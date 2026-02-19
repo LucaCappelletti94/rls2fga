@@ -246,7 +246,7 @@ fn generate_role_threshold_tuples(
 
         queries.push(TupleQuery {
             comment: format!(
-                "-- Explicit grants ({}: {})",
+                "-- Explicit grants expanded to {table} rows ({}: {})",
                 grant_role_col,
                 sorted_levels
                     .iter()
@@ -256,13 +256,14 @@ fn generate_role_threshold_tuples(
             ),
             sql: format!(
                 "SELECT\n\
-                 \x20 '{table}:' || og.{grant_resource_col} AS object,\n\
+                 \x20 '{table}:' || resource.id AS object,\n\
                  \x20 {case_expr} AS relation,\n\
                  \x20 CASE\n\
                  \x20   WHEN u.id IS NOT NULL THEN 'user:' || og.{grant_grantee_col}\n\
                  \x20   ELSE 'team:' || og.{grant_grantee_col}\n\
                  \x20 END AS subject\n\
                  FROM {grant_table} og\n\
+                 JOIN {table} resource ON resource.{owner_col} = og.{grant_resource_col}\n\
                  LEFT JOIN users u ON u.id = og.{grant_grantee_col}\n\
                  WHERE og.{grant_role_col} IN ({});",
                 role_ids.join(", ")

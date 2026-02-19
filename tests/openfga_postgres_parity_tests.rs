@@ -1,0 +1,357 @@
+#![cfg(feature = "db")]
+
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+use reqwest::Client;
+use serde_json::{json, Value};
+use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use testcontainers::{
+    core::{IntoContainerPort, WaitFor},
+    runners::AsyncRunner,
+    GenericImage, ImageExt,
+};
+
+use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+use rls2fga::classifier::policy_classifier;
+use rls2fga::generator::json_model;
+use rls2fga::generator::tuple_generator::{self, TupleQuery};
+use rls2fga::parser::sql_parser;
+
+const PG_USER: &str = "postgres";
+const PG_PASSWORD: &str = "postgres";
+const PG_DB: &str = "rls2fga";
+
+const USER_ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
+const USER_BOB: &str = "00000000-0000-0000-0000-0000000000a2";
+const USER_CAROL: &str = "00000000-0000-0000-0000-0000000000a3";
+const USER_DAVE: &str = "00000000-0000-0000-0000-0000000000a4";
+const USER_EVE: &str = "00000000-0000-0000-0000-0000000000a5";
+
+const TEAM_ALPHA: &str = "00000000-0000-0000-0000-0000000000b1";
+const TEAM_BETA: &str = "00000000-0000-0000-0000-0000000000b2";
+
+const DOC_1: &str = "00000000-0000-0000-0000-0000000000d1";
+const DOC_2: &str = "00000000-0000-0000-0000-0000000000d2";
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct TupleKey {
+    object: String,
+    relation: String,
+    subject: String,
+}
+
+fn load_emi() -> (
+    Vec<ClassifiedPolicy>,
+    sql_parser::ParserDB,
+    FunctionRegistry,
+    String,
+) {
+    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
+    let db = sql_parser::parse_schema(&sql).unwrap();
+
+    let reg_json =
+        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
+    let mut registry = FunctionRegistry::new();
+    registry.load_from_json(&reg_json).unwrap();
+
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry, sql)
+}
+
+async fn connect_postgres_with_retry(database_url: &str) -> PgPool {
+    let mut last_error = String::new();
+    for _ in 0..30 {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await
+        {
+            Ok(pool) => return pool,
+            Err(error) => {
+                last_error = error.to_string();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+
+    panic!("Failed to connect to PostgreSQL after retries: {last_error}");
+}
+
+async fn seed_emi_data(pool: &PgPool) {
+    let seed_sql = format!(
+        "
+INSERT INTO users (id) VALUES
+    ('{USER_ALICE}'),
+    ('{USER_BOB}'),
+    ('{USER_CAROL}'),
+    ('{USER_DAVE}'),
+    ('{USER_EVE}');
+
+INSERT INTO teams (id) VALUES
+    ('{TEAM_ALPHA}'),
+    ('{TEAM_BETA}');
+
+INSERT INTO team_members (team_id, user_id) VALUES
+    ('{TEAM_ALPHA}', '{USER_BOB}'),
+    ('{TEAM_BETA}', '{USER_DAVE}');
+
+INSERT INTO ownables (id, owner_id) VALUES
+    ('{DOC_1}', '{USER_ALICE}'),
+    ('{DOC_2}', '{TEAM_ALPHA}');
+
+INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+    ('{USER_CAROL}', '{USER_ALICE}', 3),
+    ('{TEAM_BETA}', '{USER_ALICE}', 2),
+    ('{USER_EVE}', '{TEAM_ALPHA}', 4);
+"
+    );
+
+    sqlx::raw_sql(&seed_sql)
+        .execute(pool)
+        .await
+        .expect("Failed to seed EMI fixture data");
+}
+
+async fn execute_tuple_queries(pool: &PgPool, tuple_queries: &[TupleQuery]) -> Vec<TupleKey> {
+    let mut keys = BTreeSet::new();
+
+    for query in tuple_queries {
+        let rows = sqlx::query(&query.sql)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
+                    query.comment, query.sql
+                )
+            });
+
+        for row in rows {
+            let object: String = row.try_get("object").unwrap();
+            let relation: String = row.try_get("relation").unwrap();
+            let subject: String = row.try_get("subject").unwrap();
+
+            keys.insert(TupleKey {
+                object,
+                relation,
+                subject,
+            });
+        }
+    }
+
+    keys.into_iter().collect()
+}
+
+async fn create_store(client: &Client, base: &str) -> String {
+    let response = client
+        .post(format!("{base}/stores"))
+        .json(&json!({"name": "pg18-parity-test"}))
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert!(
+        status.is_success(),
+        "Store creation failed ({status}): {body:#}"
+    );
+
+    body["id"].as_str().expect("missing store id").to_string()
+}
+
+async fn write_authorization_model(
+    client: &Client,
+    base: &str,
+    store_id: &str,
+    model: &json_model::AuthorizationModel,
+) -> String {
+    let response = client
+        .post(format!("{base}/stores/{store_id}/authorization-models"))
+        .json(model)
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert!(
+        status.is_success(),
+        "Model write failed ({status}): {body:#}"
+    );
+
+    body["authorization_model_id"]
+        .as_str()
+        .expect("missing authorization_model_id")
+        .to_string()
+}
+
+async fn write_tuples(
+    client: &Client,
+    base: &str,
+    store_id: &str,
+    model_id: &str,
+    tuple_keys: &[TupleKey],
+) {
+    let writes: Vec<Value> = tuple_keys
+        .iter()
+        .map(|tuple| {
+            json!({
+                "user": tuple.subject,
+                "relation": tuple.relation,
+                "object": tuple.object
+            })
+        })
+        .collect();
+
+    let response = client
+        .post(format!("{base}/stores/{store_id}/write"))
+        .json(&json!({
+            "authorization_model_id": model_id,
+            "writes": { "tuple_keys": writes }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert!(
+        status.is_success(),
+        "Tuple write failed ({status}): {body:#}"
+    );
+}
+
+async fn check_openfga(
+    client: &Client,
+    base: &str,
+    store_id: &str,
+    model_id: &str,
+    user: &str,
+    relation: &str,
+    object: &str,
+) -> bool {
+    let response = client
+        .post(format!("{base}/stores/{store_id}/check"))
+        .json(&json!({
+            "authorization_model_id": model_id,
+            "tuple_key": {
+                "user": user,
+                "relation": relation,
+                "object": object
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert!(status.is_success(), "Check failed ({status}): {body:#}");
+
+    body["allowed"].as_bool().expect("missing check result")
+}
+
+async fn postgres_role_for_user_and_doc(pool: &PgPool, user_id: &str, doc_id: &str) -> i32 {
+    sqlx::query_scalar::<_, i32>(
+        "SELECT get_owner_role($1::uuid, owner_id)
+         FROM ownables
+         WHERE id = $2::uuid",
+    )
+    .bind(user_id)
+    .bind(doc_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn translated_schema_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let pool = connect_postgres_with_retry(&pg_url).await;
+
+    let (classified, db, registry, schema_sql) = load_emi();
+    sqlx::raw_sql(&schema_sql)
+        .execute(&pool)
+        .await
+        .expect("Failed to apply EMI schema on PostgreSQL 18");
+    seed_emi_data(&pool).await;
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let tuple_queries = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+    let tuple_keys = execute_tuple_queries(&pool, &tuple_queries).await;
+    assert!(
+        !tuple_keys.is_empty(),
+        "Expected generated tuple SQL to produce at least one tuple"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.5")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let openfga_port = openfga.get_host_port_ipv4(8080).await.unwrap();
+    let base = format!("http://localhost:{openfga_port}");
+    let client = Client::new();
+
+    let store_id = create_store(&client, &base).await;
+    let model_id = write_authorization_model(&client, &base, &store_id, &model).await;
+    write_tuples(&client, &base, &store_id, &model_id, &tuple_keys).await;
+
+    let users = [USER_ALICE, USER_BOB, USER_CAROL, USER_DAVE, USER_EVE];
+    let docs = [DOC_1, DOC_2];
+    let relations = [
+        ("can_select", 2),
+        ("can_insert", 3),
+        ("can_update", 3),
+        ("can_delete", 4),
+    ];
+
+    let mut failures = Vec::new();
+    for user_id in users {
+        for doc_id in docs {
+            let role = postgres_role_for_user_and_doc(&pool, user_id, doc_id).await;
+            let user = format!("user:{user_id}");
+            let object = format!("ownables:{doc_id}");
+
+            for (relation, threshold) in relations {
+                let expected = role >= threshold;
+                let actual = check_openfga(
+                    &client, &base, &store_id, &model_id, &user, relation, &object,
+                )
+                .await;
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} {relation} {object}: postgres={expected} (role={role}), openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

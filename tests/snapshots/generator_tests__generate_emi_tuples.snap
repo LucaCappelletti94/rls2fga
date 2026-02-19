@@ -18,9 +18,9 @@ AND owner_id IS NOT NULL;
 SELECT 'team:' || team_id AS object, 'member' AS relation, 'user:' || user_id AS subject
 FROM team_members;
 
--- Explicit grants (role_id: 2=viewer, 3=editor, 4=admin)
+-- Explicit grants expanded to ownables rows (role_id: 2=viewer, 3=editor, 4=admin)
 SELECT
-  'ownables:' || og.granted_owner_id AS object,
+  'ownables:' || resource.id AS object,
   CASE og.role_id
     WHEN 2 THEN 'grant_viewer'
     WHEN 3 THEN 'grant_editor'
@@ -31,5 +31,6 @@ SELECT
     ELSE 'team:' || og.grantee_owner_id
   END AS subject
 FROM owner_grants og
+JOIN ownables resource ON resource.owner_id = og.granted_owner_id
 LEFT JOIN users u ON u.id = og.grantee_owner_id
 WHERE og.role_id IN (2, 3, 4);
