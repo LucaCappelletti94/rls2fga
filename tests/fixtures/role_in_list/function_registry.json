@@ -1,0 +1,15 @@
+{
+  "get_owner_role": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+    "grant_table": "owner_grants",
+    "grant_grantee_col": "grantee_owner_id",
+    "grant_resource_col": "granted_owner_id",
+    "grant_role_col": "role_id",
+    "team_membership_table": "team_members",
+    "team_membership_user_col": "user_id",
+    "team_membership_team_col": "team_id"
+  }
+}

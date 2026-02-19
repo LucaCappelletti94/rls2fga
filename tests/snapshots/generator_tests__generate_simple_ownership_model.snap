@@ -1,0 +1,14 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type resources
+  relations
+    define owner: [user]
+    define can_delete: owner
+    define can_select: owner

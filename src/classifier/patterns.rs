@@ -1,0 +1,205 @@
+use serde::{Deserialize, Serialize};
+use sqlparser::ast::CreatePolicyCommand;
+use std::fmt;
+
+/// The command a policy applies to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PolicyCommand {
+    /// Policy applies to SELECT queries only.
+    Select,
+    /// Policy applies to INSERT queries only.
+    Insert,
+    /// Policy applies to UPDATE queries only.
+    Update,
+    /// Policy applies to DELETE queries only.
+    Delete,
+    /// Policy applies to all DML commands.
+    All,
+}
+
+impl fmt::Display for PolicyCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PolicyCommand::Select => write!(f, "SELECT"),
+            PolicyCommand::Insert => write!(f, "INSERT"),
+            PolicyCommand::Update => write!(f, "UPDATE"),
+            PolicyCommand::Delete => write!(f, "DELETE"),
+            PolicyCommand::All => write!(f, "ALL"),
+        }
+    }
+}
+
+/// Boolean operator for composite patterns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoolOp {
+    /// Logical conjunction: all sub-conditions must hold.
+    And,
+    /// Logical disjunction: at least one sub-condition must hold.
+    Or,
+}
+
+/// Classified pattern for an expression.
+#[derive(Debug, Clone)]
+pub enum PatternClass {
+    /// P1: Numeric role threshold — `role_level(user, resource) >= N`.
+    P1NumericThreshold {
+        /// Name of the role-level function being called.
+        function_name: String,
+        /// Minimum integer level required by the policy.
+        threshold: i32,
+        /// DML command this threshold applies to.
+        command: PolicyCommand,
+    },
+    /// P2: Role name IN-list — `role_name(user, resource) IN ('viewer', ...)`.
+    P2RoleNameInList {
+        /// Name of the role-level function being called.
+        function_name: String,
+        /// Allowed role names extracted from the IN list.
+        role_names: Vec<String>,
+    },
+    /// P3: Direct column equality — `owner_id = current_user_id()`.
+    P3DirectOwnership {
+        /// Column compared against the current user.
+        column: String,
+    },
+    /// P4: EXISTS subquery membership — `EXISTS (SELECT 1 FROM members ...)`.
+    P4ExistsMembership {
+        /// Table scanned in the EXISTS subquery.
+        join_table: String,
+        /// Foreign-key column referencing the parent entity.
+        fk_column: String,
+        /// Column referencing the user in the join table.
+        user_column: String,
+    },
+    /// P5: Parent resource permission inheritance via FK join.
+    P5ParentInheritance {
+        /// Parent table whose policy is inherited.
+        parent_table: String,
+        /// FK column linking child to parent.
+        fk_column: String,
+        /// Recursively classified inner expression on the parent.
+        inner_pattern: Box<ClassifiedExpr>,
+    },
+    /// P6: Boolean flag / public access — `is_public = TRUE`.
+    P6BooleanFlag {
+        /// Boolean column name controlling public visibility.
+        column: String,
+    },
+    /// P7: Relationship AND attribute (ABAC crossover) — relationship check combined with an attribute filter.
+    P7AbacAnd {
+        /// The relationship-based sub-expression (e.g. ownership or role check).
+        relationship_part: Box<ClassifiedExpr>,
+        /// Column name used as an attribute guard.
+        attribute_part: String,
+    },
+    /// P8: Composite boolean — OR/AND of two or more sub-patterns.
+    P8Composite {
+        /// Boolean operator joining the sub-patterns.
+        op: BoolOp,
+        /// Classified sub-expressions combined by `op`.
+        parts: Vec<ClassifiedExpr>,
+    },
+    /// P9: Standalone attribute condition — `status = 'published'` or `priority >= 3`.
+    P9AttributeCondition {
+        /// Column name used as the attribute guard.
+        column: String,
+        /// Human-readable description of the comparison value.
+        value_description: String,
+    },
+    /// Expression that could not be matched to any known pattern.
+    Unknown {
+        /// SQL text of the unrecognised expression.
+        sql_text: String,
+        /// Human-readable explanation of why classification failed.
+        reason: String,
+    },
+}
+
+/// Confidence level for a classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ConfidenceLevel {
+    /// Lowest confidence — unrecognised or unsupported expression.
+    D,
+    /// Low confidence — partially recognised (e.g. ABAC crossover).
+    C,
+    /// Medium confidence — composite patterns where sub-parts are well-understood.
+    B,
+    /// Highest confidence — fully recognised, single-pattern expression.
+    A,
+}
+
+impl fmt::Display for ConfidenceLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfidenceLevel::A => write!(f, "A"),
+            ConfidenceLevel::B => write!(f, "B"),
+            ConfidenceLevel::C => write!(f, "C"),
+            ConfidenceLevel::D => write!(f, "D"),
+        }
+    }
+}
+
+impl std::str::FromStr for ConfidenceLevel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "A" => Ok(ConfidenceLevel::A),
+            "B" => Ok(ConfidenceLevel::B),
+            "C" => Ok(ConfidenceLevel::C),
+            "D" => Ok(ConfidenceLevel::D),
+            _ => Err(format!("Invalid confidence level: {s}")),
+        }
+    }
+}
+
+/// A classified expression with its pattern and confidence.
+#[derive(Debug, Clone)]
+pub struct ClassifiedExpr {
+    /// The matched pattern (P1–P8 or Unknown).
+    pub pattern: PatternClass,
+    /// How confident the classifier is in this match.
+    pub confidence: ConfidenceLevel,
+}
+
+impl From<CreatePolicyCommand> for PolicyCommand {
+    fn from(cmd: CreatePolicyCommand) -> Self {
+        match cmd {
+            CreatePolicyCommand::All => PolicyCommand::All,
+            CreatePolicyCommand::Select => PolicyCommand::Select,
+            CreatePolicyCommand::Insert => PolicyCommand::Insert,
+            CreatePolicyCommand::Update => PolicyCommand::Update,
+            CreatePolicyCommand::Delete => PolicyCommand::Delete,
+        }
+    }
+}
+
+/// A classified policy with classifications for USING and WITH CHECK.
+#[derive(Debug, Clone)]
+pub struct ClassifiedPolicy {
+    /// The original parsed `CREATE POLICY` statement.
+    pub policy: sqlparser::ast::CreatePolicy,
+    /// Classification of the USING expression, if present.
+    pub using_classification: Option<ClassifiedExpr>,
+    /// Classification of the WITH CHECK expression, if present.
+    pub with_check_classification: Option<ClassifiedExpr>,
+}
+
+impl ClassifiedPolicy {
+    /// Policy name as declared in the DDL.
+    pub fn name(&self) -> &str {
+        &self.policy.name.value
+    }
+
+    /// Fully-qualified table name targeted by this policy.
+    pub fn table_name(&self) -> String {
+        self.policy.table_name.to_string()
+    }
+
+    /// DML command this policy restricts (ALL if unspecified).
+    pub fn command(&self) -> PolicyCommand {
+        self.policy
+            .command
+            .as_ref()
+            .map_or(PolicyCommand::All, |c| PolicyCommand::from(*c))
+    }
+}

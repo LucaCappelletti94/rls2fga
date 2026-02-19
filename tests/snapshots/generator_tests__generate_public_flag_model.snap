@@ -1,0 +1,13 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type articles
+  relations
+    define public_viewer: [user:*]
+    define can_select: public_viewer
