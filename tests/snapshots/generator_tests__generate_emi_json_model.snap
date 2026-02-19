@@ -9,25 +9,6 @@ expression: model
       "type": "user"
     },
     {
-      "type": "team",
-      "relations": {
-        "member": {
-          "this": {}
-        }
-      },
-      "metadata": {
-        "relations": {
-          "member": {
-            "directly_related_user_types": [
-              {
-                "type": "user"
-              }
-            ]
-          }
-        }
-      }
-    },
-    {
       "type": "ownables",
       "relations": {
         "can_delete": {
@@ -194,6 +175,25 @@ expression: model
             ]
           },
           "owner_user": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "team",
+      "relations": {
+        "member": {
+          "this": {}
+        }
+      },
+      "metadata": {
+        "relations": {
+          "member": {
             "directly_related_user_types": [
               {
                 "type": "user"

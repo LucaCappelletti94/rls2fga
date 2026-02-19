@@ -1,0 +1,886 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 1200 3140" width="1200" height="3140" style="background:#FAFAF7">
+
+  <!-- ════════════════════════════════════════════════════════════════
+       rls2fga — Professional Infographic
+       PostgreSQL Row-Level Security → OpenFGA Authorization Models
+       ════════════════════════════════════════════════════════════════ -->
+
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2C3E6B"/>
+      <stop offset="100%" stop-color="#1A2744"/>
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#A7C7E7"/>
+      <stop offset="100%" stop-color="#8BB5DC"/>
+    </linearGradient>
+    <linearGradient id="lavenderGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C3B1E1"/>
+      <stop offset="100%" stop-color="#A898CC"/>
+    </linearGradient>
+    <linearGradient id="mintGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B2DFDB"/>
+      <stop offset="100%" stop-color="#93CEC9"/>
+    </linearGradient>
+    <linearGradient id="peachGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFDAB9"/>
+      <stop offset="100%" stop-color="#F5C9A0"/>
+    </linearGradient>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="cardShadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#00000015"/>
+    </filter>
+    <filter id="softShadow" x="-2%" y="-2%" width="104%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#00000010"/>
+    </filter>
+
+    <symbol id="icon-database" viewBox="0 0 448 512">
+      <path d="M448 80l0 48c0 44.2-100.3 80-224 80S0 172.2 0 128L0 80C0 35.8 100.3 0 224 0S448 35.8 448 80zM393.2 214.7c20.8-7.4 39.9-16.9 54.8-28.6L448 288c0 44.2-100.3 80-224 80S0 332.2 0 288L0 186.1c14.9 11.8 34 21.2 54.8 28.6C99.7 230.7 159.5 240 224 240s124.3-9.3 169.2-25.3zM0 346.1c14.9 11.8 34 21.2 54.8 28.6C99.7 390.7 159.5 400 224 400s124.3-9.3 169.2-25.3c20.8-7.4 39.9-16.9 54.8-28.6l0 85.9c0 44.2-100.3 80-224 80S0 476.2 0 432l0-85.9z"/>
+    </symbol>
+    <symbol id="icon-shield" viewBox="0 0 512 512">
+      <path d="M256 0c4.6 0 9.2 1 13.4 2.9L457.7 82.8c22 9.3 38.4 31 38.3 57.2c-.5 99.2-41.3 280.7-213.6 363.2c-16.7 8-36.1 8-52.8 0C57.3 420.7 16.5 239.2 16 140c-.1-26.2 16.3-47.9 38.3-57.2L242.7 2.9C246.8 1 251.4 0 256 0zm0 66.8l0 378.1C394 378 431.1 230.1 432 141.4L256 66.8s0 0 0 0z"/>
+    </symbol>
+    <symbol id="icon-arrow-right" viewBox="0 0 448 512">
+      <path d="M438.6 278.6c12.5-12.5 12.5-32.8 0-45.3l-160-160c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L338.8 224 32 224c-17.7 0-32 14.3-32 32s14.3 32 32 32l306.7 0L233.4 393.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l160-160z"/>
+    </symbol>
+    <symbol id="icon-lock" viewBox="0 0 448 512">
+      <path d="M144 144l0 48 160 0 0-48c0-44.2-35.8-80-80-80s-80 35.8-80 80zM80 192l0-48C80 64.5 144.5 0 224 0s144 64.5 144 144l0 48 16 0c35.3 0 64 28.7 64 64l0 192c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 256c0-35.3 28.7-64 64-64l16 0z"/>
+    </symbol>
+    <symbol id="icon-code" viewBox="0 0 640 512">
+      <path d="M392.8 1.2c-17-4.9-34.7 5-39.6 22l-128 448c-4.9 17 5 34.7 22 39.6s34.7-5 39.6-22l128-448c4.9-17-5-34.7-22-39.6zm80.6 120.1c-12.5 12.5-12.5 32.8 0 45.3L562.7 256l-89.4 89.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l112-112c12.5-12.5 12.5-32.8 0-45.3l-112-112c-12.5-12.5-32.8-12.5-45.3 0zm-306.7 0c-12.5-12.5-32.8-12.5-45.3 0l-112 112c-12.5 12.5-12.5 32.8 0 45.3l112 112c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256l89.4-89.4c12.5-12.5 12.5-32.8 0-45.3z"/>
+    </symbol>
+    <symbol id="icon-gear" viewBox="0 0 512 512">
+      <path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/>
+    </symbol>
+    <symbol id="icon-lightbulb" viewBox="0 0 384 512">
+      <path d="M272 384c9.6-31.9 29.5-59.1 49.2-86.2c0 0 0 0 0 0c5.2-7.1 10.4-14.2 15.4-21.4c19.8-28.5 31.4-63 31.4-100.3C368 78.8 289.2 0 192 0S16 78.8 16 176c0 37.3 11.6 71.9 31.4 100.3c5 7.2 10.2 14.3 15.4 21.4c0 0 0 0 0 0c19.8 27.1 39.7 54.4 49.2 86.2l160 0zM192 512c44.2 0 80-35.8 80-80l0-16-160 0 0 16c0 44.2 35.8 80 80 80zM112 176c0 8.8-7.2 16-16 16s-16-7.2-16-16c0-61.9 50.1-112 112-112c8.8 0 16 7.2 16 16s-7.2 16-16 16c-44.2 0-80 35.8-80 80z"/>
+    </symbol>
+    <symbol id="icon-file-code" viewBox="0 0 384 512">
+      <path d="M64 0C28.7 0 0 28.7 0 64L0 448c0 35.3 28.7 64 64 64l256 0c35.3 0 64-28.7 64-64l0-288-128 0c-17.7 0-32-14.3-32-32L224 0 64 0zM256 0l0 128 128 0L256 0zM153 289l-31 31 31 31c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0L71 337c-9.4-9.4-9.4-24.6 0-33.9l48-48c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9zM265 255l48 48c9.4 9.4 9.4 24.6 0 33.9l-48 48c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l31-31-31-31c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0z"/>
+    </symbol>
+    <symbol id="icon-circle-check" viewBox="0 0 512 512">
+      <path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM369 209L241 337c-9.4 9.4-24.6 9.4-33.9 0l-64-64c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L335 175c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"/>
+    </symbol>
+    <symbol id="icon-chart-bar" viewBox="0 0 512 512">
+      <path d="M32 32c17.7 0 32 14.3 32 32l0 336c0 8.8 7.2 16 16 16l400 0c17.7 0 32 14.3 32 32s-14.3 32-32 32L80 480c-44.2 0-80-35.8-80-80L0 64C0 46.3 14.3 32 32 32zm96 96c0-17.7 14.3-32 32-32l192 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-192 0c-17.7 0-32-14.3-32-32zm32 64l128 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-128 0c-17.7 0-32-14.3-32-32s14.3-32 32-32zm0 96l256 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-256 0c-17.7 0-32-14.3-32-32s14.3-32 32-32z"/>
+    </symbol>
+    <symbol id="icon-magnifying-glass" viewBox="0 0 512 512">
+      <path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/>
+    </symbol>
+    <symbol id="icon-users" viewBox="0 0 640 512">
+      <path d="M144 0a80 80 0 1 1 0 160A80 80 0 1 1 144 0zM512 0a80 80 0 1 1 0 160A80 80 0 1 1 512 0zM0 298.7C0 239.8 47.8 192 106.7 192l42.7 0c15.9 0 31 3.5 44.6 9.7c-1.3 7.2-1.9 14.7-1.9 22.3c0 38.2 16.8 72.5 43.3 96c-.2 0-.4 0-.7 0L21.3 320C9.6 320 0 310.4 0 298.7zM405.3 320c-.2 0-.4 0-.7 0c26.6-23.5 43.3-57.8 43.3-96c0-7.6-.7-15-1.9-22.3c13.6-6.3 28.7-9.7 44.6-9.7l42.7 0C592.2 192 640 239.8 640 298.7c0 11.8-9.6 21.3-21.3 21.3l-213.3 0zM224 224a96 96 0 1 1 192 0 96 96 0 1 1 -192 0zM128 485.3C128 411.7 187.7 352 261.3 352l117.3 0C452.3 352 512 411.7 512 485.3c0 14.7-11.9 26.7-26.7 26.7l-330.7 0c-14.7 0-26.7-11.9-26.7-26.7z"/>
+    </symbol>
+    <!-- Rust brand icon (Font Awesome 6, brands/rust) -->
+    <symbol id="icon-rust" viewBox="0 0 512 512">
+      <path d="M508.52,249.75,486.7,236.24c-.17-2-.34-3.93-.55-5.88l18.72-17.5a7.35,7.35,0,0,0-2.44-12.25l-24-9c-.54-1.88-1.08-3.78-1.67-5.64l15-20.83a7.35,7.35,0,0,0-4.79-11.54l-25.42-4.15c-.9-1.73-1.79-3.45-2.73-5.15l10.68-23.42a7.35,7.35,0,0,0-6.95-10.39l-25.82.91q-1.79-2.22-3.61-4.4L439,81.84A7.36,7.36,0,0,0,430.16,73L405,78.93q-2.17-1.83-4.4-3.61l.91-25.82a7.35,7.35,0,0,0-10.39-7L367.7,53.23c-1.7-.94-3.43-1.84-5.15-2.73L358.4,25.08a7.35,7.35,0,0,0-11.54-4.79L326,35.26c-1.86-.59-3.75-1.13-5.64-1.67l-9-24a7.35,7.35,0,0,0-12.25-2.44l-17.5,18.72c-1.95-.21-3.91-.38-5.88-.55L262.25,3.48a7.35,7.35,0,0,0-12.5,0L236.24,25.3c-2,.17-3.93.34-5.88.55L212.86,7.13a7.35,7.35,0,0,0-12.25,2.44l-9,24c-1.89.55-3.79,1.08-5.66,1.68l-20.82-15a7.35,7.35,0,0,0-11.54,4.79l-4.15,25.41c-1.73.9-3.45,1.79-5.16,2.73L120.88,42.55a7.35,7.35,0,0,0-10.39,7l.92,25.81c-1.49,1.19-3,2.39-4.42,3.61L81.84,73A7.36,7.36,0,0,0,73,81.84L78.93,107c-1.23,1.45-2.43,2.93-3.62,4.41l-25.81-.91a7.42,7.42,0,0,0-6.37,3.26,7.35,7.35,0,0,0-.57,7.13l10.66,23.41c-.94,1.7-1.83,3.43-2.73,5.16L25.08,153.6a7.35,7.35,0,0,0-4.79,11.54l15,20.82c-.59,1.87-1.13,3.77-1.68,5.66l-24,9a7.35,7.35,0,0,0-2.44,12.25l18.72,17.5c-.21,1.95-.38,3.91-.55,5.88L3.48,249.75a7.35,7.35,0,0,0,0,12.5L25.3,275.76c.17,2,.34,3.92.55,5.87L7.13,299.13a7.35,7.35,0,0,0,2.44,12.25l24,9c.55,1.89,1.08,3.78,1.68,5.65l-15,20.83a7.35,7.35,0,0,0,4.79,11.54l25.42,4.15c.9,1.72,1.79,3.45,2.73,5.14L42.56,391.12a7.35,7.35,0,0,0,.57,7.13,7.13,7.13,0,0,0,6.37,3.26l25.83-.91q1.77,2.22,3.6,4.4L73,430.16A7.36,7.36,0,0,0,81.84,439L107,433.07q2.18,1.83,4.41,3.61l-.92,25.82a7.35,7.35,0,0,0,10.39,6.95l23.43-10.68c1.69.94,3.42,1.83,5.14,2.73l4.15,25.42a7.34,7.34,0,0,0,11.54,4.78l20.83-15c1.86.6,3.76,1.13,5.65,1.68l9,24a7.36,7.36,0,0,0,12.25,2.44l17.5-18.72c1.95.21,3.92.38,5.88.55l13.51,21.82a7.35,7.35,0,0,0,12.5,0l13.51-21.82c2-.17,3.93-.34,5.88-.56l17.5,18.73a7.36,7.36,0,0,0,12.25-2.44l9-24c1.89-.55,3.78-1.08,5.65-1.68l20.82,15a7.34,7.34,0,0,0,11.54-4.78l4.15-25.42c1.72-.9,3.45-1.79,5.15-2.73l23.42,10.68a7.35,7.35,0,0,0,10.39-6.95l-.91-25.82q2.22-1.79,4.4-3.61L430.16,439a7.36,7.36,0,0,0,8.84-8.84L433.07,405q1.83-2.17,3.61-4.4l25.82.91a7.23,7.23,0,0,0,6.37-3.26,7.35,7.35,0,0,0,.58-7.13L458.77,367.7c.94-1.7,1.83-3.43,2.73-5.15l25.42-4.15a7.35,7.35,0,0,0,4.79-11.54l-15-20.83c.59-1.87,1.13-3.76,1.67-5.65l24-9a7.35,7.35,0,0,0,2.44-12.25l-18.72-17.5c.21-1.95.38-3.91.55-5.87l21.82-13.51a7.35,7.35,0,0,0,0-12.5Zm-151,129.08A13.91,13.91,0,0,0,341,389.51l-7.64,35.67A187.51,187.51,0,0,1,177,424.44l-7.64-35.66a13.87,13.87,0,0,0-16.46-10.68l-31.51,6.76a187.38,187.38,0,0,1-16.26-19.21H258.3c1.72,0,2.89-.29,2.89-1.91V309.55c0-1.57-1.17-1.91-2.89-1.91H213.47l.05-34.35H262c4.41,0,23.66,1.28,29.79,25.87,1.91,7.55,6.17,32.14,9.06,40,2.89,8.82,14.6,26.46,27.1,26.46H407a187.3,187.3,0,0,1-17.34,20.09Zm25.77,34.49A15.24,15.24,0,1,1,368,398.08h.44A15.23,15.23,0,0,1,383.24,413.32Zm-225.62-.68a15.24,15.24,0,1,1-15.25-15.25h.45A15.25,15.25,0,0,1,157.62,412.64ZM69.57,234.15l32.83-14.6a13.88,13.88,0,0,0,7.06-18.33L102.69,186h26.56V305.73H75.65A187.65,187.65,0,0,1,69.57,234.15ZM58.31,198.09a15.24,15.24,0,0,1,15.23-15.25H74a15.24,15.24,0,1,1-15.67,15.24Zm155.16,24.49.05-35.32h63.26c3.28,0,23.07,3.77,23.07,18.62,0,12.29-15.19,16.7-27.68,16.7ZM399,306.71c-9.8,1.13-20.63-4.12-22-10.09-5.78-32.49-15.39-39.4-30.57-51.4,18.86-11.95,38.46-29.64,38.46-53.26,0-25.52-17.49-41.59-29.4-49.48-16.76-11-35.28-13.23-40.27-13.23H116.32A187.49,187.49,0,0,1,221.21,70.06l23.47,24.6a13.82,13.82,0,0,0,19.6.44l26.26-25a187.51,187.51,0,0,1,128.37,91.43l-18,40.57A14,14,0,0,0,408,220.43l34.59,15.33a187.12,187.12,0,0,1,.4,32.54H423.71c-1.91,0-2.69,1.27-2.69,3.13v8.82C421,301,409.31,305.58,399,306.71ZM240,60.21A15.24,15.24,0,0,1,255.21,45h.45A15.24,15.24,0,1,1,240,60.21ZM436.84,214a15.24,15.24,0,1,1,0-30.48h.44a15.24,15.24,0,0,1-.44,30.48Z"/>
+    </symbol>
+    <!-- PostgreSQL brand icon (Simple Icons) -->
+    <symbol id="icon-postgresql" viewBox="0 0 24 24">
+      <path d="M23.5594 14.7228a.5269.5269 0 0 0-.0563-.1191c-.139-.2632-.4768-.3418-1.0074-.2321-1.6533.3411-2.2935.1312-2.5256-.0191 1.342-2.0482 2.445-4.522 3.0411-6.8297.2714-1.0507.7982-3.5237.1222-4.7316a1.5641 1.5641 0 0 0-.1509-.235C21.6931.9086 19.8007.0248 17.5099.0005c-1.4947-.0158-2.7705.3461-3.1161.4794a9.449 9.449 0 0 0-.5159-.0816 8.044 8.044 0 0 0-1.3114-.1278c-1.1822-.0184-2.2038.2642-3.0498.8406-.8573-.3211-4.7888-1.645-7.2219.0788C.9359 2.1526.3086 3.8733.4302 6.3043c.0409.818.5069 3.334 1.2423 5.7436.4598 1.5065.9387 2.7019 1.4334 3.582.553.9942 1.1259 1.5933 1.7143 1.7895.4474.1491 1.1327.1441 1.8581-.7279.8012-.9635 1.5903-1.8258 1.9446-2.2069.4351.2355.9064.3625 1.39.3772a.0569.0569 0 0 0 .0004.0041 11.0312 11.0312 0 0 0-.2472.3054c-.3389.4302-.4094.5197-1.5002.7443-.3102.064-1.1344.2339-1.1464.8115-.0025.1224.0329.2309.0919.3268.2269.4231.9216.6097 1.015.6331 1.3345.3335 2.5044.092 3.3714-.6787-.017 2.231.0775 4.4174.3454 5.0874.2212.5529.7618 1.9045 2.4692 1.9043.2505 0 .5263-.0291.8296-.0941 1.7819-.3821 2.5557-1.1696 2.855-2.9059.1503-.8707.4016-2.8753.5388-4.1012.0169-.0703.0357-.1207.057-.1362.0007-.0005.0697-.0471.4272.0307a.3673.3673 0 0 0 .0443.0068l.2539.0223.0149.001c.8468.0384 1.9114-.1426 2.5312-.4308.6438-.2988 1.8057-1.0323 1.5951-1.6698zM2.371 11.8765c-.7435-2.4358-1.1779-4.8851-1.2123-5.5719-.1086-2.1714.4171-3.6829 1.5623-4.4927 1.8367-1.2986 4.8398-.5408 6.108-.13-.0032.0032-.0066.0061-.0098.0094-2.0238 2.044-1.9758 5.536-1.9708 5.7495-.0002.0823.0066.1989.0162.3593.0348.5873.0996 1.6804-.0735 2.9184-.1609 1.1504.1937 2.2764.9728 3.0892.0806.0841.1648.1631.2518.2374-.3468.3714-1.1004 1.1926-1.9025 2.1576-.5677.6825-.9597.5517-1.0886.5087-.3919-.1307-.813-.5871-1.2381-1.3223-.4796-.839-.9635-2.0317-1.4155-3.5126zm6.0072 5.0871c-.1711-.0428-.3271-.1132-.4322-.1772.0889-.0394.2374-.0902.4833-.1409 1.2833-.2641 1.4815-.4506 1.9143-1.0002.0992-.126.2116-.2687.3673-.4426a.3549.3549 0 0 0 .0737-.1298c.1708-.1513.2724-.1099.4369-.0417.156.0646.3078.26.3695.4752.0291.1016.0619.2945-.0452.4444-.9043 1.2658-2.2216 1.2494-3.1676 1.0128zm2.094-3.988-.0525.141c-.133.3566-.2567.6881-.3334 1.003-.6674-.0021-1.3168-.2872-1.8105-.8024-.6279-.6551-.9131-1.5664-.7825-2.5004.1828-1.3079.1153-2.4468.079-3.0586-.005-.0857-.0095-.1607-.0122-.2199.2957-.2621 1.6659-.9962 2.6429-.7724.4459.1022.7176.4057.8305.928.5846 2.7038.0774 3.8307-.3302 4.7363-.084.1866-.1633.3629-.2311.5454zm7.3637 4.5725c-.0169.1768-.0358.376-.0618.5959l-.146.4383a.3547.3547 0 0 0-.0182.1077c-.0059.4747-.054.6489-.115.8693-.0634.2292-.1353.4891-.1794 1.0575-.11 1.4143-.8782 2.2267-2.4172 2.5565-1.5155.3251-1.7843-.4968-2.0212-1.2217a6.5824 6.5824 0 0 0-.0769-.2266c-.2154-.5858-.1911-1.4119-.1574-2.5551.0165-.5612-.0249-1.9013-.3302-2.6462.0044-.2932.0106-.5909.019-.8918a.3529.3529 0 0 0-.0153-.1126 1.4927 1.4927 0 0 0-.0439-.208c-.1226-.4283-.4213-.7866-.7797-.9351-.1424-.059-.4038-.1672-.7178-.0869.067-.276.1831-.5875.309-.9249l.0529-.142c.0595-.16.134-.3257.213-.5012.4265-.9476 1.0106-2.2453.3766-5.1772-.2374-1.0981-1.0304-1.6343-2.2324-1.5098-.7207.0746-1.3799.3654-1.7088.5321a5.6716 5.6716 0 0 0-.1958.1041c.0918-1.1064.4386-3.1741 1.7357-4.4823a4.0306 4.0306 0 0 1 .3033-.276.3532.3532 0 0 0 .1447-.0644c.7524-.5706 1.6945-.8506 2.802-.8325.4091.0067.8017.0339 1.1742.081 1.939.3544 3.2439 1.4468 4.0359 2.3827.8143.9623 1.2552 1.9315 1.4312 2.4543-1.3232-.1346-2.2234.1268-2.6797.779-.9926 1.4189.543 4.1729 1.2811 5.4964.1353.2426.2522.4522.2889.5413.2403.5825.5515.9713.7787 1.2552.0696.087.1372.1714.1885.245-.4008.1155-1.1208.3825-1.0552 1.717-.0123.1563-.0423.4469-.0834.8148-.0461.2077-.0702.4603-.0994.7662zm.8905-1.6211c-.0405-.8316.2691-.9185.5967-1.0105a2.8566 2.8566 0 0 0 .135-.0406 1.202 1.202 0 0 0 .1342.103c.5703.3765 1.5823.4213 3.0068.1344-.2016.1769-.5189.3994-.9533.6011-.4098.1903-1.0957.333-1.7473.3636-.7197.0336-1.0859-.0807-1.1721-.151zm.5695-9.2712c-.0059.3508-.0542.6692-.1054 1.0017-.055.3576-.112.7274-.1264 1.1762-.0142.4368.0404.8909.0932 1.3301.1066.887.216 1.8003-.2075 2.7014a3.5272 3.5272 0 0 1-.1876-.3856c-.0527-.1276-.1669-.3326-.3251-.6162-.6156-1.1041-2.0574-3.6896-1.3193-4.7446.3795-.5427 1.3408-.5661 2.1781-.463zm.2284 7.0137a12.3762 12.3762 0 0 0-.0853-.1074l-.0355-.0444c.7262-1.1995.5842-2.3862.4578-3.4385-.0519-.4318-.1009-.8396-.0885-1.2226.0129-.4061.0666-.7543.1185-1.0911.0639-.415.1288-.8443.1109-1.3505.0134-.0531.0188-.1158.0118-.1902-.0457-.4855-.5999-1.938-1.7294-3.253-.6076-.7073-1.4896-1.4972-2.6889-2.0395.5251-.1066 1.2328-.2035 2.0244-.1859 2.0515.0456 3.6746.8135 4.8242 2.2824a.908.908 0 0 1 .0667.1002c.7231 1.3556-.2762 6.2751-2.9867 10.5405zm-8.8166-6.1162c-.025.1794-.3089.4225-.6211.4225a.5821.5821 0 0 1-.0809-.0056c-.1873-.026-.3765-.144-.5059-.3156-.0458-.0605-.1203-.178-.1055-.2844.0055-.0401.0261-.0985.0925-.1488.1182-.0894.3518-.1226.6096-.0867.3163.0441.6426.1938.6113.4186zm7.9305-.4114c.0111.0792-.049.201-.1531.3102-.0683.0717-.212.1961-.4079.2232a.5456.5456 0 0 1-.075.0052c-.2935 0-.5414-.2344-.5607-.3717-.024-.1765.2641-.3106.5611-.352.297-.0414.6111.0088.6356.1851z"/>
+    </symbol>
+  </defs>
+
+  <style>
+    .title { font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
+    .body { font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 400; }
+    .code { font-family: 'Cascadia Code', 'Fira Code', 'Source Code Pro', monospace; }
+    .text-primary { fill: #2D2D2D; }
+    .text-secondary { fill: #5A5A5A; }
+    .text-white { fill: #FFFFFF; }
+    .text-navy { fill: #2C3E6B; }
+  </style>
+
+  <!-- Background -->
+  <rect width="1200" height="3140" fill="#FAFAF7" rx="0"/>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 1: Header Band (y: 0–180)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="header">
+    <!-- Background band -->
+    <rect x="0" y="0" width="1200" height="180" fill="url(#headerGrad)"/>
+
+    <!-- Decorative accent line -->
+    <rect x="0" y="176" width="1200" height="4" fill="#A7C7E7" opacity="0.8"/>
+
+    <!-- Title -->
+    <text x="600" y="72" text-anchor="middle" class="title text-white" font-size="52" letter-spacing="3">
+      rls2fga
+    </text>
+
+    <!-- Subtitle -->
+    <text x="600" y="112" text-anchor="middle" class="body text-white" font-size="20" opacity="0.92">
+      PostgreSQL Row-Level Security  →  OpenFGA Authorization Models
+    </text>
+
+    <!-- Three icon badges (centered) -->
+    <!-- PostgreSQL badge -->
+    <g transform="translate(415, 128)">
+      <rect x="0" y="0" width="120" height="34" rx="17" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-postgresql" x="10" y="5" width="22" height="24" fill="#A7C7E7"/>
+      <text x="38" y="23" class="body text-white" font-size="13" opacity="0.95">PostgreSQL</text>
+    </g>
+    <!-- Rust badge -->
+    <g transform="translate(555, 128)">
+      <rect x="0" y="0" width="90" height="34" rx="17" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-rust" x="10" y="5" width="22" height="24" fill="#FFDAB9"/>
+      <text x="38" y="23" class="body text-white" font-size="13" opacity="0.95">Rust</text>
+    </g>
+    <!-- OpenFGA badge -->
+    <g transform="translate(665, 128)">
+      <rect x="0" y="0" width="120" height="34" rx="17" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-shield" x="12" y="5" width="20" height="24" fill="#B2DFDB"/>
+      <text x="38" y="23" class="body text-white" font-size="13" opacity="0.95">OpenFGA</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 2: Abstract / Summary Card (y: 200–390)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="abstract" transform="translate(60, 200)">
+    <!-- Card background -->
+    <rect x="0" y="0" width="1080" height="350" rx="16" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="2" filter="url(#cardShadow)"/>
+
+    <!-- Accent bar on left -->
+    <rect x="0" y="0" width="6" height="350" rx="3" fill="url(#blueGrad)"/>
+
+    <!-- Lightbulb icon -->
+    <g transform="translate(30, 14)">
+      <circle cx="20" cy="20" r="20" fill="#A7C7E7" opacity="0.25"/>
+      <use href="#icon-lightbulb" x="8" y="6" width="24" height="28" fill="#2C3E6B"/>
+    </g>
+
+    <!-- Section title -->
+    <text x="80" y="40" class="title text-navy" font-size="22">What is rls2fga?</text>
+
+    <!-- Narrative body text -->
+    <foreignObject x="32" y="55" width="1020" height="285">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 400; font-size: 14px; color: #2D2D2D; text-align: justify; line-height: 1.6;">
+        <p style="margin: 0 0 10px 0;">
+          Most applications need to control which data each user can see or modify. PostgreSQL provides a powerful built-in answer: <strong style="color: #2C3E6B;">Row-Level Security (RLS)</strong>. RLS lets administrators attach SQL expressions directly to tables, so the database itself transparently filters which rows are visible during every SELECT, INSERT, UPDATE, or DELETE. However, because these policies are written in SQL and live inside the database engine, they remain tightly coupled to the schema &#8212; difficult to audit, reuse across services, or reason about at scale.
+        </p>
+        <p style="margin: 0 0 10px 0;">
+          In 2019, Google published the design of <strong style="color: #2C3E6B;">Zanzibar</strong>, its global authorization system. Rather than filtering rows with SQL, Zanzibar models every permission as a relationship in a graph, stored as simple <em>(object, relation, subject)</em> tuples. Access decisions are resolved by traversing this graph, which decouples authorization from any single database and scales uniformly across services. <strong style="color: #2C3E6B;">OpenFGA</strong>, the leading open-source Zanzibar implementation maintained by Auth0/Okta, brings this model to everyone with a dedicated DSL for schemas and an API for permission checks.
+        </p>
+        <p style="margin: 0;">
+          <strong style="color: #2C3E6B;">rls2fga</strong> bridges these two worlds automatically. It parses PostgreSQL RLS policies, classifies the SQL expressions into known authorization patterns, and generates equivalent OpenFGA models together with the SQL queries needed to populate relationship tuples &#8212; each output graded with a confidence level indicating how reliably the translation was performed.
+        </p>
+      </div>
+    </foreignObject>
+
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 3: The Problem — Two Worlds (y: 385–675)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="two-worlds" transform="translate(60, 580)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">The Problem: Two Worlds</text>
+    <line x1="440" y1="38" x2="640" y2="38" stroke="#A7C7E7" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- LEFT: RLS World -->
+    <g transform="translate(0, 60)">
+      <rect x="0" y="0" width="480" height="230" rx="16" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="2" filter="url(#cardShadow)"/>
+
+      <!-- Header strip -->
+      <rect x="0" y="0" width="480" height="48" rx="16" fill="url(#blueGrad)"/>
+      <rect x="0" y="32" width="480" height="16" fill="url(#blueGrad)"/>
+      <use href="#icon-postgresql" x="16" y="10" width="28" height="28" fill="#2C3E6B"/>
+      <text x="52" y="33" class="title" font-size="18" fill="#2C3E6B">PostgreSQL RLS</text>
+
+      <!-- Characteristics (justified via foreignObject) -->
+      <foreignObject x="20" y="52" width="440" height="170">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; color: #2D2D2D; line-height: 1.5;">
+          <div style="font-weight: 700; margin-bottom: 8px;">Row-filtering at the database level</div>
+          <div style="font-size: 13px; color: #5A5A5A; text-align: justify;">
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Policies defined per table with CREATE POLICY</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;USING clause filters SELECT/UPDATE/DELETE</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;WITH CHECK gates INSERT/UPDATE writes</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Expressions: SQL functions, subqueries, operators</div>
+            <div>&#8226;&#160;&#160;Tightly coupled to database schema</div>
+          </div>
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- CENTER: Arrow -->
+    <g transform="translate(500, 130)">
+      <rect x="0" y="15" width="80" height="50" rx="25" fill="url(#peachGrad)" filter="url(#softShadow)"/>
+      <use href="#icon-arrow-right" x="22" y="22" width="36" height="36" fill="#2C3E6B"/>
+      <text x="40" y="84" text-anchor="middle" class="title text-navy" font-size="12">rls2fga</text>
+    </g>
+
+    <!-- RIGHT: OpenFGA World -->
+    <g transform="translate(600, 60)">
+      <rect x="0" y="0" width="480" height="230" rx="16" fill="#FFFFFF" stroke="#B2DFDB" stroke-width="2" filter="url(#cardShadow)"/>
+
+      <!-- Header strip -->
+      <rect x="0" y="0" width="480" height="48" rx="16" fill="url(#mintGrad)"/>
+      <rect x="0" y="32" width="480" height="16" fill="url(#mintGrad)"/>
+      <use href="#icon-shield" x="18" y="10" width="24" height="28" fill="#1A5C54"/>
+      <text x="52" y="33" class="title" font-size="18" fill="#1A5C54">OpenFGA (Zanzibar)</text>
+
+      <!-- Characteristics (justified via foreignObject) -->
+      <foreignObject x="20" y="52" width="440" height="170">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; color: #2D2D2D; line-height: 1.5;">
+          <div style="font-weight: 700; margin-bottom: 8px;">Relationship-graph authorization</div>
+          <div style="font-size: 13px; color: #5A5A5A; text-align: justify;">
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Types, relations, and permissions in DSL</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Tuples: (object, relation, subject) triples</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Graph traversal for permission checks</div>
+            <div style="margin-bottom: 3px;">&#8226;&#160;&#160;Schema 1.1 with union/intersection operators</div>
+            <div>&#8226;&#160;&#160;Externalized, language-agnostic authz service</div>
+          </div>
+        </div>
+      </foreignObject>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 4: The Translation Pipeline (y: 705–1140)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="pipeline" transform="translate(60, 900)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">The Translation Pipeline</text>
+    <line x1="410" y1="38" x2="670" y2="38" stroke="#C3B1E1" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Pipeline background card -->
+    <rect x="0" y="55" width="1080" height="380" rx="16" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" filter="url(#cardShadow)"/>
+
+    <!-- Stage 1–2: Parse Schema (sql-traits) -->
+    <g transform="translate(60, 80)">
+      <circle cx="24" cy="24" r="24" fill="url(#blueGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="14">1–2</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">Parse Schema</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Parse DDL via sql-traits into ParserDB (tables, columns, FKs, functions, policies)</text>
+    </g>
+    <!-- Connector -->
+    <line x1="84" y1="130" x2="84" y2="142" stroke="#A7C7E7" stroke-width="2" stroke-dasharray="4,3"/>
+
+    <!-- Stage 3: Function Registry -->
+    <g transform="translate(60, 140)">
+      <circle cx="24" cy="24" r="24" fill="url(#lavenderGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="16">3</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">Function Registry</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Load/merge JSON registry mapping function names to semantic types</text>
+    </g>
+    <line x1="84" y1="190" x2="84" y2="202" stroke="#C3B1E1" stroke-width="2" stroke-dasharray="4,3"/>
+
+    <!-- Stage 4: Pattern Classifier -->
+    <g transform="translate(60, 200)">
+      <circle cx="24" cy="24" r="24" fill="url(#lavenderGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="16">4</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">Pattern Classifier</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Apply P1–P9 recognizers to each policy expression; assign PatternClass + ConfidenceLevel</text>
+    </g>
+    <line x1="84" y1="250" x2="84" y2="262" stroke="#C3B1E1" stroke-width="2" stroke-dasharray="4,3"/>
+
+    <!-- Stage 5: Model Generator -->
+    <g transform="translate(60, 260)">
+      <circle cx="24" cy="24" r="24" fill="url(#mintGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title" font-size="16" fill="#1A5C54">5</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">OpenFGA Model Generator</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Instantiate DSL templates per table; merge USING/WITH CHECK into unified permissions</text>
+    </g>
+    <line x1="84" y1="310" x2="84" y2="322" stroke="#B2DFDB" stroke-width="2" stroke-dasharray="4,3"/>
+
+    <!-- Stage 6: Tuple Generator -->
+    <g transform="translate(60, 320)">
+      <circle cx="24" cy="24" r="24" fill="url(#mintGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title" font-size="16" fill="#1A5C54">6</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">Tuple Query Generator</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Emit parameterized SELECT statements to populate (object, relation, subject) tuples</text>
+    </g>
+    <line x1="84" y1="370" x2="84" y2="382" stroke="#B2DFDB" stroke-width="2" stroke-dasharray="4,3"/>
+
+    <!-- Stage 7: Output Formatter -->
+    <g transform="translate(60, 380)">
+      <circle cx="24" cy="24" r="24" fill="url(#peachGrad)"/>
+      <text x="24" y="30" text-anchor="middle" class="title" font-size="16" fill="#8B5E3C">7</text>
+      <text x="60" y="22" class="title text-navy" font-size="16">Output Formatter</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Write .fga model, _tuples.sql queries, _report.md confidence summary to output directory</text>
+    </g>
+
+    <!-- Right side: Visual pipeline flow arrow -->
+    <g transform="translate(700, 80)">
+      <!-- Vertical flow indicators -->
+      <rect x="0" y="0" width="340" height="335" rx="12" fill="#F8F9FC" stroke="#E8EAF0" stroke-width="1"/>
+
+      <!-- Input -->
+      <text x="170" y="25" text-anchor="middle" class="title text-secondary" font-size="12" letter-spacing="2">DATA FLOW</text>
+
+      <rect x="40" y="40" width="260" height="36" rx="8" fill="#A7C7E7" opacity="0.35"/>
+      <text x="170" y="64" text-anchor="middle" class="code text-navy" font-size="12">schema.sql + registry.json</text>
+
+      <text x="170" y="95" text-anchor="middle" class="body text-secondary" font-size="18">&#8595;</text>
+
+      <rect x="40" y="105" width="260" height="36" rx="8" fill="#A7C7E7" opacity="0.35"/>
+      <text x="170" y="129" text-anchor="middle" class="code text-navy" font-size="12">ParserDB + FunctionRegistry</text>
+
+      <text x="170" y="160" text-anchor="middle" class="body text-secondary" font-size="18">&#8595;</text>
+
+      <rect x="40" y="170" width="260" height="36" rx="8" fill="#C3B1E1" opacity="0.35"/>
+      <text x="170" y="194" text-anchor="middle" class="code" font-size="12" fill="#2C3E6B">Vec&lt;ClassifiedPolicy&gt;</text>
+
+      <text x="170" y="225" text-anchor="middle" class="body text-secondary" font-size="18">&#8595;</text>
+
+      <rect x="40" y="235" width="260" height="36" rx="8" fill="#B2DFDB" opacity="0.35"/>
+      <text x="170" y="259" text-anchor="middle" class="code" font-size="12" fill="#1A5C54">AuthzModel + Vec&lt;TupleQuery&gt;</text>
+
+      <text x="170" y="290" text-anchor="middle" class="body text-secondary" font-size="18">&#8595;</text>
+
+      <!-- Output files -->
+      <g transform="translate(30, 300)">
+        <rect x="0" y="0" width="88" height="30" rx="6" fill="#FFDAB9" opacity="0.6"/>
+        <text x="44" y="20" text-anchor="middle" class="code" font-size="10" fill="#8B5E3C">.fga</text>
+
+        <rect x="96" y="0" width="88" height="30" rx="6" fill="#FFDAB9" opacity="0.6"/>
+        <text x="140" y="20" text-anchor="middle" class="code" font-size="10" fill="#8B5E3C">_tuples.sql</text>
+
+        <rect x="192" y="0" width="88" height="30" rx="6" fill="#FFDAB9" opacity="0.6"/>
+        <text x="236" y="20" text-anchor="middle" class="code" font-size="10" fill="#8B5E3C">_report.md</text>
+      </g>
+
+      <!-- Gear icon decoration -->
+      <use href="#icon-gear" x="295" y="155" width="30" height="30" fill="#C3B1E1" opacity="0.3"/>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 5: Pattern Classification (y: 1170–1720)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="patterns" transform="translate(60, 1365)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">Pattern Classification Taxonomy</text>
+    <line x1="380" y1="38" x2="700" y2="38" stroke="#B2DFDB" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Pattern Grid: 3 columns x 3 rows -->
+    <!-- Row 1 -->
+    <!-- P1: Numeric Role Threshold -->
+    <g transform="translate(0, 55)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P1 — Numeric Role Threshold</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">role_level(user, res) &gt;= N</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Users must exceed an integer threshold. Maps to role_admin | role_editor | role_viewer hierarchy in OpenFGA.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P2: Role Name IN-List -->
+    <g transform="translate(368, 55)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P2 — Role Name IN-List</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">role(u, r) IN ('viewer','editor')</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Same as P1, but uses role names instead of integers. Tool maps names to levels via function registry.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P3: Direct Column Equality -->
+    <g transform="translate(736, 55)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P3 — Simple Ownership</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">owner_id = current_user_id()</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Direct column equality check. User must be the resource's owner. Generates a single owner relation in OpenFGA.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- Row 2 -->
+    <!-- P4: EXISTS Subquery -->
+    <g transform="translate(0, 225)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P4 — Membership Check</text>
+      <rect x="270" y="8" width="60" height="22" rx="11" fill="#A7C7E7"/>
+      <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">A / B</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">EXISTS (SELECT 1 FROM members ...)</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          User must be member of resource's team. Level A for simple; B for multi-join or complex correlation patterns.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P5: Parent Inheritance -->
+    <g transform="translate(368, 225)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P5 — Parent Inheritance</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#A7C7E7"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">B</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">EXISTS (... ON parent FK path ...)</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Child inherits permissions from parent resource (e.g., document from folder). Traces FK path for graph traversal.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P6: Boolean Flag -->
+    <g transform="translate(736, 225)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P6 — Boolean Flag / Public</text>
+      <rect x="270" y="8" width="60" height="22" rx="11" fill="#B5D8B5"/>
+      <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A / B</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">is_public = TRUE</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Public access via boolean flag. Maps to public_viewer with user:* wildcard. Level B when composite with role checks.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- Row 3 -->
+    <!-- P7: ABAC Crossover -->
+    <g transform="translate(0, 395)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#FFDAB9" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#FFDAB9" opacity="0.4"/>
+      <rect x="0" y="26" width="345" height="12" fill="#FFDAB9" opacity="0.4"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P7 — ABAC Crossover</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#FFDAB9"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#8B5E3C">C</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">role(..) &gt;= 3 AND status = 'active'</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Relationship check AND attribute condition. Cannot be fully expressed in static OpenFGA; emits 3 options for human decision.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P8: Composite OR/AND -->
+    <g transform="translate(368, 395)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
+      <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P8 — Composite OR/AND</text>
+      <rect x="270" y="8" width="60" height="22" rx="11" fill="#A7C7E7"/>
+      <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">B / C</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">P3 OR P1 OR P6  (merged union)</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Union of multiple sub-patterns. Confidence escalates to worst sub-pattern level. B if all subs are A; C if any sub is B+.
+        </div>
+      </foreignObject>
+    </g>
+
+    <!-- P9: Standalone Attribute -->
+    <g transform="translate(736, 395)">
+      <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#F7CAC9" stroke-width="1.5" filter="url(#softShadow)"/>
+      <rect x="0" y="0" width="345" height="38" rx="12" fill="#F7CAC9" opacity="0.4"/>
+      <rect x="0" y="26" width="345" height="12" fill="#F7CAC9" opacity="0.4"/>
+      <text x="14" y="26" class="title text-navy" font-size="14">P9 — Standalone Attribute</text>
+      <rect x="280" y="8" width="50" height="22" rx="11" fill="#F7CAC9"/>
+      <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#8B3A3A">C</text>
+      <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
+      <text x="22" y="68" class="code text-secondary" font-size="11">status = 'published'</text>
+      <foreignObject x="12" y="82" width="321" height="65">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Pure column condition with no relationship context. Cannot be expressed in OpenFGA. Tool emits TODO with explanation.
+        </div>
+      </foreignObject>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 6: Confidence Levels (y: 1755–2035)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="confidence" transform="translate(60, 1950)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">Confidence Levels</text>
+    <line x1="430" y1="38" x2="650" y2="38" stroke="#FFDAB9" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- 4-column layout -->
+    <!-- Level A -->
+    <g transform="translate(0, 55)">
+      <rect x="0" y="0" width="250" height="225" rx="14" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="2" filter="url(#cardShadow)"/>
+      <!-- Top accent -->
+      <rect x="0" y="0" width="250" height="8" rx="4" fill="#B5D8B5"/>
+      <!-- Circle badge -->
+      <circle cx="125" cy="46" r="24" fill="#B5D8B5"/>
+      <text x="125" y="53" text-anchor="middle" class="title text-white" font-size="20">A</text>
+      <text x="125" y="88" text-anchor="middle" class="title text-navy" font-size="15">Fully Automatic</text>
+      <foreignObject x="18" y="96" width="214" height="56">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Single pattern, no ambiguity. Complete OpenFGA model and tuple queries generated.
+        </div>
+      </foreignObject>
+      <use href="#icon-circle-check" x="105" y="158" width="40" height="40" fill="#B5D8B5"/>
+      <!-- Bar -->
+      <rect x="20" y="206" width="210" height="8" rx="4" fill="#E8F0E8"/>
+      <rect x="20" y="206" width="210" height="8" rx="4" fill="#B5D8B5"/>
+      <text x="125" y="203" text-anchor="middle" class="code text-secondary" font-size="10">100% automated</text>
+    </g>
+
+    <!-- Level B -->
+    <g transform="translate(276, 55)">
+      <rect x="0" y="0" width="250" height="225" rx="14" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="2" filter="url(#cardShadow)"/>
+      <rect x="0" y="0" width="250" height="8" rx="4" fill="#A7C7E7"/>
+      <circle cx="125" cy="46" r="24" fill="#A7C7E7"/>
+      <text x="125" y="53" text-anchor="middle" class="title text-white" font-size="20">B</text>
+      <text x="125" y="88" text-anchor="middle" class="title text-navy" font-size="15">Safe + Annotated</text>
+      <foreignObject x="18" y="96" width="214" height="56">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Template composition safe but adds -- REVIEW comments for human verification.
+        </div>
+      </foreignObject>
+      <use href="#icon-magnifying-glass" x="105" y="158" width="40" height="40" fill="#A7C7E7"/>
+      <rect x="20" y="206" width="210" height="8" rx="4" fill="#E8F0F8"/>
+      <rect x="20" y="206" width="168" height="8" rx="4" fill="#A7C7E7"/>
+      <text x="125" y="203" text-anchor="middle" class="code text-secondary" font-size="10">~80% automated</text>
+    </g>
+
+    <!-- Level C -->
+    <g transform="translate(552, 55)">
+      <rect x="0" y="0" width="250" height="225" rx="14" fill="#FFFFFF" stroke="#FFDAB9" stroke-width="2" filter="url(#cardShadow)"/>
+      <rect x="0" y="0" width="250" height="8" rx="4" fill="#FFDAB9"/>
+      <circle cx="125" cy="46" r="24" fill="#FFDAB9"/>
+      <text x="125" y="53" text-anchor="middle" class="title" font-size="20" fill="#8B5E3C">C</text>
+      <text x="125" y="88" text-anchor="middle" class="title text-navy" font-size="15">Human Required</text>
+      <foreignObject x="18" y="96" width="214" height="56">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Partially recognized; stub with explanation generated. Human judgment needed. Exit code 1.
+        </div>
+      </foreignObject>
+      <use href="#icon-users" x="100" y="158" width="50" height="40" fill="#FFDAB9"/>
+      <rect x="20" y="206" width="210" height="8" rx="4" fill="#FFF0E0"/>
+      <rect x="20" y="206" width="84" height="8" rx="4" fill="#FFDAB9"/>
+      <text x="125" y="203" text-anchor="middle" class="code text-secondary" font-size="10">~40% automated</text>
+    </g>
+
+    <!-- Level D -->
+    <g transform="translate(828, 55)">
+      <rect x="0" y="0" width="250" height="225" rx="14" fill="#FFFFFF" stroke="#F7CAC9" stroke-width="2" filter="url(#cardShadow)"/>
+      <rect x="0" y="0" width="250" height="8" rx="4" fill="#F7CAC9"/>
+      <circle cx="125" cy="46" r="24" fill="#F7CAC9"/>
+      <text x="125" y="53" text-anchor="middle" class="title" font-size="20" fill="#8B3A3A">D</text>
+      <text x="125" y="88" text-anchor="middle" class="title text-navy" font-size="15">Manual Only</text>
+      <foreignObject x="18" y="96" width="214" height="56">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; color: #5A5A5A; text-align: justify; line-height: 1.45;">
+          Unrecognized or unsupported. Stub only; manual translation required. Exit code 1.
+        </div>
+      </foreignObject>
+      <use href="#icon-code" x="100" y="158" width="50" height="40" fill="#F7CAC9"/>
+      <rect x="20" y="206" width="210" height="8" rx="4" fill="#FCE8E8"/>
+      <rect x="20" y="206" width="21" height="8" rx="4" fill="#F7CAC9"/>
+      <text x="125" y="203" text-anchor="middle" class="code text-secondary" font-size="10">~10% automated</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 7: Output Formats (y: 2065–2460)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="outputs" transform="translate(60, 2260)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">Output Formats</text>
+    <line x1="440" y1="38" x2="640" y2="38" stroke="#B5D8B5" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- 3 cards side by side -->
+    <!-- Card 1: .fga model -->
+    <g transform="translate(0, 55)">
+      <rect x="0" y="0" width="345" height="340" rx="14" fill="#FFFFFF" stroke="#B2DFDB" stroke-width="2" filter="url(#cardShadow)"/>
+
+      <!-- Header -->
+      <rect x="0" y="0" width="345" height="50" rx="14" fill="url(#mintGrad)" opacity="0.6"/>
+      <rect x="0" y="36" width="345" height="14" fill="url(#mintGrad)" opacity="0.6"/>
+      <use href="#icon-file-code" x="14" y="11" width="24" height="28" fill="#1A5C54"/>
+      <text x="48" y="34" class="title" font-size="17" fill="#1A5C54">{name}.fga</text>
+      <text x="200" y="34" class="body text-secondary" font-size="12">OpenFGA DSL Model</text>
+
+      <!-- Code preview -->
+      <rect x="14" y="62" width="317" height="260" rx="8" fill="#1E293B"/>
+      <text x="26" y="84" class="code" font-size="11" fill="#93C5FD">
+        <tspan x="26" dy="0" fill="#A78BFA">model</tspan>
+        <tspan x="26" dy="18" fill="#6B7280">  schema 1.1</tspan>
+        <tspan x="26" dy="24" fill="#A78BFA">type</tspan><tspan fill="#F9FAFB"> user</tspan>
+        <tspan x="26" dy="24" fill="#A78BFA">type</tspan><tspan fill="#F9FAFB"> team</tspan>
+        <tspan x="26" dy="18" fill="#6B7280">  relations</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">member: [user]</tspan>
+        <tspan x="26" dy="24" fill="#A78BFA">type</tspan><tspan fill="#F9FAFB"> ownable</tspan>
+        <tspan x="26" dy="18" fill="#6B7280">  relations</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">owner: [user]</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">role_admin: owner</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">role_editor: role_admin</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">can_select: role_viewer</tspan>
+        <tspan x="26" dy="18" fill="#34D399">    define </tspan><tspan fill="#F9FAFB">can_delete: role_admin</tspan>
+      </text>
+    </g>
+
+    <!-- Card 2: _tuples.sql -->
+    <g transform="translate(368, 55)">
+      <rect x="0" y="0" width="345" height="340" rx="14" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="2" filter="url(#cardShadow)"/>
+
+      <!-- Header -->
+      <rect x="0" y="0" width="345" height="50" rx="14" fill="url(#blueGrad)" opacity="0.5"/>
+      <rect x="0" y="36" width="345" height="14" fill="url(#blueGrad)" opacity="0.5"/>
+      <use href="#icon-database" x="14" y="11" width="24" height="28" fill="#1A3A6B"/>
+      <text x="48" y="34" class="title" font-size="17" fill="#1A3A6B">{name}_tuples.sql</text>
+      <text x="230" y="34" class="body text-secondary" font-size="12">Tuple Queries</text>
+
+      <!-- Code preview -->
+      <rect x="14" y="62" width="317" height="260" rx="8" fill="#1E293B"/>
+      <text x="26" y="84" class="code" font-size="11" fill="#93C5FD">
+        <tspan x="26" dy="0" fill="#6B7280">-- User ownership tuples</tspan>
+        <tspan x="26" dy="18" fill="#A78BFA">SELECT</tspan>
+        <tspan x="26" dy="18" fill="#F9FAFB">  'ownable:' || id</tspan>
+        <tspan x="26" dy="18" fill="#6B7280">    AS </tspan><tspan fill="#FBBF24">object</tspan><tspan fill="#F9FAFB">,</tspan>
+        <tspan x="26" dy="18" fill="#F9FAFB">  'owner' </tspan><tspan fill="#6B7280">AS </tspan><tspan fill="#FBBF24">relation</tspan><tspan fill="#F9FAFB">,</tspan>
+        <tspan x="26" dy="18" fill="#F9FAFB">  'user:' || owner_id</tspan>
+        <tspan x="26" dy="18" fill="#6B7280">    AS </tspan><tspan fill="#FBBF24">subject</tspan>
+        <tspan x="26" dy="18" fill="#A78BFA">FROM</tspan><tspan fill="#F9FAFB"> ownables</tspan>
+        <tspan x="26" dy="18" fill="#A78BFA">WHERE</tspan><tspan fill="#F9FAFB"> owner_id </tspan><tspan fill="#34D399">IS NOT NULL</tspan><tspan fill="#F9FAFB">;</tspan>
+        <tspan x="26" dy="24" fill="#6B7280">-- Team membership tuples</tspan>
+        <tspan x="26" dy="18" fill="#A78BFA">SELECT</tspan><tspan fill="#F9FAFB"> 'team:' || team_id,</tspan>
+        <tspan x="26" dy="18" fill="#F9FAFB">  'member', 'user:' || user_id</tspan>
+        <tspan x="26" dy="18" fill="#A78BFA">FROM</tspan><tspan fill="#F9FAFB"> team_members;</tspan>
+      </text>
+    </g>
+
+    <!-- Card 3: _report.md -->
+    <g transform="translate(736, 55)">
+      <rect x="0" y="0" width="345" height="340" rx="14" fill="#FFFFFF" stroke="#C3B1E1" stroke-width="2" filter="url(#cardShadow)"/>
+
+      <!-- Header -->
+      <rect x="0" y="0" width="345" height="50" rx="14" fill="url(#lavenderGrad)" opacity="0.5"/>
+      <rect x="0" y="36" width="345" height="14" fill="url(#lavenderGrad)" opacity="0.5"/>
+      <use href="#icon-chart-bar" x="14" y="11" width="24" height="28" fill="#4A3578"/>
+      <text x="48" y="34" class="title" font-size="17" fill="#4A3578">{name}_report.md</text>
+      <text x="232" y="34" class="body text-secondary" font-size="12">Confidence Report</text>
+
+      <!-- Markdown preview styled as a document -->
+      <rect x="14" y="62" width="317" height="260" rx="8" fill="#FCFCFD"/>
+      <rect x="14" y="62" width="317" height="260" rx="8" fill="none" stroke="#E8E8EC" stroke-width="1"/>
+
+      <!-- Faux markdown table -->
+      <text x="26" y="84" class="title text-navy" font-size="13">Confidence Summary</text>
+      <line x1="26" y1="90" x2="316" y2="90" stroke="#E0E0E0" stroke-width="1"/>
+
+      <!-- Table header -->
+      <text x="26" y="108" class="title text-secondary" font-size="10">
+        <tspan x="30">Policy</tspan>
+        <tspan x="140">Pattern</tspan>
+        <tspan x="230">Confidence</tspan>
+      </text>
+      <line x1="26" y1="114" x2="316" y2="114" stroke="#E0E0E0" stroke-width="1"/>
+
+      <!-- Row 1 -->
+      <text x="26" y="130" class="code text-primary" font-size="10">
+        <tspan x="30">select_policy</tspan>
+        <tspan x="140">P1 (&gt;= 2)</tspan>
+      </text>
+      <rect x="230" y="120" width="30" height="16" rx="8" fill="#B5D8B5"/>
+      <text x="245" y="132" text-anchor="middle" class="title" font-size="9" fill="#2D5A2D">A</text>
+
+      <!-- Row 2 -->
+      <text x="26" y="150" class="code text-primary" font-size="10">
+        <tspan x="30">insert_policy</tspan>
+        <tspan x="140">P1 (&gt;= 3)</tspan>
+      </text>
+      <rect x="230" y="140" width="30" height="16" rx="8" fill="#B5D8B5"/>
+      <text x="245" y="152" text-anchor="middle" class="title" font-size="9" fill="#2D5A2D">A</text>
+
+      <!-- Row 3 -->
+      <text x="26" y="170" class="code text-primary" font-size="10">
+        <tspan x="30">update_policy</tspan>
+        <tspan x="140">P1 (&gt;= 3)</tspan>
+      </text>
+      <rect x="230" y="160" width="30" height="16" rx="8" fill="#B5D8B5"/>
+      <text x="245" y="172" text-anchor="middle" class="title" font-size="9" fill="#2D5A2D">A</text>
+
+      <!-- Row 4 -->
+      <text x="26" y="190" class="code text-primary" font-size="10">
+        <tspan x="30">delete_policy</tspan>
+        <tspan x="140">P1 (&gt;= 4)</tspan>
+      </text>
+      <rect x="230" y="180" width="30" height="16" rx="8" fill="#B5D8B5"/>
+      <text x="245" y="192" text-anchor="middle" class="title" font-size="9" fill="#2D5A2D">A</text>
+
+      <!-- Row 5 -->
+      <text x="26" y="210" class="code text-primary" font-size="10">
+        <tspan x="30">status_check</tspan>
+        <tspan x="140">P7 (ABAC)</tspan>
+      </text>
+      <rect x="230" y="200" width="30" height="16" rx="8" fill="#FFDAB9"/>
+      <text x="245" y="212" text-anchor="middle" class="title" font-size="9" fill="#8B5E3C">C</text>
+
+      <line x1="26" y1="224" x2="316" y2="224" stroke="#E0E0E0" stroke-width="1"/>
+
+      <!-- TODOs section -->
+      <text x="26" y="242" class="title text-navy" font-size="11">TODOs</text>
+      <text x="26" y="260" class="body text-secondary" font-size="10">
+        <tspan x="30" dy="0">[C] status_check: attribute condition</tspan>
+        <tspan x="30" dy="14">on 'status' column requires human review</tspan>
+      </text>
+
+      <!-- Result badge -->
+      <rect x="26" y="290" width="120" height="22" rx="11" fill="#B5D8B5" opacity="0.4"/>
+      <text x="86" y="305" text-anchor="middle" class="title" font-size="10" fill="#2D5A2D">Exit code: 0</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 8: Architecture & Tech Stack (y: 2490–2795)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="architecture" transform="translate(60, 2685)">
+    <!-- Section title -->
+    <text x="540" y="30" text-anchor="middle" class="title text-navy" font-size="26">Architecture &amp; Tech Stack</text>
+    <line x1="400" y1="38" x2="680" y2="38" stroke="#F7CAC9" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Main card -->
+    <rect x="0" y="55" width="1080" height="250" rx="16" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" filter="url(#cardShadow)"/>
+
+    <!-- Rust logo area -->
+    <g transform="translate(40, 80)">
+      <rect x="0" y="0" width="180" height="200" rx="12" fill="#FAFAF7" stroke="#FFDAB9" stroke-width="1.5"/>
+      <use href="#icon-rust" x="60" y="20" width="60" height="60" fill="#2C3E6B"/>
+      <text x="90" y="100" text-anchor="middle" class="title text-navy" font-size="18">Rust 2021</text>
+      <text x="90" y="120" text-anchor="middle" class="body text-secondary" font-size="11">Memory Safe</text>
+      <text x="90" y="136" text-anchor="middle" class="body text-secondary" font-size="11">Zero Runtime Overhead</text>
+      <text x="90" y="152" text-anchor="middle" class="body text-secondary" font-size="11">Single Binary</text>
+
+      <!-- Safe Rust badge -->
+      <rect x="20" y="170" width="140" height="22" rx="11" fill="#B5D8B5" opacity="0.5"/>
+      <text x="90" y="185" text-anchor="middle" class="title" font-size="10" fill="#2D5A2D">#![forbid(unsafe_code)]</text>
+    </g>
+
+    <!-- Dependencies grid -->
+    <g transform="translate(260, 80)">
+      <text x="0" y="15" class="title text-navy" font-size="15">Core Dependencies</text>
+
+      <!-- Dep cards row 1 -->
+      <g transform="translate(0, 28)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#A7C7E7" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">sqlparser-rs</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">PostgreSQL SQL parsing</text>
+      </g>
+      <g transform="translate(168, 28)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#A7C7E7" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">sql-traits</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Schema introspection traits</text>
+      </g>
+      <g transform="translate(336, 28)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#A7C7E7" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">clap v4</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">CLI argument parsing</text>
+      </g>
+      <g transform="translate(504, 28)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#A7C7E7" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">serde / serde_json</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Registry serialization</text>
+      </g>
+
+      <!-- Dep cards row 2 -->
+      <g transform="translate(0, 86)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#C3B1E1" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">thiserror v2</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Structured error handling</text>
+      </g>
+      <g transform="translate(168, 86)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#C3B1E1" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">insta</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Snapshot testing</text>
+      </g>
+      <g transform="translate(336, 86)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#C3B1E1" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">reqwest + tokio</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Optional: LLM agent mode</text>
+      </g>
+      <g transform="translate(504, 86)">
+        <rect x="0" y="0" width="155" height="48" rx="8" fill="#C3B1E1" opacity="0.2"/>
+        <text x="12" y="20" class="title text-navy" font-size="12">testcontainers</text>
+        <text x="12" y="36" class="body text-secondary" font-size="10">Docker integration tests</text>
+      </g>
+
+      <!-- Quality badges -->
+      <text x="0" y="162" class="title text-navy" font-size="15">Quality Assurance</text>
+      <g transform="translate(0, 175)">
+        <rect x="0" y="0" width="120" height="26" rx="13" fill="#B5D8B5" opacity="0.4"/>
+        <use href="#icon-circle-check" x="8" y="3" width="20" height="20" fill="#2D5A2D"/>
+        <text x="34" y="18" class="title" font-size="11" fill="#2D5A2D">Safe Rust</text>
+
+        <rect x="135" y="0" width="120" height="26" rx="13" fill="#A7C7E7" opacity="0.4"/>
+        <use href="#icon-circle-check" x="143" y="3" width="20" height="20" fill="#1A3A6B"/>
+        <text x="169" y="18" class="title" font-size="11" fill="#1A3A6B">Clippy Clean</text>
+
+        <rect x="270" y="0" width="140" height="26" rx="13" fill="#C3B1E1" opacity="0.4"/>
+        <use href="#icon-circle-check" x="278" y="3" width="20" height="20" fill="#4A3578"/>
+        <text x="304" y="18" class="title" font-size="11" fill="#4A3578">Snapshot Tests</text>
+
+        <rect x="425" y="0" width="140" height="26" rx="13" fill="#B2DFDB" opacity="0.4"/>
+        <use href="#icon-circle-check" x="433" y="3" width="20" height="20" fill="#1A5C54"/>
+        <text x="459" y="18" class="title" font-size="11" fill="#1A5C54">10 Test Fixtures</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SECTION 9: Footer (y: 2825–2945)
+       ═══════════════════════════════════════════════════════════ -->
+  <g id="footer" transform="translate(0, 3020)">
+    <!-- Footer background -->
+    <rect x="0" y="0" width="1200" height="120" fill="url(#headerGrad)"/>
+    <rect x="0" y="0" width="1200" height="3" fill="#A7C7E7" opacity="0.6"/>
+
+    <!-- Project info -->
+    <text x="600" y="40" text-anchor="middle" class="title text-white" font-size="18" opacity="0.95">
+      rls2fga
+    </text>
+    <text x="600" y="62" text-anchor="middle" class="body text-white" font-size="13" opacity="0.75">
+      PostgreSQL Row-Level Security → OpenFGA Authorization Models
+    </text>
+
+    <!-- Badges -->
+    <g transform="translate(360, 76)">
+      <!-- Built with Rust badge -->
+      <rect x="0" y="0" width="130" height="28" rx="14" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-rust" x="10" y="2" width="22" height="24" fill="#FFDAB9"/>
+      <text x="40" y="19" class="body text-white" font-size="12" opacity="0.9">Built with Rust</text>
+
+      <!-- MIT License -->
+      <rect x="148" y="0" width="120" height="28" rx="14" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-lock" x="158" y="3" width="18" height="22" fill="#B2DFDB"/>
+      <text x="184" y="19" class="body text-white" font-size="12" opacity="0.9">MIT License</text>
+
+      <!-- Open Source -->
+      <rect x="286" y="0" width="130" height="28" rx="14" fill="#FFFFFF" opacity="0.15"/>
+      <use href="#icon-code" x="296" y="3" width="22" height="22" fill="#A7C7E7"/>
+      <text x="326" y="19" class="body text-white" font-size="12" opacity="0.9">Open Source</text>
+    </g>
+  </g>
+
+
+</svg>

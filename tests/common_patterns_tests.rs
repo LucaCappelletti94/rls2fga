@@ -65,7 +65,11 @@ fn tenant_isolation_is_classified() {
         );
     });
 
-    assert_eq!(classified.len(), 1, "Should find the tenant isolation policy");
+    assert_eq!(
+        classified.len(),
+        1,
+        "Should find the tenant isolation policy"
+    );
     let cp = &classified[0];
     let classification = cp
         .using_classification
@@ -126,8 +130,7 @@ fn compound_or_owner_or_public() {
     }
 
     // Verify model contains the composite relation
-    let model =
-        model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
     assert!(
         model.dsl.contains("owner or public_viewer"),
         "Model should contain 'owner or public_viewer', got:\n{}",
@@ -177,9 +180,7 @@ fn supabase_auth_uid_pattern() {
                     assert_eq!(column, "user_id");
                 }
                 PatternClass::Unknown { reason, .. } => {
-                    eprintln!(
-                        "  KNOWN GAP: auth.uid() pattern falls to Unknown. Reason: {reason}"
-                    );
+                    eprintln!("  KNOWN GAP: auth.uid() pattern falls to Unknown. Reason: {reason}");
                 }
                 other => {
                     eprintln!("  UNEXPECTED: classified as {other:?}");
@@ -205,11 +206,7 @@ fn in_subquery_membership() {
         );
     });
 
-    assert_eq!(
-        classified.len(),
-        1,
-        "Should find one IN-subquery policy"
-    );
+    assert_eq!(classified.len(), 1, "Should find one IN-subquery policy");
     let cp = &classified[0];
     let classification = cp
         .using_classification
@@ -234,14 +231,9 @@ fn in_subquery_membership() {
 
 #[test]
 fn current_user_keyword_equality() {
-    let (classified, _db, _reg) =
-        classify_fixture("current_user_equality", |_reg| {});
+    let (classified, _db, _reg) = classify_fixture("current_user_equality", |_reg| {});
 
-    assert_eq!(
-        classified.len(),
-        1,
-        "Should find one current_user policy"
-    );
+    assert_eq!(classified.len(), 1, "Should find one current_user policy");
     let cp = &classified[0];
     let classification = cp
         .using_classification
@@ -308,8 +300,7 @@ fn multi_policy_table_classification() {
     );
 
     // Check that the model generates something reasonable
-    let model =
-        model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -349,8 +340,7 @@ fn role_in_list_classification() {
     }
 
     // Verify model generation produces role threshold output
-    let model =
-        model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -370,8 +360,7 @@ fn pipeline_summary_all_common_patterns() {
     eprintln!("\n=== Common RLS Pattern Pipeline Summary ===\n");
 
     for (fixture, description) in patterns {
-        let sql =
-            std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql")).unwrap();
+        let sql = std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql")).unwrap();
         let db = sql_parser::parse_schema(&sql).unwrap();
         let mut registry = FunctionRegistry::new();
         registry.register_if_absent(
@@ -382,12 +371,8 @@ fn pipeline_summary_all_common_patterns() {
         );
 
         let classified = policy_classifier::classify_policies(&db, &registry);
-        let model = model_generator::generate_model(
-            &classified,
-            &db,
-            &registry,
-            &ConfidenceLevel::D,
-        );
+        let model =
+            model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
         let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
 
         let all_a = classified.iter().all(|cp| {
@@ -409,7 +394,10 @@ fn pipeline_summary_all_common_patterns() {
 
         if !model.todos.is_empty() {
             for todo in &model.todos {
-                eprintln!("  TODO [{}]: {} - {}", todo.level, todo.policy_name, todo.message);
+                eprintln!(
+                    "  TODO [{}]: {} - {}",
+                    todo.level, todo.policy_name, todo.message
+                );
             }
         }
     }

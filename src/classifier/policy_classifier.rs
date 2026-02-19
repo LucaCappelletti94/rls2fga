@@ -148,6 +148,11 @@ pub fn classify_expr(
         return classified;
     }
 
+    // Try P10: constant boolean policy
+    if let Some(classified) = recognizers::recognize_p10_constant_bool(expr, db, registry) {
+        return classified;
+    }
+
     // Try P9: standalone attribute condition (fallback at confidence C)
     if let Some(col) = recognizers::is_attribute_check(expr) {
         let value_desc = describe_comparison_value(expr);

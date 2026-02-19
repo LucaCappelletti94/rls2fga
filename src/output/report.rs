@@ -72,8 +72,16 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
 fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String {
     use crate::classifier::patterns::PatternClass;
     match pattern {
-        PatternClass::P1NumericThreshold { threshold, .. } => {
-            format!("P1 (threshold >= {threshold})")
+        PatternClass::P1NumericThreshold {
+            operator,
+            threshold,
+            ..
+        } => {
+            let op = match operator {
+                crate::classifier::patterns::ThresholdOperator::Gte => ">=",
+                crate::classifier::patterns::ThresholdOperator::Gt => ">",
+            };
+            format!("P1 (threshold {op} {threshold})")
         }
         PatternClass::P2RoleNameInList { role_names, .. } => {
             format!("P2 (roles: {})", role_names.join(", "))
@@ -92,8 +100,14 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         PatternClass::P8Composite { op, parts } => {
             format!("P8 ({op:?} of {} parts)", parts.len())
         }
-        PatternClass::P9AttributeCondition { column, value_description } => {
+        PatternClass::P9AttributeCondition {
+            column,
+            value_description,
+        } => {
             format!("P9 ({column} = {value_description})")
+        }
+        PatternClass::P10ConstantBool { value } => {
+            format!("P10 (constant {value})")
         }
         PatternClass::Unknown { reason, .. } => format!("Unknown: {reason}"),
     }

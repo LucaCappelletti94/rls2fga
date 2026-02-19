@@ -88,14 +88,19 @@ fn generate_tuples_for_pattern(
             join_table,
             fk_column,
             user_column,
+            extra_predicate_sql,
         } => {
             let key = format!("p4:{join_table}");
             if generated.insert(key) {
                 let parent_type = fk_column.strip_suffix("_id").unwrap_or(fk_column);
+                let where_clause = extra_predicate_sql
+                    .as_ref()
+                    .map(|e| format!("\nWHERE {e}"))
+                    .unwrap_or_default();
                 queries.push(TupleQuery {
                     comment: format!("-- {parent_type} membership from {join_table}"),
                     sql: format!(
-                        "SELECT '{parent_type}:' || {fk_column} AS object, 'member' AS relation, 'user:' || {user_column} AS subject\nFROM {join_table};"
+                        "SELECT '{parent_type}:' || {fk_column} AS object, 'member' AS relation, 'user:' || {user_column} AS subject\nFROM {join_table}{where_clause};"
                     ),
                 });
             }
@@ -140,6 +145,17 @@ fn generate_tuples_for_pattern(
                 queries,
                 generated,
             );
+        }
+        PatternClass::P10ConstantBool { value } => {
+            let key = format!("p10:{table}:{value}");
+            if generated.insert(key) && *value {
+                queries.push(TupleQuery {
+                    comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
+                    sql: format!(
+                        "SELECT '{table}:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table};"
+                    ),
+                });
+            }
         }
         _ => {}
     }

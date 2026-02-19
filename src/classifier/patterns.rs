@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::CreatePolicyCommand;
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
 use std::fmt;
 
 /// The command a policy applies to.
@@ -15,6 +15,42 @@ pub enum PolicyCommand {
     Delete,
     /// Policy applies to all DML commands.
     All,
+}
+
+/// Policy combination mode in PostgreSQL RLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PolicyMode {
+    /// OR-combined policy branch.
+    Permissive,
+    /// AND-combined policy branch.
+    Restrictive,
+}
+
+impl fmt::Display for PolicyMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PolicyMode::Permissive => write!(f, "PERMISSIVE"),
+            PolicyMode::Restrictive => write!(f, "RESTRICTIVE"),
+        }
+    }
+}
+
+impl From<CreatePolicyType> for PolicyMode {
+    fn from(value: CreatePolicyType) -> Self {
+        match value {
+            CreatePolicyType::Permissive => PolicyMode::Permissive,
+            CreatePolicyType::Restrictive => PolicyMode::Restrictive,
+        }
+    }
+}
+
+/// Comparison operator for numeric threshold checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThresholdOperator {
+    /// `>= N`
+    Gte,
+    /// `> N`
+    Gt,
 }
 
 impl fmt::Display for PolicyCommand {
@@ -45,6 +81,8 @@ pub enum PatternClass {
     P1NumericThreshold {
         /// Name of the role-level function being called.
         function_name: String,
+        /// Numeric comparison operator.
+        operator: ThresholdOperator,
         /// Minimum integer level required by the policy.
         threshold: i32,
         /// DML command this threshold applies to.
@@ -70,6 +108,8 @@ pub enum PatternClass {
         fk_column: String,
         /// Column referencing the user in the join table.
         user_column: String,
+        /// Additional filter predicate from the membership query (e.g. `role = 'admin'`).
+        extra_predicate_sql: Option<String>,
     },
     /// P5: Parent resource permission inheritance via FK join.
     P5ParentInheritance {
@@ -105,6 +145,11 @@ pub enum PatternClass {
         column: String,
         /// Human-readable description of the comparison value.
         value_description: String,
+    },
+    /// P10: Constant boolean policy (`TRUE` / `FALSE`).
+    P10ConstantBool {
+        /// Constant value in the policy.
+        value: bool,
     },
     /// Expression that could not be matched to any known pattern.
     Unknown {
@@ -201,5 +246,13 @@ impl ClassifiedPolicy {
             .command
             .as_ref()
             .map_or(PolicyCommand::All, |c| PolicyCommand::from(*c))
+    }
+
+    /// Policy mode (`PERMISSIVE` by default when omitted).
+    pub fn mode(&self) -> PolicyMode {
+        self.policy
+            .policy_type
+            .as_ref()
+            .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
     }
 }

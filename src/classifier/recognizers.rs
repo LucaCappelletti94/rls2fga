@@ -1,4 +1,4 @@
-use sqlparser::ast::{BinaryOperator, Expr, Value};
+use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -12,20 +12,23 @@ pub fn recognize_p1(
     command: &PolicyCommand,
 ) -> Option<ClassifiedExpr> {
     if let Expr::BinaryOp { left, op, right } = expr {
-        if !matches!(op, BinaryOperator::GtEq | BinaryOperator::Gt) {
-            return None;
-        }
+        let (func_expr, threshold_expr, operator) = match op {
+            BinaryOperator::GtEq => (left.as_ref(), right.as_ref(), ThresholdOperator::Gte),
+            BinaryOperator::Gt => (left.as_ref(), right.as_ref(), ThresholdOperator::Gt),
+            _ => return None,
+        };
 
-        let func_name = extract_function_name(left)?;
+        let func_name = extract_function_name(func_expr)?;
         if !registry.is_role_threshold(&func_name) {
             return None;
         }
 
-        let threshold = extract_integer_value(right)?;
+        let threshold = extract_integer_value(threshold_expr)?;
 
         return Some(ClassifiedExpr {
             pattern: PatternClass::P1NumericThreshold {
                 function_name: func_name,
+                operator,
                 threshold,
                 command: command.clone(),
             },
@@ -157,7 +160,7 @@ pub fn recognize_p3(
 pub fn recognize_p4(
     expr: &Expr,
     db: &ParserDB,
-    _registry: &FunctionRegistry,
+    registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     if let Expr::Exists { subquery, negated } = expr {
         if *negated {
@@ -181,32 +184,20 @@ pub fn recognize_p4(
                         .map(|c| c.column_name().to_string())
                         .collect();
 
-                    let has_user_col = col_names
-                        .iter()
-                        .any(|n| n.contains("user_id") || n.contains("member_id"));
-
-                    if has_user_col {
-                        let fk_col = col_names
-                            .iter()
-                            .find(|n| {
-                                n.contains("team_id")
-                                    || n.contains("group_id")
-                                    || n.contains("org_id")
-                            })
-                            .cloned()
-                            .unwrap_or_else(|| "team_id".to_string());
-
-                        let user_col = col_names
-                            .iter()
-                            .find(|n| n.contains("user_id") || n.contains("member_id"))
-                            .cloned()
-                            .unwrap_or_else(|| "user_id".to_string());
-
+                    if let Some((fk_col, user_col, extra_predicate_sql)) =
+                        extract_membership_columns(
+                            select.as_ref(),
+                            &table_name,
+                            &col_names,
+                            registry,
+                        )
+                    {
                         return Some(ClassifiedExpr {
                             pattern: PatternClass::P4ExistsMembership {
                                 join_table: table_name,
                                 fk_column: fk_col,
                                 user_column: user_col,
+                                extra_predicate_sql,
                             },
                             confidence: ConfidenceLevel::A,
                         });
@@ -222,7 +213,7 @@ pub fn recognize_p4(
 pub fn recognize_p4_in_subquery(
     expr: &Expr,
     db: &ParserDB,
-    _registry: &FunctionRegistry,
+    registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     if let Expr::InSubquery {
         expr: lhs,
@@ -235,7 +226,7 @@ pub fn recognize_p4_in_subquery(
         }
 
         // LHS should be a column reference (e.g. team_id)
-        let _lhs_col = extract_column_name(lhs)?;
+        let lhs_col = extract_column_name(lhs)?;
 
         let query = subquery.as_ref();
         let body = query.body.as_ref();
@@ -252,38 +243,45 @@ pub fn recognize_p4_in_subquery(
                         .map(|c| c.column_name().to_string())
                         .collect();
 
-                    let has_user_col = col_names
-                        .iter()
-                        .any(|n| n.contains("user_id") || n.contains("member_id"));
-
-                    if has_user_col {
-                        let fk_col = col_names
-                            .iter()
-                            .find(|n| {
-                                n.contains("team_id")
-                                    || n.contains("group_id")
-                                    || n.contains("org_id")
-                            })
-                            .cloned()
-                            .unwrap_or_else(|| "team_id".to_string());
-
-                        let user_col = col_names
-                            .iter()
-                            .find(|n| n.contains("user_id") || n.contains("member_id"))
-                            .cloned()
-                            .unwrap_or_else(|| "user_id".to_string());
-
+                    let projected_col =
+                        extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
+                    if let Some((_fk_col, user_col, extra_predicate_sql)) =
+                        extract_membership_columns(
+                            select.as_ref(),
+                            &table_name,
+                            &col_names,
+                            registry,
+                        )
+                    {
                         return Some(ClassifiedExpr {
                             pattern: PatternClass::P4ExistsMembership {
                                 join_table: table_name,
-                                fk_column: fk_col,
+                                fk_column: projected_col,
                                 user_column: user_col,
+                                extra_predicate_sql,
                             },
                             confidence: ConfidenceLevel::A,
                         });
                     }
                 }
             }
+        }
+    }
+    None
+}
+
+/// Try to recognize P10: constant boolean policies (`TRUE` / `FALSE`).
+pub fn recognize_p10_constant_bool(
+    expr: &Expr,
+    _db: &ParserDB,
+    _registry: &FunctionRegistry,
+) -> Option<ClassifiedExpr> {
+    if let Expr::Value(v) = expr {
+        if let Value::Boolean(b) = v.value {
+            return Some(ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: b },
+                confidence: ConfidenceLevel::A,
+            });
         }
     }
     None
@@ -381,6 +379,141 @@ fn extract_table_name_from_table_factor(tf: &sqlparser::ast::TableFactor) -> Opt
         Some(name.to_string())
     } else {
         None
+    }
+}
+
+fn extract_projection_column(select: &Select) -> Option<String> {
+    select.projection.first().and_then(|p| match p {
+        SelectItem::UnnamedExpr(e) => extract_column_name(e),
+        SelectItem::ExprWithAlias { expr, .. } => extract_column_name(expr),
+        _ => None,
+    })
+}
+
+fn extract_membership_columns(
+    select: &Select,
+    join_table: &str,
+    join_cols: &[String],
+    registry: &FunctionRegistry,
+) -> Option<(String, String, Option<String>)> {
+    let mut fk_col: Option<String> = None;
+    let mut user_col: Option<String> = None;
+    let mut extras: Vec<String> = Vec::new();
+
+    if let Some(selection) = &select.selection {
+        let mut predicates = Vec::new();
+        flatten_and_predicates(selection, &mut predicates);
+
+        for pred in predicates {
+            if let Expr::BinaryOp {
+                left,
+                op: BinaryOperator::Eq,
+                right,
+            } = pred
+            {
+                let left_col = extract_qualified_column(left);
+                let right_col = extract_qualified_column(right);
+
+                // user_id = auth_current_user()
+                if let Some((_, col)) = left_col.clone() {
+                    if join_cols.contains(&col) && is_current_user_expr(right, registry) {
+                        user_col = Some(col);
+                        continue;
+                    }
+                }
+                if let Some((_, col)) = right_col.clone() {
+                    if join_cols.contains(&col) && is_current_user_expr(left, registry) {
+                        user_col = Some(col);
+                        continue;
+                    }
+                }
+
+                // join_table_fk = outer_table_col
+                if let (Some((left_qual, left_name)), Some((right_qual, right_name))) =
+                    (left_col, right_col)
+                {
+                    let left_is_join = left_qual.as_deref().is_some_and(|q| q == join_table)
+                        || (left_qual.is_none() && join_cols.contains(&left_name));
+                    let right_is_join = right_qual.as_deref().is_some_and(|q| q == join_table)
+                        || (right_qual.is_none() && join_cols.contains(&right_name));
+
+                    if left_is_join && !right_is_join {
+                        fk_col = Some(left_name);
+                        continue;
+                    }
+                    if right_is_join && !left_is_join {
+                        fk_col = Some(right_name);
+                        continue;
+                    }
+                }
+            }
+
+            // Keep additional predicates for tuple filtering.
+            extras.push(pred.to_string());
+        }
+    }
+
+    if user_col.is_none() {
+        user_col = join_cols
+            .iter()
+            .find(|c| c.contains("user_id") || c.contains("member_id"))
+            .cloned();
+    }
+
+    if fk_col.is_none() {
+        // Prefer any *_id other than the user column.
+        fk_col = join_cols
+            .iter()
+            .find(|c| c.ends_with("_id") && Some(*c) != user_col.as_ref())
+            .cloned();
+    }
+
+    let user_col = user_col?;
+    let fk_col = fk_col?;
+
+    let extra_predicate_sql = if extras.is_empty() {
+        None
+    } else {
+        Some(extras.join(" AND "))
+    };
+
+    Some((fk_col, user_col, extra_predicate_sql))
+}
+
+fn flatten_and_predicates<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::And,
+        right,
+    } = expr
+    {
+        flatten_and_predicates(left, out);
+        flatten_and_predicates(right, out);
+    } else {
+        out.push(expr);
+    }
+}
+
+fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
+    match expr {
+        Expr::Identifier(id) => Some((None, id.value.clone())),
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => Some((
+            Some(parts[parts.len() - 2].value.clone()),
+            parts.last()?.value.clone(),
+        )),
+        _ => None,
+    }
+}
+
+fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    match expr {
+        Expr::Function(func) => {
+            let name = func.name.to_string();
+            registry.is_current_user_accessor(&name)
+        }
+        Expr::Cast { expr, .. } => is_current_user_expr(expr, registry),
+        Expr::Nested(inner) => is_current_user_expr(inner, registry),
+        _ => false,
     }
 }
 

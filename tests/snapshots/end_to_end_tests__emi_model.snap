@@ -7,21 +7,21 @@ model
 
 type user
 
-type team
-  relations
-    define member: [user]
-
 type ownables
   relations
-    define owner_user: [user]
-    define owner_team: [team]
-    define grant_viewer: [user, team]
-    define grant_editor: [user, team]
     define grant_admin: [user, team]
+    define grant_editor: [user, team]
+    define grant_viewer: [user, team]
+    define owner_team: [team]
+    define owner_user: [user]
+    define can_delete: role_admin
+    define can_insert: role_editor
+    define can_select: role_viewer
+    define can_update: role_editor
     define role_admin: owner_user or owner_team->member or grant_admin or grant_admin->member
     define role_editor: role_admin or grant_editor or grant_editor->member
     define role_viewer: role_editor or grant_viewer or grant_viewer->member
-    define can_select: role_viewer
-    define can_insert: role_editor
-    define can_update: role_editor
-    define can_delete: role_admin
+
+type team
+  relations
+    define member: [user]
