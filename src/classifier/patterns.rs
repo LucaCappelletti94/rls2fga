@@ -17,7 +17,7 @@ pub enum PolicyCommand {
     All,
 }
 
-/// Policy combination mode in PostgreSQL RLS.
+/// Policy combination mode in `PostgreSQL` RLS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PolicyMode {
     /// OR-combined policy branch.

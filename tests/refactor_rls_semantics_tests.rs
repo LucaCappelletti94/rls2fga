@@ -49,7 +49,7 @@ fn multi_policy_table_combines_patterns_for_select() {
 
 #[test]
 fn restrictive_policy_is_anded_with_permissive() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (
   id UUID PRIMARY KEY,
@@ -64,7 +64,7 @@ CREATE POLICY p_owner ON docs AS PERMISSIVE FOR SELECT TO PUBLIC
   USING (owner_id = auth_current_user_id());
 CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
   USING (is_public = TRUE);
-"#;
+";
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -86,7 +86,7 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
 
 #[test]
 fn update_using_and_with_check_are_split() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE teams (id UUID PRIMARY KEY);
 CREATE TABLE team_members (
@@ -112,7 +112,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
   USING (get_owner_role(auth_current_user_id(), owner_id) >= 2)
   WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
-"#;
+";
     let reg_json =
         std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
 
@@ -140,7 +140,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
 
 #[test]
 fn p4_membership_uses_actual_fk_column_from_subquery() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE projects (id UUID PRIMARY KEY);
 CREATE TABLE project_members (
@@ -160,7 +160,7 @@ CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
       AND role = 'admin'
   )
 );
-"#;
+";
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -185,13 +185,11 @@ CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
     );
     assert!(
         tuples.contains("project_id"),
-        "tuple SQL should use real fk column, got:\n{}",
-        tuples
+        "tuple SQL should use real fk column, got:\n{tuples}"
     );
     assert!(
         !tuples.contains("team_id"),
-        "tuple SQL should not invent team_id, got:\n{}",
-        tuples
+        "tuple SQL should not invent team_id, got:\n{tuples}"
     );
 }
 
@@ -213,7 +211,7 @@ fn p2_role_in_list_generates_action_permissions() {
 
 #[test]
 fn threshold_operator_and_registry_levels_are_respected() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (id UUID PRIMARY KEY, owner_id UUID NOT NULL);
 CREATE TABLE grants (grantee UUID NOT NULL, resource UUID NOT NULL, role INTEGER NOT NULL);
@@ -226,7 +224,7 @@ CREATE FUNCTION get_role(uid UUID, rid UUID) RETURNS INTEGER
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
   USING (get_role(auth_current_user_id(), owner_id) > 2);
-"#;
+";
     let reg_json = r#"{
       "get_role": {
         "kind": "role_threshold",
@@ -253,7 +251,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
 
 #[test]
 fn for_all_expands_to_crud_actions() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (
   id UUID PRIMARY KEY,
@@ -265,7 +263,7 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
   USING (owner_id = auth_current_user_id());
-"#;
+";
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -289,12 +287,12 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
 
 #[test]
 fn constant_true_false_policies_are_not_unknown() {
-    let sql = r#"
+    let sql = r"
 CREATE TABLE docs (id UUID PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_true ON docs FOR SELECT TO PUBLIC USING (TRUE);
 CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
-"#;
+";
 
     let (classified, db, registry) = classify_sql(sql, None);
     let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);

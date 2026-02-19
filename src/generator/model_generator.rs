@@ -206,7 +206,7 @@ pub(crate) fn build_schema_plan(
                     PolicyCommand::All | PolicyCommand::Update | PolicyCommand::Insert
                 )
             {
-                with_check_expr = using_expr.clone();
+                with_check_expr.clone_from(&using_expr);
             }
 
             for target in using_targets(&cp.command()) {
@@ -238,10 +238,10 @@ pub(crate) fn build_schema_plan(
 
         // If only one UPDATE side exists, mirror it as PostgreSQL-compatible default.
         if update_using_expr.is_some() && update_check_expr.is_none() {
-            update_check_expr = update_using_expr.clone();
+            update_check_expr.clone_from(&update_using_expr);
         }
         if update_check_expr.is_some() && update_using_expr.is_none() {
-            update_using_expr = update_check_expr.clone();
+            update_using_expr.clone_from(&update_check_expr);
         }
 
         if let Some(expr) = select_expr.take() {
@@ -326,10 +326,9 @@ fn using_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
 
 fn with_check_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
     match command {
-        PolicyCommand::Select => vec![],
         PolicyCommand::Insert => vec![ActionTarget::Insert],
         PolicyCommand::Update => vec![ActionTarget::UpdateCheck],
-        PolicyCommand::Delete => vec![],
+        PolicyCommand::Select | PolicyCommand::Delete => vec![],
         PolicyCommand::All => vec![ActionTarget::Insert, ActionTarget::UpdateCheck],
     }
 }
@@ -348,9 +347,7 @@ fn push_action_expr(
 }
 
 fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Option<UsersetExpr> {
-    let Some(bucket) = bucket else {
-        return None;
-    };
+    let bucket = bucket?;
 
     let permissive = combine_union(bucket.permissive.clone());
     let restrictive = combine_intersection(bucket.restrictive.clone());
