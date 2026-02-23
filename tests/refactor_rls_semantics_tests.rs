@@ -4,6 +4,7 @@ use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator;
 use rls2fga::generator::tuple_generator;
+use rls2fga::output::report;
 use rls2fga::parser::sql_parser;
 
 fn classify_sql(
@@ -139,6 +140,53 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
 }
 
 #[test]
+fn tuples_include_using_and_with_check_patterns_for_update() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE TABLE memberships (
+  doc_id UUID NOT NULL REFERENCES docs(id),
+  user_id UUID NOT NULL REFERENCES users(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
+  USING (owner_id = auth_current_user_id())
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM memberships
+      WHERE memberships.doc_id = docs.id
+        AND memberships.user_id = auth_current_user_id()
+    )
+  );
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+
+    assert!(
+        tuples.contains("'owner' AS relation"),
+        "expected owner tuples from USING, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("'member' AS relation"),
+        "expected membership tuples from WITH CHECK, got:\n{tuples}"
+    );
+}
+
+#[test]
 fn p4_membership_uses_actual_fk_column_from_subquery() {
     let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
@@ -194,6 +242,141 @@ CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
 }
 
 #[test]
+fn p4_membership_generates_resource_bridge_tuples() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (id UUID PRIMARY KEY);
+CREATE TABLE project_members (
+  project_id UUID NOT NULL REFERENCES projects(id),
+  user_id UUID NOT NULL REFERENCES users(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
+  EXISTS (
+    SELECT 1 FROM project_members
+    WHERE project_id = projects.id
+      AND user_id = auth_current_user_id()
+  )
+);
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+
+    assert!(
+        tuples.contains("'member' AS relation"),
+        "expected membership tuples, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("'project' AS relation"),
+        "expected resource bridge tuples for tuple-to-userset relation, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("FROM projects"),
+        "expected bridge tuples sourced from resource table, got:\n{tuples}"
+    );
+}
+
+#[test]
+fn p4_membership_queries_are_not_deduped_only_by_join_table() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (id UUID PRIMARY KEY);
+CREATE TABLE tasks (id UUID PRIMARY KEY);
+CREATE TABLE memberships (
+  doc_id UUID REFERENCES docs(id),
+  task_id UUID REFERENCES tasks(id),
+  user_id UUID NOT NULL REFERENCES users(id),
+  role TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT TO PUBLIC USING (
+  EXISTS (
+    SELECT 1 FROM memberships
+    WHERE memberships.doc_id = docs.id
+      AND memberships.user_id = auth_current_user_id()
+      AND memberships.role = 'editor'
+  )
+);
+CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
+  EXISTS (
+    SELECT 1 FROM memberships
+    WHERE memberships.task_id = tasks.id
+      AND memberships.user_id = auth_current_user_id()
+      AND memberships.role = 'admin'
+  )
+);
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+
+    assert!(
+        tuples.contains("'doc:' || doc_id"),
+        "expected doc membership tuples, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("'task:' || task_id"),
+        "expected task membership tuples, got:\n{tuples}"
+    );
+}
+
+#[test]
+fn report_includes_with_check_pattern_when_present() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
+  USING (owner_id = auth_current_user_id())
+  WITH CHECK (FALSE);
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let report_md = report::build_report(&model, &classified);
+
+    assert!(
+        report_md.contains("p_upd (WITH CHECK)"),
+        "report should include separate WITH CHECK entry, got:\n{report_md}"
+    );
+    assert!(
+        report_md.contains("P10 (constant false)"),
+        "report should show WITH CHECK pattern details, got:\n{report_md}"
+    );
+}
+
+#[test]
 fn p2_role_in_list_generates_action_permissions() {
     let sql = std::fs::read_to_string("tests/fixtures/role_in_list/input.sql").unwrap();
     let reg_json =
@@ -245,6 +428,113 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     assert!(
         model.dsl.contains("define can_select: role_admin"),
         "strict >2 with levels 1/2/3 should map to admin, got:\n{}",
+        model.dsl
+    );
+}
+
+#[test]
+fn p2_in_list_does_not_collapse_to_min_threshold() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE grants (grantee UUID NOT NULL, resource UUID NOT NULL, role INTEGER NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role(uid UUID, rid UUID) RETURNS INTEGER
+  LANGUAGE sql STABLE
+  AS 'SELECT 0';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
+  USING (get_role(auth_current_user_id(), owner_id) IN (2, 4));
+";
+    let reg_json = r#"{
+      "get_role": {
+        "kind": "role_threshold",
+        "user_param_index": 0,
+        "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "grants",
+        "grant_grantee_col": "grantee",
+        "grant_resource_col": "resource",
+        "grant_role_col": "role"
+      },
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+
+    assert!(
+        !model.dsl.contains("define can_select: role_viewer"),
+        "IN (2,4) should not collapse to >=2 threshold semantics, got:\n{}",
+        model.dsl
+    );
+}
+
+#[test]
+fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
+    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+
+    assert!(
+        !tuples.contains("TODO [Level C]: Attribute condition"),
+        "attribute-only policies should not emit broad placeholder tuple SQL, got:\n{tuples}"
+    );
+    assert!(
+        !tuples.contains("IS NOT NULL; -- TODO: replace with actual condition"),
+        "attribute-only policies should not emit IS NOT NULL tuple filters, got:\n{tuples}"
+    );
+}
+
+#[test]
+fn json_model_respects_min_confidence_threshold() {
+    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
+    let json = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::A);
+
+    let posts = json
+        .type_definitions
+        .iter()
+        .find(|t| t.type_name == "posts")
+        .expect("posts type should exist");
+    let relations = posts
+        .relations
+        .as_ref()
+        .expect("posts should have relations");
+
+    assert!(
+        !relations.contains_key("public_viewer"),
+        "A-threshold JSON output should exclude C-level public_viewer relation, got: {json:#?}"
+    );
+}
+
+#[test]
+fn model_generation_respects_min_confidence_threshold() {
+    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::A);
+
+    assert!(
+        !model.dsl.contains("public_viewer"),
+        "A-threshold model output should exclude C-level public_viewer relation, got:\n{}",
         model.dsl
     );
 }

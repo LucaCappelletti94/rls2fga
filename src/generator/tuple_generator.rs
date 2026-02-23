@@ -40,12 +40,17 @@ pub fn generate_tuple_queries(
     let mut generated = std::collections::HashSet::new();
 
     for cp in policies {
-        let classification = cp
-            .using_classification
-            .as_ref()
-            .or(cp.with_check_classification.as_ref());
-
-        if let Some(classified) = classification {
+        if let Some(classified) = cp.using_classification.as_ref() {
+            generate_tuples_for_pattern(
+                &classified.pattern,
+                &cp.table_name(),
+                db,
+                registry,
+                &mut queries,
+                &mut generated,
+            );
+        }
+        if let Some(classified) = cp.with_check_classification.as_ref() {
             generate_tuples_for_pattern(
                 &classified.pattern,
                 &cp.table_name(),
@@ -90,7 +95,10 @@ fn generate_tuples_for_pattern(
             user_column,
             extra_predicate_sql,
         } => {
-            let key = format!("p4:{join_table}");
+            let key = format!(
+                "p4:{table}:{join_table}:{fk_column}:{user_column}:{}",
+                extra_predicate_sql.as_deref().unwrap_or("")
+            );
             if generated.insert(key) {
                 let parent_type = fk_column.strip_suffix("_id").unwrap_or(fk_column);
                 let where_clause = extra_predicate_sql
@@ -104,6 +112,18 @@ fn generate_tuples_for_pattern(
                     ),
                 });
             }
+
+            let parent_type = fk_column.strip_suffix("_id").unwrap_or(fk_column);
+            let bridge_key = format!("p4_bridge:{table}:{parent_type}");
+            if generated.insert(bridge_key) {
+                let (object_col, parent_ref_col) = pick_bridge_columns(table, fk_column, db);
+                queries.push(TupleQuery {
+                    comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
+                    sql: format!(
+                        "SELECT '{table}:' || {object_col} AS object, '{parent_type}' AS relation, '{parent_type}:' || {parent_ref_col} AS subject\nFROM {table}\nWHERE {object_col} IS NOT NULL\nAND {parent_ref_col} IS NOT NULL;"
+                    ),
+                });
+            }
         }
         PatternClass::P6BooleanFlag { column } => {
             let key = format!("p6:{table}:{column}");
@@ -112,19 +132,6 @@ fn generate_tuples_for_pattern(
                     comment: format!("-- Public access flag ({column})"),
                     sql: format!(
                         "SELECT '{table}:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table}\nWHERE {column} = TRUE;"
-                    ),
-                });
-            }
-        }
-        PatternClass::P9AttributeCondition { column, .. } => {
-            let key = format!("p9:{table}:{column}");
-            if generated.insert(key) {
-                queries.push(TupleQuery {
-                    comment: format!(
-                        "-- TODO [Level C]: Attribute condition ({column}) — adjust filter to match your policy"
-                    ),
-                    sql: format!(
-                        "SELECT '{table}:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table}\nWHERE {column} IS NOT NULL; -- TODO: replace with actual condition"
                     ),
                 });
             }
@@ -292,4 +299,33 @@ fn find_owner_column(table: &str, db: &ParserDB) -> String {
         }
     }
     "owner_id".to_string()
+}
+
+fn pick_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> (String, String) {
+    let Some(table_info) = db.table(None, table) else {
+        return ("id".to_string(), "id".to_string());
+    };
+
+    let cols: Vec<String> = table_info
+        .columns(db)
+        .map(|c| c.column_name().to_string())
+        .collect();
+
+    if cols.is_empty() {
+        return ("id".to_string(), "id".to_string());
+    }
+
+    let object_col = if cols.iter().any(|c| c == "id") {
+        "id".to_string()
+    } else {
+        cols[0].clone()
+    };
+
+    let parent_ref_col = if cols.iter().any(|c| c == fk_column) {
+        fk_column.to_string()
+    } else {
+        object_col.clone()
+    };
+
+    (object_col, parent_ref_col)
 }

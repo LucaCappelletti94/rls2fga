@@ -128,9 +128,10 @@ pub fn generate_json_model(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
-    _min_confidence: &ConfidenceLevel,
+    min_confidence: &ConfidenceLevel,
 ) -> AuthorizationModel {
-    let plan = build_schema_plan(policies, db, registry);
+    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let plan = build_schema_plan(&filtered, db, registry);
 
     let type_definitions = plan
         .types
@@ -142,6 +143,36 @@ pub fn generate_json_model(
         schema_version: "1.1".to_string(),
         type_definitions,
     }
+}
+
+fn filter_policies_for_output(
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) -> Vec<ClassifiedPolicy> {
+    policies
+        .iter()
+        .filter_map(|cp| {
+            let mut filtered = cp.clone();
+            filtered.using_classification = cp
+                .using_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+            filtered.with_check_classification = cp
+                .with_check_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+
+            if filtered.using_classification.is_some()
+                || filtered.with_check_classification.is_some()
+            {
+                Some(filtered)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {

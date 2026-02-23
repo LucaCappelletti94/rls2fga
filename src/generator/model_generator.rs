@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 use sqlparser::ast::Owner;
@@ -106,9 +106,10 @@ pub fn generate_model(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
-    _min_confidence: &ConfidenceLevel,
+    min_confidence: &ConfidenceLevel,
 ) -> GeneratedModel {
-    let plan = build_schema_plan(policies, db, registry);
+    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let plan = build_schema_plan(&filtered, db, registry);
     let dsl = render_dsl(&plan.types);
 
     GeneratedModel {
@@ -116,6 +117,36 @@ pub fn generate_model(
         todos: plan.todos,
         confidence_summary: plan.confidence_summary,
     }
+}
+
+fn filter_policies_for_output(
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) -> Vec<ClassifiedPolicy> {
+    policies
+        .iter()
+        .filter_map(|cp| {
+            let mut filtered = cp.clone();
+            filtered.using_classification = cp
+                .using_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+            filtered.with_check_classification = cp
+                .with_check_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+
+            if filtered.using_classification.is_some()
+                || filtered.with_check_classification.is_some()
+            {
+                Some(filtered)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn build_schema_plan(
@@ -465,17 +496,17 @@ fn pattern_to_expr(
                 team_membership_table.is_some(),
             );
 
-            let mut selected_levels = Vec::new();
+            let mut selected_levels: BTreeSet<i32> = BTreeSet::new();
             for role in role_names {
                 if let Ok(level) = role.parse::<i32>() {
-                    selected_levels.push(level);
+                    selected_levels.insert(level);
                     continue;
                 }
                 if let Some(level) = role_levels
                     .iter()
                     .find_map(|(name, level)| name.eq_ignore_ascii_case(role).then_some(*level))
                 {
-                    selected_levels.push(level);
+                    selected_levels.insert(level);
                 }
             }
 
@@ -485,9 +516,12 @@ fn pattern_to_expr(
                 return UsersetExpr::Computed("no_access".to_string());
             }
 
-            let min_level = *selected_levels.iter().min().unwrap_or(&i32::MAX);
-            if let Some(role_relation) = role_for_level(&sorted_roles, min_level) {
-                UsersetExpr::Computed(role_relation)
+            if let Some(expr) = exact_roles_expr(
+                &sorted_roles,
+                &selected_levels,
+                team_membership_table.is_some(),
+            ) {
+                expr
             } else {
                 table_plan
                     .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
@@ -698,6 +732,44 @@ fn role_for_level(sorted_roles: &[(String, i32)], min_level: i32) -> Option<Stri
         .iter()
         .find(|(_, level)| *level >= min_level)
         .map(|(name, _)| format!("role_{name}"))
+}
+
+fn exact_roles_expr(
+    sorted_roles: &[(String, i32)],
+    selected_levels: &BTreeSet<i32>,
+    has_team_support: bool,
+) -> Option<UsersetExpr> {
+    let mut children = Vec::new();
+
+    for (role_name, role_level) in sorted_roles {
+        if selected_levels.contains(role_level) {
+            let grant_name = format!("grant_{role_name}");
+            children.push(UsersetExpr::Computed(grant_name.clone()));
+            if has_team_support {
+                children.push(UsersetExpr::TupleToUserset {
+                    tupleset: grant_name,
+                    computed: "member".to_string(),
+                });
+            }
+        }
+    }
+
+    if sorted_roles
+        .iter()
+        .map(|(_, level)| *level)
+        .max()
+        .is_some_and(|max| selected_levels.contains(&max))
+    {
+        children.push(UsersetExpr::Computed("owner_user".to_string()));
+        if has_team_support {
+            children.push(UsersetExpr::TupleToUserset {
+                tupleset: "owner_team".to_string(),
+                computed: "member".to_string(),
+            });
+        }
+    }
+
+    combine_union(children)
 }
 
 fn render_dsl(types: &[TypePlan]) -> String {

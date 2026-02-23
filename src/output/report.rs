@@ -17,37 +17,31 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
     writeln!(report, "|--------|---------|------------|-------|").unwrap();
 
     for cp in policies {
-        let pattern_desc = if let Some(ref c) = cp.using_classification {
-            format_pattern(&c.pattern)
-        } else if let Some(ref c) = cp.with_check_classification {
-            format_pattern(&c.pattern)
-        } else {
-            "N/A".to_string()
-        };
-
-        let confidence = if let Some(ref c) = cp.using_classification {
-            c.confidence.to_string()
-        } else if let Some(ref c) = cp.with_check_classification {
-            c.confidence.to_string()
-        } else {
-            "N/A".to_string()
-        };
-
-        let notes = if let Some(ref c) = cp.using_classification {
-            format_notes(&c.pattern)
-        } else {
-            String::new()
-        };
-
-        writeln!(
-            report,
-            "| {} | {} | {} | {} |",
-            cp.name(),
-            pattern_desc,
-            confidence,
-            notes
-        )
-        .unwrap();
+        if let Some(ref c) = cp.using_classification {
+            writeln!(
+                report,
+                "| {} (USING) | {} | {} | {} |",
+                cp.name(),
+                format_pattern(&c.pattern),
+                c.confidence,
+                format_notes(&c.pattern)
+            )
+            .unwrap();
+        }
+        if let Some(ref c) = cp.with_check_classification {
+            writeln!(
+                report,
+                "| {} (WITH CHECK) | {} | {} | {} |",
+                cp.name(),
+                format_pattern(&c.pattern),
+                c.confidence,
+                format_notes(&c.pattern)
+            )
+            .unwrap();
+        }
+        if cp.using_classification.is_none() && cp.with_check_classification.is_none() {
+            writeln!(report, "| {} | N/A | N/A |  |", cp.name()).unwrap();
+        }
     }
 
     // TODOs
