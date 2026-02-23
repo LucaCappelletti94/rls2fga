@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::parser::function_analyzer::FunctionSemantic;
+use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
 
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
@@ -49,6 +50,24 @@ impl FunctionRegistry {
             self.get(name),
             Some(FunctionSemantic::CurrentUserAccessor { .. })
         )
+    }
+
+    /// Infer function semantics from parsed in-schema function bodies.
+    /// Explicitly provided registry entries take precedence.
+    pub fn enrich_from_schema(&mut self, db: &ParserDB) {
+        for function in db.functions() {
+            let Some(body) = function.body() else {
+                continue;
+            };
+            let return_type = function
+                .return_type
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            if let Some(semantic) = FunctionSemantic::analyze_body(body, &return_type, "sql") {
+                self.register_if_absent(function.name().to_string(), semantic);
+            }
+        }
     }
 }
 

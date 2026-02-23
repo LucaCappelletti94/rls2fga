@@ -7,6 +7,9 @@ use crate::parser::sql_parser::{DatabaseLike, ParserDB};
 
 /// Classify all policies in the database.
 pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<ClassifiedPolicy> {
+    let mut effective_registry = registry.clone();
+    effective_registry.enrich_from_schema(db);
+
     db.policies()
         .map(|policy| {
             let table_name = policy.table_name.to_string();
@@ -18,12 +21,12 @@ pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<Clas
             let using_classification = policy
                 .using
                 .as_ref()
-                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
+                .map(|expr| classify_expr(expr, db, &effective_registry, &table_name, &command));
 
             let with_check_classification = policy
                 .with_check
                 .as_ref()
-                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
+                .map(|expr| classify_expr(expr, db, &effective_registry, &table_name, &command));
 
             ClassifiedPolicy {
                 policy: policy.clone(),

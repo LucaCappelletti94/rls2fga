@@ -60,9 +60,11 @@ impl FunctionSemantic {
     /// Returns None if the function cannot be classified from its body alone.
     pub fn analyze_body(body: &str, return_type: &str, language: &str) -> Option<FunctionSemantic> {
         let body_lower = body.to_lowercase();
+        let return_type_lower = return_type.to_lowercase();
+        let language_lower = language.to_lowercase();
 
         // Detect current_user accessor patterns
-        if return_type.contains("uuid")
+        if return_type_lower.contains("uuid")
             && (body_lower.contains("current_setting") || body_lower.contains("current_user"))
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
@@ -71,8 +73,8 @@ impl FunctionSemantic {
         }
 
         // Detect role-threshold pattern: returns integer, references grants
-        if (return_type.contains("int") || return_type.contains("integer"))
-            && language == "sql"
+        if (return_type_lower.contains("int") || return_type_lower.contains("integer"))
+            && language_lower == "sql"
             && body_lower.contains("grant")
         {
             // This is a simplified heuristic - the function registry is preferred

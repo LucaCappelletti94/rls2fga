@@ -164,3 +164,26 @@ fn classify_abac_status_as_p7() {
     );
     assert_eq!(classification.confidence, ConfidenceLevel::C);
 }
+
+#[test]
+fn classify_tenant_isolation_without_registry_via_function_body_inference() {
+    let sql = std::fs::read_to_string("tests/fixtures/tenant_isolation/input.sql").unwrap();
+    let db = sql_parser::parse_schema(&sql).unwrap();
+    let registry = FunctionRegistry::new();
+
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    assert_eq!(classified.len(), 1);
+
+    let cp = &classified[0];
+    let classification = cp
+        .using_classification
+        .as_ref()
+        .expect("tenant policy should have USING classification");
+    match &classification.pattern {
+        PatternClass::P3DirectOwnership { column } => {
+            assert_eq!(column, "tenant_id");
+            assert_eq!(classification.confidence, ConfidenceLevel::A);
+        }
+        other => panic!("expected inferred P3 for tenant isolation, got: {other:?}"),
+    }
+}
