@@ -88,6 +88,7 @@ impl FunctionSemantic {
 #[cfg(test)]
 mod tests {
     use super::FunctionSemantic;
+    use std::collections::HashMap;
 
     #[test]
     fn analyze_body_detects_current_user_accessor() {
@@ -97,12 +98,10 @@ mod tests {
             "sql",
         );
 
-        match semantic {
-            Some(FunctionSemantic::CurrentUserAccessor { returns }) => {
-                assert_eq!(returns, "uuid");
-            }
-            other => panic!("expected current user accessor, got {other:?}"),
-        }
+        assert!(matches!(
+            semantic,
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+        ));
     }
 
     #[test]
@@ -117,5 +116,50 @@ mod tests {
             semantic.is_none(),
             "role-threshold-like SQL should remain unclassified without explicit metadata"
         );
+    }
+
+    #[test]
+    fn current_user_accessor_default_return_type_deserializes_to_uuid() {
+        let semantic: FunctionSemantic = serde_json::from_str(
+            r#"{
+  "kind": "current_user_accessor"
+}"#,
+        )
+        .expect("semantic json should parse");
+
+        assert!(matches!(
+            semantic,
+            FunctionSemantic::CurrentUserAccessor { ref returns } if returns == "uuid"
+        ));
+    }
+
+    #[test]
+    fn role_threshold_semantic_round_trips_with_all_fields() {
+        let semantic = FunctionSemantic::RoleThreshold {
+            user_param_index: 0,
+            resource_param_index: 1,
+            role_levels: HashMap::from([("viewer".to_string(), 1), ("editor".to_string(), 2)]),
+            grant_table: "object_grants".to_string(),
+            grant_grantee_col: "grantee_id".to_string(),
+            grant_resource_col: "resource_id".to_string(),
+            grant_role_col: "role_level".to_string(),
+            team_membership_table: Some("team_memberships".to_string()),
+            team_membership_user_col: Some("user_id".to_string()),
+            team_membership_team_col: Some("team_id".to_string()),
+        };
+
+        let json = serde_json::to_string(&semantic).expect("semantic should serialize");
+        let parsed: FunctionSemantic =
+            serde_json::from_str(&json).expect("semantic should deserialize");
+
+        assert!(matches!(
+            parsed,
+            FunctionSemantic::RoleThreshold {
+                team_membership_table: Some(ref table),
+                team_membership_user_col: Some(ref user_col),
+                team_membership_team_col: Some(ref team_col),
+                ..
+            } if table == "team_memberships" && user_col == "user_id" && team_col == "team_id"
+        ));
     }
 }

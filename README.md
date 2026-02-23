@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/LucaCappelletti94/rls2fga/actions/workflows/ci.yml/badge.svg)](https://github.com/LucaCappelletti94/rls2fga/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/LucaCappelletti94/rls2fga/graph/badge.svg)](https://codecov.io/gh/LucaCappelletti94/rls2fga)
-[![License](https://img.shields.io/github/license/LucaCappelletti94/rls2fga)](LICENSE)
+[![License](https://img.shields.io/github/license/LucaCappelletti94/rls2fga)](https://github.com/LucaCappelletti94/rls2fga/blob/main/LICENSE)
 
-Rust crate to convert Postgres Row Level Security (RLS) to OpenFGA's Fine Grained Authorization
+Rust crate to convert Postgres Row Level Security (RLS) to `OpenFGA`'s Fine Grained Authorization
 
 ## Pre-commit hook (Rust-based)
 
@@ -37,7 +37,7 @@ Validate a commit message manually:
 cargo run --bin xtask -- commit-msg .git/COMMIT_EDITMSG
 ```
 
-Include Docker-backed ignored tests (OpenFGA + PostgreSQL 18):
+Include Docker-backed ignored tests (`OpenFGA` + `PostgreSQL` 18):
 
 ```bash
 cargo run --bin xtask -- precommit --with-docker

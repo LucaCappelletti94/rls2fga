@@ -214,21 +214,15 @@ fn describe_comparison_value(expr: &Expr) -> String {
 mod tests {
     use super::*;
     use crate::parser::sql_parser::parse_schema;
-    use sqlparser::ast::SetExpr;
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
 
     fn parse_expr(expr_sql: &str) -> Expr {
-        let sql = format!("SELECT 1 WHERE {expr_sql}");
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("query should parse");
-        let stmt = stmts.first().expect("expected one statement");
-        let sqlparser::ast::Statement::Query(query) = stmt else {
-            panic!("expected query statement");
-        };
-        let SetExpr::Select(select) = query.body.as_ref() else {
-            panic!("expected select set expression");
-        };
-        select.selection.clone().expect("expected where expression")
+        Parser::new(&PostgreSqlDialect {})
+            .try_with_sql(expr_sql)
+            .expect("expression should parse")
+            .parse_expr()
+            .expect("expression should parse")
     }
 
     fn docs_db() -> ParserDB {
@@ -260,13 +254,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
 
-        match classified.pattern {
-            PatternClass::P8Composite { op, parts } => {
-                assert_eq!(op, BoolOp::Or);
-                assert_eq!(parts.len(), 2);
-            }
-            other => panic!("expected OR composite, got {other:?}"),
-        }
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P8Composite {
+                op: BoolOp::Or,
+                parts
+            } if parts.len() == 2
+        ));
         assert_eq!(classified.confidence, ConfidenceLevel::B);
     }
 
@@ -281,12 +275,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         ] {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
-            match classified.pattern {
-                PatternClass::P7AbacAnd { attribute_part, .. } => {
-                    assert_eq!(attribute_part, "status");
-                }
-                other => panic!("expected P7 ABAC pattern, got {other:?}"),
-            }
+            assert!(matches!(
+                &classified.pattern,
+                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+            ));
             assert_eq!(classified.confidence, ConfidenceLevel::C);
         }
     }
@@ -299,13 +291,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
 
-        match classified.pattern {
-            PatternClass::P8Composite { op, parts } => {
-                assert_eq!(op, BoolOp::And);
-                assert_eq!(parts.len(), 2);
-            }
-            other => panic!("expected AND composite, got {other:?}"),
-        }
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P8Composite {
+                op: BoolOp::And,
+                parts
+            } if parts.len() == 2
+        ));
         assert_eq!(classified.confidence, ConfidenceLevel::B);
     }
 
@@ -317,10 +309,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
 
-        match classified.pattern {
-            PatternClass::P3DirectOwnership { column } => assert_eq!(column, "owner_id"),
-            other => panic!("expected ownership pattern, got {other:?}"),
-        }
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P3DirectOwnership { column } if column == "owner_id"
+        ));
         assert_eq!(classified.confidence, ConfidenceLevel::A);
     }
 
@@ -338,16 +330,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         for (expr_sql, expected_col, expected_value) in cases {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
-            match classified.pattern {
+            assert!(matches!(
+                &classified.pattern,
                 PatternClass::P9AttributeCondition {
                     column,
-                    value_description,
-                } => {
-                    assert_eq!(column, expected_col);
-                    assert_eq!(value_description, expected_value);
-                }
-                other => panic!("expected P9 attribute pattern, got {other:?}"),
-            }
+                    value_description
+                } if column == expected_col && value_description == expected_value
+            ));
             assert_eq!(classified.confidence, ConfidenceLevel::C);
         }
     }
@@ -360,12 +349,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
 
-        match classified.pattern {
-            PatternClass::Unknown { reason, .. } => {
-                assert!(reason.contains("Function 'mystery_auth' not in registry"));
-            }
-            other => panic!("expected Unknown pattern, got {other:?}"),
-        }
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason.contains("Function 'mystery_auth' not in registry")
+        ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
 
@@ -377,13 +364,57 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
 
-        match classified.pattern {
-            PatternClass::Unknown { reason, .. } => {
-                assert_eq!(reason, "Expression does not match any known pattern");
-            }
-            other => panic!("expected Unknown pattern, got {other:?}"),
-        }
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason == "Expression does not match any known pattern"
+        ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_or_and_confidence_can_drop_below_b() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let or_expr = parse_expr("mystery_auth(owner_id) OR owner_id = current_user");
+        let or_classified = classify_expr(&or_expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert_eq!(or_classified.confidence, ConfidenceLevel::D);
+
+        let and_expr = parse_expr("mystery_auth(owner_id) AND owner_id = current_user");
+        let and_classified =
+            classify_expr(&and_expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert_eq!(and_classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_current_user_accessor_function_without_pattern_falls_back_to_unknown_reason() {
+        let db = docs_db();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let expr = parse_expr("auth_current_user_id()");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason == "Expression does not match any known pattern"
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn describe_comparison_value_handles_null_and_non_binary() {
+        let null_expr = parse_expr("status = NULL");
+        assert_eq!(describe_comparison_value(&null_expr), "NULL");
+
+        let non_binary = parse_expr("status IS NULL");
+        assert_eq!(describe_comparison_value(&non_binary), "unknown");
     }
 
     #[test]

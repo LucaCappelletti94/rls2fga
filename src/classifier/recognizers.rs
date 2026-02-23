@@ -566,16 +566,11 @@ mod tests {
     use sqlparser::parser::Parser;
 
     fn parse_expr(expr_sql: &str) -> Expr {
-        let sql = format!("SELECT 1 WHERE {expr_sql}");
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("query should parse");
-        let stmt = stmts.first().expect("expected one statement");
-        let Statement::Query(query) = stmt else {
-            panic!("expected query statement");
-        };
-        let SetExpr::Select(select) = query.body.as_ref() else {
-            panic!("expected select body");
-        };
-        select.selection.clone().expect("expected where expression")
+        Parser::new(&PostgreSqlDialect {})
+            .try_with_sql(expr_sql)
+            .expect("expression should parse")
+            .parse_expr()
+            .expect("expression should parse")
     }
 
     fn parse_select(sql: &str) -> Select {
@@ -641,20 +636,15 @@ CREATE TABLE doc_members (
 
         let classified =
             recognize_p1(&expr, &db, &registry, &PolicyCommand::Delete).expect("expected P1 match");
-        match classified.pattern {
+        assert!(matches!(
+            &classified.pattern,
             PatternClass::P1NumericThreshold {
                 function_name,
-                operator,
+                operator: ThresholdOperator::Gt,
                 threshold,
-                command,
-            } => {
-                assert_eq!(function_name, "role_level");
-                assert_eq!(operator, ThresholdOperator::Gt);
-                assert_eq!(threshold, 2);
-                assert_eq!(command, PolicyCommand::Delete);
-            }
-            other => panic!("expected P1 pattern, got {other:?}"),
-        }
+                command: PolicyCommand::Delete,
+            } if function_name == "role_level" && *threshold == 2
+        ));
 
         let unknown = parse_expr("unknown_role(auth_current_user_id(), id) >= 1");
         assert!(recognize_p1(&unknown, &db, &registry, &PolicyCommand::Select).is_none());
@@ -676,16 +666,14 @@ CREATE TABLE doc_members (
 
         let ok = parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', 2)");
         let classified = recognize_p2(&ok, &db, &registry).expect("expected P2 match");
-        match classified.pattern {
+        assert!(matches!(
+            &classified.pattern,
             PatternClass::P2RoleNameInList {
                 function_name,
                 role_names,
-            } => {
-                assert_eq!(function_name, "role_level");
-                assert_eq!(role_names, vec!["viewer".to_string(), "2".to_string()]);
-            }
-            other => panic!("expected P2 pattern, got {other:?}"),
-        }
+            } if function_name == "role_level"
+                && role_names == &vec!["viewer".to_string(), "2".to_string()]
+        ));
     }
 
     #[test]
@@ -735,22 +723,20 @@ CREATE TABLE doc_members (
              )",
         );
         let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
-        match classified.pattern {
+        assert!(matches!(
+            &classified.pattern,
             PatternClass::P4ExistsMembership {
                 join_table,
                 fk_column,
                 user_column,
                 extra_predicate_sql,
-            } => {
-                assert_eq!(join_table, "doc_members");
-                assert_eq!(fk_column, "doc_id");
-                assert_eq!(user_column, "user_id");
-                assert!(extra_predicate_sql
+            } if join_table == "doc_members"
+                && fk_column == "doc_id"
+                && user_column == "user_id"
+                && extra_predicate_sql
                     .as_deref()
-                    .is_some_and(|s| s.contains("doc_members.role = 'admin'")));
-            }
-            other => panic!("expected P4 pattern, got {other:?}"),
-        }
+                    .is_some_and(|s| s.contains("doc_members.role = 'admin'"))
+        ));
     }
 
     #[test]
@@ -776,17 +762,14 @@ CREATE TABLE doc_members (
         );
         let classified =
             recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected match");
-        match classified.pattern {
+        assert!(matches!(
+            &classified.pattern,
             PatternClass::P4ExistsMembership {
                 fk_column,
                 user_column,
                 ..
-            } => {
-                assert_eq!(fk_column, "doc_id");
-                assert_eq!(user_column, "user_id");
-            }
-            other => panic!("expected P4 pattern, got {other:?}"),
-        }
+            } if fk_column == "doc_id" && user_column == "user_id"
+        ));
     }
 
     #[test]
@@ -898,5 +881,232 @@ CREATE TABLE doc_members (
         assert!(is_current_user_expr(&nested, &registry));
         assert!(is_current_user_expr(&casted, &registry));
         assert!(!is_current_user_expr(&other, &registry));
+    }
+
+    #[test]
+    fn extract_projection_column_returns_none_for_wildcard() {
+        let select = parse_select("SELECT * FROM doc_members");
+        assert!(extract_projection_column(&select).is_none());
+    }
+
+    #[test]
+    fn is_attribute_check_supports_literal_on_left_and_not_equal_operator() {
+        let reverse_literal = parse_expr("3 <= priority");
+        assert_eq!(
+            is_attribute_check(&reverse_literal).as_deref(),
+            Some("priority")
+        );
+
+        let not_equal = parse_expr("status <> 'draft'");
+        assert_eq!(is_attribute_check(&not_equal).as_deref(), Some("status"));
+    }
+
+    #[test]
+    fn extract_membership_columns_detects_reversed_predicates() {
+        let select = parse_select(
+            "SELECT dm.doc_id
+             FROM doc_members dm
+             WHERE auth_current_user_id() = dm.user_id
+               AND docs.id = dm.doc_id",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
+            .expect("reversed predicates should still infer membership columns");
+        assert_eq!(extracted.0, "doc_id");
+        assert_eq!(extracted.1, "user_id");
+    }
+
+    #[test]
+    fn recognize_p1_rejects_non_numeric_threshold_expressions() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let bool_threshold = parse_expr("role_level(auth_current_user_id(), id) >= TRUE");
+        assert!(recognize_p1(&bool_threshold, &db, &registry, &PolicyCommand::Select).is_none());
+
+        let non_value_threshold = parse_expr("role_level(auth_current_user_id(), id) >= owner_id");
+        assert!(
+            recognize_p1(&non_value_threshold, &db, &registry, &PolicyCommand::Select).is_none()
+        );
+    }
+
+    #[test]
+    fn recognize_p2_ignores_non_literal_in_list_items() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let expr = parse_expr("role_level(auth_current_user_id(), id) IN (owner_id)");
+        assert!(recognize_p2(&expr, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p3_accepts_function_on_left_side() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("auth_current_user_id() = owner_id");
+        let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P3DirectOwnership { column } if column == "owner_id"
+        ));
+    }
+
+    #[test]
+    fn recognize_p4_and_in_subquery_fail_when_membership_columns_cannot_be_inferred() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE odd_members(alpha text, beta text);
+",
+        )
+        .expect("schema should parse");
+        let registry = registry_with_role_level();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM odd_members
+               WHERE odd_members.alpha = 'x'
+             )",
+        );
+        assert!(recognize_p4(&exists_expr, &db, &registry).is_none());
+
+        let in_subquery_expr = parse_expr(
+            "id IN (
+               SELECT odd_members.alpha
+               FROM odd_members
+               WHERE odd_members.beta = 'x'
+             )",
+        );
+        assert!(recognize_p4_in_subquery(&in_subquery_expr, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let unknown_table = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM ghost_members
+               WHERE ghost_members.doc_id = docs.id
+             )",
+        );
+        assert!(recognize_p4(&unknown_table, &db, &registry).is_none());
+
+        let unsupported = parse_expr(
+            "doc_id IN (
+               (SELECT dm.doc_id FROM doc_members dm)
+               UNION
+               (SELECT dm.doc_id FROM doc_members dm)
+             )",
+        );
+        assert!(recognize_p4_in_subquery(&unsupported, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p4_and_in_subquery_reject_multi_from_subqueries() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let exists_multi_from = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm, docs d
+               WHERE dm.doc_id = d.id
+             )",
+        );
+        assert!(recognize_p4(&exists_multi_from, &db, &registry).is_none());
+
+        let in_multi_from = parse_expr(
+            "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm, docs d
+               WHERE dm.user_id = auth_current_user_id()
+             )",
+        );
+        assert!(recognize_p4_in_subquery(&in_multi_from, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p6_covers_visible_branch_and_non_literal_binary_case() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let visible = parse_expr("visible = TRUE");
+        let classified = recognize_p6(&visible, &db, &registry).expect("expected visible match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P6BooleanFlag { column } if column == "visible"
+        ));
+
+        let non_literal = parse_expr("is_public = owner_id");
+        assert!(recognize_p6(&non_literal, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
+        let select = parse_select(
+            "SELECT dm.doc_id
+             FROM doc_members dm
+             WHERE auth_current_user_id() = dm.user_id
+               AND docs.id = doc_id
+               AND dm.role > 'a'",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
+            .expect("columns should still be inferred");
+        assert_eq!(extracted.0, "doc_id");
+        assert_eq!(extracted.1, "user_id");
+        assert!(extracted
+            .2
+            .as_deref()
+            .is_some_and(|s| s.contains("dm.role > 'a'")));
+    }
+
+    #[test]
+    fn extract_membership_columns_handles_queries_without_selection() {
+        let select = parse_select("SELECT dm.doc_id FROM doc_members dm");
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
+            .expect("fallback should infer columns even without WHERE");
+        assert_eq!(extracted.0, "doc_id");
+        assert_eq!(extracted.1, "user_id");
+        assert!(extracted.2.is_none());
+    }
+
+    #[test]
+    fn is_attribute_check_rejects_unsupported_operators() {
+        let like_expr = parse_expr("status LIKE 'draft%'");
+        assert!(is_attribute_check(&like_expr).is_none());
+    }
+
+    #[test]
+    fn parse_select_panics_for_non_query_and_non_select_body() {
+        let non_query = std::panic::catch_unwind(|| parse_select("DELETE FROM doc_members"));
+        assert!(non_query.is_err());
+
+        let non_select = std::panic::catch_unwind(|| parse_select("VALUES (1)"));
+        assert!(non_select.is_err());
     }
 }

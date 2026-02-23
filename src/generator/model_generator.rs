@@ -240,14 +240,14 @@ pub(crate) fn build_schema_plan(
                 with_check_expr.clone_from(&using_expr);
             }
 
-            for target in using_targets(&cp.command()) {
-                if let Some(expr) = using_expr.clone() {
-                    push_action_expr(&mut action_buckets, target, cp.mode(), expr);
+            if let Some(expr) = using_expr.clone() {
+                for target in using_targets(&cp.command()) {
+                    push_action_expr(&mut action_buckets, target, cp.mode(), expr.clone());
                 }
             }
-            for target in with_check_targets(&cp.command()) {
-                if let Some(expr) = with_check_expr.clone() {
-                    push_action_expr(&mut action_buckets, target, cp.mode(), expr);
+            if let Some(expr) = with_check_expr.clone() {
+                for target in with_check_targets(&cp.command()) {
+                    push_action_expr(&mut action_buckets, target, cp.mode(), expr.clone());
                 }
             }
         }
@@ -267,14 +267,6 @@ pub(crate) fn build_schema_plan(
         let mut delete_expr =
             compose_action(&mut table_plan, action_buckets.get(&ActionTarget::Delete));
 
-        // If only one UPDATE side exists, mirror it as PostgreSQL-compatible default.
-        if update_using_expr.is_some() && update_check_expr.is_none() {
-            update_check_expr.clone_from(&update_using_expr);
-        }
-        if update_check_expr.is_some() && update_using_expr.is_none() {
-            update_using_expr.clone_from(&update_check_expr);
-        }
-
         if let Some(expr) = select_expr.take() {
             table_plan.set_computed("can_select", expr);
         }
@@ -285,26 +277,26 @@ pub(crate) fn build_schema_plan(
             table_plan.set_computed("can_delete", expr);
         }
 
-        match (update_using_expr.take(), update_check_expr.take()) {
-            (Some(using_expr), Some(check_expr)) => {
-                if using_expr == check_expr {
-                    table_plan.set_computed("can_update", using_expr);
-                } else {
-                    table_plan.set_computed("can_update_using", using_expr);
-                    table_plan.set_computed("can_update_check", check_expr);
-                    table_plan.set_computed(
-                        "can_update",
-                        UsersetExpr::Intersection(vec![
-                            UsersetExpr::Computed("can_update_using".to_string()),
-                            UsersetExpr::Computed("can_update_check".to_string()),
-                        ]),
-                    );
-                }
+        if let Some(using_expr) = update_using_expr
+            .take()
+            .or_else(|| update_check_expr.clone())
+        {
+            let check_expr = update_check_expr
+                .take()
+                .unwrap_or_else(|| using_expr.clone());
+            if using_expr == check_expr {
+                table_plan.set_computed("can_update", using_expr);
+            } else {
+                table_plan.set_computed("can_update_using", using_expr);
+                table_plan.set_computed("can_update_check", check_expr);
+                table_plan.set_computed(
+                    "can_update",
+                    UsersetExpr::Intersection(vec![
+                        UsersetExpr::Computed("can_update_using".to_string()),
+                        UsersetExpr::Computed("can_update_check".to_string()),
+                    ]),
+                );
             }
-            (Some(expr), None) | (None, Some(expr)) => {
-                table_plan.set_computed("can_update", expr);
-            }
-            (None, None) => {}
         }
 
         if !table_plan.has_relations() {
@@ -324,14 +316,20 @@ pub(crate) fn build_schema_plan(
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
-    if let Some(pos) = type_names.iter().position(|n| n == "user") {
-        let user = type_names.remove(pos);
-        type_names.insert(0, user);
-    }
+    let pos = type_names
+        .iter()
+        .position(|n| n == "user")
+        .expect("user type should always be present");
+    let user = type_names.remove(pos);
+    type_names.insert(0, user);
 
     let types = type_names
         .into_iter()
-        .filter_map(|name| all_types.remove(&name))
+        .map(|name| {
+            all_types
+                .remove(&name)
+                .expect("type name should exist in plan map")
+        })
         .collect();
 
     SchemaPlan {
@@ -704,7 +702,8 @@ fn ensure_role_threshold_scaffold(
                     computed: "member".to_string(),
                 });
             }
-        } else if let Some((higher_name, _)) = descending.get(idx - 1) {
+        } else {
+            let higher_name = &descending[idx - 1].0;
             children.push(UsersetExpr::Computed(format!("role_{higher_name}")));
         }
 
@@ -719,8 +718,7 @@ fn ensure_role_threshold_scaffold(
 
         table_plan.ensure_computed(
             format!("role_{role_name}"),
-            combine_union(children)
-                .unwrap_or_else(|| UsersetExpr::Computed("no_access".to_string())),
+            combine_union(children).expect("role relation should always have at least one source"),
         );
     }
 
@@ -1172,19 +1170,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let selected = BTreeSet::from([3]);
         let expr =
             exact_roles_expr(&sorted, &selected, true).expect("roles should produce expression");
-        match expr {
-            UsersetExpr::Union(children) => {
-                assert!(children
-                    .iter()
-                    .any(|c| matches!(c, UsersetExpr::Computed(name) if name == "owner_user")));
-                assert!(children.iter().any(|c| matches!(
-                    c,
-                    UsersetExpr::TupleToUserset { tupleset, computed }
-                        if tupleset == "owner_team" && computed == "member"
-                )));
-            }
-            other => panic!("expected union, got {other:?}"),
-        }
+        assert!(matches!(&expr, UsersetExpr::Union(children) if children
+        .iter()
+        .any(|c| matches!(c, UsersetExpr::Computed(name) if name == "owner_user"))
+        && children.iter().any(|c| matches!(
+            c,
+            UsersetExpr::TupleToUserset { tupleset, computed }
+                if tupleset == "owner_team" && computed == "member"
+        ))));
     }
 
     #[test]
@@ -1200,5 +1193,192 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert_eq!(expr_to_dsl(&union, 2), "(a or b)");
         assert_eq!(expr_to_dsl(&intersection, 3), "(x and y)");
+    }
+
+    #[test]
+    fn combine_helpers_cover_empty_and_multi_intersection() {
+        assert!(combine_union(Vec::new()).is_none());
+        assert!(combine_intersection(Vec::new()).is_none());
+
+        let inter = combine_intersection(vec![
+            UsersetExpr::Computed("a".to_string()),
+            UsersetExpr::Computed("b".to_string()),
+        ])
+        .expect("intersection should exist");
+        assert!(matches!(inter, UsersetExpr::Intersection(children) if children.len() == 2));
+
+        let mut plan = TypePlan::new("docs");
+        let empty_bucket = ModeBuckets::default();
+        assert!(compose_action(&mut plan, Some(&empty_bucket)).is_none());
+    }
+
+    #[test]
+    fn build_schema_plan_skips_unknown_and_non_rls_tables() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id uuid primary key, owner_id uuid);
+CREATE TABLE rls_docs(id uuid primary key, owner_id uuid);
+ALTER TABLE rls_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs USING (owner_id = current_user);
+CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let mut policies = Vec::new();
+        for policy in db.policies() {
+            let classified = classified_from_policy(
+                policy.clone(),
+                Some(PatternClass::P3DirectOwnership {
+                    column: "owner_id".to_string(),
+                }),
+                None,
+            );
+            if classified.name() == "docs_select" {
+                let mut missing_table = classified.clone();
+                missing_table.policy.table_name =
+                    sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                        sqlparser::ast::Ident::new("ghost_docs"),
+                    )]);
+                policies.push(missing_table);
+            }
+            policies.push(classified);
+        }
+
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&policies, &db, &registry);
+        assert!(
+            plan.types.iter().any(|t| t.type_name == "rls_docs"),
+            "RLS-enabled table should be translated"
+        );
+        assert!(
+            !plan.types.iter().any(|t| t.type_name == "docs"),
+            "non-RLS table should be skipped"
+        );
+    }
+
+    #[test]
+    fn build_schema_plan_adds_no_translatable_relations_todo() {
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = current_user);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = classified_from_policy(policy, None, None);
+        let registry = FunctionRegistry::new();
+
+        let plan = build_schema_plan(&[classified], &db, &registry);
+        assert!(plan
+            .todos
+            .iter()
+            .any(|t| t.message.contains("No translatable relations generated")));
+    }
+
+    #[test]
+    fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_update ON docs FOR UPDATE USING (owner_id = current_user);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = classified_from_policy(
+            policy,
+            Some(PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            }),
+            None,
+        );
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&[classified], &db, &registry);
+
+        let docs = plan
+            .types
+            .iter()
+            .find(|t| t.type_name == "docs")
+            .expect("docs type should exist");
+        assert!(docs.computed_relations.contains_key("can_update"));
+    }
+
+    #[test]
+    fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let role_levels = HashMap::from([
+            ("beta".to_string(), 1),
+            ("alpha".to_string(), 1),
+            ("admin".to_string(), 2),
+        ]);
+
+        let sorted =
+            ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+        assert_eq!(
+            sorted,
+            vec![
+                ("alpha".to_string(), 1),
+                ("beta".to_string(), 1),
+                ("admin".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_names() {
+        let registry = role_registry(r#"{"viewer": 1}"#, false);
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let mut todos = Vec::new();
+
+        let p1_unreachable = PatternClass::P1NumericThreshold {
+            function_name: "role_level".to_string(),
+            operator: ThresholdOperator::Gt,
+            threshold: 10,
+            command: PolicyCommand::Select,
+        };
+        let p2_mixed_case = PatternClass::P2RoleNameInList {
+            function_name: "role_level".to_string(),
+            role_names: vec!["VIEWER".to_string()],
+        };
+
+        let p1_expr = pattern_to_expr(
+            &p1_unreachable,
+            "p1_unreachable",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p2_expr = pattern_to_expr(
+            &p2_mixed_case,
+            "p2_case",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+
+        assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert!(
+            matches!(p2_expr, UsersetExpr::Union(_) | UsersetExpr::Computed(_)),
+            "case-insensitive role name matching should produce a translatable expression"
+        );
+    }
+
+    #[test]
+    fn role_registry_helper_covers_team_branch() {
+        let registry = role_registry(r#"{"viewer": 1, "editor": 2}"#, true);
+        assert!(matches!(
+            registry.get("role_level"),
+            Some(FunctionSemantic::RoleThreshold {
+                team_membership_table: Some(_),
+                team_membership_user_col: Some(_),
+                team_membership_team_col: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn action_target_helpers_cover_empty_arms() {
+        assert!(using_targets(&PolicyCommand::Insert).is_empty());
+        assert!(with_check_targets(&PolicyCommand::Select).is_empty());
+        assert!(with_check_targets(&PolicyCommand::Delete).is_empty());
     }
 }

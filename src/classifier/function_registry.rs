@@ -113,4 +113,31 @@ CREATE FUNCTION opaque_lookup() RETURNS TEXT
             "non-recognized function should not be registered"
         );
     }
+
+    #[test]
+    fn default_registry_is_empty() {
+        let registry = FunctionRegistry::default();
+        assert!(registry.functions.is_empty());
+    }
+
+    #[test]
+    fn enrich_from_schema_skips_functions_without_body() {
+        let sql = r"
+CREATE FUNCTION declared_only() RETURNS UUID LANGUAGE SQL;
+
+CREATE FUNCTION current_tenant_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(
+            registry.get("declared_only").is_none(),
+            "functions without bodies should be ignored"
+        );
+        assert!(registry.is_current_user_accessor("current_tenant_id"));
+    }
 }

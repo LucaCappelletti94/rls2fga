@@ -274,11 +274,12 @@ mod tests {
             },
         ]);
 
-        match expr_to_userset(&expr) {
-            Userset::Intersection { intersection } => {
-                assert_eq!(intersection.child.len(), 2);
-            }
-            other => panic!("expected intersection userset, got {other:?}"),
-        }
+        let userset = expr_to_userset(&expr);
+        assert!(matches!(
+            userset,
+            Userset::Intersection {
+                intersection: IntersectionDef { child }
+            } if child.len() == 2
+        ));
     }
 }

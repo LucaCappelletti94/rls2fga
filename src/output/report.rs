@@ -250,6 +250,17 @@ CREATE POLICY {name} ON docs USING (TRUE);
     }
 
     #[test]
+    fn format_pattern_renders_gt_threshold_operator() {
+        let pattern = PatternClass::P1NumericThreshold {
+            function_name: "role_level".to_string(),
+            operator: ThresholdOperator::Gt,
+            threshold: 5,
+            command: PolicyCommand::Delete,
+        };
+        assert_eq!(format_pattern(&pattern), "P1 (threshold > 5)");
+    }
+
+    #[test]
     fn format_notes_handles_review_and_unknown_paths() {
         let p3 = ClassifiedExpr {
             pattern: PatternClass::P3DirectOwnership {

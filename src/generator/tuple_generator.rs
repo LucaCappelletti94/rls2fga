@@ -292,8 +292,12 @@ fn find_owner_column(table: &str, db: &ParserDB) -> String {
             let ref_table = fk.referenced_table(db);
             let ref_name = ref_table.table_name();
             if ref_name == "users" || ref_name == "owners" {
-                if let Some(col) = fk.host_columns(db).next() {
-                    return col.column_name().to_string();
+                if let Some(col_name) = fk
+                    .host_columns(db)
+                    .next()
+                    .map(|col| col.column_name().to_string())
+                {
+                    return col_name;
                 }
             }
         }
@@ -311,15 +315,12 @@ fn pick_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> (String, 
         .map(|c| c.column_name().to_string())
         .collect();
 
-    if cols.is_empty() {
-        return ("id".to_string(), "id".to_string());
-    }
-
-    let object_col = if cols.iter().any(|c| c == "id") {
-        "id".to_string()
-    } else {
-        cols[0].clone()
-    };
+    let object_col = cols
+        .iter()
+        .find(|c| c.as_str() == "id")
+        .cloned()
+        .or_else(|| cols.first().cloned())
+        .unwrap_or_else(|| "id".to_string());
 
     let parent_ref_col = if cols.iter().any(|c| c == fk_column) {
         fk_column.to_string()
@@ -466,15 +467,54 @@ CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
         let db = parse_schema(
             r"
 CREATE TABLE users(id uuid primary key);
+CREATE TABLE owners(id uuid primary key);
 CREATE TABLE docs(id uuid primary key, owner_id uuid);
 CREATE TABLE notes(id uuid primary key, owner_ref uuid references users(id));
+CREATE TABLE posts(id uuid primary key, owner_ref uuid references owners(id));
 ",
         )
         .expect("schema should parse");
 
         assert_eq!(find_owner_column("docs", &db), "owner_id");
         assert_eq!(find_owner_column("notes", &db), "owner_ref");
+        assert_eq!(find_owner_column("posts", &db), "owner_ref");
         assert_eq!(find_owner_column("missing_table", &db), "owner_id");
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_skips_team_memberships_when_columns_missing() {
+        let db = db_with_resources();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 1},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level",
+    "team_membership_table": "team_memberships"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+        generate_role_threshold_tuples(
+            "role_level",
+            "docs",
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(!queries.iter().any(|q| q.comment == "-- Team memberships"));
     }
 
     #[test]

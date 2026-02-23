@@ -1,4 +1,4 @@
-//! Translate `PostgreSQL` Row-Level Security policies into `OpenFGA` authorization models.
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
 /// RLS expression classification: pattern matching, function registry, and confidence scoring.

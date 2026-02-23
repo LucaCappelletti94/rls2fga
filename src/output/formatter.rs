@@ -82,4 +82,26 @@ mod tests {
         assert!(err.contains("Failed to write"));
         assert!(err.contains("nested/output.fga"));
     }
+
+    #[test]
+    fn write_output_writes_all_artifacts_on_success() {
+        let dir = unique_path("rls2fga_formatter_ok");
+        let tuples = vec![TupleQuery {
+            comment: "-- tuple".to_string(),
+            sql: "SELECT 1;".to_string(),
+        }];
+
+        write_output(&dir, "docs", &empty_model(), &tuples, &[])
+            .expect("write_output should succeed");
+
+        let fga = std::fs::read_to_string(dir.join("docs.fga")).expect("fga file should exist");
+        let tuple_sql =
+            std::fs::read_to_string(dir.join("docs_tuples.sql")).expect("tuple file should exist");
+        let report =
+            std::fs::read_to_string(dir.join("docs_report.md")).expect("report should exist");
+
+        assert_eq!(fga, "model");
+        assert!(tuple_sql.contains("SELECT 1;"));
+        assert!(report.contains("# rls2fga Translation Report"));
+    }
 }
