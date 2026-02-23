@@ -1,8 +1,13 @@
 #![cfg(feature = "db")]
 
 use std::collections::BTreeSet;
+use std::thread;
 use std::time::Duration;
 
+use diesel::connection::SimpleConnection;
+use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use diesel::sql_types::{Integer, Text};
 use reqwest::Client;
 use serde_json::{json, Value};
 use testcontainers::{
@@ -10,7 +15,6 @@ use testcontainers::{
     runners::AsyncRunner,
     GenericImage, ImageExt,
 };
-use tokio_postgres::{Client as PgClient, NoTls};
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
@@ -42,6 +46,22 @@ struct TupleKey {
     subject: String,
 }
 
+#[derive(QueryableByName)]
+struct TupleRow {
+    #[diesel(sql_type = Text)]
+    object: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    subject: String,
+}
+
+#[derive(QueryableByName)]
+struct RoleRow {
+    #[diesel(sql_type = Integer)]
+    role: i32,
+}
+
 fn load_emi() -> (
     Vec<ClassifiedPolicy>,
     sql_parser::ParserDB,
@@ -60,21 +80,14 @@ fn load_emi() -> (
     (classified, db, registry, sql)
 }
 
-async fn connect_postgres_with_retry(database_url: &str) -> PgClient {
+fn connect_postgres_with_retry(database_url: &str) -> PgConnection {
     let mut last_error = String::new();
     for _ in 0..30 {
-        match tokio_postgres::connect(database_url, NoTls).await {
-            Ok((client, connection)) => {
-                tokio::spawn(async move {
-                    if let Err(error) = connection.await {
-                        eprintln!("PostgreSQL connection error: {error}");
-                    }
-                });
-                return client;
-            }
+        match PgConnection::establish(database_url) {
+            Ok(conn) => return conn,
             Err(error) => {
                 last_error = error.to_string();
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                thread::sleep(Duration::from_millis(200));
             }
         }
     }
@@ -82,7 +95,7 @@ async fn connect_postgres_with_retry(database_url: &str) -> PgClient {
     panic!("Failed to connect to PostgreSQL after retries: {last_error}");
 }
 
-async fn seed_emi_data(pool: &PgClient) {
+fn seed_emi_data(conn: &mut PgConnection) {
     let seed_sql = format!(
         "
 INSERT INTO users (id) VALUES
@@ -111,31 +124,29 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
 "
     );
 
-    pool.batch_execute(&seed_sql)
-        .await
+    conn.batch_execute(&seed_sql)
         .expect("Failed to seed EMI fixture data");
 }
 
-async fn execute_tuple_queries(pool: &PgClient, tuple_queries: &[TupleQuery]) -> Vec<TupleKey> {
+fn execute_tuple_queries(conn: &mut PgConnection, tuple_queries: &[TupleQuery]) -> Vec<TupleKey> {
     let mut keys = BTreeSet::new();
 
     for query in tuple_queries {
-        let rows = pool.query(&query.sql, &[]).await.unwrap_or_else(|error| {
-            panic!(
-                "Tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
-                query.comment, query.sql
-            )
-        });
+        let rows: Vec<TupleRow> =
+            diesel::sql_query(&query.sql)
+                .load(conn)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
+                        query.comment, query.sql
+                    )
+                });
 
         for row in rows {
-            let object: String = row.get("object");
-            let relation: String = row.get("relation");
-            let subject: String = row.get("subject");
-
             keys.insert(TupleKey {
-                object,
-                relation,
-                subject,
+                object: row.object,
+                relation: row.relation,
+                subject: row.subject,
             });
         }
     }
@@ -253,16 +264,18 @@ async fn check_openfga(
     body["allowed"].as_bool().expect("missing check result")
 }
 
-async fn postgres_role_for_user_and_doc(pool: &PgClient, user_id: &str, doc_id: &str) -> i32 {
-    pool.query_one(
-        "SELECT get_owner_role($1::uuid, owner_id)
+fn postgres_role_for_user_and_doc(conn: &mut PgConnection, user_id: &str, doc_id: &str) -> i32 {
+    let row: RoleRow = diesel::sql_query(
+        "SELECT get_owner_role($1::text::uuid, owner_id)
+             AS role
          FROM ownables
-         WHERE id = $2::uuid",
-        &[&user_id, &doc_id],
+         WHERE id = $2::text::uuid",
     )
-    .await
-    .unwrap()
-    .get(0)
+    .bind::<Text, _>(user_id)
+    .bind::<Text, _>(doc_id)
+    .get_result(conn)
+    .unwrap();
+    row.role
 }
 
 #[tokio::test]
@@ -282,17 +295,16 @@ async fn translated_schema_parity_postgres18_and_openfga() {
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let pool = connect_postgres_with_retry(&pg_url).await;
+    let mut conn = connect_postgres_with_retry(&pg_url);
 
     let (classified, db, registry, schema_sql) = load_emi();
-    pool.batch_execute(&schema_sql)
-        .await
+    conn.batch_execute(&schema_sql)
         .expect("Failed to apply EMI schema on PostgreSQL 18");
-    seed_emi_data(&pool).await;
+    seed_emi_data(&mut conn);
 
     let model = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::B);
     let tuple_queries = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
-    let tuple_keys = execute_tuple_queries(&pool, &tuple_queries).await;
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),
         "Expected generated tuple SQL to produce at least one tuple"
@@ -327,7 +339,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
     let mut failures = Vec::new();
     for user_id in users {
         for doc_id in docs {
-            let role = postgres_role_for_user_and_doc(&pool, user_id, doc_id).await;
+            let role = postgres_role_for_user_and_doc(&mut conn, user_id, doc_id);
             let user = format!("user:{user_id}");
             let object = format!("ownables:{doc_id}");
 

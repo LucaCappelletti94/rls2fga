@@ -7,7 +7,7 @@ description = "Translate PostgreSQL RLS policies into OpenFGA authorization mode
 [features]
 default = []
 agent = ["reqwest", "tokio"]
-db = ["tokio-postgres"]
+db = ["diesel"]
 
 [dependencies]
 sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main", features = ["serde"] }
@@ -20,7 +20,7 @@ thiserror = "2"
 # Optional
 reqwest = { version = "0.12", features = ["json"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
-tokio-postgres = { version = "0.7", optional = true }
+diesel = { version = "2", features = ["postgres"], optional = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
