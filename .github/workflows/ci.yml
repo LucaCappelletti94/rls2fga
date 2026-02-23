@@ -41,8 +41,18 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run quality checks
+      - name: Run quality checks (non-Windows)
+        if: runner.os != 'Windows'
         run: cargo run --locked --bin xtask -- ci --locked
+
+      - name: Run quality checks (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --features db --locked --lib --tests
+          cargo test --all-features --locked --no-run --lib --tests
+          cargo test --doc --all-features --locked
 
   docker-integration:
     name: Docker integration (OpenFGA + PostgreSQL 18)
