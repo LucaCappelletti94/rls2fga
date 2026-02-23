@@ -71,18 +71,24 @@ fn run_precommit(locked: bool) -> Result<(), String> {
             "warnings",
         ],
     )?;
-    run_cargo(&["test", "--features", "db"], locked)?;
+    run_cargo(&["test", "--features", "db", "--lib", "--tests"], locked)?;
 
     Ok(())
 }
 
 fn run_docker_tests(locked: bool) -> Result<(), String> {
-    run_cargo(&["test", "--features", "db", "--", "--ignored"], locked)
+    run_cargo(
+        &["test", "--features", "db", "--tests", "--", "--ignored"],
+        locked,
+    )
 }
 
 fn run_ci(locked: bool, with_docker: bool) -> Result<(), String> {
     run_precommit(locked)?;
-    run_cargo(&["test", "--all-features", "--no-run"], locked)?;
+    run_cargo(
+        &["test", "--all-features", "--no-run", "--lib", "--tests"],
+        locked,
+    )?;
     run_cargo(&["test", "--doc", "--all-features"], locked)?;
 
     if with_docker {
