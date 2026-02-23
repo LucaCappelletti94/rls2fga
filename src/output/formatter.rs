@@ -1,9 +1,8 @@
-use std::fmt::Write;
 use std::path::Path;
 
 use crate::classifier::patterns::ClassifiedPolicy;
 use crate::generator::model_generator::GeneratedModel;
-use crate::generator::tuple_generator::TupleQuery;
+use crate::generator::tuple_generator::{self, TupleQuery};
 use crate::output::report;
 
 /// Write all output files to the specified directory.
@@ -24,12 +23,7 @@ pub fn write_output(
 
     // Write _tuples.sql
     let tuples_path = output_dir.join(format!("{name}_tuples.sql"));
-    let mut tuples_content = String::new();
-    for query in tuples {
-        writeln!(tuples_content, "{}", query.comment).unwrap();
-        writeln!(tuples_content, "{}", query.sql).unwrap();
-        writeln!(tuples_content).unwrap();
-    }
+    let tuples_content = tuple_generator::format_tuples(tuples);
     std::fs::write(&tuples_path, &tuples_content)
         .map_err(|e| format!("Failed to write {}: {e}", tuples_path.display()))?;
 
