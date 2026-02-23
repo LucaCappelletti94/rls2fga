@@ -5,7 +5,7 @@ use std::process;
 
 use clap::Parser;
 use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator;
 use rls2fga::generator::tuple_generator;
@@ -126,9 +126,12 @@ fn main() {
             }
         }
     }
+    // Infer semantics for in-schema functions when possible (without overriding explicit registry).
+    registry.enrich_from_schema(&db);
 
     // Stage 4: Classify policies
     let classified = policy_classifier::classify_policies(&db, &registry);
+    let output_classified = filter_policies_for_output(&classified, cli.min_confidence);
 
     if cli.verbose {
         for cp in &classified {
@@ -144,10 +147,11 @@ fn main() {
     }
 
     // Stage 5: Generate model
-    let model = model_generator::generate_model(&classified, &db, &registry, &cli.min_confidence);
+    let model =
+        model_generator::generate_model(&output_classified, &db, &registry, &cli.min_confidence);
 
     // Stage 6: Generate tuple queries
-    let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+    let tuples = tuple_generator::generate_tuple_queries(&output_classified, &db, &registry);
 
     // Stage 7: Write output
     // Derive name from first input file
@@ -157,7 +161,9 @@ fn main() {
         .and_then(|s| s.to_str())
         .unwrap_or("output");
 
-    if let Err(e) = formatter::write_output(&cli.output_dir, name, &model, &tuples, &classified) {
+    if let Err(e) =
+        formatter::write_output(&cli.output_dir, name, &model, &tuples, &output_classified)
+    {
         eprintln!("Error writing output: {e}");
         process::exit(2);
     }
@@ -178,4 +184,34 @@ fn main() {
     if has_below_min {
         process::exit(1);
     }
+}
+
+fn filter_policies_for_output(
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) -> Vec<ClassifiedPolicy> {
+    policies
+        .iter()
+        .filter_map(|cp| {
+            let mut filtered = cp.clone();
+            filtered.using_classification = cp
+                .using_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+            filtered.with_check_classification = cp
+                .with_check_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+
+            if filtered.using_classification.is_some()
+                || filtered.with_check_classification.is_some()
+            {
+                Some(filtered)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
