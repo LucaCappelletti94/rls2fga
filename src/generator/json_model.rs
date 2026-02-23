@@ -259,3 +259,26 @@ fn expr_to_userset(expr: &UsersetExpr) -> Userset {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expr_to_userset_supports_intersection_nodes() {
+        let expr = UsersetExpr::Intersection(vec![
+            UsersetExpr::Computed("owner".to_string()),
+            UsersetExpr::TupleToUserset {
+                tupleset: "team".to_string(),
+                computed: "member".to_string(),
+            },
+        ]);
+
+        match expr_to_userset(&expr) {
+            Userset::Intersection { intersection } => {
+                assert_eq!(intersection.child.len(), 2);
+            }
+            other => panic!("expected intersection userset, got {other:?}"),
+        }
+    }
+}

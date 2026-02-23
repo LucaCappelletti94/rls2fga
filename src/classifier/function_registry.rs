@@ -76,3 +76,41 @@ impl Default for FunctionRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::parse_schema;
+
+    #[test]
+    fn load_from_json_reports_invalid_payload() {
+        let mut registry = FunctionRegistry::new();
+        let err = registry
+            .load_from_json("{not-valid-json")
+            .expect_err("invalid json should fail");
+        assert!(err.contains("Invalid function registry JSON"));
+    }
+
+    #[test]
+    fn enrich_from_schema_infers_known_semantics_only() {
+        let sql = r"
+CREATE FUNCTION current_tenant_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION opaque_lookup() RETURNS TEXT
+  LANGUAGE sql STABLE
+  AS 'SELECT ''noop''::text';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(registry.is_current_user_accessor("current_tenant_id"));
+        assert!(
+            registry.get("opaque_lookup").is_none(),
+            "non-recognized function should not be registered"
+        );
+    }
+}

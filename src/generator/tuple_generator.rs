@@ -329,3 +329,292 @@ fn pick_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> (String, 
 
     (object_col, parent_ref_col)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+
+    fn registry_with_role_threshold(team_support: bool) -> FunctionRegistry {
+        let mut registry = FunctionRegistry::new();
+        let team_fields = if team_support {
+            r#",
+    "team_membership_table": "team_memberships",
+    "team_membership_user_col": "user_id",
+    "team_membership_team_col": "team_id""#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{
+  "role_level": {{
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {{"viewer": 1, "editor": 2}},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"{team_fields}
+  }}
+}}"#
+        );
+        registry
+            .load_from_json(&json)
+            .expect("registry json should parse");
+        registry
+    }
+
+    fn db_with_resources() -> ParserDB {
+        parse_schema(
+            r"
+CREATE TABLE users(id uuid primary key);
+CREATE TABLE teams(id uuid primary key);
+CREATE TABLE docs(id uuid primary key, owner_id uuid references users(id), project_id uuid);
+CREATE TABLE doc_members(doc_id uuid, user_id uuid, role text);
+CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
+CREATE TABLE team_memberships(user_id uuid, team_id uuid);
+CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
+",
+        )
+        .expect("schema should parse")
+    }
+
+    #[test]
+    fn format_tuples_trims_trailing_newlines() {
+        let tuples = vec![
+            TupleQuery {
+                comment: "-- one".to_string(),
+                sql: "SELECT 1;".to_string(),
+            },
+            TupleQuery {
+                comment: "-- two".to_string(),
+                sql: "SELECT 2;".to_string(),
+            },
+        ];
+        let formatted = format_tuples(&tuples);
+        assert!(formatted.ends_with("SELECT 2;"));
+        assert!(!formatted.ends_with('\n'));
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_supports_team_membership_and_dedup() {
+        let db = db_with_resources();
+        let registry = registry_with_role_threshold(true);
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+
+        generate_role_threshold_tuples(
+            "role_level",
+            "docs",
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+        generate_role_threshold_tuples(
+            "role_level",
+            "docs",
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(queries.iter().any(|q| q
+            .comment
+            .contains("User ownership (owner_id references users)")));
+        assert!(queries.iter().any(|q| q
+            .comment
+            .contains("Team ownership (owner_id references teams)")));
+        assert!(queries.iter().any(|q| q.comment == "-- Team memberships"));
+        assert!(queries
+            .iter()
+            .any(|q| q.comment.contains("Explicit grants expanded to docs rows")));
+
+        let team_membership_count = queries
+            .iter()
+            .filter(|q| q.comment == "-- Team memberships")
+            .count();
+        assert_eq!(
+            team_membership_count, 1,
+            "team membership tuples should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_ignores_unknown_function_semantics() {
+        let db = db_with_resources();
+        let registry = FunctionRegistry::new();
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+
+        generate_role_threshold_tuples(
+            "unknown_role_fn",
+            "docs",
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(queries.is_empty());
+    }
+
+    #[test]
+    fn find_owner_column_prefers_named_owner_then_fk_then_default() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id uuid primary key);
+CREATE TABLE docs(id uuid primary key, owner_id uuid);
+CREATE TABLE notes(id uuid primary key, owner_ref uuid references users(id));
+",
+        )
+        .expect("schema should parse");
+
+        assert_eq!(find_owner_column("docs", &db), "owner_id");
+        assert_eq!(find_owner_column("notes", &db), "owner_ref");
+        assert_eq!(find_owner_column("missing_table", &db), "owner_id");
+    }
+
+    #[test]
+    fn pick_bridge_columns_covers_fallback_paths() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id uuid primary key, project_id uuid);
+CREATE TABLE links(resource_uuid uuid, project_uuid uuid);
+",
+        )
+        .expect("schema should parse");
+
+        assert_eq!(
+            pick_bridge_columns("missing", "project_id", &db),
+            ("id".to_string(), "id".to_string())
+        );
+        assert_eq!(
+            pick_bridge_columns("docs", "project_id", &db),
+            ("id".to_string(), "project_id".to_string())
+        );
+        assert_eq!(
+            pick_bridge_columns("links", "project_id", &db),
+            ("resource_uuid".to_string(), "resource_uuid".to_string())
+        );
+    }
+
+    #[test]
+    fn generate_tuples_for_pattern_handles_p4_bridge_p7_p8_and_p10() {
+        let db = db_with_resources();
+        let registry = registry_with_role_threshold(false);
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+
+        let p4 = PatternClass::P4ExistsMembership {
+            join_table: "doc_members".to_string(),
+            fk_column: "project_id".to_string(),
+            user_column: "user_id".to_string(),
+            extra_predicate_sql: Some("doc_members.role = 'admin'".to_string()),
+        };
+        generate_tuples_for_pattern(&p4, "docs", &db, &registry, &mut queries, &mut generated);
+        generate_tuples_for_pattern(&p4, "docs", &db, &registry, &mut queries, &mut generated);
+
+        let p7 = PatternClass::P7AbacAnd {
+            relationship_part: Box::new(ClassifiedExpr {
+                pattern: PatternClass::P3DirectOwnership {
+                    column: "owner_id".to_string(),
+                },
+                confidence: ConfidenceLevel::A,
+            }),
+            attribute_part: "status".to_string(),
+        };
+        generate_tuples_for_pattern(&p7, "docs", &db, &registry, &mut queries, &mut generated);
+
+        let composite = PatternClass::P8Composite {
+            op: BoolOp::Or,
+            parts: vec![
+                ClassifiedExpr {
+                    pattern: PatternClass::P6BooleanFlag {
+                        column: "is_public".to_string(),
+                    },
+                    confidence: ConfidenceLevel::A,
+                },
+                ClassifiedExpr {
+                    pattern: PatternClass::P10ConstantBool { value: true },
+                    confidence: ConfidenceLevel::A,
+                },
+                ClassifiedExpr {
+                    pattern: PatternClass::P10ConstantBool { value: false },
+                    confidence: ConfidenceLevel::A,
+                },
+            ],
+        };
+        generate_tuples_for_pattern(
+            &composite,
+            "docs",
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(queries
+            .iter()
+            .any(|q| q.comment.contains("-- project membership from doc_members")));
+        assert!(queries
+            .iter()
+            .any(|q| q.comment.contains("bridge for tuple-to-userset")));
+        assert!(queries.iter().any(|q| q
+            .comment
+            .contains("User ownership (owner_id references users)")));
+        assert!(queries
+            .iter()
+            .any(|q| q.comment.contains("Constant TRUE policy")));
+
+        let p4_membership_count = queries
+            .iter()
+            .filter(|q| q.comment.contains("-- project membership from doc_members"))
+            .count();
+        assert_eq!(
+            p4_membership_count, 1,
+            "P4 membership tuples should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn generate_tuple_queries_reads_using_and_with_check() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id uuid primary key, owner_id uuid);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_update ON docs FOR UPDATE
+  USING (owner_id = current_user)
+  WITH CHECK (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = ClassifiedPolicy {
+            policy,
+            using_classification: Some(ClassifiedExpr {
+                pattern: PatternClass::P3DirectOwnership {
+                    column: "owner_id".to_string(),
+                },
+                confidence: ConfidenceLevel::A,
+            }),
+            with_check_classification: Some(ClassifiedExpr {
+                pattern: PatternClass::P6BooleanFlag {
+                    column: "is_public".to_string(),
+                },
+                confidence: ConfidenceLevel::A,
+            }),
+        };
+
+        let queries = generate_tuple_queries(&[classified], &db, &FunctionRegistry::new());
+        assert!(queries.iter().any(|q| q
+            .comment
+            .contains("User ownership (owner_id references users)")));
+        assert!(queries
+            .iter()
+            .any(|q| q.comment.contains("Public access flag (is_public)")));
+    }
+}

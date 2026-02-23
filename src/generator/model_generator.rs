@@ -841,3 +841,364 @@ fn expr_to_dsl(expr: &UsersetExpr, parent_precedence: u8) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+
+    fn role_registry(role_levels: &str, include_team: bool) -> FunctionRegistry {
+        let mut registry = FunctionRegistry::new();
+        let team_fields = if include_team {
+            r#",
+    "team_membership_table": "team_memberships",
+    "team_membership_user_col": "user_id",
+    "team_membership_team_col": "team_id""#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{
+  "role_level": {{
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {role_levels},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"{team_fields}
+  }}
+}}"#
+        );
+        registry
+            .load_from_json(&json)
+            .expect("registry json should parse");
+        registry
+    }
+
+    fn docs_db_with_policy(policy_sql: &str) -> ParserDB {
+        let sql = format!(
+            "
+CREATE TABLE docs(id uuid primary key, owner_id uuid, status text);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+{policy_sql}
+"
+        );
+        parse_schema(&sql).expect("schema should parse")
+    }
+
+    fn classified_from_policy(
+        policy: sqlparser::ast::CreatePolicy,
+        using: Option<PatternClass>,
+        with_check: Option<PatternClass>,
+    ) -> ClassifiedPolicy {
+        ClassifiedPolicy {
+            policy,
+            using_classification: using.map(|pattern| ClassifiedExpr {
+                pattern,
+                confidence: ConfidenceLevel::A,
+            }),
+            with_check_classification: with_check.map(|pattern| ClassifiedExpr {
+                pattern,
+                confidence: ConfidenceLevel::A,
+            }),
+        }
+    }
+
+    #[test]
+    fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
+        let mut plan = TypePlan::new("docs");
+        let bucket = ModeBuckets {
+            permissive: Vec::new(),
+            restrictive: vec![UsersetExpr::Computed("owner".to_string())],
+        };
+
+        let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
+        assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+        assert!(
+            plan.direct_relations.contains_key("no_access"),
+            "restrictive-only rules should synthesize no_access"
+        );
+    }
+
+    #[test]
+    fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
+        let empty_registry = FunctionRegistry::new();
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let mut todos = Vec::new();
+
+        let p1 = PatternClass::P1NumericThreshold {
+            function_name: "missing_fn".to_string(),
+            operator: ThresholdOperator::Gte,
+            threshold: 2,
+            command: PolicyCommand::Select,
+        };
+        let p2 = PatternClass::P2RoleNameInList {
+            function_name: "missing_fn".to_string(),
+            role_names: vec!["viewer".to_string()],
+        };
+
+        let p1_expr = pattern_to_expr(
+            &p1,
+            "p1",
+            &mut table_plan,
+            &mut all_types,
+            &empty_registry,
+            &mut todos,
+        );
+        let p2_expr = pattern_to_expr(
+            &p2,
+            "p2",
+            &mut table_plan,
+            &mut all_types,
+            &empty_registry,
+            &mut todos,
+        );
+
+        assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(p2_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(todos.len(), 2);
+        assert!(todos[0].message.contains("missing semantic metadata"));
+        assert!(todos[1].message.contains("missing semantic metadata"));
+    }
+
+    #[test]
+    fn pattern_to_expr_handles_empty_role_selection_paths() {
+        let registry = role_registry("{}", false);
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let mut todos = Vec::new();
+
+        let p2_non_numeric = PatternClass::P2RoleNameInList {
+            function_name: "role_level".to_string(),
+            role_names: vec!["viewer".to_string()],
+        };
+        let p2_numeric_without_levels = PatternClass::P2RoleNameInList {
+            function_name: "role_level".to_string(),
+            role_names: vec!["5".to_string()],
+        };
+
+        let first = pattern_to_expr(
+            &p2_non_numeric,
+            "p2_non_numeric",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let second = pattern_to_expr(
+            &p2_numeric_without_levels,
+            "p2_numeric",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+
+        assert_eq!(first, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(second, UsersetExpr::Computed("no_access".to_string()));
+    }
+
+    #[test]
+    fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
+        let registry = FunctionRegistry::new();
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let mut todos = Vec::new();
+
+        let relationship = ClassifiedExpr {
+            pattern: PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            },
+            confidence: ConfidenceLevel::A,
+        };
+        let p7 = PatternClass::P7AbacAnd {
+            relationship_part: Box::new(relationship.clone()),
+            attribute_part: "status".to_string(),
+        };
+        let p8_or_empty = PatternClass::P8Composite {
+            op: BoolOp::Or,
+            parts: Vec::new(),
+        };
+        let p8_and_empty = PatternClass::P8Composite {
+            op: BoolOp::And,
+            parts: Vec::new(),
+        };
+        let p10_false = PatternClass::P10ConstantBool { value: false };
+        let p5 = PatternClass::P5ParentInheritance {
+            parent_table: "projects".to_string(),
+            fk_column: "project_id".to_string(),
+            inner_pattern: Box::new(relationship),
+        };
+        let unknown = PatternClass::Unknown {
+            sql_text: "mystery()".to_string(),
+            reason: "no recognizer".to_string(),
+        };
+
+        let p7_expr = pattern_to_expr(
+            &p7,
+            "p7",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p8_or_expr = pattern_to_expr(
+            &p8_or_empty,
+            "p8_or",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p8_and_expr = pattern_to_expr(
+            &p8_and_empty,
+            "p8_and",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p10_expr = pattern_to_expr(
+            &p10_false,
+            "p10",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p5_expr = pattern_to_expr(
+            &p5,
+            "p5",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let unknown_expr = pattern_to_expr(
+            &unknown,
+            "unknown",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+
+        assert_eq!(p7_expr, UsersetExpr::Computed("owner".to_string()));
+        assert_eq!(p8_or_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(p8_and_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(p10_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(p5_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert!(todos
+            .iter()
+            .any(|t| t.message.contains("still requires runtime enforcement")));
+        assert!(todos
+            .iter()
+            .any(|t| t.message.contains("could not be safely translated")));
+    }
+
+    #[test]
+    fn build_schema_plan_adds_todos_for_non_public_to_and_empty_translation() {
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (TRUE);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = classified_from_policy(
+            policy,
+            Some(PatternClass::Unknown {
+                sql_text: "TRUE".to_string(),
+                reason: "not supported".to_string(),
+            }),
+            None,
+        );
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&[classified], &db, &registry);
+
+        assert!(plan
+            .todos
+            .iter()
+            .any(|t| t.message.contains("Policy role scope TO")));
+        assert!(plan.todos.iter().any(|t| t
+            .message
+            .contains("Expression could not be safely translated")));
+    }
+
+    #[test]
+    fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_update ON docs FOR UPDATE WITH CHECK (owner_id = current_user);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = classified_from_policy(
+            policy,
+            None,
+            Some(PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            }),
+        );
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&[classified], &db, &registry);
+
+        let docs = plan
+            .types
+            .iter()
+            .find(|t| t.type_name == "docs")
+            .expect("docs type should exist");
+        assert!(
+            docs.computed_relations.contains_key("can_update"),
+            "update relation should be synthesized from WITH CHECK"
+        );
+    }
+
+    #[test]
+    fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclusion() {
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let role_levels = HashMap::from([
+            ("viewer".to_string(), 1),
+            ("editor".to_string(), 2),
+            ("admin".to_string(), 3),
+        ]);
+
+        let sorted =
+            ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, true);
+        assert!(table_plan.direct_relations.contains_key("owner_team"));
+        assert!(table_plan.direct_relations.contains_key("grant_admin"));
+        assert!(all_types.contains_key("team"));
+
+        let selected = BTreeSet::from([3]);
+        let expr =
+            exact_roles_expr(&sorted, &selected, true).expect("roles should produce expression");
+        match expr {
+            UsersetExpr::Union(children) => {
+                assert!(children
+                    .iter()
+                    .any(|c| matches!(c, UsersetExpr::Computed(name) if name == "owner_user")));
+                assert!(children.iter().any(|c| matches!(
+                    c,
+                    UsersetExpr::TupleToUserset { tupleset, computed }
+                        if tupleset == "owner_team" && computed == "member"
+                )));
+            }
+            other => panic!("expected union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expr_to_dsl_adds_parentheses_when_required() {
+        let union = UsersetExpr::Union(vec![
+            UsersetExpr::Computed("a".to_string()),
+            UsersetExpr::Computed("b".to_string()),
+        ]);
+        let intersection = UsersetExpr::Intersection(vec![
+            UsersetExpr::Computed("x".to_string()),
+            UsersetExpr::Computed("y".to_string()),
+        ]);
+
+        assert_eq!(expr_to_dsl(&union, 2), "(a or b)");
+        assert_eq!(expr_to_dsl(&intersection, 3), "(x and y)");
+    }
+}

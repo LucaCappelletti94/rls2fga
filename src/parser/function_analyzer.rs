@@ -84,3 +84,38 @@ impl FunctionSemantic {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FunctionSemantic;
+
+    #[test]
+    fn analyze_body_detects_current_user_accessor() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.current_user_id')::uuid",
+            "UUID",
+            "sql",
+        );
+
+        match semantic {
+            Some(FunctionSemantic::CurrentUserAccessor { returns }) => {
+                assert_eq!(returns, "uuid");
+            }
+            other => panic!("expected current user accessor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn analyze_body_does_not_auto_classify_role_threshold() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT grant_level FROM grants WHERE user_id = $1",
+            "integer",
+            "sql",
+        );
+
+        assert!(
+            semantic.is_none(),
+            "role-threshold-like SQL should remain unclassified without explicit metadata"
+        );
+    }
+}

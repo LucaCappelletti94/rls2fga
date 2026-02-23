@@ -556,3 +556,347 @@ fn is_user_related_column(col: &str) -> bool {
         || lower.contains("created_by")
         || lower.contains("author_id")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::parse_schema;
+    use sqlparser::ast::{SetExpr, Statement};
+    use sqlparser::dialect::PostgreSqlDialect;
+    use sqlparser::parser::Parser;
+
+    fn parse_expr(expr_sql: &str) -> Expr {
+        let sql = format!("SELECT 1 WHERE {expr_sql}");
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("query should parse");
+        let stmt = stmts.first().expect("expected one statement");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            panic!("expected select body");
+        };
+        select.selection.clone().expect("expected where expression")
+    }
+
+    fn parse_select(sql: &str) -> Select {
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).expect("query should parse");
+        let stmt = stmts.first().expect("expected one statement");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            panic!("expected select body");
+        };
+        select.as_ref().clone()
+    }
+
+    fn db_with_docs_and_members() -> ParserDB {
+        parse_schema(
+            r"
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID,
+  tenant_uuid UUID,
+  is_public BOOLEAN,
+  published BOOLEAN
+);
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+",
+        )
+        .expect("schema should parse")
+    }
+
+    fn registry_with_role_level() -> FunctionRegistry {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 1, "editor": 2},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"
+  },
+  "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+}"#,
+            )
+            .expect("registry json should parse");
+        registry
+    }
+
+    #[test]
+    fn recognize_p1_supports_gt_and_rejects_unknown_functions() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+        let expr = parse_expr("role_level(auth_current_user_id(), id) > 2");
+
+        let classified =
+            recognize_p1(&expr, &db, &registry, &PolicyCommand::Delete).expect("expected P1 match");
+        match classified.pattern {
+            PatternClass::P1NumericThreshold {
+                function_name,
+                operator,
+                threshold,
+                command,
+            } => {
+                assert_eq!(function_name, "role_level");
+                assert_eq!(operator, ThresholdOperator::Gt);
+                assert_eq!(threshold, 2);
+                assert_eq!(command, PolicyCommand::Delete);
+            }
+            other => panic!("expected P1 pattern, got {other:?}"),
+        }
+
+        let unknown = parse_expr("unknown_role(auth_current_user_id(), id) >= 1");
+        assert!(recognize_p1(&unknown, &db, &registry, &PolicyCommand::Select).is_none());
+    }
+
+    #[test]
+    fn recognize_p2_handles_negation_and_literal_filtering() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let negated = parse_expr("role_level(auth_current_user_id(), id) NOT IN ('viewer')");
+        assert!(recognize_p2(&negated, &db, &registry).is_none());
+
+        let non_threshold = parse_expr("unknown_role(auth_current_user_id(), id) IN ('viewer')");
+        assert!(recognize_p2(&non_threshold, &db, &registry).is_none());
+
+        let non_string_literals = parse_expr("role_level(auth_current_user_id(), id) IN (TRUE)");
+        assert!(recognize_p2(&non_string_literals, &db, &registry).is_none());
+
+        let ok = parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', 2)");
+        let classified = recognize_p2(&ok, &db, &registry).expect("expected P2 match");
+        match classified.pattern {
+            PatternClass::P2RoleNameInList {
+                function_name,
+                role_names,
+            } => {
+                assert_eq!(function_name, "role_level");
+                assert_eq!(role_names, vec!["viewer".to_string(), "2".to_string()]);
+            }
+            other => panic!("expected P2 pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recognize_p3_heuristics_cover_confidence_variants() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let a = parse_expr("owner_id = auth_current_user_id()");
+        let classified_a = recognize_p3(&a, &db, &registry).expect("expected heuristic match");
+        assert_eq!(classified_a.confidence, ConfidenceLevel::A);
+
+        let b = parse_expr("tenant_uuid = auth_current_user_id()");
+        let classified_b = recognize_p3(&b, &db, &registry).expect("expected heuristic match");
+        assert_eq!(classified_b.confidence, ConfidenceLevel::B);
+
+        let none = parse_expr("tenant_uuid = actor_id()");
+        assert!(
+            recognize_p3(&none, &db, &registry).is_none(),
+            "non-user-like function should not match ownership"
+        );
+
+        let not_eq = parse_expr("owner_id <> auth_current_user_id()");
+        assert!(recognize_p3(&not_eq, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p4_exists_supports_extra_predicates_and_negation() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let negated = parse_expr(
+            "NOT EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+             )",
+        );
+        assert!(recognize_p4(&negated, &db, &registry).is_none());
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = auth_current_user_id()
+                 AND doc_members.role = 'admin'
+             )",
+        );
+        let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+        match classified.pattern {
+            PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column,
+                user_column,
+                extra_predicate_sql,
+            } => {
+                assert_eq!(join_table, "doc_members");
+                assert_eq!(fk_column, "doc_id");
+                assert_eq!(user_column, "user_id");
+                assert!(extra_predicate_sql
+                    .as_deref()
+                    .is_some_and(|s| s.contains("doc_members.role = 'admin'")));
+            }
+            other => panic!("expected P4 pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let negated = parse_expr(
+            "doc_id NOT IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+             )",
+        );
+        assert!(recognize_p4_in_subquery(&negated, &db, &registry).is_none());
+
+        let in_subquery = parse_expr(
+            "doc_id IN (
+               SELECT dm.doc_id AS projected_doc
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+             )",
+        );
+        let classified =
+            recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected match");
+        match classified.pattern {
+            PatternClass::P4ExistsMembership {
+                fk_column,
+                user_column,
+                ..
+            } => {
+                assert_eq!(fk_column, "doc_id");
+                assert_eq!(user_column, "user_id");
+            }
+            other => panic!("expected P4 pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recognize_p10_and_p6_cover_non_matching_variants() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let p10_true = parse_expr("TRUE");
+        assert!(recognize_p10_constant_bool(&p10_true, &db, &registry).is_some());
+
+        let p10_not_bool = parse_expr("1");
+        assert!(recognize_p10_constant_bool(&p10_not_bool, &db, &registry).is_none());
+
+        let p6_false = parse_expr("FALSE = is_public");
+        assert!(recognize_p6(&p6_false, &db, &registry).is_none());
+
+        let p6_ident = parse_expr("published");
+        assert!(recognize_p6(&p6_ident, &db, &registry).is_some());
+
+        let p6_non_public = parse_expr("private_flag");
+        assert!(recognize_p6(&p6_non_public, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn extractor_helpers_and_attribute_detection_work_for_edge_cases() {
+        let fun = parse_expr("auth_current_user_id()");
+        assert_eq!(
+            extract_function_name(&fun).as_deref(),
+            Some("auth_current_user_id")
+        );
+
+        let id_expr = parse_expr("owner_id");
+        assert!(extract_function_name(&id_expr).is_none());
+
+        let qualified = parse_expr("docs.owner_id");
+        assert_eq!(extract_column_name(&qualified).as_deref(), Some("owner_id"));
+        assert_eq!(
+            extract_qualified_column(&qualified),
+            Some((Some("docs".to_string()), "owner_id".to_string()))
+        );
+
+        let simple = parse_expr("owner_id");
+        assert_eq!(
+            extract_qualified_column(&simple),
+            Some((None, "owner_id".to_string()))
+        );
+
+        let attr = parse_expr("priority >= 3");
+        assert_eq!(is_attribute_check(&attr).as_deref(), Some("priority"));
+
+        let user_attr = parse_expr("user_id = 'x'");
+        assert!(is_attribute_check(&user_attr).is_none());
+
+        let non_literal = parse_expr("status = other_status");
+        assert!(is_attribute_check(&non_literal).is_none());
+    }
+
+    #[test]
+    fn membership_column_extraction_falls_back_when_join_predicates_missing() {
+        let select = parse_select(
+            "SELECT dm.doc_id
+             FROM doc_members dm
+             WHERE dm.role = 'admin'",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "member_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
+            .expect("fallback should infer membership columns");
+        assert_eq!(extracted.0, "doc_id");
+        assert_eq!(extracted.1, "member_id");
+        assert!(extracted
+            .2
+            .as_deref()
+            .is_some_and(|s| s.contains("dm.role = 'admin'")));
+    }
+
+    #[test]
+    fn table_and_projection_extractors_cover_non_table_and_alias_paths() {
+        let table_select = parse_select("SELECT dm.doc_id AS projected FROM doc_members dm");
+        let from = &table_select.from[0];
+        let table_name = extract_table_name_from_table_factor(&from.relation)
+            .expect("table factor should resolve");
+        assert_eq!(table_name, "doc_members");
+        assert_eq!(
+            extract_projection_column(&table_select).as_deref(),
+            Some("doc_id")
+        );
+
+        let derived_select = parse_select("SELECT x.id FROM (SELECT 1 AS id) x WHERE x.id = 1");
+        let derived_from = &derived_select.from[0];
+        assert!(
+            extract_table_name_from_table_factor(&derived_from.relation).is_none(),
+            "derived table should not resolve to a table name"
+        );
+    }
+
+    #[test]
+    fn current_user_expr_detection_supports_cast_and_nested() {
+        let registry = registry_with_role_level();
+        let nested = parse_expr("(auth_current_user_id())");
+        let casted = parse_expr("CAST(auth_current_user_id() AS UUID)");
+        let other = parse_expr("owner_id");
+
+        assert!(is_current_user_expr(&nested, &registry));
+        assert!(is_current_user_expr(&casted, &registry));
+        assert!(!is_current_user_expr(&other, &registry));
+    }
+}

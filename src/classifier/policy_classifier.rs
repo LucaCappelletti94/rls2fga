@@ -209,3 +209,205 @@ fn describe_comparison_value(expr: &Expr) -> String {
     }
     "unknown".to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::parse_schema;
+    use sqlparser::ast::SetExpr;
+    use sqlparser::dialect::PostgreSqlDialect;
+    use sqlparser::parser::Parser;
+
+    fn parse_expr(expr_sql: &str) -> Expr {
+        let sql = format!("SELECT 1 WHERE {expr_sql}");
+        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("query should parse");
+        let stmt = stmts.first().expect("expected one statement");
+        let sqlparser::ast::Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            panic!("expected select set expression");
+        };
+        select.selection.clone().expect("expected where expression")
+    }
+
+    fn docs_db() -> ParserDB {
+        parse_schema(
+            r"
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID,
+  is_public BOOLEAN,
+  status TEXT,
+  priority INTEGER,
+  archived BOOLEAN
+);
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+",
+        )
+        .expect("schema should parse")
+    }
+
+    #[test]
+    fn classify_or_of_level_a_patterns_becomes_level_b_composite() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id = current_user OR is_public = TRUE");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        match classified.pattern {
+            PatternClass::P8Composite { op, parts } => {
+                assert_eq!(op, BoolOp::Or);
+                assert_eq!(parts.len(), 2);
+            }
+            other => panic!("expected OR composite, got {other:?}"),
+        }
+        assert_eq!(classified.confidence, ConfidenceLevel::B);
+    }
+
+    #[test]
+    fn classify_and_with_attribute_on_each_side_maps_to_p7() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        for expr_sql in [
+            "status = 'published' AND owner_id = current_user",
+            "owner_id = current_user AND status = 'published'",
+        ] {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            match classified.pattern {
+                PatternClass::P7AbacAnd { attribute_part, .. } => {
+                    assert_eq!(attribute_part, "status");
+                }
+                other => panic!("expected P7 ABAC pattern, got {other:?}"),
+            }
+            assert_eq!(classified.confidence, ConfidenceLevel::C);
+        }
+    }
+
+    #[test]
+    fn classify_and_relationships_without_attributes_remains_composite() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id = current_user AND TRUE");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        match classified.pattern {
+            PatternClass::P8Composite { op, parts } => {
+                assert_eq!(op, BoolOp::And);
+                assert_eq!(parts.len(), 2);
+            }
+            other => panic!("expected AND composite, got {other:?}"),
+        }
+        assert_eq!(classified.confidence, ConfidenceLevel::B);
+    }
+
+    #[test]
+    fn classify_nested_expression_is_unwrapped() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("(owner_id = current_user)");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        match classified.pattern {
+            PatternClass::P3DirectOwnership { column } => assert_eq!(column, "owner_id"),
+            other => panic!("expected ownership pattern, got {other:?}"),
+        }
+        assert_eq!(classified.confidence, ConfidenceLevel::A);
+    }
+
+    #[test]
+    fn classify_attribute_fallback_formats_literal_values() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let cases = [
+            ("status = 'draft'", "status", "'draft'"),
+            ("priority >= 3", "priority", "3"),
+            ("archived = FALSE", "archived", "false"),
+        ];
+
+        for (expr_sql, expected_col, expected_value) in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            match classified.pattern {
+                PatternClass::P9AttributeCondition {
+                    column,
+                    value_description,
+                } => {
+                    assert_eq!(column, expected_col);
+                    assert_eq!(value_description, expected_value);
+                }
+                other => panic!("expected P9 attribute pattern, got {other:?}"),
+            }
+            assert_eq!(classified.confidence, ConfidenceLevel::C);
+        }
+    }
+
+    #[test]
+    fn classify_unknown_function_has_specific_reason() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("mystery_auth(owner_id)");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        match classified.pattern {
+            PatternClass::Unknown { reason, .. } => {
+                assert!(reason.contains("Function 'mystery_auth' not in registry"));
+            }
+            other => panic!("expected Unknown pattern, got {other:?}"),
+        }
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_generic_unknown_expression_has_fallback_reason() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id IS NULL");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        match classified.pattern {
+            PatternClass::Unknown { reason, .. } => {
+                assert_eq!(reason, "Expression does not match any known pattern");
+            }
+            other => panic!("expected Unknown pattern, got {other:?}"),
+        }
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_policies_handles_using_and_with_check() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_update ON docs FOR UPDATE
+  USING (owner_id = current_user)
+  WITH CHECK (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let registry = FunctionRegistry::new();
+        let classified = classify_policies(&db, &registry);
+        assert_eq!(classified.len(), 1);
+
+        let policy = &classified[0];
+        assert!(policy.using_classification.is_some());
+        assert!(policy.with_check_classification.is_some());
+    }
+}

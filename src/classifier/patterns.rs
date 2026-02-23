@@ -256,3 +256,107 @@ impl ClassifiedPolicy {
             .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+    use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
+    use std::str::FromStr;
+
+    fn first_policy(sql: &str) -> sqlparser::ast::CreatePolicy {
+        let db = parse_schema(sql).expect("schema should parse");
+        let policy = db.policies().next().expect("expected one policy").clone();
+        policy
+    }
+
+    #[test]
+    fn policy_mode_and_command_format_and_conversion() {
+        assert_eq!(
+            PolicyMode::from(CreatePolicyType::Permissive),
+            PolicyMode::Permissive
+        );
+        assert_eq!(
+            PolicyMode::from(CreatePolicyType::Restrictive),
+            PolicyMode::Restrictive
+        );
+        assert_eq!(format!("{}", PolicyMode::Permissive), "PERMISSIVE");
+        assert_eq!(format!("{}", PolicyMode::Restrictive), "RESTRICTIVE");
+
+        assert_eq!(
+            PolicyCommand::from(CreatePolicyCommand::All),
+            PolicyCommand::All
+        );
+        assert_eq!(
+            PolicyCommand::from(CreatePolicyCommand::Select),
+            PolicyCommand::Select
+        );
+        assert_eq!(
+            PolicyCommand::from(CreatePolicyCommand::Insert),
+            PolicyCommand::Insert
+        );
+        assert_eq!(
+            PolicyCommand::from(CreatePolicyCommand::Update),
+            PolicyCommand::Update
+        );
+        assert_eq!(
+            PolicyCommand::from(CreatePolicyCommand::Delete),
+            PolicyCommand::Delete
+        );
+
+        assert_eq!(format!("{}", PolicyCommand::Select), "SELECT");
+        assert_eq!(format!("{}", PolicyCommand::Insert), "INSERT");
+        assert_eq!(format!("{}", PolicyCommand::Update), "UPDATE");
+        assert_eq!(format!("{}", PolicyCommand::Delete), "DELETE");
+        assert_eq!(format!("{}", PolicyCommand::All), "ALL");
+    }
+
+    #[test]
+    fn confidence_level_parsing_is_case_insensitive() {
+        assert_eq!(ConfidenceLevel::from_str("a"), Ok(ConfidenceLevel::A));
+        assert_eq!(ConfidenceLevel::from_str("B"), Ok(ConfidenceLevel::B));
+        assert_eq!(ConfidenceLevel::from_str("c"), Ok(ConfidenceLevel::C));
+        assert_eq!(ConfidenceLevel::from_str("D"), Ok(ConfidenceLevel::D));
+        assert_eq!(format!("{}", ConfidenceLevel::A), "A");
+        assert_eq!(format!("{}", ConfidenceLevel::B), "B");
+        assert_eq!(format!("{}", ConfidenceLevel::C), "C");
+        assert_eq!(format!("{}", ConfidenceLevel::D), "D");
+
+        let err = ConfidenceLevel::from_str("z").expect_err("invalid level should fail");
+        assert!(err.contains("Invalid confidence level: z"));
+    }
+
+    #[test]
+    fn classified_policy_defaults_and_explicit_values() {
+        let sql_default = r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_default ON docs USING (TRUE);
+";
+        let sql_explicit = r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
+";
+
+        let cp_default = ClassifiedPolicy {
+            policy: first_policy(sql_default),
+            using_classification: None,
+            with_check_classification: None,
+        };
+        assert_eq!(cp_default.name(), "p_default");
+        assert_eq!(cp_default.table_name(), "docs");
+        assert_eq!(cp_default.command(), PolicyCommand::All);
+        assert_eq!(cp_default.mode(), PolicyMode::Permissive);
+
+        let cp_explicit = ClassifiedPolicy {
+            policy: first_policy(sql_explicit),
+            using_classification: None,
+            with_check_classification: None,
+        };
+        assert_eq!(cp_explicit.name(), "p_explicit");
+        assert_eq!(cp_explicit.table_name(), "docs");
+        assert_eq!(cp_explicit.command(), PolicyCommand::Delete);
+        assert_eq!(cp_explicit.mode(), PolicyMode::Restrictive);
+    }
+}
