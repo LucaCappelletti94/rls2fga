@@ -256,3 +256,148 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        env::temp_dir().join(format!("{prefix}_{nanos}.txt"))
+    }
+
+    fn write_temp_message(prefix: &str, content: &str) -> std::path::PathBuf {
+        let path = unique_temp_path(prefix);
+        fs::write(&path, content).expect("should write temporary commit message file");
+        path
+    }
+
+    #[test]
+    fn cargo_args_with_locked_keeps_args_when_unlocked() {
+        let args = cargo_args_with_locked(&["test", "--features", "db"], false);
+        assert_eq!(args, vec!["test", "--features", "db"]);
+    }
+
+    #[test]
+    fn cargo_args_with_locked_inserts_before_double_dash() {
+        let args = cargo_args_with_locked(&["test", "--features", "db", "--", "--ignored"], true);
+        assert_eq!(args, vec!["test", "--features", "db", "--locked", "--", "--ignored"]);
+    }
+
+    #[test]
+    fn cargo_args_with_locked_appends_when_no_separator() {
+        let args = cargo_args_with_locked(&["test", "--all-features"], true);
+        assert_eq!(args, vec!["test", "--all-features", "--locked"]);
+    }
+
+    #[test]
+    fn parse_flags_accepts_known_flags_and_deduplicates() {
+        let rest = vec![
+            "--locked".to_string(),
+            "--locked".to_string(),
+            "--with-docker".to_string(),
+        ];
+        let flags = parse_flags(&rest, &["--locked", "--with-docker"])
+            .expect("known flags should parse");
+
+        assert_eq!(flags.len(), 2);
+        assert!(flags.contains("--locked"));
+        assert!(flags.contains("--with-docker"));
+    }
+
+    #[test]
+    fn parse_flags_rejects_unknown_flags() {
+        let rest = vec!["--unknown".to_string()];
+        let code =
+            parse_flags(&rest, &["--locked"]).expect_err("unknown flags should be rejected");
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn validate_commit_message_accepts_valid_subjects() {
+        let path = write_temp_message(
+            "xtask_commit_ok",
+            "# comment\n\nfeat(parser): add validation\n",
+        );
+        validate_commit_message(&path).expect("valid conventional commit should pass");
+    }
+
+    #[test]
+    fn validate_commit_message_accepts_breaking_change_marker() {
+        let path = write_temp_message("xtask_commit_breaking_ok", "feat!: drop old schema\n");
+        validate_commit_message(&path).expect("breaking-change header should pass");
+    }
+
+    #[test]
+    fn validate_commit_message_accepts_skip_prefixes() {
+        for (idx, subject) in [
+            "Merge branch 'main' into feature",
+            "Revert \"feat(api): add endpoint\"",
+            "fixup! feat(parser): add node",
+            "squash! feat(parser): add node",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = write_temp_message(&format!("xtask_commit_skip_{idx}"), subject);
+            validate_commit_message(&path).expect("skip prefixes should bypass validation");
+        }
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_empty_subject() {
+        let path = write_temp_message("xtask_commit_empty", "\n# only comment\n\n");
+        let error =
+            validate_commit_message(&path).expect_err("empty subject should be rejected");
+        assert!(error.contains("subject is empty"));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_too_long_subject() {
+        let subject = format!("feat: {}", "a".repeat(90));
+        let path = write_temp_message("xtask_commit_long", &subject);
+        let error = validate_commit_message(&path).expect_err("long subject should be rejected");
+        assert!(error.contains("max 72"));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_trailing_period() {
+        let path = write_temp_message("xtask_commit_period", "feat: add parser.\n");
+        let error =
+            validate_commit_message(&path).expect_err("trailing period should be rejected");
+        assert!(error.contains("must not end with a period"));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_missing_conventional_format() {
+        let path = write_temp_message("xtask_commit_no_colon", "feat add parser\n");
+        let error = validate_commit_message(&path).expect_err("missing ': ' should be rejected");
+        assert!(error.contains("Conventional Commits"));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_unclosed_scope() {
+        let path = write_temp_message("xtask_commit_scope", "feat(parser: add validation\n");
+        let error = validate_commit_message(&path).expect_err("invalid scope should be rejected");
+        assert!(error.contains("unclosed scope"));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_invalid_type() {
+        let path = write_temp_message("xtask_commit_type", "invalid(scope): add validation\n");
+        let error = validate_commit_message(&path).expect_err("invalid type should be rejected");
+        assert!(error.contains("Invalid Conventional Commit type"));
+    }
+
+    #[test]
+    fn validate_commit_message_reports_missing_file() {
+        let path = unique_temp_path("xtask_commit_missing");
+        let error =
+            validate_commit_message(&path).expect_err("missing commit-msg file should fail");
+        assert!(error.contains("Failed to read commit message file"));
+    }
+}

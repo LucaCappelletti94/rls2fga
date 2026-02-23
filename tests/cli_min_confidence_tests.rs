@@ -148,3 +148,212 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
         "expected inferred ownership policy translation, got:\n{model}"
     );
 }
+
+#[test]
+fn cli_schema_dir_missing_reports_error() {
+    let temp = unique_temp_dir("rls2fga_schema_dir_missing");
+    let missing_dir = temp.join("does_not_exist");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg("--schema-dir")
+        .arg(&missing_dir)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected schema-dir read failure exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error reading schema directory:"),
+        "missing schema dir should report a directory read error, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_schema_dir_without_sql_files_reports_no_input() {
+    let empty_schema_dir = unique_temp_dir("rls2fga_schema_dir_empty");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg("--schema-dir")
+        .arg(&empty_schema_dir)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected empty schema-dir exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No input SQL files provided"),
+        "empty schema dir should report missing input SQL files, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_missing_input_file_reports_error() {
+    let temp = unique_temp_dir("rls2fga_missing_input");
+    let missing_input = temp.join("missing.sql");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg(&missing_input)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected missing input file exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error reading"),
+        "missing input file should report read failure, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_missing_function_registry_file_reports_error() {
+    let temp = unique_temp_dir("rls2fga_registry_missing");
+    let input_path = temp.join("input.sql");
+    let missing_registry = temp.join("registry.json");
+    let output_dir = temp.join("out");
+
+    let sql = "CREATE TABLE docs (id UUID PRIMARY KEY);";
+    std::fs::write(&input_path, sql).expect("should write temp input sql");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg(&input_path)
+        .arg("--function-registry")
+        .arg(&missing_registry)
+        .arg("--output-dir")
+        .arg(&output_dir)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected missing function-registry file exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error reading function registry:"),
+        "missing function registry should report read failure, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_invalid_function_registry_json_reports_error() {
+    let temp = unique_temp_dir("rls2fga_registry_invalid");
+    let input_path = temp.join("input.sql");
+    let registry_path = temp.join("registry.json");
+    let output_dir = temp.join("out");
+
+    let sql = "CREATE TABLE docs (id UUID PRIMARY KEY);";
+    std::fs::write(&input_path, sql).expect("should write temp input sql");
+    std::fs::write(&registry_path, "{ not valid json").expect("should write invalid registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg(&input_path)
+        .arg("--function-registry")
+        .arg(&registry_path)
+        .arg("--output-dir")
+        .arg(&output_dir)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected invalid function-registry json exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error parsing function registry:"),
+        "invalid function registry should report parse failure, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_output_dir_file_path_reports_write_error() {
+    let temp = unique_temp_dir("rls2fga_output_dir_file");
+    let input_path = temp.join("input.sql");
+    let output_dir_marker = temp.join("not_a_directory");
+    std::fs::write(&output_dir_marker, "marker file").expect("should create marker file");
+
+    let sql = "CREATE TABLE docs (id UUID PRIMARY KEY);";
+    std::fs::write(&input_path, sql).expect("should write temp input sql");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg(&input_path)
+        .arg("--output-dir")
+        .arg(&output_dir_marker)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected write-output failure exit code 2, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error writing output: Failed to create output directory:"),
+        "file path output-dir should report create_dir_all failure, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cli_verbose_emits_parse_and_policy_diagnostics() {
+    let temp = unique_temp_dir("rls2fga_verbose_output");
+    let input_path = temp.join("input.sql");
+    let output_dir = temp.join("out");
+
+    let sql = std::fs::read_to_string("tests/fixtures/public_flag/input.sql")
+        .unwrap_or_else(|e| panic!("failed to read fixture SQL: {e}"));
+    std::fs::write(&input_path, sql).expect("should write temp input sql");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rls2fga"))
+        .arg(&input_path)
+        .arg("--verbose")
+        .arg("--min-confidence")
+        .arg("C")
+        .arg("--output-dir")
+        .arg(&output_dir)
+        .output()
+        .expect("should run rls2fga binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected successful verbose run, got {:?}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Parsed "),
+        "verbose mode should emit parse summary, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Policy '"),
+        "verbose mode should emit per-policy diagnostics, got:\n{stderr}"
+    );
+}
