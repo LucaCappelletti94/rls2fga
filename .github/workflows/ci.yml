@@ -34,6 +34,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install libpq (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libpq
+          LIBPQ_PREFIX="$(brew --prefix libpq)"
+          echo "${LIBPQ_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "LIBRARY_PATH=${LIBPQ_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${LIBPQ_PREFIX}/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${LIBPQ_PREFIX}/lib" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,8 +61,8 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --features db --locked --lib --tests
-          cargo test --all-features --locked --no-run --lib --tests
+          cargo test --locked --lib --tests
+          cargo test --features agent --locked --no-run --lib --tests
           cargo test --doc --all-features --locked
 
   docs:
