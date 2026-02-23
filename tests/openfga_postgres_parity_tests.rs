@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde_json::{json, Value};
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use testcontainers::{
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
     GenericImage, ImageExt,
 };
+use tokio_postgres::{Client as PgClient, NoTls};
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
@@ -60,15 +60,18 @@ fn load_emi() -> (
     (classified, db, registry, sql)
 }
 
-async fn connect_postgres_with_retry(database_url: &str) -> PgPool {
+async fn connect_postgres_with_retry(database_url: &str) -> PgClient {
     let mut last_error = String::new();
     for _ in 0..30 {
-        match PgPoolOptions::new()
-            .max_connections(5)
-            .connect(database_url)
-            .await
-        {
-            Ok(pool) => return pool,
+        match tokio_postgres::connect(database_url, NoTls).await {
+            Ok((client, connection)) => {
+                tokio::spawn(async move {
+                    if let Err(error) = connection.await {
+                        eprintln!("PostgreSQL connection error: {error}");
+                    }
+                });
+                return client;
+            }
             Err(error) => {
                 last_error = error.to_string();
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -79,7 +82,7 @@ async fn connect_postgres_with_retry(database_url: &str) -> PgPool {
     panic!("Failed to connect to PostgreSQL after retries: {last_error}");
 }
 
-async fn seed_emi_data(pool: &PgPool) {
+async fn seed_emi_data(pool: &PgClient) {
     let seed_sql = format!(
         "
 INSERT INTO users (id) VALUES
@@ -108,30 +111,26 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
 "
     );
 
-    sqlx::raw_sql(&seed_sql)
-        .execute(pool)
+    pool.batch_execute(&seed_sql)
         .await
         .expect("Failed to seed EMI fixture data");
 }
 
-async fn execute_tuple_queries(pool: &PgPool, tuple_queries: &[TupleQuery]) -> Vec<TupleKey> {
+async fn execute_tuple_queries(pool: &PgClient, tuple_queries: &[TupleQuery]) -> Vec<TupleKey> {
     let mut keys = BTreeSet::new();
 
     for query in tuple_queries {
-        let rows = sqlx::query(&query.sql)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "Tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
-                    query.comment, query.sql
-                )
-            });
+        let rows = pool.query(&query.sql, &[]).await.unwrap_or_else(|error| {
+            panic!(
+                "Tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
+                query.comment, query.sql
+            )
+        });
 
         for row in rows {
-            let object: String = row.try_get("object").unwrap();
-            let relation: String = row.try_get("relation").unwrap();
-            let subject: String = row.try_get("subject").unwrap();
+            let object: String = row.get("object");
+            let relation: String = row.get("relation");
+            let subject: String = row.get("subject");
 
             keys.insert(TupleKey {
                 object,
@@ -254,17 +253,16 @@ async fn check_openfga(
     body["allowed"].as_bool().expect("missing check result")
 }
 
-async fn postgres_role_for_user_and_doc(pool: &PgPool, user_id: &str, doc_id: &str) -> i32 {
-    sqlx::query_scalar::<_, i32>(
+async fn postgres_role_for_user_and_doc(pool: &PgClient, user_id: &str, doc_id: &str) -> i32 {
+    pool.query_one(
         "SELECT get_owner_role($1::uuid, owner_id)
          FROM ownables
          WHERE id = $2::uuid",
+        &[&user_id, &doc_id],
     )
-    .bind(user_id)
-    .bind(doc_id)
-    .fetch_one(pool)
     .await
     .unwrap()
+    .get(0)
 }
 
 #[tokio::test]
@@ -287,8 +285,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
     let pool = connect_postgres_with_retry(&pg_url).await;
 
     let (classified, db, registry, schema_sql) = load_emi();
-    sqlx::raw_sql(&schema_sql)
-        .execute(&pool)
+    pool.batch_execute(&schema_sql)
         .await
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&pool).await;
