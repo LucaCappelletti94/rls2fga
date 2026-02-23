@@ -10,7 +10,12 @@ Install the repository hooks:
 ./scripts/install-hooks.sh
 ```
 
-The pre-commit hook runs:
+Installed hooks:
+
+- `pre-commit`: runs Rust quality checks
+- `commit-msg`: validates Conventional Commit format
+
+`pre-commit` runs:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
@@ -20,6 +25,12 @@ Run the same checks manually:
 
 ```bash
 cargo run --bin xtask -- precommit
+```
+
+Validate a commit message manually:
+
+```bash
+cargo run --bin xtask -- commit-msg .git/COMMIT_EDITMSG
 ```
 
 Include Docker-backed ignored tests (OpenFGA + PostgreSQL 18):
@@ -32,5 +43,5 @@ cargo run --bin xtask -- precommit --with-docker
 
 GitHub Actions CI is defined in `.github/workflows/ci.yml` with:
 
-- `checks` job for format, lint, and tests via `xtask precommit`
-- `docker-integration` job for ignored Docker-backed integration tests
+- `quality` matrix job (`ubuntu`, `macos`, `windows`) via `xtask ci --locked`
+- `docker-integration` job (`ubuntu`) for ignored Docker-backed integration tests

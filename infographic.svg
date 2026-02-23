@@ -3,7 +3,7 @@
      viewBox="0 0 1200 3140" width="1200" height="3140" style="background:#FAFAF7">
 
   <!-- ════════════════════════════════════════════════════════════════
-       rls2fga — Professional Infographic
+       rls2fga - Professional Infographic
        PostgreSQL Row-Level Security → OpenFGA Authorization Models
        ════════════════════════════════════════════════════════════════ -->
 
@@ -98,7 +98,7 @@
   <rect width="1200" height="3140" fill="#FAFAF7" rx="0"/>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 1: Header Band (y: 0–180)
+       SECTION 1: Header Band (y: 0-180)
        ═══════════════════════════════════════════════════════════ -->
   <g id="header">
     <!-- Background band -->
@@ -139,7 +139,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 2: Abstract / Summary Card (y: 200–390)
+       SECTION 2: Abstract / Summary Card (y: 200-390)
        ═══════════════════════════════════════════════════════════ -->
   <g id="abstract" transform="translate(60, 200)">
     <!-- Card background -->
@@ -161,13 +161,13 @@
     <foreignObject x="32" y="55" width="1020" height="285">
       <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 400; font-size: 14px; color: #2D2D2D; text-align: justify; line-height: 1.6;">
         <p style="margin: 0 0 10px 0;">
-          Most applications need to control which data each user can see or modify. PostgreSQL provides a powerful built-in answer: <strong style="color: #2C3E6B;">Row-Level Security (RLS)</strong>. RLS lets administrators attach SQL expressions directly to tables, so the database itself transparently filters which rows are visible during every SELECT, INSERT, UPDATE, or DELETE. However, because these policies are written in SQL and live inside the database engine, they remain tightly coupled to the schema &#8212; difficult to audit, reuse across services, or reason about at scale.
+          Most applications need to control which data each user can see or modify. PostgreSQL provides a powerful built-in answer: <strong style="color: #2C3E6B;">Row-Level Security (RLS)</strong>. RLS lets administrators attach SQL expressions directly to tables, so the database itself transparently filters which rows are visible during every SELECT, INSERT, UPDATE, or DELETE. However, because these policies are written in SQL and live inside the database engine, they remain tightly coupled to the schema - difficult to audit, reuse across services, or reason about at scale.
         </p>
         <p style="margin: 0 0 10px 0;">
           In 2019, Google published the design of <strong style="color: #2C3E6B;">Zanzibar</strong>, its global authorization system. Rather than filtering rows with SQL, Zanzibar models every permission as a relationship in a graph, stored as simple <em>(object, relation, subject)</em> tuples. Access decisions are resolved by traversing this graph, which decouples authorization from any single database and scales uniformly across services. <strong style="color: #2C3E6B;">OpenFGA</strong>, the leading open-source Zanzibar implementation maintained by Auth0/Okta, brings this model to everyone with a dedicated DSL for schemas and an API for permission checks.
         </p>
         <p style="margin: 0;">
-          <strong style="color: #2C3E6B;">rls2fga</strong> bridges these two worlds automatically. It parses PostgreSQL RLS policies, classifies the SQL expressions into known authorization patterns, and generates equivalent OpenFGA models together with the SQL queries needed to populate relationship tuples &#8212; each output graded with a confidence level indicating how reliably the translation was performed.
+          <strong style="color: #2C3E6B;">rls2fga</strong> bridges these two worlds automatically. It parses PostgreSQL RLS policies, classifies the SQL expressions into known authorization patterns, and generates equivalent OpenFGA models together with the SQL queries needed to populate relationship tuples - each output graded with a confidence level indicating how reliably the translation was performed.
         </p>
       </div>
     </foreignObject>
@@ -175,7 +175,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 3: The Problem — Two Worlds (y: 385–675)
+       SECTION 3: The Problem - Two Worlds (y: 385-675)
        ═══════════════════════════════════════════════════════════ -->
   <g id="two-worlds" transform="translate(60, 580)">
     <!-- Section title -->
@@ -241,7 +241,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 4: The Translation Pipeline (y: 705–1140)
+       SECTION 4: The Translation Pipeline (y: 705-1140)
        ═══════════════════════════════════════════════════════════ -->
   <g id="pipeline" transform="translate(60, 900)">
     <!-- Section title -->
@@ -251,10 +251,10 @@
     <!-- Pipeline background card -->
     <rect x="0" y="55" width="1080" height="380" rx="16" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" filter="url(#cardShadow)"/>
 
-    <!-- Stage 1–2: Parse Schema (sql-traits) -->
+    <!-- Stage 1-2: Parse Schema (sql-traits) -->
     <g transform="translate(60, 80)">
       <circle cx="24" cy="24" r="24" fill="url(#blueGrad)"/>
-      <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="14">1–2</text>
+      <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="14">1-2</text>
       <text x="60" y="22" class="title text-navy" font-size="16">Parse Schema</text>
       <text x="60" y="40" class="body text-secondary" font-size="13">Parse DDL via sql-traits into ParserDB (tables, columns, FKs, functions, policies)</text>
     </g>
@@ -275,7 +275,7 @@
       <circle cx="24" cy="24" r="24" fill="url(#lavenderGrad)"/>
       <text x="24" y="30" text-anchor="middle" class="title text-white" font-size="16">4</text>
       <text x="60" y="22" class="title text-navy" font-size="16">Pattern Classifier</text>
-      <text x="60" y="40" class="body text-secondary" font-size="13">Apply P1–P9 recognizers to each policy expression; assign PatternClass + ConfidenceLevel</text>
+      <text x="60" y="40" class="body text-secondary" font-size="13">Apply P1-P9 recognizers to each policy expression; assign PatternClass + ConfidenceLevel</text>
     </g>
     <line x1="84" y1="250" x2="84" y2="262" stroke="#C3B1E1" stroke-width="2" stroke-dasharray="4,3"/>
 
@@ -351,7 +351,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 5: Pattern Classification (y: 1170–1720)
+       SECTION 5: Pattern Classification (y: 1170-1720)
        ═══════════════════════════════════════════════════════════ -->
   <g id="patterns" transform="translate(60, 1365)">
     <!-- Section title -->
@@ -365,7 +365,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P1 — Numeric Role Threshold</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P1 - Numeric Role Threshold</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -382,7 +382,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P2 — Role Name IN-List</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P2 - Role Name IN-List</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -399,7 +399,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P3 — Simple Ownership</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P3 - Simple Ownership</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#B5D8B5"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -417,7 +417,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P4 — Membership Check</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P4 - Membership Check</text>
       <rect x="270" y="8" width="60" height="22" rx="11" fill="#A7C7E7"/>
       <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">A / B</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -434,7 +434,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P5 — Parent Inheritance</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P5 - Parent Inheritance</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#A7C7E7"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">B</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -451,7 +451,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#B5D8B5" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#B5D8B5" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#B5D8B5" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P6 — Boolean Flag / Public</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P6 - Boolean Flag / Public</text>
       <rect x="270" y="8" width="60" height="22" rx="11" fill="#B5D8B5"/>
       <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#2D5A2D">A / B</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -469,7 +469,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#FFDAB9" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#FFDAB9" opacity="0.4"/>
       <rect x="0" y="26" width="345" height="12" fill="#FFDAB9" opacity="0.4"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P7 — ABAC Crossover</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P7 - ABAC Crossover</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#FFDAB9"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#8B5E3C">C</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -486,7 +486,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#A7C7E7" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#A7C7E7" opacity="0.35"/>
       <rect x="0" y="26" width="345" height="12" fill="#A7C7E7" opacity="0.35"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P8 — Composite OR/AND</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P8 - Composite OR/AND</text>
       <rect x="270" y="8" width="60" height="22" rx="11" fill="#A7C7E7"/>
       <text x="300" y="24" text-anchor="middle" class="title" font-size="11" fill="#1A3A6B">B / C</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -503,7 +503,7 @@
       <rect x="0" y="0" width="345" height="155" rx="12" fill="#FFFFFF" stroke="#F7CAC9" stroke-width="1.5" filter="url(#softShadow)"/>
       <rect x="0" y="0" width="345" height="38" rx="12" fill="#F7CAC9" opacity="0.4"/>
       <rect x="0" y="26" width="345" height="12" fill="#F7CAC9" opacity="0.4"/>
-      <text x="14" y="26" class="title text-navy" font-size="14">P9 — Standalone Attribute</text>
+      <text x="14" y="26" class="title text-navy" font-size="14">P9 - Standalone Attribute</text>
       <rect x="280" y="8" width="50" height="22" rx="11" fill="#F7CAC9"/>
       <text x="305" y="24" text-anchor="middle" class="title" font-size="11" fill="#8B3A3A">C</text>
       <rect x="12" y="48" width="321" height="30" rx="6" fill="#F5F7FA"/>
@@ -517,7 +517,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 6: Confidence Levels (y: 1755–2035)
+       SECTION 6: Confidence Levels (y: 1755-2035)
        ═══════════════════════════════════════════════════════════ -->
   <g id="confidence" transform="translate(60, 1950)">
     <!-- Section title -->
@@ -602,7 +602,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 7: Output Formats (y: 2065–2460)
+       SECTION 7: Output Formats (y: 2065-2460)
        ═══════════════════════════════════════════════════════════ -->
   <g id="outputs" transform="translate(60, 2260)">
     <!-- Section title -->
@@ -753,7 +753,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 8: Architecture & Tech Stack (y: 2490–2795)
+       SECTION 8: Architecture & Tech Stack (y: 2490-2795)
        ═══════════════════════════════════════════════════════════ -->
   <g id="architecture" transform="translate(60, 2685)">
     <!-- Section title -->
@@ -848,7 +848,7 @@
   </g>
 
   <!-- ═══════════════════════════════════════════════════════════
-       SECTION 9: Footer (y: 2825–2945)
+       SECTION 9: Footer (y: 2825-2945)
        ═══════════════════════════════════════════════════════════ -->
   <g id="footer" transform="translate(0, 3020)">
     <!-- Footer background -->

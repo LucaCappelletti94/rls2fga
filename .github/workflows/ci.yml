@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
   push:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -12,11 +14,21 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  checks:
-    name: Rust checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  quality:
+    name: Quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,14 +41,14 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run precommit checks
-        run: cargo run --bin xtask -- precommit
+      - name: Run quality checks
+        run: cargo run --locked --bin xtask -- ci --locked
 
   docker-integration:
-    name: Docker integration tests
+    name: Docker integration (OpenFGA + PostgreSQL 18)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: checks
+    needs: quality
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,4 +65,4 @@ jobs:
         run: docker version
 
       - name: Run ignored integration tests
-        run: cargo test --features db -- --ignored
+        run: cargo run --locked --bin xtask -- docker-tests --locked

@@ -5,4 +5,5 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 git config core.hooksPath .githooks
-echo "Git hooks installed. pre-commit will run Rust checks via xtask."
+chmod +x .githooks/pre-commit .githooks/commit-msg
+echo "Git hooks installed: pre-commit and commit-msg now run via xtask."
