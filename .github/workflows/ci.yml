@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -54,6 +55,45 @@ jobs:
           cargo test --all-features --locked --no-run --lib --tests
           cargo test --doc --all-features --locked
 
+  docs:
+    name: Rustdoc (warnings denied)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --all-features --no-deps
+
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run cargo-audit
+        run: cargo audit
+
   docker-integration:
     name: Docker integration (OpenFGA + PostgreSQL 18)
     runs-on: ubuntu-latest
@@ -76,3 +116,36 @@ jobs:
 
       - name: Run ignored integration tests
         run: cargo run --locked --bin xtask -- docker-tests --locked
+
+  coverage:
+    name: Coverage (Codecov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: quality
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --features db --locked --lib --tests --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+          use_oidc: true
