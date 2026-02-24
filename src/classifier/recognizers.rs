@@ -1,4 +1,4 @@
-use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, Value};
+use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -402,15 +402,10 @@ pub fn recognize_p10_constant_bool(
     _db: &ParserDB,
     _registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::Value(v) = expr {
-        if let Value::Boolean(b) = v.value {
-            return Some(ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: b },
-                confidence: ConfidenceLevel::A,
-            });
-        }
-    }
-    None
+    constant_bool_value(expr).map(|value| ClassifiedExpr {
+        pattern: PatternClass::P10ConstantBool { value },
+        confidence: ConfidenceLevel::A,
+    })
 }
 
 /// Try to recognize P6: boolean flag `is_public = TRUE` or bare boolean column.
@@ -425,19 +420,17 @@ pub fn recognize_p6(
             op: BinaryOperator::Eq,
             right,
         } => {
-            // Check for `column = TRUE`
-            let (col_name, is_true) = match (left.as_ref(), right.as_ref()) {
-                (_, Expr::Value(v)) => {
-                    let col = extract_column_name(left)?;
-                    let is_t = matches!(v.value, Value::Boolean(true));
-                    (col, is_t)
-                }
-                (Expr::Value(v), _) => {
-                    let col = extract_column_name(right)?;
-                    let is_t = matches!(v.value, Value::Boolean(true));
-                    (col, is_t)
-                }
-                _ => return None,
+            // Check for `column = TRUE` or `TRUE = column`.
+            let (col_name, is_true) = if let (Some(col), Some(value)) =
+                (extract_column_name(left), constant_bool_value(right))
+            {
+                (col, value)
+            } else if let (Some(value), Some(col)) =
+                (constant_bool_value(left), extract_column_name(right))
+            {
+                (col, value)
+            } else {
+                return None;
             };
 
             if is_true && is_public_flag_column_name(&col_name) {
@@ -447,8 +440,17 @@ pub fn recognize_p6(
                 });
             }
         }
-        Expr::Identifier(ident) => {
-            let col_name = ident.value.clone();
+        Expr::IsTrue(inner) | Expr::IsNotFalse(inner) => {
+            let col_name = extract_column_name(inner)?;
+            if is_public_flag_column_name(&col_name) {
+                return Some(ClassifiedExpr {
+                    pattern: PatternClass::P6BooleanFlag { column: col_name },
+                    confidence: ConfidenceLevel::A,
+                });
+            }
+        }
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
+            let col_name = extract_column_name(expr)?;
             if is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
                     pattern: PatternClass::P6BooleanFlag { column: col_name },
@@ -459,6 +461,21 @@ pub fn recognize_p6(
         _ => {}
     }
     None
+}
+
+fn constant_bool_value(expr: &Expr) -> Option<bool> {
+    match expr {
+        Expr::Value(v) => match &v.value {
+            Value::Boolean(b) => Some(*b),
+            _ => None,
+        },
+        Expr::Nested(inner) | Expr::Cast { expr: inner, .. } => constant_bool_value(inner),
+        Expr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr: inner,
+        } => constant_bool_value(inner).map(|value| !value),
+        _ => None,
+    }
 }
 
 // ---- Helper functions ----
@@ -509,18 +526,15 @@ struct RelationSource {
 }
 
 fn relation_sources(select: &Select) -> Vec<RelationSource> {
-    if select.from.len() != 1 {
-        return Vec::new();
-    }
-
-    let from = &select.from[0];
     let mut sources = Vec::new();
-    if let Some(source) = relation_source_from_table_factor(&from.relation) {
-        sources.push(source);
-    }
-    for join in &from.joins {
-        if let Some(source) = relation_source_from_table_factor(&join.relation) {
+    for from in &select.from {
+        if let Some(source) = relation_source_from_table_factor(&from.relation) {
             sources.push(source);
+        }
+        for join in &from.joins {
+            if let Some(source) = relation_source_from_table_factor(&join.relation) {
+                sources.push(source);
+            }
         }
     }
 
@@ -1331,12 +1345,32 @@ CREATE TABLE doc_members (
 
         let p10_true = parse_expr("TRUE");
         assert!(recognize_p10_constant_bool(&p10_true, &db, &registry).is_some());
+        let p10_not_true = parse_expr("NOT TRUE");
+        assert!(matches!(
+            recognize_p10_constant_bool(&p10_not_true, &db, &registry),
+            Some(ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: false },
+                ..
+            })
+        ));
+        let p10_cast = parse_expr("CAST(TRUE AS BOOLEAN)");
+        assert!(matches!(
+            recognize_p10_constant_bool(&p10_cast, &db, &registry),
+            Some(ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: true },
+                ..
+            })
+        ));
 
         let p10_not_bool = parse_expr("1");
         assert!(recognize_p10_constant_bool(&p10_not_bool, &db, &registry).is_none());
 
         let p6_false = parse_expr("FALSE = is_public");
         assert!(recognize_p6(&p6_false, &db, &registry).is_none());
+        let p6_is_true = parse_expr("is_public IS TRUE");
+        assert!(recognize_p6(&p6_is_true, &db, &registry).is_some());
+        let p6_is_not_false = parse_expr("is_public IS NOT FALSE");
+        assert!(recognize_p6(&p6_is_not_false, &db, &registry).is_some());
 
         let p6_ident = parse_expr("published");
         assert!(recognize_p6(&p6_ident, &db, &registry).is_some());
@@ -1575,7 +1609,7 @@ CREATE TABLE odd_members(alpha text, beta text);
     }
 
     #[test]
-    fn recognize_p4_and_in_subquery_reject_multi_from_subqueries() {
+    fn recognize_p4_and_in_subquery_accept_unambiguous_multi_from_subqueries() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
 
@@ -1586,7 +1620,13 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE dm.doc_id = d.id
              )",
         );
-        assert!(recognize_p4(&exists_multi_from, &db, &registry).is_none());
+        assert!(matches!(
+            recognize_p4(&exists_multi_from, &db, &registry),
+            Some(ClassifiedExpr {
+                pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
+                ..
+            }) if join_table == "doc_members"
+        ));
 
         let in_multi_from = parse_expr(
             "doc_id IN (
@@ -1595,7 +1635,13 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE dm.user_id = auth_current_user_id()
              )",
         );
-        assert!(recognize_p4_in_subquery(&in_multi_from, &db, &registry).is_none());
+        assert!(matches!(
+            recognize_p4_in_subquery(&in_multi_from, &db, &registry),
+            Some(ClassifiedExpr {
+                pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
+                ..
+            }) if join_table == "doc_members"
+        ));
     }
 
     #[test]
