@@ -23,7 +23,8 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
-    let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
     let expected = tuple_generator::format_tuples(&tuples);
 
     let out_dir = unique_temp_dir("rls2fga_formatter");

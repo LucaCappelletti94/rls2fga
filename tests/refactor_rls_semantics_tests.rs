@@ -171,6 +171,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -216,6 +217,7 @@ CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -268,6 +270,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -309,6 +312,7 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -368,6 +372,7 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -561,6 +566,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
 
     assert!(
@@ -613,6 +619,52 @@ fn model_generation_respects_min_confidence_threshold() {
         !model.dsl.contains("public_viewer"),
         "A-threshold model output should exclude C-level public_viewer relation, got:\n{}",
         model.dsl
+    );
+}
+
+#[test]
+fn tuple_generation_respects_min_confidence_threshold() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id),
+  status TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
+  USING (status = 'published' AND owner_id = auth_current_user_id());
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples_a = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        &ConfidenceLevel::A,
+    ));
+
+    assert!(
+        !tuples_a.contains("'owner' AS relation"),
+        "A-threshold tuple output should exclude C-level ABAC tuples, got:\n{tuples_a}"
+    );
+
+    let tuples_d = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        &ConfidenceLevel::D,
+    ));
+
+    assert!(
+        tuples_d.contains("'owner' AS relation"),
+        "D-threshold tuple output should include ABAC-derived ownership tuples, got:\n{tuples_d}"
     );
 }
 
@@ -774,6 +826,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
+        &ConfidenceLevel::D,
     ));
     assert!(
         tuples.contains("'project' AS relation"),

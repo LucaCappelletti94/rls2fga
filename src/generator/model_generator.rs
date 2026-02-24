@@ -3,6 +3,7 @@ use std::fmt::Write;
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, lookup_table, parent_type_from_fk_column, policy_scope_relation_name,
@@ -777,14 +778,8 @@ fn ensure_role_threshold_scaffold(
     all_types: &mut BTreeMap<String, TypePlan>,
     role_levels: &HashMap<String, i32>,
     has_team_support: bool,
-) -> Vec<(String, i32)> {
-    let mut sorted_roles: Vec<(String, i32)> = role_levels
-        .iter()
-        .map(|(name, level)| (name.clone(), *level))
-        .collect();
-    sorted_roles.sort_by(|(a_name, a_level), (b_name, b_level)| {
-        a_level.cmp(b_level).then_with(|| a_name.cmp(b_name))
-    });
+) -> Vec<RoleRelationName> {
+    let sorted_roles = sorted_role_relation_names(role_levels);
 
     table_plan.ensure_direct("owner_user", vec![DirectSubject::Type("user".to_string())]);
 
@@ -802,14 +797,14 @@ fn ensure_role_threshold_scaffold(
         vec![DirectSubject::Type("user".to_string())]
     };
 
-    for (role_name, _) in &sorted_roles {
-        table_plan.ensure_direct(format!("grant_{role_name}"), grant_subjects.clone());
+    for role in &sorted_roles {
+        table_plan.ensure_direct(role.grant_relation(), grant_subjects.clone());
     }
 
     let mut descending = sorted_roles.clone();
     descending.reverse();
 
-    for (idx, (role_name, _)) in descending.iter().enumerate() {
+    for (idx, role) in descending.iter().enumerate() {
         let mut children = Vec::new();
 
         if idx == 0 {
@@ -821,11 +816,10 @@ fn ensure_role_threshold_scaffold(
                 });
             }
         } else {
-            let higher_name = &descending[idx - 1].0;
-            children.push(UsersetExpr::Computed(format!("role_{higher_name}")));
+            children.push(UsersetExpr::Computed(descending[idx - 1].role_relation()));
         }
 
-        let grant_name = format!("grant_{role_name}");
+        let grant_name = role.grant_relation();
         children.push(UsersetExpr::Computed(grant_name.clone()));
         if has_team_support {
             children.push(UsersetExpr::TupleToUserset {
@@ -835,7 +829,7 @@ fn ensure_role_threshold_scaffold(
         }
 
         table_plan.ensure_computed(
-            format!("role_{role_name}"),
+            role.role_relation(),
             combine_union(children).expect("role relation should always have at least one source"),
         );
     }
@@ -843,23 +837,23 @@ fn ensure_role_threshold_scaffold(
     sorted_roles
 }
 
-fn role_for_level(sorted_roles: &[(String, i32)], min_level: i32) -> Option<String> {
+fn role_for_level(sorted_roles: &[RoleRelationName], min_level: i32) -> Option<String> {
     sorted_roles
         .iter()
-        .find(|(_, level)| *level >= min_level)
-        .map(|(name, _)| format!("role_{name}"))
+        .find(|role| role.level >= min_level)
+        .map(RoleRelationName::role_relation)
 }
 
 fn exact_roles_expr(
-    sorted_roles: &[(String, i32)],
+    sorted_roles: &[RoleRelationName],
     selected_levels: &BTreeSet<i32>,
     has_team_support: bool,
 ) -> Option<UsersetExpr> {
     let mut children = Vec::new();
 
-    for (role_name, role_level) in sorted_roles {
-        if selected_levels.contains(role_level) {
-            let grant_name = format!("grant_{role_name}");
+    for role in sorted_roles {
+        if selected_levels.contains(&role.level) {
+            let grant_name = role.grant_relation();
             children.push(UsersetExpr::Computed(grant_name.clone()));
             if has_team_support {
                 children.push(UsersetExpr::TupleToUserset {
@@ -872,7 +866,7 @@ fn exact_roles_expr(
 
     if sorted_roles
         .iter()
-        .map(|(_, level)| *level)
+        .map(|role| role.level)
         .max()
         .is_some_and(|max| selected_levels.contains(&max))
     {
@@ -1401,6 +1395,55 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     }
 
     #[test]
+    fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let role_levels =
+            HashMap::from([("read-write".to_string(), 1), ("Team Admin".to_string(), 2)]);
+
+        ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+
+        assert!(
+            table_plan.direct_relations.contains_key("grant_read_write"),
+            "expected hyphenated role names to be canonicalized"
+        );
+        assert!(
+            table_plan.direct_relations.contains_key("grant_team_admin"),
+            "expected spaced/cased role names to be canonicalized"
+        );
+        assert!(
+            table_plan
+                .computed_relations
+                .contains_key("role_read_write"),
+            "expected computed role relation name to be canonicalized"
+        );
+    }
+
+    #[test]
+    fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let role_levels = HashMap::from([("role-a".to_string(), 1), ("role a".to_string(), 2)]);
+
+        ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+
+        let grant_relations: Vec<&String> = table_plan
+            .direct_relations
+            .keys()
+            .filter(|name| name.starts_with("grant_role_a"))
+            .collect();
+        assert_eq!(
+            grant_relations.len(),
+            2,
+            "canonical collisions must remain distinct relation identifiers"
+        );
+        assert_ne!(
+            grant_relations[0], grant_relations[1],
+            "colliding canonical names should be disambiguated"
+        );
+    }
+
+    #[test]
     fn expr_to_dsl_adds_parentheses_when_required() {
         let union = UsersetExpr::Union(vec![
             UsersetExpr::Computed("a".to_string()),
@@ -1561,8 +1604,12 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
 
         let sorted =
             ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+        let ordered: Vec<(String, i32)> = sorted
+            .iter()
+            .map(|role| (role.original_name.clone(), role.level))
+            .collect();
         assert_eq!(
-            sorted,
+            ordered,
             vec![
                 ("alpha".to_string(), 1),
                 ("beta".to_string(), 1),

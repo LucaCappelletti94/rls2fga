@@ -138,7 +138,8 @@ fn compound_or_owner_or_public() {
     );
 
     // Verify tuple generation
-    let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
@@ -363,7 +364,12 @@ fn pipeline_summary_all_common_patterns() {
         let classified = policy_classifier::classify_policies(&db, &registry);
         let model =
             model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
-        let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+        let tuples = tuple_generator::generate_tuple_queries(
+            &classified,
+            &db,
+            &registry,
+            &ConfidenceLevel::D,
+        );
 
         let all_a = classified.iter().all(|cp| {
             cp.using_classification

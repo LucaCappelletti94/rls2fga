@@ -29,7 +29,8 @@ fn generate_emi_model() {
 #[test]
 fn generate_emi_tuples() {
     let (classified, db, registry) = load_emi();
-    let tuples = tuple_generator::generate_tuple_queries(&classified, &db, &registry);
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
     insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
 }
 

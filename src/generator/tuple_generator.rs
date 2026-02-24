@@ -1,5 +1,6 @@
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::generator::role_relations::sorted_role_relation_names;
 use crate::parser::expr::extract_column_name;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
@@ -66,14 +67,16 @@ pub fn generate_tuple_queries(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
+    min_confidence: &ConfidenceLevel,
 ) -> Vec<TupleQuery> {
     let mut queries = Vec::new();
-    let role_threshold_resource_hints = infer_role_threshold_resource_columns(policies, registry);
+    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let role_threshold_resource_hints = infer_role_threshold_resource_columns(&filtered, registry);
 
     // Track which tuple types we've already generated to avoid duplicates
     let mut generated = std::collections::HashSet::new();
 
-    for cp in policies {
+    for cp in &filtered {
         emit_policy_scope_tuples(cp, &cp.table_name(), db, &mut queries, &mut generated);
         for classified in cp.classifications() {
             generate_tuples_for_pattern(
@@ -105,6 +108,8 @@ fn emit_policy_scope_tuples(
 
     let table_type = canonical_fga_type_name(table);
     let object_col = find_object_column(table, db);
+    let table_sql = quote_sql_identifier(table);
+    let object_col_sql = quote_sql_identifier(&object_col);
     let scope_relation = policy_scope_relation_name(cp.name());
 
     for role in scoped_roles {
@@ -118,7 +123,7 @@ fn emit_policy_scope_tuples(
                 "-- Policy scope: {table} rows require PostgreSQL role '{role}' via {scope_relation}"
             ),
             sql: format!(
-                "SELECT '{table_type}:' || {object_col} AS object, '{scope_relation}' AS relation, 'pg_role:{role_id}' AS subject\nFROM {table}\nWHERE {object_col} IS NOT NULL;"
+                "SELECT '{table_type}:' || {object_col_sql} AS object, '{scope_relation}' AS relation, 'pg_role:{role_id}' AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL;"
             ),
         });
     }
@@ -161,10 +166,13 @@ fn generate_tuples_for_pattern(
             let key = format!("p3:{table}:{column}");
             if generated.insert(key) {
                 let object_col = find_object_column(table, db);
+                let table_sql = quote_sql_identifier(table);
+                let object_col_sql = quote_sql_identifier(&object_col);
+                let column_sql = quote_sql_identifier(column);
                 queries.push(TupleQuery {
                     comment: format!("-- User ownership ({column} references users)"),
                     sql: format!(
-                        "SELECT '{table_type}:' || {object_col} AS object, 'owner' AS relation, 'user:' || {column} AS subject\nFROM {table}\nWHERE {column} IS NOT NULL;"
+                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner' AS relation, 'user:' || {column_sql} AS subject\nFROM {table_sql}\nWHERE {column_sql} IS NOT NULL;"
                     ),
                 });
             }
@@ -181,6 +189,9 @@ fn generate_tuples_for_pattern(
             );
             if generated.insert(key) {
                 let parent_type = parent_type_from_fk_column(fk_column);
+                let join_table_sql = quote_sql_identifier(join_table);
+                let fk_column_sql = quote_sql_identifier(fk_column);
+                let user_column_sql = quote_sql_identifier(user_column);
                 let where_clause = extra_predicate_sql
                     .as_ref()
                     .map(|e| format!("\nWHERE {e}"))
@@ -188,7 +199,7 @@ fn generate_tuples_for_pattern(
                 queries.push(TupleQuery {
                     comment: format!("-- {parent_type} membership from {join_table}"),
                     sql: format!(
-                        "SELECT '{parent_type}:' || {fk_column} AS object, 'member' AS relation, 'user:' || {user_column} AS subject\nFROM {join_table}{where_clause};"
+                        "SELECT '{parent_type}:' || {fk_column_sql} AS object, 'member' AS relation, 'user:' || {user_column_sql} AS subject\nFROM {join_table_sql}{where_clause};"
                     ),
                 });
             }
@@ -202,10 +213,13 @@ fn generate_tuples_for_pattern(
             let key = format!("p6:{table}:{column}");
             if generated.insert(key) {
                 let object_col = find_object_column(table, db);
+                let table_sql = quote_sql_identifier(table);
+                let object_col_sql = quote_sql_identifier(&object_col);
+                let column_sql = quote_sql_identifier(column);
                 queries.push(TupleQuery {
                     comment: format!("-- Public access flag ({column})"),
                     sql: format!(
-                        "SELECT '{table_type}:' || {object_col} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table}\nWHERE {column} = TRUE;"
+                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql}\nWHERE {column_sql} = TRUE;"
                     ),
                 });
             }
@@ -240,10 +254,12 @@ fn generate_tuples_for_pattern(
             let key = format!("p10:{table}:{value}");
             if generated.insert(key) && *value {
                 let object_col = find_object_column(table, db);
+                let table_sql = quote_sql_identifier(table);
+                let object_col_sql = quote_sql_identifier(&object_col);
                 queries.push(TupleQuery {
                     comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
                     sql: format!(
-                        "SELECT '{table_type}:' || {object_col} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table};"
+                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql};"
                     ),
                 });
             }
@@ -320,21 +336,25 @@ fn generate_role_threshold_tuples_with_options(
         // Identify ownership and object columns.
         let owner_col = find_owner_column(table, db);
         let object_col = find_object_column(table, db);
+        let table_sql = quote_sql_identifier(table);
+        let object_col_sql = quote_sql_identifier(&object_col);
 
         if let Some(owner_col) = owner_col.as_deref() {
+            let owner_col_sql = quote_sql_identifier(owner_col);
             // 1. User ownership
             if let Some(user_principal) = principals.user.as_ref() {
+                let user_table_sql = quote_sql_identifier(&user_principal.table);
+                let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
                 queries.push(TupleQuery {
                     comment: format!(
                         "-- User ownership ({owner_col} references {})",
                         user_principal.table
                     ),
                     sql: format!(
-                        "SELECT '{table_type}:' || {object_col} AS object, 'owner_user' AS relation, 'user:' || {owner_col} AS subject\n\
-                         FROM {table}\n\
-                         WHERE {owner_col} IN (SELECT {} FROM {})\n\
-                         AND {owner_col} IS NOT NULL;",
-                        user_principal.pk_col, user_principal.table
+                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_user' AS relation, 'user:' || {owner_col_sql} AS subject\n\
+                         FROM {table_sql}\n\
+                         WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
+                         AND {owner_col_sql} IS NOT NULL;"
                     ),
                 });
             } else {
@@ -349,17 +369,18 @@ fn generate_role_threshold_tuples_with_options(
             // 2. Team ownership (if teams exist)
             if team_membership_table.is_some() {
                 if let Some(team_principal) = principals.team.as_ref() {
+                    let team_table_sql = quote_sql_identifier(&team_principal.table);
+                    let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
                     queries.push(TupleQuery {
                         comment: format!(
                             "-- Team ownership ({owner_col} references {})",
                             team_principal.table
                         ),
                         sql: format!(
-                            "SELECT '{table_type}:' || {object_col} AS object, 'owner_team' AS relation, 'team:' || {owner_col} AS subject\n\
-                             FROM {table}\n\
-                             WHERE {owner_col} IN (SELECT {} FROM {})\n\
-                             AND {owner_col} IS NOT NULL;",
-                            team_principal.pk_col, team_principal.table
+                            "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_team' AS relation, 'team:' || {owner_col_sql} AS subject\n\
+                             FROM {table_sql}\n\
+                             WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
+                             AND {owner_col_sql} IS NOT NULL;"
                         ),
                     });
                 } else {
@@ -388,11 +409,14 @@ fn generate_role_threshold_tuples_with_options(
         ) {
             let tm_key = format!("team_membership:{tm_table}");
             if generated.insert(tm_key) {
+                let tm_table_sql = quote_sql_identifier(tm_table);
+                let tm_user_sql = quote_sql_identifier(tm_user);
+                let tm_team_sql = quote_sql_identifier(tm_team);
                 queries.push(TupleQuery {
                     comment: "-- Team memberships".to_string(),
                     sql: format!(
-                        "SELECT 'team:' || {tm_team} AS object, 'member' AS relation, 'user:' || {tm_user} AS subject\n\
-                         FROM {tm_table};"
+                        "SELECT 'team:' || {tm_team_sql} AS object, 'member' AS relation, 'user:' || {tm_user_sql} AS subject\n\
+                         FROM {tm_table_sql};"
                     ),
                 });
             }
@@ -401,10 +425,9 @@ fn generate_role_threshold_tuples_with_options(
         // 4. Explicit grants
         let mut role_cases = Vec::new();
         let mut role_ids = Vec::new();
-        let mut sorted_levels: Vec<(&String, &i32)> = role_levels.iter().collect();
-        sorted_levels.sort_by_key(|(_, v)| *v);
+        let sorted_roles = sorted_role_relation_names(role_levels);
 
-        if sorted_levels.is_empty() {
+        if sorted_roles.is_empty() {
             return;
         }
 
@@ -428,44 +451,58 @@ fn generate_role_threshold_tuples_with_options(
             return;
         };
 
-        for (role_name, role_id) in &sorted_levels {
-            role_cases.push(format!("    WHEN {role_id} THEN 'grant_{role_name}'"));
-            role_ids.push(role_id.to_string());
+        for role in &sorted_roles {
+            role_cases.push(format!(
+                "    WHEN {} THEN '{}'",
+                role.level,
+                role.grant_relation()
+            ));
+            role_ids.push(role.level.to_string());
         }
 
-        let case_expr = format!("CASE og.{grant_role_col}\n{}\n  END", role_cases.join("\n"));
+        let grant_role_col_sql = quote_sql_identifier(grant_role_col);
+        let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col);
+        let grant_resource_col_sql = quote_sql_identifier(grant_resource_col);
+        let grant_join_col_sql = quote_sql_identifier(grant_join_col);
+        let grant_table_sql = quote_sql_identifier(grant_table);
+
+        let case_expr = format!(
+            "CASE og.{grant_role_col_sql}\n{}\n  END",
+            role_cases.join("\n")
+        );
         let mut subject_joins: Vec<String> = Vec::new();
         let subject_expr = match (principals.user.as_ref(), principals.team.as_ref()) {
             (Some(user_principal), Some(team_principal)) => {
+                let user_table_sql = quote_sql_identifier(&user_principal.table);
+                let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
+                let team_table_sql = quote_sql_identifier(&team_principal.table);
+                let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
                 subject_joins.push(format!(
-                    "LEFT JOIN {} u ON u.{} = og.{grant_grantee_col}",
-                    user_principal.table, user_principal.pk_col
+                    "LEFT JOIN {user_table_sql} u ON u.{user_pk_col_sql} = og.{grant_grantee_col_sql}"
                 ));
                 subject_joins.push(format!(
-                    "LEFT JOIN {} t ON t.{} = og.{grant_grantee_col}",
-                    team_principal.table, team_principal.pk_col
+                    "LEFT JOIN {team_table_sql} t ON t.{team_pk_col_sql} = og.{grant_grantee_col_sql}"
                 ));
                 format!(
                     "CASE\n\
-                     \x20   WHEN u.{} IS NOT NULL THEN 'user:' || og.{grant_grantee_col}\n\
-                     \x20   WHEN t.{} IS NOT NULL THEN 'team:' || og.{grant_grantee_col}\n\
-                     \x20   ELSE 'user:' || og.{grant_grantee_col}\n\
+                     \x20   WHEN u.{user_pk_col_sql} IS NOT NULL THEN 'user:' || og.{grant_grantee_col_sql}\n\
+                     \x20   WHEN t.{team_pk_col_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
+                     \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
                      \x20 END",
-                    user_principal.pk_col, team_principal.pk_col
                 )
             }
-            (Some(_) | None, None) => format!("'user:' || og.{grant_grantee_col}"),
+            (Some(_) | None, None) => format!("'user:' || og.{grant_grantee_col_sql}"),
             (None, Some(team_principal)) => {
+                let team_table_sql = quote_sql_identifier(&team_principal.table);
+                let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
                 subject_joins.push(format!(
-                    "LEFT JOIN {} t ON t.{} = og.{grant_grantee_col}",
-                    team_principal.table, team_principal.pk_col
+                    "LEFT JOIN {team_table_sql} t ON t.{team_pk_col_sql} = og.{grant_grantee_col_sql}"
                 ));
                 format!(
                     "CASE\n\
-                     \x20   WHEN t.{} IS NOT NULL THEN 'team:' || og.{grant_grantee_col}\n\
-                     \x20   ELSE 'user:' || og.{grant_grantee_col}\n\
+                     \x20   WHEN t.{team_pk_col_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
+                     \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
                      \x20 END",
-                    team_principal.pk_col
                 )
             }
         };
@@ -480,21 +517,21 @@ fn generate_role_threshold_tuples_with_options(
             comment: format!(
                 "-- Explicit grants expanded to {table} rows ({}: {})",
                 grant_role_col,
-                sorted_levels
+                sorted_roles
                     .iter()
-                    .map(|(name, id)| format!("{id}={name}"))
+                    .map(|role| format!("{}={}", role.level, role.original_name))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
             sql: format!(
                 "SELECT\n\
-                 \x20 '{table_type}:' || resource.{object_col} AS object,\n\
+                 \x20 '{table_type}:' || resource.{object_col_sql} AS object,\n\
                  \x20 {case_expr} AS relation,\n\
                  \x20 {subject_expr} AS subject\n\
-                 FROM {grant_table} og\n\
-                 JOIN {table} resource ON resource.{grant_join_col} = og.{grant_resource_col}\n\
+                 FROM {grant_table_sql} og\n\
+                 JOIN {table_sql} resource ON resource.{grant_join_col_sql} = og.{grant_resource_col_sql}\n\
                  {subject_join_sql}\
-                 WHERE og.{grant_role_col} IN ({});",
+                 WHERE og.{grant_role_col_sql} IN ({});",
                 role_ids.join(", ")
             ),
         });
@@ -549,6 +586,67 @@ fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
 
 fn find_object_column(table: &str, db: &ParserDB) -> String {
     resolve_object_column(table, db).unwrap_or_else(|| "id".to_string())
+}
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    split_qualified_identifier(identifier)
+        .into_iter()
+        .map(|part| quote_sql_identifier_part(&part))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn split_qualified_identifier(identifier: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_quotes = false;
+
+    for (idx, ch) in identifier.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => {
+                parts.push(identifier[start..idx].trim().to_string());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(identifier[start..].trim().to_string());
+
+    parts
+}
+
+fn quote_sql_identifier_part(part: &str) -> String {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return "\"\"".to_string();
+    }
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        return trimmed.to_string();
+    }
+    if !identifier_needs_quoting(trimmed) {
+        return trimmed.to_string();
+    }
+    format!("\"{}\"", trimmed.replace('"', "\"\""))
+}
+
+fn identifier_needs_quoting(ident: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "all", "from", "group", "order", "role", "select", "table", "user", "where",
+    ];
+
+    if RESERVED.iter().any(|kw| ident.eq_ignore_ascii_case(kw)) {
+        return true;
+    }
+
+    let mut chars = ident.chars();
+    let Some(first) = chars.next() else {
+        return true;
+    };
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return true;
+    }
+    chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'))
 }
 
 fn resolve_role_principals(
@@ -949,10 +1047,13 @@ fn emit_bridge_tuple(
         });
         return;
     };
+    let table_sql = quote_sql_identifier(table);
+    let object_col_sql = quote_sql_identifier(&object_col);
+    let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
     queries.push(TupleQuery {
         comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
         sql: format!(
-            "SELECT '{table_type}:' || {object_col} AS object, '{parent_type}' AS relation, '{parent_type}:' || {parent_ref_col} AS subject\nFROM {table}\nWHERE {object_col} IS NOT NULL\nAND {parent_ref_col} IS NOT NULL;"
+            "SELECT '{table_type}:' || {object_col_sql} AS object, '{parent_type}' AS relation, '{parent_type}:' || {parent_ref_col_sql} AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL\nAND {parent_ref_col_sql} IS NOT NULL;"
         ),
     });
 }
@@ -1405,7 +1506,12 @@ CREATE POLICY docs_update ON docs FOR UPDATE
             }),
         };
 
-        let queries = generate_tuple_queries(&[classified], &db, &FunctionRegistry::new());
+        let queries = generate_tuple_queries(
+            &[classified],
+            &db,
+            &FunctionRegistry::new(),
+            &ConfidenceLevel::D,
+        );
         assert!(queries.iter().any(|q| q
             .comment
             .contains("User ownership (owner_id references users)")));
@@ -1428,7 +1534,12 @@ CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
 
         let classified =
             crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let queries = generate_tuple_queries(&classified, &db, &FunctionRegistry::new());
+        let queries = generate_tuple_queries(
+            &classified,
+            &db,
+            &FunctionRegistry::new(),
+            &ConfidenceLevel::D,
+        );
         let scope_relation = policy_scope_relation_name("docs_select");
 
         assert!(queries
@@ -1479,7 +1590,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
 
         let explicit_grants = queries
             .iter()
@@ -1532,7 +1643,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
 
         let explicit_grants = queries
             .iter()
@@ -1586,7 +1697,7 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
 
         assert!(
             queries
@@ -1727,6 +1838,58 @@ CREATE TABLE team_memberships(user_id uuid, team_id uuid);
     }
 
     #[test]
+    fn generate_role_threshold_tuples_sanitizes_grant_relation_names() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id uuid primary key);
+CREATE TABLE docs(id uuid primary key, owner_id uuid);
+CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
+",
+        )
+        .expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"read-write": 1, "Team Admin": 2},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+        generate_role_threshold_tuples(
+            "role_level",
+            "docs",
+            Some("id"),
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        let grants = queries
+            .iter()
+            .find(|q| q.comment.contains("Explicit grants expanded to docs rows"))
+            .expect("expected explicit grants query");
+
+        assert!(grants.sql.contains("WHEN 1 THEN 'grant_read_write'"));
+        assert!(grants.sql.contains("WHEN 2 THEN 'grant_team_admin'"));
+        assert!(!grants.sql.contains("grant_read-write"));
+        assert!(!grants.sql.contains("grant_Team Admin"));
+    }
+
+    #[test]
     fn find_owner_column_returns_none_when_owner_columns_missing() {
         let db = parse_schema(
             r"
@@ -1764,7 +1927,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
 
         let registry = FunctionRegistry::new();
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
 
         let membership_query = queries
             .iter()
@@ -1854,7 +2017,12 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
 
         let classified =
             crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let queries = generate_tuple_queries(&classified, &db, &FunctionRegistry::new());
+        let queries = generate_tuple_queries(
+            &classified,
+            &db,
+            &FunctionRegistry::new(),
+            &ConfidenceLevel::D,
+        );
 
         let ownership_query = queries
             .iter()
@@ -1862,5 +2030,48 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
             .expect("expected ownership tuple query");
         assert!(ownership_query.sql.contains("'docs:' ||"));
         assert!(!ownership_query.sql.contains("'app.docs:' ||"));
+    }
+
+    #[test]
+    fn tuple_sql_quotes_identifiers_for_mixed_case_and_reserved_names() {
+        let db = parse_schema(
+            r#"
+CREATE TABLE "Doc Items"(
+  "user" uuid primary key,
+  "OwnerID" uuid
+);
+ALTER TABLE "Doc Items" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON "Doc Items" FOR SELECT
+  USING ("OwnerID" = current_user);
+"#,
+        )
+        .expect("schema should parse");
+
+        let classified =
+            crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
+        let queries = generate_tuple_queries(
+            &classified,
+            &db,
+            &FunctionRegistry::new(),
+            &ConfidenceLevel::D,
+        );
+
+        let ownership_query = queries
+            .iter()
+            .find(|q| q.comment.contains("User ownership"))
+            .expect("expected ownership tuple query");
+
+        assert!(
+            ownership_query
+                .sql
+                .contains("'user:' || \"OwnerID\" AS subject"),
+            "subject column should be quoted, got:\n{}",
+            ownership_query.sql
+        );
+        assert!(
+            ownership_query.sql.contains("FROM \"Doc Items\""),
+            "table name should be quoted, got:\n{}",
+            ownership_query.sql
+        );
     }
 }
