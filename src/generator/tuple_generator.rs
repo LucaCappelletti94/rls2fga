@@ -287,7 +287,7 @@ fn generate_tuples_for_pattern(
                 queries.push(TupleQuery {
                     comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
                     sql: format!(
-                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql};"
+                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL;"
                     ),
                 });
             }
@@ -632,6 +632,25 @@ fn generate_role_threshold_tuples_with_options(
                 role_ids.join(", ")
             ),
         });
+    } else {
+        let (comment, sql) = match registry.get(function_name) {
+            Some(semantic) => (
+                format!(
+                    "-- TODO [Level D]: skipped role-threshold tuples for {table} (function '{function_name}' has incompatible semantic kind '{}')",
+                    semantic_kind(semantic)
+                ),
+                "-- Role-threshold tuples not emitted; function semantic must be 'role_threshold'."
+                    .to_string(),
+            ),
+            None => (
+                format!(
+                    "-- TODO [Level D]: skipped role-threshold tuples for {table} (missing semantic metadata for function '{function_name}')"
+                ),
+                "-- Role-threshold tuples not emitted; add function_registry metadata for this function."
+                    .to_string(),
+            ),
+        };
+        queries.push(TupleQuery { comment, sql });
     }
 }
 
@@ -660,6 +679,14 @@ fn find_owner_column(table: &str, db: &ParserDB) -> Option<String> {
         }
     }
     None
+}
+
+fn semantic_kind(semantic: &FunctionSemantic) -> &'static str {
+    match semantic {
+        FunctionSemantic::RoleThreshold { .. } => "role_threshold",
+        FunctionSemantic::CurrentUserAccessor { .. } => "current_user_accessor",
+        FunctionSemantic::Unknown { .. } => "unknown",
+    }
 }
 
 fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
@@ -1322,7 +1349,7 @@ CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
     }
 
     #[test]
-    fn generate_role_threshold_tuples_ignores_unknown_function_semantics() {
+    fn generate_role_threshold_tuples_emits_todo_for_missing_function_semantics() {
         let db = db_with_resources();
         let registry = FunctionRegistry::new();
         let mut queries = Vec::new();
@@ -1338,7 +1365,42 @@ CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
             &mut generated,
         );
 
-        assert!(queries.is_empty());
+        assert!(queries.iter().any(|q| q
+            .comment
+            .contains("missing semantic metadata for function 'unknown_role_fn'")));
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_emits_todo_for_incompatible_function_semantics() {
+        let db = db_with_resources();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "auth_current_user_id": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+
+        generate_role_threshold_tuples(
+            "auth_current_user_id",
+            "docs",
+            None,
+            &db,
+            &registry,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(queries.iter().any(|q| {
+            q.comment
+                .contains("incompatible semantic kind 'current_user_accessor'")
+        }));
     }
 
     #[test]
@@ -1610,6 +1672,14 @@ CREATE TABLE tasks(
         assert!(queries
             .iter()
             .any(|q| q.comment.contains("Constant TRUE policy")));
+        let constant_true = queries
+            .iter()
+            .find(|q| q.comment.contains("Constant TRUE policy"))
+            .expect("expected constant true tuple query");
+        assert!(
+            constant_true.sql.contains("WHERE id IS NOT NULL;"),
+            "constant TRUE tuple generation must fail closed for null object IDs"
+        );
 
         let p4_membership_count = queries
             .iter()
