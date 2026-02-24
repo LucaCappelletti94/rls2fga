@@ -620,12 +620,24 @@ fn extract_membership_columns(
                     );
 
                     if left_is_join && !right_is_join {
-                        fk_col = Some(left_name);
-                        continue;
+                        if fk_col
+                            .as_ref()
+                            .is_none_or(|existing| existing == &left_name)
+                        {
+                            fk_col = Some(left_name);
+                            continue;
+                        }
+                        return None;
                     }
                     if right_is_join && !left_is_join {
-                        fk_col = Some(right_name);
-                        continue;
+                        if fk_col
+                            .as_ref()
+                            .is_none_or(|existing| existing == &right_name)
+                        {
+                            fk_col = Some(right_name);
+                            continue;
+                        }
+                        return None;
                     }
                 }
             }
@@ -1746,6 +1758,30 @@ CREATE TABLE odd_members(alpha text, beta text);
         assert!(
             extracted.is_none(),
             "ambiguous membership FK should fail closed"
+        );
+    }
+
+    #[test]
+    fn extract_membership_columns_fails_when_join_predicates_conflict() {
+        let select = parse_select(
+            "SELECT m.doc_id
+             FROM doc_members m
+             WHERE m.user_id = auth_current_user_id()
+               AND m.doc_id = docs.id
+               AND m.project_id = docs.project_id",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "project_id".to_string(),
+            "user_id".to_string(),
+        ];
+
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry, None);
+        assert!(
+            extracted.is_none(),
+            "conflicting join predicates should fail closed"
         );
     }
 
