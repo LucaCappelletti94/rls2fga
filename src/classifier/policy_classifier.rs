@@ -1,4 +1,4 @@
-use sqlparser::ast::{BinaryOperator, Expr, Value};
+use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -143,6 +143,63 @@ pub fn classify_expr(
         return classify_expr(inner, db, registry, table, command);
     }
 
+    // Handle NOT unary operator: classify the inner expression to produce an informative reason
+    if let Expr::UnaryOp {
+        op: UnaryOperator::Not,
+        expr: inner,
+    } = expr
+    {
+        let inner_classified = classify_expr(inner, db, registry, table, command);
+        let desc = pattern_short_name(&inner_classified.pattern);
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: format!(
+                    "NOT applied to {desc}; negation cannot be expressed as a static \
+                     OpenFGA tuple — consider rewriting as an allowlist policy"
+                ),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+
+    // Handle negated structural forms (NOT IN list / NOT EXISTS / NOT IN subquery).
+    // Each recognizer already returns None for these, so intercept them here to give
+    // a specific diagnostic reason instead of the generic "unknown pattern" fallback.
+    if let Expr::InList { negated: true, .. } = expr {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: "NOT IN (...) cannot be represented as static OpenFGA tuples; \
+                         negation requires runtime filtering"
+                    .to_string(),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+    if let Expr::Exists { negated: true, .. } = expr {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: "NOT EXISTS cannot be represented as static OpenFGA membership tuples; \
+                         negation requires runtime filtering"
+                    .to_string(),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+    if let Expr::InSubquery { negated: true, .. } = expr {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: "NOT IN (subquery) cannot be represented as static OpenFGA membership \
+                         tuples; negation requires runtime filtering"
+                    .to_string(),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+
     // Try P1: numeric threshold
     if let Some(classified) = recognizers::recognize_p1(expr, db, registry, command) {
         return classified;
@@ -266,6 +323,22 @@ fn describe_comparison_value(expr: &Expr) -> String {
         }
     }
     "unknown".to_string()
+}
+
+fn pattern_short_name(pattern: &PatternClass) -> &'static str {
+    match pattern {
+        PatternClass::P1NumericThreshold { .. } => "numeric role-threshold check",
+        PatternClass::P2RoleNameInList { .. } => "role-name-in-list check",
+        PatternClass::P3DirectOwnership { .. } => "direct-ownership check",
+        PatternClass::P4ExistsMembership { .. } => "EXISTS membership check",
+        PatternClass::P5ParentInheritance { .. } => "parent-inheritance check",
+        PatternClass::P6BooleanFlag { .. } => "boolean-flag check",
+        PatternClass::P7AbacAnd { .. } => "ABAC-and-relationship check",
+        PatternClass::P8Composite { .. } => "composite check",
+        PatternClass::P9AttributeCondition { .. } => "attribute-condition check",
+        PatternClass::P10ConstantBool { .. } => "constant-boolean check",
+        PatternClass::Unknown { .. } => "unrecognized expression",
+    }
 }
 
 fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
@@ -514,6 +587,72 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous parent inheritance pattern")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_not_expression_names_the_inner_pattern() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let cases = [
+            (
+                "NOT (owner_id = current_user)",
+                "NOT applied to direct-ownership check",
+            ),
+            (
+                "NOT (is_public = TRUE)",
+                "NOT applied to boolean-flag check",
+            ),
+            (
+                "NOT (status = 'deleted')",
+                "NOT applied to attribute-condition check",
+            ),
+        ];
+
+        for (expr_sql, expected_fragment) in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            assert!(
+                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                    if reason.contains(expected_fragment)),
+                "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
+                classified.pattern
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+        }
+    }
+
+    #[test]
+    fn classify_negated_structural_forms_give_specific_reasons() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let cases = [
+            (
+                "owner_id NOT IN ('user-1', 'user-2')",
+                "NOT IN (...) cannot be represented",
+            ),
+            (
+                "NOT EXISTS (SELECT 1 FROM doc_members WHERE doc_id = id AND user_id = current_user)",
+                "NOT EXISTS cannot be represented",
+            ),
+            (
+                "owner_id NOT IN (SELECT user_id FROM doc_members WHERE doc_id = id)",
+                "NOT IN (subquery) cannot be represented",
+            ),
+        ];
+
+        for (expr_sql, expected_fragment) in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            assert!(
+                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                    if reason.contains(expected_fragment)),
+                "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
+                classified.pattern
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+        }
     }
 
     #[test]
