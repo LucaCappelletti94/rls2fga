@@ -175,21 +175,7 @@ pub fn recognize_p4(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            let matches = membership_matches(select.as_ref(), db, registry, None);
-
-            if matches.len() == 1 {
-                let (join_table, fk_column, user_column, extra_predicate_sql) =
-                    matches.into_iter().next()?;
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P4ExistsMembership {
-                        join_table,
-                        fk_column,
-                        user_column,
-                        extra_predicate_sql,
-                    },
-                    confidence: ConfidenceLevel::A,
-                });
-            }
+            return classify_membership_select(select.as_ref(), db, registry, None);
         }
     }
     None
@@ -331,24 +317,35 @@ pub fn recognize_p4_in_subquery(
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
             let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-            let matches = membership_matches(select.as_ref(), db, registry, Some(&projected_col));
-
-            if matches.len() == 1 {
-                let (join_table, _fk_column, user_column, extra_predicate_sql) =
-                    matches.into_iter().next()?;
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P4ExistsMembership {
-                        join_table,
-                        fk_column: projected_col,
-                        user_column,
-                        extra_predicate_sql,
-                    },
-                    confidence: ConfidenceLevel::A,
-                });
-            }
+            return classify_membership_select(select.as_ref(), db, registry, Some(projected_col));
         }
     }
     None
+}
+
+fn classify_membership_select(
+    select: &Select,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    projected_fk: Option<String>,
+) -> Option<ClassifiedExpr> {
+    let matches = membership_matches(select, db, registry, projected_fk.as_deref());
+    if matches.len() != 1 {
+        return None;
+    }
+
+    let (join_table, inferred_fk_column, user_column, extra_predicate_sql) =
+        matches.into_iter().next()?;
+
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P4ExistsMembership {
+            join_table,
+            fk_column: projected_fk.unwrap_or(inferred_fk_column),
+            user_column,
+            extra_predicate_sql,
+        },
+        confidence: ConfidenceLevel::A,
+    })
 }
 
 /// Try to recognize P10: constant boolean policies (`TRUE` / `FALSE`).
@@ -1774,6 +1771,18 @@ CREATE TABLE odd_members(alpha text, beta text);
              )",
         );
         assert!(recognize_p4_in_subquery(&unsupported, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p4_paths_fail_closed_for_values_subqueries() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let exists_values = parse_expr("EXISTS (VALUES (1))");
+        let in_values = parse_expr("id IN (VALUES (1))");
+
+        assert!(recognize_p4(&exists_values, &db, &registry).is_none());
+        assert!(recognize_p4_in_subquery(&in_values, &db, &registry).is_none());
     }
 
     #[test]
