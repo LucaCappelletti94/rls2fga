@@ -1,0 +1,24 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type ownables
+  relations
+    define grant_admin: [user, team]
+    define grant_editor: [user, team]
+    define grant_viewer: [user, team]
+    define owner_team: [team]
+    define owner_user: [user]
+    define can_select: grant_viewer or grant_viewer->member or grant_editor or grant_editor->member or grant_admin or grant_admin->member or owner_user or owner_team->member
+    define role_admin: owner_user or owner_team->member or grant_admin or grant_admin->member
+    define role_editor: role_admin or grant_editor or grant_editor->member
+    define role_viewer: role_editor or grant_viewer or grant_viewer->member
+
+type team
+  relations
+    define member: [user]

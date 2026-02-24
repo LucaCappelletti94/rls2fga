@@ -1,0 +1,8 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- Public access flag (is_public)
+SELECT 'articles:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject
+FROM articles
+WHERE is_public = TRUE;

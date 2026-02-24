@@ -1,0 +1,17 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type projects
+  relations
+    define team: [team]
+    define can_select: team->member
+
+type team
+  relations
+    define member: [user]

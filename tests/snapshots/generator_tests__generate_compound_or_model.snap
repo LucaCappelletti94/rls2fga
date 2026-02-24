@@ -1,0 +1,14 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type documents
+  relations
+    define owner: [user]
+    define public_viewer: [user:*]
+    define can_select: owner or public_viewer

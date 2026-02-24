@@ -1,0 +1,20 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type project
+
+type projects
+  relations
+    define owner: [user]
+    define can_select: owner
+
+type tasks
+  relations
+    define project: [project]
+    define can_select: project->can_select

@@ -1,0 +1,41 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- User ownership (owner_id references users)
+SELECT 'ownables:' || id AS object, 'owner_user' AS relation, 'user:' || owner_id AS subject
+FROM ownables
+WHERE owner_id IN (SELECT id FROM users)
+AND owner_id IS NOT NULL;
+
+-- Team ownership (owner_id references teams)
+SELECT 'ownables:' || id AS object, 'owner_team' AS relation, 'team:' || owner_id AS subject
+FROM ownables
+WHERE owner_id IN (SELECT id FROM teams)
+AND owner_id IS NOT NULL;
+
+-- Team memberships
+SELECT 'team:' || team_id AS object, 'member' AS relation, 'user:' || user_id AS subject
+FROM team_members;
+
+-- Explicit grants expanded to ownables rows (role_id: 2=viewer, 3=editor, 4=admin)
+SELECT
+  'ownables:' || resource.id AS object,
+  CASE og.role_id
+    WHEN 2 THEN 'grant_viewer'
+    WHEN 3 THEN 'grant_editor'
+    WHEN 4 THEN 'grant_admin'
+  END AS relation,
+  CASE
+    WHEN u.id IS NOT NULL THEN 'user:' || og.grantee_owner_id
+    WHEN t.id IS NOT NULL THEN 'team:' || og.grantee_owner_id
+    ELSE 'user:' || og.grantee_owner_id
+  END AS subject
+FROM owner_grants og
+JOIN ownables resource ON resource.owner_id = og.granted_owner_id
+LEFT JOIN users u ON u.id = og.grantee_owner_id
+                 LEFT JOIN teams t ON t.id = og.grantee_owner_id
+WHERE og.role_id IN (2, 3, 4);
+
+-- TODO [Level C]: attribute condition 'status' on ownables requires runtime enforcement; relationship tuples generated above
+-- Tuple query not emitted; attribute filter 'status' must be enforced by application logic.

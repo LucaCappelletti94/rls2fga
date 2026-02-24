@@ -1,0 +1,8 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- Constant TRUE policy (all rows are visible)
+SELECT 'docs:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject
+FROM docs
+WHERE id IS NOT NULL;

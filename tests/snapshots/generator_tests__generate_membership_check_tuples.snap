@@ -1,0 +1,13 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- team membership from team_members
+SELECT 'team:' || team_id AS object, 'member' AS relation, 'user:' || user_id AS subject
+FROM team_members;
+
+-- projects to team bridge for tuple-to-userset
+SELECT 'projects:' || id AS object, 'team' AS relation, 'team:' || team_id AS subject
+FROM projects
+WHERE id IS NOT NULL
+AND team_id IS NOT NULL;
