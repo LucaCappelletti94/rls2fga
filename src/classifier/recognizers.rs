@@ -1,8 +1,13 @@
-use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, Value};
+use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
-use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ParserDB, TableLike};
+pub use crate::parser::expr::extract_column_name;
+use crate::parser::names::{
+    is_owner_like_column_name, is_public_flag_column_name, is_user_related_column_name,
+    lookup_table, normalize_relation_name, split_schema_and_relation,
+};
+use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 
 /// Try to recognize P1: numeric role threshold `func(user, resource) >= N`.
 pub fn recognize_p1(
@@ -99,41 +104,35 @@ pub fn recognize_p3(
             return None;
         }
 
-        // Try column = function() or function() = column
-        let (col_name, func_name) = if let (Some(col), Some(func)) =
-            (extract_column_name(left), extract_function_name(right))
+        // Try column = accessor_expr or accessor_expr = column.
+        let (col_name, accessor_name) = if let (Some(col), Some(accessor)) =
+            (extract_column_name(left), current_user_accessor_name(right))
         {
-            (col, func)
-        } else if let (Some(func), Some(col)) =
-            (extract_function_name(left), extract_column_name(right))
+            (col, accessor)
+        } else if let (Some(accessor), Some(col)) =
+            (current_user_accessor_name(left), extract_column_name(right))
         {
-            (col, func)
+            (col, accessor)
         } else {
             return None;
         };
 
-        // Determine how we matched the function and assign confidence accordingly.
-        let is_registry_confirmed = registry.is_current_user_accessor(&func_name);
-        let func_lower = func_name.to_lowercase();
-        let is_sql_keyword =
-            func_lower == "current_user" || func_lower == "session_user" || func_lower == "user";
+        // Determine how we matched the accessor and assign confidence accordingly.
+        let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
+        let accessor_lower = accessor_name.to_lowercase();
+        let is_sql_keyword = is_current_user_keyword(&accessor_lower);
 
         if !is_registry_confirmed && !is_sql_keyword {
-            // Heuristic function name check
-            if !func_lower.contains("current_user")
-                && !func_lower.contains("auth")
-                && !func_lower.contains("user_id")
+            // Heuristic accessor name check
+            if !accessor_lower.contains("current_user")
+                && !accessor_lower.contains("auth")
+                && !accessor_lower.contains("user_id")
             {
                 return None;
             }
 
             // Heuristic match: require column name to look ownership-related
-            let col_lower = col_name.to_lowercase();
-            if col_lower.contains("owner")
-                || col_lower.contains("created_by")
-                || col_lower.contains("user_id")
-                || col_lower == "author_id"
-            {
+            if is_owner_like_column_name(&col_name) {
                 return Some(ClassifiedExpr {
                     pattern: PatternClass::P3DirectOwnership { column: col_name },
                     confidence: ConfidenceLevel::A,
@@ -171,39 +170,159 @@ pub fn recognize_p4(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            // Simple membership: one table, FK join + user filter
-            if select.from.len() == 1 {
-                let from = &select.from[0];
-                let table_name = extract_table_name_from_table_factor(&from.relation)?;
+            let sources = relation_sources(select.as_ref());
+            if sources.is_empty() {
+                return None;
+            }
 
-                // Check if this table exists in schema via sql-traits
-                if let Some(table) = db.table(None, &table_name) {
-                    // Collect column names for analysis
-                    let col_names: Vec<String> = table
-                        .columns(db)
-                        .map(|c| c.column_name().to_string())
-                        .collect();
+            let mut matches: Vec<(String, String, String, Option<String>)> = Vec::new();
+            for source in sources {
+                let Some(table) = lookup_table(db, &source.table_name) else {
+                    continue;
+                };
 
-                    if let Some((fk_col, user_col, extra_predicate_sql)) =
-                        extract_membership_columns(
-                            select.as_ref(),
-                            &table_name,
-                            &col_names,
-                            registry,
-                        )
-                    {
-                        return Some(ClassifiedExpr {
-                            pattern: PatternClass::P4ExistsMembership {
-                                join_table: table_name,
-                                fk_column: fk_col,
-                                user_column: user_col,
-                                extra_predicate_sql,
-                            },
-                            confidence: ConfidenceLevel::A,
-                        });
-                    }
+                let col_names: Vec<String> = table
+                    .columns(db)
+                    .map(|c| c.column_name().to_string())
+                    .collect();
+
+                if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
+                    select.as_ref(),
+                    &source.table_name,
+                    source.alias.as_deref(),
+                    &col_names,
+                    registry,
+                    None,
+                ) {
+                    matches.push((source.table_name, fk_col, user_col, extra_predicate_sql));
                 }
             }
+
+            if matches.len() == 1 {
+                let (join_table, fk_column, user_column, extra_predicate_sql) =
+                    matches.into_iter().next()?;
+                return Some(ClassifiedExpr {
+                    pattern: PatternClass::P4ExistsMembership {
+                        join_table,
+                        fk_column,
+                        user_column,
+                        extra_predicate_sql,
+                    },
+                    confidence: ConfidenceLevel::A,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Try to recognize P5: parent inheritance via correlated EXISTS on parent table.
+pub fn recognize_p5(
+    expr: &Expr,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    outer_table: &str,
+    command: &PolicyCommand,
+) -> Option<ClassifiedExpr> {
+    if let Expr::Exists { subquery, negated } = expr {
+        if *negated {
+            return None;
+        }
+
+        let query = subquery.as_ref();
+        let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
+            return None;
+        };
+        let sources = relation_sources(select.as_ref());
+        if sources.is_empty() {
+            return None;
+        }
+        let outer_table_meta = lookup_table(db, outer_table)?;
+        let selection = select.selection.as_ref()?;
+
+        let outer_cols: Vec<String> = outer_table_meta
+            .columns(db)
+            .map(|c| c.column_name().to_string())
+            .collect();
+
+        let mut predicates = Vec::new();
+        flatten_and_predicates(selection, &mut predicates);
+
+        let mut matches = Vec::new();
+        for source in sources {
+            let Some(parent_table) = lookup_table(db, &source.table_name) else {
+                continue;
+            };
+            let parent_cols: Vec<String> = parent_table
+                .columns(db)
+                .map(|c| c.column_name().to_string())
+                .collect();
+
+            let mut fk_column: Option<String> = None;
+            let mut inner_predicates: Vec<Expr> = Vec::new();
+            let mut invalid_join = false;
+
+            for pred in &predicates {
+                if let Some((outer_fk, _parent_col)) = extract_parent_join_columns(
+                    pred,
+                    outer_table,
+                    &outer_cols,
+                    &source.table_name,
+                    source.alias.as_deref(),
+                    &parent_cols,
+                ) {
+                    if fk_column
+                        .as_ref()
+                        .is_none_or(|existing| existing == &outer_fk)
+                    {
+                        fk_column = Some(outer_fk);
+                        continue;
+                    }
+                    invalid_join = true;
+                    break;
+                }
+                inner_predicates.push((*pred).clone());
+            }
+
+            if invalid_join {
+                continue;
+            }
+            let Some(fk_column) = fk_column else {
+                continue;
+            };
+            if inner_predicates.is_empty() {
+                continue;
+            }
+            if !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name) {
+                continue;
+            }
+
+            let Some(inner_expr) = combine_predicates_with_and(inner_predicates) else {
+                continue;
+            };
+            let inner_classified = crate::classifier::policy_classifier::classify_expr(
+                &inner_expr,
+                db,
+                registry,
+                &source.table_name,
+                command,
+            );
+            if matches!(inner_classified.pattern, PatternClass::Unknown { .. }) {
+                continue;
+            }
+
+            matches.push(ClassifiedExpr {
+                confidence: inner_classified.confidence,
+                pattern: PatternClass::P5ParentInheritance {
+                    parent_table: source.table_name,
+                    fk_column,
+                    inner_pattern: Box::new(inner_classified),
+                },
+            });
+        }
+
+        if matches.len() == 1 {
+            return matches.into_iter().next();
         }
     }
     None
@@ -232,38 +351,45 @@ pub fn recognize_p4_in_subquery(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            if select.from.len() == 1 {
-                let from = &select.from[0];
-                let table_name = extract_table_name_from_table_factor(&from.relation)?;
+            let sources = relation_sources(select.as_ref());
+            if sources.is_empty() {
+                return None;
+            }
 
-                // Check if this table exists in schema
-                if let Some(table) = db.table(None, &table_name) {
-                    let col_names: Vec<String> = table
-                        .columns(db)
-                        .map(|c| c.column_name().to_string())
-                        .collect();
+            let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
+            let mut matches: Vec<(String, String, Option<String>)> = Vec::new();
+            for source in sources {
+                let Some(table) = lookup_table(db, &source.table_name) else {
+                    continue;
+                };
+                let col_names: Vec<String> = table
+                    .columns(db)
+                    .map(|c| c.column_name().to_string())
+                    .collect();
 
-                    let projected_col =
-                        extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-                    if let Some((_fk_col, user_col, extra_predicate_sql)) =
-                        extract_membership_columns(
-                            select.as_ref(),
-                            &table_name,
-                            &col_names,
-                            registry,
-                        )
-                    {
-                        return Some(ClassifiedExpr {
-                            pattern: PatternClass::P4ExistsMembership {
-                                join_table: table_name,
-                                fk_column: projected_col,
-                                user_column: user_col,
-                                extra_predicate_sql,
-                            },
-                            confidence: ConfidenceLevel::A,
-                        });
-                    }
+                if let Some((_fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
+                    select.as_ref(),
+                    &source.table_name,
+                    source.alias.as_deref(),
+                    &col_names,
+                    registry,
+                    Some(projected_col.as_str()),
+                ) {
+                    matches.push((source.table_name, user_col, extra_predicate_sql));
                 }
+            }
+
+            if matches.len() == 1 {
+                let (join_table, user_column, extra_predicate_sql) = matches.into_iter().next()?;
+                return Some(ClassifiedExpr {
+                    pattern: PatternClass::P4ExistsMembership {
+                        join_table,
+                        fk_column: projected_col,
+                        user_column,
+                        extra_predicate_sql,
+                    },
+                    confidence: ConfidenceLevel::A,
+                });
             }
         }
     }
@@ -314,11 +440,7 @@ pub fn recognize_p6(
                 _ => return None,
             };
 
-            if is_true
-                && (col_name.contains("public")
-                    || col_name.contains("published")
-                    || col_name.contains("visible"))
-            {
+            if is_true && is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
                     pattern: PatternClass::P6BooleanFlag { column: col_name },
                     confidence: ConfidenceLevel::A,
@@ -327,10 +449,7 @@ pub fn recognize_p6(
         }
         Expr::Identifier(ident) => {
             let col_name = ident.value.clone();
-            if col_name.contains("public")
-                || col_name.contains("published")
-                || col_name.contains("visible")
-            {
+            if is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
                     pattern: PatternClass::P6BooleanFlag { column: col_name },
                     confidence: ConfidenceLevel::A,
@@ -347,16 +466,9 @@ pub fn recognize_p6(
 /// Extract a function name from an expression.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Function(func) => Some(func.name.to_string()),
-        _ => None,
-    }
-}
-
-/// Extract a simple column name from an expression.
-pub fn extract_column_name(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Identifier(ident) => Some(ident.value.clone()),
-        Expr::CompoundIdentifier(parts) => Some(parts.last()?.value.clone()),
+        Expr::Function(func) => Some(normalize_relation_name(&func.name.to_string())),
+        Expr::Cast { expr, .. } => extract_function_name(expr),
+        Expr::Nested(inner) => extract_function_name(inner),
         _ => None,
     }
 }
@@ -374,12 +486,52 @@ fn extract_integer_value(expr: &Expr) -> Option<i32> {
 }
 
 /// Extract a table name from a `TableFactor`.
-fn extract_table_name_from_table_factor(tf: &sqlparser::ast::TableFactor) -> Option<String> {
-    if let sqlparser::ast::TableFactor::Table { name, .. } = tf {
+fn extract_table_name_from_table_factor(tf: &TableFactor) -> Option<String> {
+    if let TableFactor::Table { name, .. } = tf {
         Some(name.to_string())
     } else {
         None
     }
+}
+
+fn extract_table_alias_from_table_factor(tf: &TableFactor) -> Option<String> {
+    if let TableFactor::Table { alias, .. } = tf {
+        alias.as_ref().map(|a| a.name.value.clone())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RelationSource {
+    table_name: String,
+    alias: Option<String>,
+}
+
+fn relation_sources(select: &Select) -> Vec<RelationSource> {
+    if select.from.len() != 1 {
+        return Vec::new();
+    }
+
+    let from = &select.from[0];
+    let mut sources = Vec::new();
+    if let Some(source) = relation_source_from_table_factor(&from.relation) {
+        sources.push(source);
+    }
+    for join in &from.joins {
+        if let Some(source) = relation_source_from_table_factor(&join.relation) {
+            sources.push(source);
+        }
+    }
+
+    sources
+}
+
+fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource> {
+    Some(RelationSource {
+        table_name: extract_table_name_from_table_factor(tf)?,
+        alias: extract_table_alias_from_table_factor(tf),
+    })
 }
 
 fn extract_projection_column(select: &Select) -> Option<String> {
@@ -393,8 +545,10 @@ fn extract_projection_column(select: &Select) -> Option<String> {
 fn extract_membership_columns(
     select: &Select,
     join_table: &str,
+    join_alias: Option<&str>,
     join_cols: &[String],
     registry: &FunctionRegistry,
+    projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
     let mut fk_col: Option<String> = None;
     let mut user_col: Option<String> = None;
@@ -415,14 +569,18 @@ fn extract_membership_columns(
                 let right_col = extract_qualified_column(right);
 
                 // user_id = auth_current_user()
-                if let Some((_, col)) = left_col.clone() {
-                    if join_cols.contains(&col) && is_current_user_expr(right, registry) {
+                if let Some((qual, col)) = left_col.clone() {
+                    if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+                        && is_current_user_expr(right, registry)
+                    {
                         user_col = Some(col);
                         continue;
                     }
                 }
-                if let Some((_, col)) = right_col.clone() {
-                    if join_cols.contains(&col) && is_current_user_expr(left, registry) {
+                if let Some((qual, col)) = right_col.clone() {
+                    if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+                        && is_current_user_expr(left, registry)
+                    {
                         user_col = Some(col);
                         continue;
                     }
@@ -432,10 +590,20 @@ fn extract_membership_columns(
                 if let (Some((left_qual, left_name)), Some((right_qual, right_name))) =
                     (left_col, right_col)
                 {
-                    let left_is_join = left_qual.as_deref().is_some_and(|q| q == join_table)
-                        || (left_qual.is_none() && join_cols.contains(&left_name));
-                    let right_is_join = right_qual.as_deref().is_some_and(|q| q == join_table)
-                        || (right_qual.is_none() && join_cols.contains(&right_name));
+                    let left_is_join = is_join_column_ref(
+                        left_qual.as_deref(),
+                        &left_name,
+                        join_table,
+                        join_alias,
+                        join_cols,
+                    );
+                    let right_is_join = is_join_column_ref(
+                        right_qual.as_deref(),
+                        &right_name,
+                        join_table,
+                        join_alias,
+                        join_cols,
+                    );
 
                     if left_is_join && !right_is_join {
                         fk_col = Some(left_name);
@@ -449,7 +617,12 @@ fn extract_membership_columns(
             }
 
             // Keep additional predicates for tuple filtering.
-            extras.push(pred.to_string());
+            let predicate_sql = pred.to_string();
+            extras.push(normalize_extra_predicate_sql(
+                &predicate_sql,
+                join_table,
+                join_alias,
+            ));
         }
     }
 
@@ -461,11 +634,12 @@ fn extract_membership_columns(
     }
 
     if fk_col.is_none() {
-        // Prefer any *_id other than the user column.
-        fk_col = join_cols
-            .iter()
-            .find(|c| c.ends_with("_id") && Some(*c) != user_col.as_ref())
-            .cloned();
+        fk_col = infer_membership_fk_column(
+            join_table,
+            join_cols,
+            user_col.as_deref(),
+            projected_fk_hint,
+        );
     }
 
     let user_col = user_col?;
@@ -505,16 +679,249 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     }
 }
 
-fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
+fn current_user_accessor_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Function(func) => {
-            let name = func.name.to_string();
-            registry.is_current_user_accessor(&name)
-        }
-        Expr::Cast { expr, .. } => is_current_user_expr(expr, registry),
-        Expr::Nested(inner) => is_current_user_expr(inner, registry),
-        _ => false,
+        Expr::Function(func) => Some(normalize_relation_name(&func.name.to_string())),
+        Expr::Identifier(ident) => Some(normalize_relation_name(&ident.value)),
+        Expr::Cast { expr, .. } => current_user_accessor_name(expr),
+        Expr::Nested(inner) => current_user_accessor_name(inner),
+        _ => None,
     }
+}
+
+fn is_current_user_keyword(name: &str) -> bool {
+    name == "current_user" || name == "session_user" || name == "user"
+}
+
+fn is_known_current_user_name(name: &str, registry: &FunctionRegistry) -> bool {
+    let normalized = normalize_relation_name(name);
+    registry.is_current_user_accessor(&normalized) || is_current_user_keyword(&normalized)
+}
+
+fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    current_user_accessor_name(expr)
+        .as_deref()
+        .is_some_and(|name| is_known_current_user_name(name, registry))
+}
+
+fn is_join_column_ref(
+    qualifier: Option<&str>,
+    column: &str,
+    join_table: &str,
+    join_alias: Option<&str>,
+    join_cols: &[String],
+) -> bool {
+    if !join_cols.iter().any(|c| c == column) {
+        return false;
+    }
+
+    match qualifier {
+        None => true,
+        Some(q) => qualifier_matches_table(q, join_table, join_alias),
+    }
+}
+
+fn normalize_extra_predicate_sql(sql: &str, join_table: &str, join_alias: Option<&str>) -> String {
+    let mut normalized = strip_qualifier_outside_literals(sql, &format!("{join_table}."));
+    if let Some((_, relation)) = split_schema_and_relation(join_table) {
+        normalized = strip_qualifier_outside_literals(&normalized, &format!("{relation}."));
+    }
+    if let Some(alias) = join_alias {
+        normalized = strip_qualifier_outside_literals(&normalized, &format!("{alias}."));
+    }
+    normalized
+}
+
+fn qualifier_matches_table(qualifier: &str, table_name: &str, alias: Option<&str>) -> bool {
+    if alias.is_some_and(|a| qualifier.eq_ignore_ascii_case(a)) {
+        return true;
+    }
+
+    table_qualifier_candidates(table_name)
+        .iter()
+        .any(|candidate| qualifier.eq_ignore_ascii_case(candidate))
+}
+
+fn table_qualifier_candidates(table_name: &str) -> Vec<String> {
+    let mut candidates = vec![table_name.to_string()];
+    if let Some((_, relation)) = split_schema_and_relation(table_name) {
+        candidates.push(relation);
+    }
+    candidates
+}
+
+fn strip_qualifier_outside_literals(sql: &str, qualifier: &str) -> String {
+    if qualifier.is_empty() {
+        return sql.to_string();
+    }
+
+    let mut out = String::with_capacity(sql.len());
+    let mut idx = 0usize;
+    let mut in_single_quote = false;
+
+    while idx < sql.len() {
+        let rest = &sql[idx..];
+
+        if !in_single_quote && rest.starts_with(qualifier) {
+            idx += qualifier.len();
+            continue;
+        }
+
+        let ch = rest
+            .chars()
+            .next()
+            .expect("slice should have at least one char");
+        let ch_len = ch.len_utf8();
+
+        if ch == '\'' {
+            if in_single_quote {
+                let after = &sql[idx + ch_len..];
+                if after.starts_with('\'') {
+                    out.push('\'');
+                    out.push('\'');
+                    idx += ch_len + 1;
+                    continue;
+                }
+                in_single_quote = false;
+            } else {
+                in_single_quote = true;
+            }
+        }
+
+        out.push(ch);
+        idx += ch_len;
+    }
+
+    out
+}
+
+fn combine_predicates_with_and(predicates: Vec<Expr>) -> Option<Expr> {
+    let mut iter = predicates.into_iter();
+    let first = iter.next()?;
+    Some(iter.fold(first, |acc, next| Expr::BinaryOp {
+        left: Box::new(acc),
+        op: BinaryOperator::And,
+        right: Box::new(next),
+    }))
+}
+
+fn extract_parent_join_columns(
+    predicate: &Expr,
+    outer_table: &str,
+    outer_cols: &[String],
+    parent_table: &str,
+    parent_alias: Option<&str>,
+    parent_cols: &[String],
+) -> Option<(String, String)> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = predicate
+    else {
+        return None;
+    };
+
+    let left_col = extract_qualified_column(left)?;
+    let right_col = extract_qualified_column(right)?;
+
+    let left_is_parent = is_parent_column_ref(
+        left_col.0.as_deref(),
+        &left_col.1,
+        parent_table,
+        parent_alias,
+        parent_cols,
+        outer_cols,
+    );
+    let right_is_parent = is_parent_column_ref(
+        right_col.0.as_deref(),
+        &right_col.1,
+        parent_table,
+        parent_alias,
+        parent_cols,
+        outer_cols,
+    );
+
+    let left_is_outer = is_outer_column_ref(
+        left_col.0.as_deref(),
+        &left_col.1,
+        outer_table,
+        outer_cols,
+        parent_cols,
+    );
+    let right_is_outer = is_outer_column_ref(
+        right_col.0.as_deref(),
+        &right_col.1,
+        outer_table,
+        outer_cols,
+        parent_cols,
+    );
+
+    if left_is_parent && right_is_outer {
+        return Some((right_col.1, left_col.1));
+    }
+    if right_is_parent && left_is_outer {
+        return Some((left_col.1, right_col.1));
+    }
+
+    None
+}
+
+fn is_parent_column_ref(
+    qualifier: Option<&str>,
+    column: &str,
+    parent_table: &str,
+    parent_alias: Option<&str>,
+    parent_cols: &[String],
+    outer_cols: &[String],
+) -> bool {
+    if !parent_cols.iter().any(|c| c == column) {
+        return false;
+    }
+
+    match qualifier {
+        Some(q) => qualifier_matches_table(q, parent_table, parent_alias),
+        None => !outer_cols.iter().any(|c| c == column),
+    }
+}
+
+fn is_outer_column_ref(
+    qualifier: Option<&str>,
+    column: &str,
+    outer_table: &str,
+    outer_cols: &[String],
+    parent_cols: &[String],
+) -> bool {
+    if !outer_cols.iter().any(|c| c == column) {
+        return false;
+    }
+
+    match qualifier {
+        Some(q) => qualifier_matches_table(q, outer_table, None),
+        None => !parent_cols.iter().any(|c| c == column),
+    }
+}
+
+fn table_has_fk_to_parent(
+    outer_table: &<ParserDB as DatabaseLike>::Table,
+    db: &ParserDB,
+    fk_column: &str,
+    parent_table_name: &str,
+) -> bool {
+    outer_table.foreign_keys(db).any(|fk| {
+        let host_col_matches = fk
+            .host_column(db)
+            .is_some_and(|col| col.column_name() == fk_column);
+        if !host_col_matches {
+            return false;
+        }
+
+        qualifier_matches_table(
+            fk.referenced_table(db).table_name(),
+            parent_table_name,
+            None,
+        )
+    })
 }
 
 /// Check if an expression references a column that looks like an attribute
@@ -550,11 +957,70 @@ fn is_literal_value(expr: &Expr) -> bool {
 }
 
 fn is_user_related_column(col: &str) -> bool {
-    let lower = col.to_lowercase();
-    lower.contains("user_id")
-        || lower.contains("owner_id")
-        || lower.contains("created_by")
-        || lower.contains("author_id")
+    is_user_related_column_name(col)
+}
+
+fn infer_membership_fk_column(
+    join_table: &str,
+    join_cols: &[String],
+    user_col: Option<&str>,
+    projected_fk_hint: Option<&str>,
+) -> Option<String> {
+    let id_candidates: Vec<String> = join_cols
+        .iter()
+        .filter(|c| c.ends_with("_id") && Some(c.as_str()) != user_col)
+        .cloned()
+        .collect();
+
+    if id_candidates.is_empty() {
+        return None;
+    }
+    if id_candidates.len() == 1 {
+        return id_candidates.first().cloned();
+    }
+
+    if let Some(hint) = projected_fk_hint {
+        if id_candidates.iter().any(|c| c == hint) {
+            return Some(hint.to_string());
+        }
+    }
+
+    let relation = normalize_relation_name(join_table);
+    let mut relation_hints = Vec::new();
+    if let Some(stem) = relation.strip_suffix("_members") {
+        relation_hints.push(format!("{stem}_id"));
+    }
+    if let Some(stem) = relation.strip_suffix("_memberships") {
+        relation_hints.push(format!("{stem}_id"));
+    }
+    if let Some(stem) = relation.strip_suffix("_membership") {
+        relation_hints.push(format!("{stem}_id"));
+    }
+
+    let hinted: Vec<String> = id_candidates
+        .iter()
+        .filter(|candidate| relation_hints.iter().any(|hint| hint == *candidate))
+        .cloned()
+        .collect();
+    if hinted.len() == 1 {
+        return hinted.into_iter().next();
+    }
+
+    let non_scope_candidates: Vec<String> = id_candidates
+        .iter()
+        .filter(|candidate| {
+            !matches!(
+                candidate.as_str(),
+                "tenant_id" | "org_id" | "organization_id" | "account_id" | "workspace_id"
+            )
+        })
+        .cloned()
+        .collect();
+    if non_scope_candidates.len() == 1 {
+        return non_scope_candidates.into_iter().next();
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -735,7 +1201,66 @@ CREATE TABLE doc_members (
                 && user_column == "user_id"
                 && extra_predicate_sql
                     .as_deref()
-                    .is_some_and(|s| s.contains("doc_members.role = 'admin'"))
+                    .is_some_and(|s| s.contains("role = 'admin'"))
+        ));
+    }
+
+    #[test]
+    fn recognize_p4_exists_supports_joined_membership_tables() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM docs d
+               JOIN doc_members dm ON dm.doc_id = d.id
+               WHERE d.id = docs.id
+                 AND dm.user_id = auth_current_user_id()
+             )",
+        );
+
+        let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column,
+                user_column,
+                ..
+            } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+        ));
+    }
+
+    #[test]
+    fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND dm.role = 'admin'
+             )",
+        );
+
+        let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column,
+                user_column,
+                extra_predicate_sql,
+            } if join_table == "doc_members"
+                && fk_column == "doc_id"
+                && user_column == "user_id"
+                && extra_predicate_sql
+                    .as_deref()
+                    .is_some_and(|s| s == "role = 'admin'")
         ));
     }
 
@@ -773,6 +1298,33 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_in_subquery_supports_joined_membership_tables() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let in_subquery = parse_expr(
+            "doc_id IN (
+               SELECT dm.doc_id
+               FROM docs d
+               JOIN doc_members dm ON dm.doc_id = d.id
+               WHERE dm.user_id = auth_current_user_id()
+             )",
+        );
+
+        let classified =
+            recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected P4 match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column,
+                user_column,
+                ..
+            } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+        ));
+    }
+
+    #[test]
     fn recognize_p10_and_p6_cover_non_matching_variants() {
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
@@ -800,6 +1352,8 @@ CREATE TABLE doc_members (
             extract_function_name(&fun).as_deref(),
             Some("auth_current_user_id")
         );
+        let schema_fun = parse_expr(r#""auth"."uid"()"#);
+        assert_eq!(extract_function_name(&schema_fun).as_deref(), Some("uid"));
 
         let id_expr = parse_expr("owner_id");
         assert!(extract_function_name(&id_expr).is_none());
@@ -841,14 +1395,15 @@ CREATE TABLE doc_members (
             "role".to_string(),
         ];
 
-        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
-            .expect("fallback should infer membership columns");
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+                .expect("fallback should infer membership columns");
         assert_eq!(extracted.0, "doc_id");
         assert_eq!(extracted.1, "member_id");
         assert!(extracted
             .2
             .as_deref()
-            .is_some_and(|s| s.contains("dm.role = 'admin'")));
+            .is_some_and(|s| s.contains("role = 'admin'")));
     }
 
     #[test]
@@ -858,6 +1413,10 @@ CREATE TABLE doc_members (
         let table_name = extract_table_name_from_table_factor(&from.relation)
             .expect("table factor should resolve");
         assert_eq!(table_name, "doc_members");
+        assert_eq!(
+            extract_table_alias_from_table_factor(&from.relation).as_deref(),
+            Some("dm")
+        );
         assert_eq!(
             extract_projection_column(&table_select).as_deref(),
             Some("doc_id")
@@ -876,10 +1435,12 @@ CREATE TABLE doc_members (
         let registry = registry_with_role_level();
         let nested = parse_expr("(auth_current_user_id())");
         let casted = parse_expr("CAST(auth_current_user_id() AS UUID)");
+        let keyword = parse_expr("current_user");
         let other = parse_expr("owner_id");
 
         assert!(is_current_user_expr(&nested, &registry));
         assert!(is_current_user_expr(&casted, &registry));
+        assert!(is_current_user_expr(&keyword, &registry));
         assert!(!is_current_user_expr(&other, &registry));
     }
 
@@ -916,8 +1477,9 @@ CREATE TABLE doc_members (
             "role".to_string(),
         ];
 
-        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
-            .expect("reversed predicates should still infer membership columns");
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+                .expect("reversed predicates should still infer membership columns");
         assert_eq!(extracted.0, "doc_id");
         assert_eq!(extracted.1, "user_id");
     }
@@ -1068,14 +1630,15 @@ CREATE TABLE odd_members(alpha text, beta text);
             "role".to_string(),
         ];
 
-        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
-            .expect("columns should still be inferred");
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+                .expect("columns should still be inferred");
         assert_eq!(extracted.0, "doc_id");
         assert_eq!(extracted.1, "user_id");
         assert!(extracted
             .2
             .as_deref()
-            .is_some_and(|s| s.contains("dm.role > 'a'")));
+            .is_some_and(|s| s.contains("role > 'a'")));
     }
 
     #[test]
@@ -1088,11 +1651,116 @@ CREATE TABLE odd_members(alpha text, beta text);
             "role".to_string(),
         ];
 
-        let extracted = extract_membership_columns(&select, "doc_members", &cols, &registry)
-            .expect("fallback should infer columns even without WHERE");
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+                .expect("fallback should infer columns even without WHERE");
         assert_eq!(extracted.0, "doc_id");
         assert_eq!(extracted.1, "user_id");
         assert!(extracted.2.is_none());
+    }
+
+    #[test]
+    fn membership_column_extraction_prefers_relation_hint_over_scope_ids() {
+        let select = parse_select(
+            "SELECT dm.doc_id
+             FROM doc_members dm
+             WHERE dm.role = 'admin'",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "tenant_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+                .expect("relation hint should select doc_id");
+        assert_eq!(extracted.0, "doc_id");
+    }
+
+    #[test]
+    fn membership_column_extraction_fails_when_fk_remains_ambiguous() {
+        let select = parse_select(
+            "SELECT m.alpha_id
+             FROM memberships m
+             WHERE m.role = 'admin'",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "alpha_id".to_string(),
+            "beta_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+
+        let extracted =
+            extract_membership_columns(&select, "memberships", Some("m"), &cols, &registry, None);
+        assert!(
+            extracted.is_none(),
+            "ambiguous membership FK should fail closed"
+        );
+    }
+
+    #[test]
+    fn recognize_p5_accepts_unqualified_parent_column_when_unambiguous() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(project_uuid UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(project_uuid));
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM projects p
+               WHERE project_uuid = tasks.project_id
+                 AND p.owner_id = current_user
+             )",
+        );
+
+        let classified = recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select)
+            .expect("expected P5 classification");
+        assert!(matches!(
+            classified.pattern,
+            PatternClass::P5ParentInheritance { ref parent_table, ref fk_column, .. }
+                if parent_table == "projects" && fk_column == "project_id"
+        ));
+    }
+
+    #[test]
+    fn recognize_p5_supports_joined_parent_sources() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(project_uuid UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
+CREATE TABLE project_tags(project_id UUID REFERENCES projects(project_uuid), tag TEXT);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(project_uuid));
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM projects p
+               JOIN project_tags pt ON pt.project_id = p.project_uuid
+               WHERE p.project_uuid = tasks.project_id
+                 AND p.owner_id = current_user
+             )",
+        );
+
+        let classified = recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select)
+            .expect("expected P5 classification");
+        assert!(matches!(
+            classified.pattern,
+            PatternClass::P5ParentInheritance { ref parent_table, ref fk_column, .. }
+                if parent_table == "projects" && fk_column == "project_id"
+        ));
     }
 
     #[test]
