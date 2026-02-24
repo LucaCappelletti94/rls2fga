@@ -33,6 +33,18 @@ struct RolePrincipalResolution {
     team: Option<PrincipalTable>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RoleThresholdResourceHints {
+    columns: HashMap<(String, String), String>,
+    conflicts: BTreeSet<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RoleThresholdResourceJoin<'a> {
+    column: Option<&'a str>,
+    conflict: bool,
+}
+
 /// Format a list of tuple queries into a single SQL string.
 pub fn format_tuples(tuples: &[TupleQuery]) -> String {
     let mut out = String::new();
@@ -56,7 +68,7 @@ pub fn generate_tuple_queries(
     registry: &FunctionRegistry,
 ) -> Vec<TupleQuery> {
     let mut queries = Vec::new();
-    let role_threshold_resource_columns = infer_role_threshold_resource_columns(policies, registry);
+    let role_threshold_resource_hints = infer_role_threshold_resource_columns(policies, registry);
 
     // Track which tuple types we've already generated to avoid duplicates
     let mut generated = std::collections::HashSet::new();
@@ -69,7 +81,7 @@ pub fn generate_tuple_queries(
                 &cp.table_name(),
                 db,
                 registry,
-                &role_threshold_resource_columns,
+                &role_threshold_resource_hints,
                 &mut queries,
                 &mut generated,
             );
@@ -117,7 +129,7 @@ fn generate_tuples_for_pattern(
     table: &str,
     db: &ParserDB,
     registry: &FunctionRegistry,
-    role_threshold_resource_columns: &HashMap<(String, String), String>,
+    role_threshold_resource_hints: &RoleThresholdResourceHints,
     queries: &mut Vec<TupleQuery>,
     generated: &mut std::collections::HashSet<String>,
 ) {
@@ -126,14 +138,19 @@ fn generate_tuples_for_pattern(
     match pattern {
         PatternClass::P1NumericThreshold { function_name, .. }
         | PatternClass::P2RoleNameInList { function_name, .. } => {
-            let resource_join_col = role_threshold_resource_columns
-                .get(&(table.to_string(), function_name.clone()))
-                .map(String::as_str);
+            let key = (table.to_string(), function_name.clone());
+            let resource_join = RoleThresholdResourceJoin {
+                column: role_threshold_resource_hints
+                    .columns
+                    .get(&key)
+                    .map(String::as_str),
+                conflict: role_threshold_resource_hints.conflicts.contains(&key),
+            };
 
-            generate_role_threshold_tuples(
+            generate_role_threshold_tuples_with_options(
                 function_name,
                 table,
-                resource_join_col,
+                resource_join,
                 db,
                 registry,
                 queries,
@@ -200,7 +217,7 @@ fn generate_tuples_for_pattern(
                     table,
                     db,
                     registry,
-                    role_threshold_resource_columns,
+                    role_threshold_resource_hints,
                     queries,
                     generated,
                 );
@@ -214,7 +231,7 @@ fn generate_tuples_for_pattern(
                 table,
                 db,
                 registry,
-                role_threshold_resource_columns,
+                role_threshold_resource_hints,
                 queries,
                 generated,
             );
@@ -235,10 +252,34 @@ fn generate_tuples_for_pattern(
     }
 }
 
+#[cfg(test)]
 fn generate_role_threshold_tuples(
     function_name: &str,
     table: &str,
     resource_join_col: Option<&str>,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    queries: &mut Vec<TupleQuery>,
+    generated: &mut std::collections::HashSet<String>,
+) {
+    generate_role_threshold_tuples_with_options(
+        function_name,
+        table,
+        RoleThresholdResourceJoin {
+            column: resource_join_col,
+            conflict: false,
+        },
+        db,
+        registry,
+        queries,
+        generated,
+    );
+}
+
+fn generate_role_threshold_tuples_with_options(
+    function_name: &str,
+    table: &str,
+    resource_join: RoleThresholdResourceJoin<'_>,
     db: &ParserDB,
     registry: &FunctionRegistry,
     queries: &mut Vec<TupleQuery>,
@@ -367,7 +408,17 @@ fn generate_role_threshold_tuples(
             return;
         }
 
-        let Some(grant_join_col) = resource_join_col.or(owner_col.as_deref()) else {
+        if resource_join.conflict {
+            queries.push(TupleQuery {
+                comment: format!(
+                    "-- TODO [Level D]: skipped explicit grants for {table} (conflicting resource join columns inferred from policies)"
+                ),
+                sql: "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.".to_string(),
+            });
+            return;
+        }
+
+        let Some(grant_join_col) = resource_join.column.or(owner_col.as_deref()) else {
             queries.push(TupleQuery {
                 comment: format!(
                     "-- TODO [Level D]: skipped explicit grants for {table} (missing resource join column)"
@@ -563,8 +614,8 @@ fn table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
 fn infer_role_threshold_resource_columns(
     policies: &[ClassifiedPolicy],
     registry: &FunctionRegistry,
-) -> HashMap<(String, String), String> {
-    let mut map = HashMap::new();
+) -> RoleThresholdResourceHints {
+    let mut hints = RoleThresholdResourceHints::default();
 
     for cp in policies {
         collect_policy_resource_column(
@@ -572,18 +623,20 @@ fn infer_role_threshold_resource_columns(
             cp.policy.using.as_ref(),
             cp.using_classification.as_ref(),
             registry,
-            &mut map,
+            &mut hints.columns,
+            &mut hints.conflicts,
         );
         collect_policy_resource_column(
             &cp.table_name(),
             cp.policy.with_check.as_ref(),
             cp.with_check_classification.as_ref(),
             registry,
-            &mut map,
+            &mut hints.columns,
+            &mut hints.conflicts,
         );
     }
 
-    map
+    hints
 }
 
 fn collect_policy_resource_column(
@@ -592,6 +645,7 @@ fn collect_policy_resource_column(
     classified: Option<&ClassifiedExpr>,
     registry: &FunctionRegistry,
     out: &mut HashMap<(String, String), String>,
+    conflicts: &mut BTreeSet<(String, String)>,
 ) {
     let Some(expr) = policy_expr else {
         return;
@@ -600,14 +654,26 @@ fn collect_policy_resource_column(
     for (function_name, resource_param_index) in
         role_threshold_functions_and_resource_params(classified, registry)
     {
+        let key = (table.to_string(), function_name);
+        if conflicts.contains(&key) {
+            continue;
+        }
+
         let Some(resource_col) =
-            extract_resource_column_for_function(expr, &function_name, resource_param_index)
+            extract_resource_column_for_function(expr, &key.1, resource_param_index)
         else {
             continue;
         };
 
-        out.entry((table.to_string(), function_name))
-            .or_insert(resource_col);
+        if let Some(existing) = out.get(&key) {
+            if existing != &resource_col {
+                out.remove(&key);
+                conflicts.insert(key);
+            }
+            continue;
+        }
+
+        out.insert(key, resource_col);
     }
 }
 
@@ -894,7 +960,6 @@ mod tests {
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
-    use std::collections::HashMap;
 
     fn parse_expr(expr_sql: &str) -> Expr {
         Parser::new(&PostgreSqlDialect {})
@@ -1209,7 +1274,7 @@ CREATE TABLE tasks(
         let registry = registry_with_role_threshold(false);
         let mut queries = Vec::new();
         let mut generated = std::collections::HashSet::new();
-        let role_threshold_resource_columns = HashMap::new();
+        let role_threshold_resource_hints = RoleThresholdResourceHints::default();
 
         let p4 = PatternClass::P4ExistsMembership {
             join_table: "doc_members".to_string(),
@@ -1222,7 +1287,7 @@ CREATE TABLE tasks(
             "docs",
             &db,
             &registry,
-            &role_threshold_resource_columns,
+            &role_threshold_resource_hints,
             &mut queries,
             &mut generated,
         );
@@ -1231,7 +1296,7 @@ CREATE TABLE tasks(
             "docs",
             &db,
             &registry,
-            &role_threshold_resource_columns,
+            &role_threshold_resource_hints,
             &mut queries,
             &mut generated,
         );
@@ -1250,7 +1315,7 @@ CREATE TABLE tasks(
             "docs",
             &db,
             &registry,
-            &role_threshold_resource_columns,
+            &role_threshold_resource_hints,
             &mut queries,
             &mut generated,
         );
@@ -1279,7 +1344,7 @@ CREATE TABLE tasks(
             "docs",
             &db,
             &registry,
-            &role_threshold_resource_columns,
+            &role_threshold_resource_hints,
             &mut queries,
             &mut generated,
         );
@@ -1476,6 +1541,61 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 .contains("JOIN docs resource ON resource.id = og.resource_id"),
             "expected composite policy extraction to preserve join on `id`, got:\n{}",
             explicit_grants.sql
+        );
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_emits_todo_when_resource_columns_conflict() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id uuid primary key);
+CREATE TABLE docs(id uuid primary key, owner_id uuid references users(id), project_id uuid);
+CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select_id ON docs FOR SELECT
+  USING (role_level(auth_current_user_id(), id) >= 2);
+CREATE POLICY docs_select_project ON docs FOR SELECT
+  USING (role_level(auth_current_user_id(), project_id) >= 2);
+",
+        )
+        .expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 1, "editor": 2},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"
+  },
+  "auth_current_user_id": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry);
+
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("conflicting resource join columns")),
+            "expected conflict TODO when role threshold resource columns disagree"
+        );
+        assert!(
+            !queries
+                .iter()
+                .any(|q| q.comment.contains("Explicit grants expanded to docs rows")),
+            "explicit grants should be skipped when resource join column is ambiguous"
         );
     }
 
