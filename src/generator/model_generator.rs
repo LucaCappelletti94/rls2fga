@@ -662,12 +662,12 @@ fn pattern_to_expr_for_target(
             fk_column,
             inner_pattern,
         } => {
-            if matches!(inner_pattern.pattern, PatternClass::Unknown { .. }) {
+            if let PatternClass::Unknown { reason, .. } = &inner_pattern.pattern {
                 todos.push(TodoItem {
                     level: ConfidenceLevel::D,
                     policy_name: policy_name.to_string(),
                     message: format!(
-                        "Parent inheritance from '{parent_table}' has unknown inner rule; mapped to no_access"
+                        "Parent inheritance from '{parent_table}' has unknown inner rule ({reason}); mapped to no_access"
                     ),
                 });
                 return deny_expr(table_plan);
@@ -747,12 +747,13 @@ fn pattern_to_expr_for_target(
                 deny_expr(table_plan)
             }
         }
-        PatternClass::Unknown { .. } => {
+        PatternClass::Unknown { reason, .. } => {
             todos.push(TodoItem {
                 level: ConfidenceLevel::D,
                 policy_name: policy_name.to_string(),
-                message: "Expression could not be safely translated; mapped to no_access"
-                    .to_string(),
+                message: format!(
+                    "Expression could not be safely translated ({reason}); mapped to no_access"
+                ),
             });
             deny_expr(table_plan)
         }
@@ -1291,6 +1292,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(plan.todos.iter().any(|t| t
             .message
             .contains("Expression could not be safely translated")));
+        assert!(plan
+            .todos
+            .iter()
+            .any(|t| t.message.contains("not supported")));
     }
 
     #[test]
