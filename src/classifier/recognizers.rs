@@ -20,6 +20,8 @@ pub fn recognize_p1(
         let (func_expr, threshold_expr, operator) = match op {
             BinaryOperator::GtEq => (left.as_ref(), right.as_ref(), ThresholdOperator::Gte),
             BinaryOperator::Gt => (left.as_ref(), right.as_ref(), ThresholdOperator::Gt),
+            BinaryOperator::LtEq => (right.as_ref(), left.as_ref(), ThresholdOperator::Gte),
+            BinaryOperator::Lt => (right.as_ref(), left.as_ref(), ThresholdOperator::Gt),
             _ => return None,
         };
 
@@ -99,60 +101,63 @@ pub fn recognize_p3(
     _db: &ParserDB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::BinaryOp { left, op, right } = expr {
-        if !matches!(op, BinaryOperator::Eq) {
+    let (left, right) = match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        }
+        | Expr::IsNotDistinctFrom(left, right) => (left.as_ref(), right.as_ref()),
+        _ => return None,
+    };
+
+    // Try column = accessor_expr or accessor_expr = column.
+    let (col_name, accessor_name) = if let (Some(col), Some(accessor)) =
+        (extract_column_name(left), current_user_accessor_name(right))
+    {
+        (col, accessor)
+    } else if let (Some(accessor), Some(col)) =
+        (current_user_accessor_name(left), extract_column_name(right))
+    {
+        (col, accessor)
+    } else {
+        return None;
+    };
+
+    // Determine how we matched the accessor and assign confidence accordingly.
+    let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
+    let accessor_lower = accessor_name.to_lowercase();
+    let is_sql_keyword = is_current_user_keyword(&accessor_lower);
+
+    if !is_registry_confirmed && !is_sql_keyword {
+        // Heuristic accessor name check
+        if !accessor_lower.contains("current_user")
+            && !accessor_lower.contains("auth")
+            && !accessor_lower.contains("user_id")
+        {
             return None;
         }
 
-        // Try column = accessor_expr or accessor_expr = column.
-        let (col_name, accessor_name) = if let (Some(col), Some(accessor)) =
-            (extract_column_name(left), current_user_accessor_name(right))
-        {
-            (col, accessor)
-        } else if let (Some(accessor), Some(col)) =
-            (current_user_accessor_name(left), extract_column_name(right))
-        {
-            (col, accessor)
-        } else {
-            return None;
-        };
-
-        // Determine how we matched the accessor and assign confidence accordingly.
-        let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
-        let accessor_lower = accessor_name.to_lowercase();
-        let is_sql_keyword = is_current_user_keyword(&accessor_lower);
-
-        if !is_registry_confirmed && !is_sql_keyword {
-            // Heuristic accessor name check
-            if !accessor_lower.contains("current_user")
-                && !accessor_lower.contains("auth")
-                && !accessor_lower.contains("user_id")
-            {
-                return None;
-            }
-
-            // Heuristic match: require column name to look ownership-related
-            if is_owner_like_column_name(&col_name) {
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P3DirectOwnership { column: col_name },
-                    confidence: ConfidenceLevel::A,
-                });
-            }
-
-            // Heuristic function + non-standard column → confidence B
+        // Heuristic match: require column name to look ownership-related
+        if is_owner_like_column_name(&col_name) {
             return Some(ClassifiedExpr {
                 pattern: PatternClass::P3DirectOwnership { column: col_name },
-                confidence: ConfidenceLevel::B,
+                confidence: ConfidenceLevel::A,
             });
         }
 
-        // Registry-confirmed or SQL keyword: accept any column at confidence A
+        // Heuristic function + non-standard column → confidence B
         return Some(ClassifiedExpr {
             pattern: PatternClass::P3DirectOwnership { column: col_name },
-            confidence: ConfidenceLevel::A,
+            confidence: ConfidenceLevel::B,
         });
     }
-    None
+
+    // Registry-confirmed or SQL keyword: accept any column at confidence A
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P3DirectOwnership { column: col_name },
+        confidence: ConfidenceLevel::A,
+    })
 }
 
 /// Try to recognize P4: EXISTS membership check.
@@ -1143,6 +1148,37 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p1_accepts_reversed_comparators() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let gte = parse_expr("2 <= role_level(auth_current_user_id(), id)");
+        let classified_gte =
+            recognize_p1(&gte, &db, &registry, &PolicyCommand::Select).expect("expected P1 match");
+        assert!(matches!(
+            &classified_gte.pattern,
+            PatternClass::P1NumericThreshold {
+                operator: ThresholdOperator::Gte,
+                threshold,
+                ..
+            } if *threshold == 2
+        ));
+
+        let gt = parse_expr("2 < role_level(auth_current_user_id(), id)");
+        let classified_gt =
+            recognize_p1(&gt, &db, &registry, &PolicyCommand::Delete).expect("expected P1 match");
+        assert!(matches!(
+            &classified_gt.pattern,
+            PatternClass::P1NumericThreshold {
+                operator: ThresholdOperator::Gt,
+                threshold,
+                command: PolicyCommand::Delete,
+                ..
+            } if *threshold == 2
+        ));
+    }
+
+    #[test]
     fn recognize_p2_handles_negation_and_literal_filtering() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -1189,6 +1225,20 @@ CREATE TABLE doc_members (
 
         let not_eq = parse_expr("owner_id <> auth_current_user_id()");
         assert!(recognize_p3(&not_eq, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p3_supports_is_not_distinct_from() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("owner_id IS NOT DISTINCT FROM auth_current_user_id()");
+        let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
+        assert!(matches!(
+            classified.pattern,
+            PatternClass::P3DirectOwnership { ref column } if column == "owner_id"
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::A);
     }
 
     #[test]
