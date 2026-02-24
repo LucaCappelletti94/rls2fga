@@ -33,6 +33,18 @@ pub enum FunctionSemantic {
         /// Team column in the team-membership table.
         #[serde(default)]
         team_membership_team_col: Option<String>,
+        /// Optional user principal table used for ownership/grant subject resolution.
+        #[serde(default)]
+        user_table: Option<String>,
+        /// Primary-key column of `user_table`.
+        #[serde(default)]
+        user_pk_col: Option<String>,
+        /// Optional team principal table used for ownership/grant subject resolution.
+        #[serde(default)]
+        team_table: Option<String>,
+        /// Primary-key column of `team_table`.
+        #[serde(default)]
+        team_pk_col: Option<String>,
     },
 
     /// A function that returns the current authenticated user's ID.
@@ -146,6 +158,10 @@ mod tests {
             team_membership_table: Some("team_memberships".to_string()),
             team_membership_user_col: Some("user_id".to_string()),
             team_membership_team_col: Some("team_id".to_string()),
+            user_table: Some("users".to_string()),
+            user_pk_col: Some("id".to_string()),
+            team_table: Some("teams".to_string()),
+            team_pk_col: Some("id".to_string()),
         };
 
         let json = serde_json::to_string(&semantic).expect("semantic should serialize");
@@ -158,8 +174,18 @@ mod tests {
                 team_membership_table: Some(ref table),
                 team_membership_user_col: Some(ref user_col),
                 team_membership_team_col: Some(ref team_col),
+                user_table: Some(ref user_table),
+                user_pk_col: Some(ref user_pk_col),
+                team_table: Some(ref team_table),
+                team_pk_col: Some(ref team_pk_col),
                 ..
-            } if table == "team_memberships" && user_col == "user_id" && team_col == "team_id"
+            } if table == "team_memberships"
+                && user_col == "user_id"
+                && team_col == "team_id"
+                && user_table == "users"
+                && user_pk_col == "id"
+                && team_table == "teams"
+                && team_pk_col == "id"
         ));
     }
 }

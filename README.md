@@ -28,27 +28,39 @@ Installed hooks:
 Run the same checks manually:
 
 ```bash
-cargo run --bin xtask -- precommit
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --features db --lib --tests
 ```
 
 Validate a commit message manually:
 
 ```bash
-cargo run --bin xtask -- commit-msg .git/COMMIT_EDITMSG
+./scripts/validate-commit-msg.sh .git/COMMIT_EDITMSG
 ```
 
 Include Docker-backed ignored tests (`OpenFGA` + `PostgreSQL` 18):
 
 ```bash
-cargo run --bin xtask -- precommit --with-docker
+cargo test --features db --tests -- --ignored
 ```
 
 ## CI
 
 GitHub Actions CI is defined in `.github/workflows/ci.yml` with:
 
-- `quality` matrix job (`ubuntu`, `macos`, `windows`) via `xtask ci --locked`
+- `quality` matrix job (`ubuntu`, `macos`, `windows`) via direct cargo checks
 - `docs` job (`ubuntu`) building rustdoc with warnings denied
 - `security-audit` job (`ubuntu`) checking dependencies with `cargo audit`
 - `docker-integration` job (`ubuntu`) for ignored Docker-backed integration tests
 - `coverage` job (`ubuntu`) generating coverage via `cargo llvm-cov` and uploading to Codecov
+
+## Dependency update policy
+
+`sqlparser` is currently tracked from the upstream `main` branch.
+
+When `Cargo.lock` updates that dependency, include in the same PR:
+
+- `cargo test --lib`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- snapshot/test updates for parser-classifier-generator behavior changes
