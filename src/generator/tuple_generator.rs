@@ -5,7 +5,8 @@ use crate::parser::expr::extract_column_name;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name, split_schema_and_relation,
+    parent_type_from_fk_column, policy_scope_relation_name, split_qualified_identifier_parts,
+    split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{
@@ -107,7 +108,10 @@ fn emit_policy_scope_tuples(
     }
 
     let table_type = canonical_fga_type_name(table);
-    let object_col = find_object_column(table, db);
+    let Some(object_col) = find_object_column(table, db) else {
+        emit_missing_object_identifier_todo(table, "policy scope tuples", queries, generated);
+        return;
+    };
     let table_sql = quote_sql_identifier(table);
     let object_col_sql = quote_sql_identifier(&object_col);
     let scope_relation = policy_scope_relation_name(cp.name());
@@ -165,7 +169,15 @@ fn generate_tuples_for_pattern(
         PatternClass::P3DirectOwnership { column } => {
             let key = format!("p3:{table}:{column}");
             if generated.insert(key) {
-                let object_col = find_object_column(table, db);
+                let Some(object_col) = find_object_column(table, db) else {
+                    emit_missing_object_identifier_todo(
+                        table,
+                        "ownership tuples",
+                        queries,
+                        generated,
+                    );
+                    return;
+                };
                 let table_sql = quote_sql_identifier(table);
                 let object_col_sql = quote_sql_identifier(&object_col);
                 let column_sql = quote_sql_identifier(column);
@@ -212,7 +224,15 @@ fn generate_tuples_for_pattern(
         PatternClass::P6BooleanFlag { column } => {
             let key = format!("p6:{table}:{column}");
             if generated.insert(key) {
-                let object_col = find_object_column(table, db);
+                let Some(object_col) = find_object_column(table, db) else {
+                    emit_missing_object_identifier_todo(
+                        table,
+                        "public-flag tuples",
+                        queries,
+                        generated,
+                    );
+                    return;
+                };
                 let table_sql = quote_sql_identifier(table);
                 let object_col_sql = quote_sql_identifier(&object_col);
                 let column_sql = quote_sql_identifier(column);
@@ -253,7 +273,15 @@ fn generate_tuples_for_pattern(
         PatternClass::P10ConstantBool { value } => {
             let key = format!("p10:{table}:{value}");
             if generated.insert(key) && *value {
-                let object_col = find_object_column(table, db);
+                let Some(object_col) = find_object_column(table, db) else {
+                    emit_missing_object_identifier_todo(
+                        table,
+                        "constant-TRUE tuples",
+                        queries,
+                        generated,
+                    );
+                    return;
+                };
                 let table_sql = quote_sql_identifier(table);
                 let object_col_sql = quote_sql_identifier(&object_col);
                 queries.push(TupleQuery {
@@ -264,8 +292,47 @@ fn generate_tuples_for_pattern(
                 });
             }
         }
-        _ => {}
+        PatternClass::P9AttributeCondition { column, .. } => {
+            emit_untranslated_pattern_todo(
+                table,
+                "P9",
+                &format!(
+                    "attribute condition on '{column}' requires runtime filtering; no static tuple mapping"
+                ),
+                queries,
+                generated,
+            );
+        }
+        PatternClass::Unknown { reason, .. } => {
+            emit_untranslated_pattern_todo(
+                table,
+                "Unknown",
+                &format!("classifier could not translate expression: {reason}"),
+                queries,
+                generated,
+            );
+        }
     }
+}
+
+fn emit_untranslated_pattern_todo(
+    table: &str,
+    pattern: &str,
+    detail: &str,
+    queries: &mut Vec<TupleQuery>,
+    generated: &mut std::collections::HashSet<String>,
+) {
+    let key = format!("todo:unsupported:{table}:{pattern}:{detail}");
+    if !generated.insert(key) {
+        return;
+    }
+
+    queries.push(TupleQuery {
+        comment: format!(
+            "-- TODO [Level D]: skipped tuple generation for {table} (unsupported pattern {pattern})"
+        ),
+        sql: format!("-- Tuple query not emitted; {detail}."),
+    });
 }
 
 #[cfg(test)]
@@ -337,60 +404,64 @@ fn generate_role_threshold_tuples_with_options(
         let owner_col = find_owner_column(table, db);
         let object_col = find_object_column(table, db);
         let table_sql = quote_sql_identifier(table);
-        let object_col_sql = quote_sql_identifier(&object_col);
 
         if let Some(owner_col) = owner_col.as_deref() {
-            let owner_col_sql = quote_sql_identifier(owner_col);
-            // 1. User ownership
-            if let Some(user_principal) = principals.user.as_ref() {
-                let user_table_sql = quote_sql_identifier(&user_principal.table);
-                let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
-                queries.push(TupleQuery {
-                    comment: format!(
-                        "-- User ownership ({owner_col} references {})",
-                        user_principal.table
-                    ),
-                    sql: format!(
-                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_user' AS relation, 'user:' || {owner_col_sql} AS subject\n\
-                         FROM {table_sql}\n\
-                         WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
-                         AND {owner_col_sql} IS NOT NULL;"
-                    ),
-                });
-            } else {
-                queries.push(TupleQuery {
-                    comment: format!(
-                        "-- TODO [Level D]: skipped user ownership tuples for {table} (unresolved user principal table)"
-                    ),
-                    sql: "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string(),
-                });
-            }
-
-            // 2. Team ownership (if teams exist)
-            if team_membership_table.is_some() {
-                if let Some(team_principal) = principals.team.as_ref() {
-                    let team_table_sql = quote_sql_identifier(&team_principal.table);
-                    let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
+            if let Some(object_col) = object_col.as_deref() {
+                let object_col_sql = quote_sql_identifier(object_col);
+                let owner_col_sql = quote_sql_identifier(owner_col);
+                // 1. User ownership
+                if let Some(user_principal) = principals.user.as_ref() {
+                    let user_table_sql = quote_sql_identifier(&user_principal.table);
+                    let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
                     queries.push(TupleQuery {
                         comment: format!(
-                            "-- Team ownership ({owner_col} references {})",
-                            team_principal.table
+                            "-- User ownership ({owner_col} references {})",
+                            user_principal.table
                         ),
                         sql: format!(
-                            "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_team' AS relation, 'team:' || {owner_col_sql} AS subject\n\
+                            "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_user' AS relation, 'user:' || {owner_col_sql} AS subject\n\
                              FROM {table_sql}\n\
-                             WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
+                             WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
                              AND {owner_col_sql} IS NOT NULL;"
                         ),
                     });
                 } else {
                     queries.push(TupleQuery {
                         comment: format!(
-                            "-- TODO [Level D]: skipped team ownership tuples for {table} (unresolved team principal table)"
+                            "-- TODO [Level D]: skipped user ownership tuples for {table} (unresolved user principal table)"
                         ),
-                        sql: "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string(),
+                        sql: "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string(),
                     });
                 }
+
+                // 2. Team ownership (if teams exist)
+                if team_membership_table.is_some() {
+                    if let Some(team_principal) = principals.team.as_ref() {
+                        let team_table_sql = quote_sql_identifier(&team_principal.table);
+                        let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
+                        queries.push(TupleQuery {
+                            comment: format!(
+                                "-- Team ownership ({owner_col} references {})",
+                                team_principal.table
+                            ),
+                            sql: format!(
+                                "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_team' AS relation, 'team:' || {owner_col_sql} AS subject\n\
+                                 FROM {table_sql}\n\
+                                 WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
+                                 AND {owner_col_sql} IS NOT NULL;"
+                            ),
+                        });
+                    } else {
+                        queries.push(TupleQuery {
+                            comment: format!(
+                                "-- TODO [Level D]: skipped team ownership tuples for {table} (unresolved team principal table)"
+                            ),
+                            sql: "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string(),
+                        });
+                    }
+                }
+            } else {
+                emit_missing_object_identifier_todo(table, "ownership tuples", queries, generated);
             }
         } else {
             queries.push(TupleQuery {
@@ -419,6 +490,27 @@ fn generate_role_threshold_tuples_with_options(
                          FROM {tm_table_sql};"
                     ),
                 });
+            }
+        } else if let Some(tm_table) = team_membership_table {
+            let mut missing_fields = Vec::new();
+            if team_membership_user_col.is_none() {
+                missing_fields.push("team_membership_user_col");
+            }
+            if team_membership_team_col.is_none() {
+                missing_fields.push("team_membership_team_col");
+            }
+
+            if !missing_fields.is_empty() {
+                let missing = missing_fields.join(", ");
+                let tm_key = format!("team_membership_todo:{tm_table}:{missing}");
+                if generated.insert(tm_key) {
+                    queries.push(TupleQuery {
+                        comment: format!(
+                            "-- TODO [Level D]: skipped team memberships for {tm_table} (incomplete team membership metadata: missing {missing})"
+                        ),
+                        sql: "-- Team membership tuples not emitted; add missing role_threshold team membership fields.".to_string(),
+                    });
+                }
             }
         }
 
@@ -450,6 +542,11 @@ fn generate_role_threshold_tuples_with_options(
             });
             return;
         };
+        let Some(object_col) = object_col.as_deref() else {
+            emit_missing_object_identifier_todo(table, "explicit grant tuples", queries, generated);
+            return;
+        };
+        let object_col_sql = quote_sql_identifier(object_col);
 
         for role in &sorted_roles {
             role_cases.push(format!(
@@ -576,44 +673,37 @@ fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
                 .find(|c| c.column_name() == "id")
                 .map(|c| c.column_name().to_string())
         })
-        .or_else(|| {
-            table_info
-                .columns(db)
-                .next()
-                .map(|c| c.column_name().to_string())
-        })
 }
 
-fn find_object_column(table: &str, db: &ParserDB) -> String {
-    resolve_object_column(table, db).unwrap_or_else(|| "id".to_string())
+fn find_object_column(table: &str, db: &ParserDB) -> Option<String> {
+    resolve_object_column(table, db)
+}
+
+fn emit_missing_object_identifier_todo(
+    table: &str,
+    context: &str,
+    queries: &mut Vec<TupleQuery>,
+    generated: &mut std::collections::HashSet<String>,
+) {
+    let key = format!("todo:missing_object_identifier:{table}:{context}");
+    if !generated.insert(key) {
+        return;
+    }
+
+    queries.push(TupleQuery {
+        comment: format!(
+            "-- TODO [Level D]: skipped {context} for {table} (missing object identifier column)"
+        ),
+        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+    });
 }
 
 fn quote_sql_identifier(identifier: &str) -> String {
-    split_qualified_identifier(identifier)
+    split_qualified_identifier_parts(identifier)
         .into_iter()
         .map(|part| quote_sql_identifier_part(&part))
         .collect::<Vec<_>>()
         .join(".")
-}
-
-fn split_qualified_identifier(identifier: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut in_quotes = false;
-
-    for (idx, ch) in identifier.char_indices() {
-        match ch {
-            '"' => in_quotes = !in_quotes,
-            '.' if !in_quotes => {
-                parts.push(identifier[start..idx].trim().to_string());
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(identifier[start..].trim().to_string());
-
-    parts
 }
 
 fn quote_sql_identifier_part(part: &str) -> String {
@@ -757,11 +847,20 @@ fn collect_policy_resource_column(
             continue;
         }
 
-        let Some(resource_col) =
-            extract_resource_column_for_function(expr, &key.1, resource_param_index)
-        else {
+        let resource_cols =
+            extract_resource_columns_for_function(expr, &key.1, resource_param_index);
+        if resource_cols.is_empty() {
             continue;
-        };
+        }
+        if resource_cols.len() > 1 {
+            out.remove(&key);
+            conflicts.insert(key);
+            continue;
+        }
+        let resource_col = resource_cols
+            .into_iter()
+            .next()
+            .expect("non-empty resource column set should contain one value");
 
         if let Some(existing) = out.get(&key) {
             if existing != &resource_col {
@@ -827,26 +926,62 @@ fn role_threshold_functions_and_resource_params(
     functions.into_iter().collect()
 }
 
-fn extract_resource_column_for_function(
+fn extract_resource_columns_for_function(
     expr: &Expr,
     function_name: &str,
     resource_param_index: usize,
-) -> Option<String> {
-    let function = find_function_call(expr, function_name)?;
-    let arg_expr = positional_function_arg(function, resource_param_index)?;
-    extract_column_name(arg_expr)
+) -> BTreeSet<String> {
+    let mut functions = Vec::new();
+    collect_function_calls(expr, function_name, &mut functions);
+
+    let mut columns = BTreeSet::new();
+    for function in functions {
+        let Some(arg_expr) = positional_function_arg(function, resource_param_index) else {
+            continue;
+        };
+        let Some(column) = extract_column_name(arg_expr) else {
+            continue;
+        };
+        columns.insert(column);
+    }
+
+    columns
 }
 
-fn find_function_call<'a>(expr: &'a Expr, function_name: &str) -> Option<&'a Function> {
+fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec<&'a Function>) {
     match expr {
         Expr::Function(function)
             if normalize_relation_name(&function.name.to_string())
                 == normalize_relation_name(function_name) =>
         {
-            Some(function)
+            out.push(function);
         }
-        Expr::BinaryOp { left, right, .. } => find_function_call(left, function_name)
-            .or_else(|| find_function_call(right, function_name)),
+        Expr::Function(function) => {
+            if let FunctionArguments::List(arg_list) = &function.args {
+                for arg in &arg_list.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                        | FunctionArg::Named {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        }
+                        | FunctionArg::ExprNamed {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        } => collect_function_calls(expr, function_name, out),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right)
+        | Expr::AnyOp { left, right, .. }
+        | Expr::AllOp { left, right, .. } => {
+            collect_function_calls(left, function_name, out);
+            collect_function_calls(right, function_name, out);
+        }
         Expr::UnaryOp { expr, .. }
         | Expr::Cast { expr, .. }
         | Expr::InSubquery { expr, .. }
@@ -857,95 +992,99 @@ fn find_function_call<'a>(expr: &'a Expr, function_name: &str) -> Option<&'a Fun
         | Expr::IsNotTrue(expr)
         | Expr::IsNotFalse(expr)
         | Expr::IsUnknown(expr)
-        | Expr::IsNotUnknown(expr) => find_function_call(expr, function_name),
-        Expr::Nested(inner) => find_function_call(inner, function_name),
+        | Expr::IsNotUnknown(expr) => collect_function_calls(expr, function_name, out),
+        Expr::Nested(inner) => collect_function_calls(inner, function_name, out),
         Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => {
-            find_function_call_in_query(subquery, function_name)
+            collect_function_calls_in_query(subquery, function_name, out);
         }
-        Expr::InList { expr, list, .. } => find_function_call(expr, function_name).or_else(|| {
-            list.iter()
-                .find_map(|item| find_function_call(item, function_name))
-        }),
+        Expr::InList { expr, list, .. } => {
+            collect_function_calls(expr, function_name, out);
+            for item in list {
+                collect_function_calls(item, function_name, out);
+            }
+        }
         Expr::InUnnest {
             expr, array_expr, ..
-        } => find_function_call(expr, function_name)
-            .or_else(|| find_function_call(array_expr, function_name)),
+        } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(array_expr, function_name, out);
+        }
         Expr::Between {
             expr, low, high, ..
-        } => find_function_call(expr, function_name)
-            .or_else(|| find_function_call(low, function_name))
-            .or_else(|| find_function_call(high, function_name)),
+        } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(low, function_name, out);
+            collect_function_calls(high, function_name, out);
+        }
         Expr::Case {
             operand,
             conditions,
             else_result,
             ..
-        } => operand
-            .as_deref()
-            .and_then(|o| find_function_call(o, function_name))
-            .or_else(|| {
-                conditions.iter().find_map(|when| {
-                    find_function_call(&when.condition, function_name)
-                        .or_else(|| find_function_call(&when.result, function_name))
-                })
-            })
-            .or_else(|| {
-                else_result
-                    .as_deref()
-                    .and_then(|else_expr| find_function_call(else_expr, function_name))
-            }),
+        } => {
+            if let Some(operand) = operand.as_deref() {
+                collect_function_calls(operand, function_name, out);
+            }
+            for when in conditions {
+                collect_function_calls(&when.condition, function_name, out);
+                collect_function_calls(&when.result, function_name, out);
+            }
+            if let Some(else_expr) = else_result.as_deref() {
+                collect_function_calls(else_expr, function_name, out);
+            }
+        }
         Expr::Like { expr, pattern, .. }
         | Expr::ILike { expr, pattern, .. }
         | Expr::SimilarTo { expr, pattern, .. }
-        | Expr::RLike { expr, pattern, .. } => find_function_call(expr, function_name)
-            .or_else(|| find_function_call(pattern, function_name)),
-        Expr::IsDistinctFrom(left, right)
-        | Expr::IsNotDistinctFrom(left, right)
-        | Expr::AnyOp { left, right, .. }
-        | Expr::AllOp { left, right, .. } => find_function_call(left, function_name)
-            .or_else(|| find_function_call(right, function_name)),
-        Expr::Tuple(items) => items
-            .iter()
-            .find_map(|item| find_function_call(item, function_name)),
-        _ => None,
+        | Expr::RLike { expr, pattern, .. } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(pattern, function_name, out);
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_function_calls(item, function_name, out);
+            }
+        }
+        _ => {}
     }
 }
 
-fn find_function_call_in_query<'a>(query: &'a Query, function_name: &str) -> Option<&'a Function> {
-    find_function_call_in_set_expr(query.body.as_ref(), function_name)
+fn collect_function_calls_in_query<'a>(
+    query: &'a Query,
+    function_name: &str,
+    out: &mut Vec<&'a Function>,
+) {
+    collect_function_calls_in_set_expr(query.body.as_ref(), function_name, out);
 }
 
-fn find_function_call_in_set_expr<'a>(
+fn collect_function_calls_in_set_expr<'a>(
     set_expr: &'a SetExpr,
     function_name: &str,
-) -> Option<&'a Function> {
+    out: &mut Vec<&'a Function>,
+) {
     match set_expr {
         SetExpr::Select(select) => {
             for item in &select.projection {
-                let found = match item {
+                match item {
                     SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                        find_function_call(expr, function_name)
+                        collect_function_calls(expr, function_name, out);
                     }
-                    _ => None,
-                };
-                if found.is_some() {
-                    return found;
+                    _ => {}
                 }
             }
             if let Some(selection) = &select.selection {
-                return find_function_call(selection, function_name);
+                collect_function_calls(selection, function_name, out);
             }
             if let Some(having) = &select.having {
-                return find_function_call(having, function_name);
+                collect_function_calls(having, function_name, out);
             }
-            None
         }
         SetExpr::SetOperation { left, right, .. } => {
-            find_function_call_in_set_expr(left, function_name)
-                .or_else(|| find_function_call_in_set_expr(right, function_name))
+            collect_function_calls_in_set_expr(left, function_name, out);
+            collect_function_calls_in_set_expr(right, function_name, out);
         }
-        SetExpr::Query(query) => find_function_call_in_query(query, function_name),
-        _ => None,
+        SetExpr::Query(query) => collect_function_calls_in_query(query, function_name, out),
+        _ => {}
     }
 }
 
@@ -1228,7 +1367,7 @@ CREATE TABLE posts(id uuid primary key, owner_ref uuid references owners(id));
     }
 
     #[test]
-    fn generate_role_threshold_tuples_skips_team_memberships_when_columns_missing() {
+    fn generate_role_threshold_tuples_emits_todo_when_team_membership_columns_missing() {
         let db = db_with_resources();
         let mut registry = FunctionRegistry::new();
         registry
@@ -1262,6 +1401,12 @@ CREATE TABLE posts(id uuid primary key, owner_ref uuid references owners(id));
         );
 
         assert!(!queries.iter().any(|q| q.comment == "-- Team memberships"));
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("incomplete team membership metadata")),
+            "missing team membership columns should produce an explicit TODO"
+        );
     }
 
     #[test]
@@ -1473,6 +1618,53 @@ CREATE TABLE tasks(
         assert_eq!(
             p4_membership_count, 1,
             "P4 membership tuples should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn generate_tuples_for_pattern_emits_todos_for_unhandled_patterns() {
+        let db = db_with_resources();
+        let registry = FunctionRegistry::new();
+        let mut queries = Vec::new();
+        let mut generated = std::collections::HashSet::new();
+        let role_threshold_resource_hints = RoleThresholdResourceHints::default();
+
+        generate_tuples_for_pattern(
+            &PatternClass::P9AttributeCondition {
+                column: "status".to_string(),
+                value_description: "'published'".to_string(),
+            },
+            "docs",
+            &db,
+            &registry,
+            &role_threshold_resource_hints,
+            &mut queries,
+            &mut generated,
+        );
+        generate_tuples_for_pattern(
+            &PatternClass::Unknown {
+                sql_text: "owner_id IS NULL".to_string(),
+                reason: "unsupported".to_string(),
+            },
+            "docs",
+            &db,
+            &registry,
+            &role_threshold_resource_hints,
+            &mut queries,
+            &mut generated,
+        );
+
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("unsupported pattern P9")),
+            "expected TODO entry for unsupported P9 tuple generation"
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("unsupported pattern Unknown")),
+            "expected TODO entry for unsupported Unknown tuple generation"
         );
     }
 
@@ -1710,6 +1902,63 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
                 .iter()
                 .any(|q| q.comment.contains("Explicit grants expanded to docs rows")),
             "explicit grants should be skipped when resource join column is ambiguous"
+        );
+    }
+
+    #[test]
+    fn generate_role_threshold_tuples_emits_todo_when_single_policy_has_conflicting_resource_columns(
+    ) {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id uuid primary key);
+CREATE TABLE docs(id uuid primary key, owner_id uuid references users(id), project_id uuid);
+CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+  USING (
+    (role_level(auth_current_user_id(), id) >= 2)
+    OR (role_level(auth_current_user_id(), project_id) >= 2)
+  );
+",
+        )
+        .expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 1, "editor": 2},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"
+  },
+  "auth_current_user_id": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("conflicting resource join columns")),
+            "expected conflict TODO for mixed resource args in one policy expression"
+        );
+        assert!(
+            !queries
+                .iter()
+                .any(|q| q.comment.contains("Explicit grants expanded to docs rows")),
+            "explicit grants should be skipped when a single policy mixes resource join columns"
         );
     }
 
@@ -1957,25 +2206,25 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
     }
 
     #[test]
-    fn extract_resource_column_for_function_walks_case_between_and_subquery_nodes() {
+    fn extract_resource_columns_for_function_walks_case_between_and_subquery_nodes() {
         let case_expr =
             parse_expr("CASE WHEN TRUE THEN role_level(auth_current_user_id(), doc_id) ELSE 0 END");
         assert_eq!(
-            extract_resource_column_for_function(&case_expr, "role_level", 1).as_deref(),
-            Some("doc_id")
+            extract_resource_columns_for_function(&case_expr, "role_level", 1),
+            BTreeSet::from(["doc_id".to_string()])
         );
 
         let between_expr = parse_expr("role_level(auth_current_user_id(), id) BETWEEN 1 AND 5");
         assert_eq!(
-            extract_resource_column_for_function(&between_expr, "role_level", 1).as_deref(),
-            Some("id")
+            extract_resource_columns_for_function(&between_expr, "role_level", 1),
+            BTreeSet::from(["id".to_string()])
         );
 
         let in_subquery_expr =
             parse_expr("role_level(auth_current_user_id(), id) IN (SELECT doc_id FROM docs)");
         assert_eq!(
-            extract_resource_column_for_function(&in_subquery_expr, "role_level", 1).as_deref(),
-            Some("id")
+            extract_resource_columns_for_function(&in_subquery_expr, "role_level", 1),
+            BTreeSet::from(["id".to_string()])
         );
 
         let exists_expr = parse_expr(
@@ -1986,8 +2235,8 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
              )",
         );
         assert_eq!(
-            extract_resource_column_for_function(&exists_expr, "role_level", 1).as_deref(),
-            Some("id")
+            extract_resource_columns_for_function(&exists_expr, "role_level", 1),
+            BTreeSet::from(["id".to_string()])
         );
 
         let having_expr = parse_expr(
@@ -1999,8 +2248,17 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
              )",
         );
         assert_eq!(
-            extract_resource_column_for_function(&having_expr, "role_level", 1).as_deref(),
-            Some("id")
+            extract_resource_columns_for_function(&having_expr, "role_level", 1),
+            BTreeSet::from(["id".to_string()])
+        );
+
+        let conflicting_expr = parse_expr(
+            "(role_level(auth_current_user_id(), id) >= 2)
+             OR (role_level(auth_current_user_id(), project_id) >= 2)",
+        );
+        assert_eq!(
+            extract_resource_columns_for_function(&conflicting_expr, "role_level", 1),
+            BTreeSet::from(["id".to_string(), "project_id".to_string()])
         );
     }
 
@@ -2037,7 +2295,7 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
         let db = parse_schema(
             r#"
 CREATE TABLE "Doc Items"(
-  "user" uuid primary key,
+  id uuid primary key,
   "OwnerID" uuid
 );
 ALTER TABLE "Doc Items" ENABLE ROW LEVEL SECURITY;
@@ -2072,6 +2330,34 @@ CREATE POLICY docs_select ON "Doc Items" FOR SELECT
             ownership_query.sql.contains("FROM \"Doc Items\""),
             "table name should be quoted, got:\n{}",
             ownership_query.sql
+        );
+    }
+
+    #[test]
+    fn tuple_generation_fails_closed_when_object_identifier_column_is_missing() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(doc_uuid uuid, owner_id uuid);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+  USING (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let registry = FunctionRegistry::new();
+        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
+        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.comment.contains("missing object identifier column")),
+            "expected explicit TODO when object identifier column cannot be resolved"
+        );
+        assert!(
+            !queries.iter().any(|q| q.comment.contains("User ownership")),
+            "ownership tuples should not be emitted without a stable object identifier column"
         );
     }
 }
