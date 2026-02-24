@@ -1,3 +1,5 @@
+/// Shared authorization intermediate representation (`TupleSource` and friends).
+pub(crate) mod ir;
 /// `OpenFGA` JSON authorization model structs and builder.
 pub mod json_model;
 /// `OpenFGA` DSL text model generation.

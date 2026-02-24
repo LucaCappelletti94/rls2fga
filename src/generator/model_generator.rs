@@ -3,12 +3,18 @@ use std::fmt::Write;
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
+use crate::parser::expr::extract_column_name;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    canonical_fga_type_name, lookup_table, parent_type_from_fk_column, policy_scope_relation_name,
+    canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
+    parent_type_from_fk_column, policy_scope_relation_name,
 };
-use crate::parser::sql_parser::{ParserDB, TableLike};
+use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
+use sqlparser::ast::{
+    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Query, SelectItem, SetExpr,
+};
 
 /// Generated ``OpenFGA`` model output.
 #[derive(Debug, Clone)]
@@ -51,6 +57,17 @@ pub(crate) struct TypePlan {
     pub type_name: String,
     pub direct_relations: BTreeMap<String, Vec<DirectSubject>>,
     pub computed_relations: BTreeMap<String, UsersetExpr>,
+    /// Tuple sources keyed by relation name.  A relation without an entry has
+    /// no static SQL tuples.  Populated during pattern translation; consumed by
+    /// [`crate::generator::tuple_generator`].
+    // Populated in Step 3 of the IR migration; read in Step 4.
+    #[allow(dead_code)]
+    pub tuple_sources: BTreeMap<String, Vec<TupleSource>>,
+    /// Table-level tuple sources not tied to a specific relation (e.g. policy
+    /// scope tuples).
+    // Populated in Step 3 of the IR migration; read in Step 4.
+    #[allow(dead_code)]
+    pub table_tuple_sources: Vec<TupleSource>,
 }
 
 impl TypePlan {
@@ -59,6 +76,8 @@ impl TypePlan {
             type_name: type_name.into(),
             direct_relations: BTreeMap::new(),
             computed_relations: BTreeMap::new(),
+            tuple_sources: BTreeMap::new(),
+            table_tuple_sources: Vec::new(),
         }
     }
 
@@ -78,6 +97,10 @@ impl TypePlan {
 
     fn has_relations(&self) -> bool {
         !self.direct_relations.is_empty() || !self.computed_relations.is_empty()
+    }
+
+    fn add_source(&mut self, source: TupleSource) {
+        self.table_tuple_sources.push(source);
     }
 }
 
@@ -103,6 +126,29 @@ struct ModeBuckets {
     restrictive: Vec<UsersetExpr>,
 }
 
+/// Pre-computed per-`(table, function_name)` resource column hints for P1/P2
+/// patterns.  Populated once per `build_schema_plan` call by walking the raw
+/// policy `Expr` AST before pattern translation begins.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RoleThresholdResourceHints {
+    /// `(table, function_name)` → resource column name (unambiguous cases).
+    pub columns: HashMap<(String, String), String>,
+    /// `(table, function_name)` pairs where multiple distinct resource columns
+    /// were observed; these cannot be resolved to a single tuple join column.
+    pub conflicts: BTreeSet<(String, String)>,
+}
+
+/// Resolved resource-join information for a single P1/P2 call site.
+// Constructed in Step 3 once TupleSource population begins.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RoleThresholdResourceJoin<'a> {
+    /// The unambiguous resource column, if one could be inferred.
+    pub column: Option<&'a str>,
+    /// `true` when multiple conflicting columns were observed for this key.
+    pub conflict: bool,
+}
+
 /// Generate an ``OpenFGA`` model from classified policies.
 pub fn generate_model(
     policies: &[ClassifiedPolicy],
@@ -126,6 +172,11 @@ pub(crate) fn build_schema_plan(
     db: &ParserDB,
     registry: &FunctionRegistry,
 ) -> SchemaPlan {
+    // Pre-compute resource column hints for P1/P2 role-threshold patterns.
+    // This walks the raw policy Expr AST once up-front so that
+    // pattern_to_expr_for_target can use the resolved column during translation.
+    let role_threshold_resource_hints = infer_role_threshold_resource_columns(policies, registry);
+
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut todos = Vec::new();
     let mut confidence_summary = Vec::new();
@@ -181,6 +232,25 @@ pub(crate) fn build_schema_plan(
                         scoped_roles.join(", ")
                     ),
                 });
+                if let Some(pk_col) = resolve_pk_column(&source_table_name, db) {
+                    for role in &scoped_roles {
+                        let pg_role = canonical_fga_type_name(role);
+                        table_plan.add_source(TupleSource::PolicyScope {
+                            table: source_table_name.clone(),
+                            pk_col: pk_col.clone(),
+                            scope_relation: relation.clone(),
+                            pg_role,
+                        });
+                    }
+                } else {
+                    table_plan.add_source(TupleSource::Todo {
+                        level: ConfidenceLevel::D,
+                        comment: format!(
+                            "-- TODO [Level D]: skipped policy scope tuples for {source_table_name} (missing object identifier column)"
+                        ),
+                        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+                    });
+                }
                 Some(relation)
             };
 
@@ -193,6 +263,9 @@ pub(crate) fn build_schema_plan(
                     &mut all_types,
                     registry,
                     &mut todos,
+                    &role_threshold_resource_hints,
+                    db,
+                    &source_table_name,
                 );
                 let expr = if let Some(scope_relation) = scope_relation.as_deref() {
                     scoped_policy_expr(expr, scope_relation)
@@ -509,6 +582,7 @@ fn pattern_to_expr(
     registry: &FunctionRegistry,
     todos: &mut Vec<TodoItem>,
 ) -> UsersetExpr {
+    let db = crate::parser::sql_parser::parse_schema("").expect("empty schema should parse");
     pattern_to_expr_for_target(
         pattern,
         policy_name,
@@ -517,9 +591,13 @@ fn pattern_to_expr(
         all_types,
         registry,
         todos,
+        &RoleThresholdResourceHints::default(),
+        &db,
+        "test_table",
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pattern_to_expr_for_target(
     pattern: &PatternClass,
     policy_name: &str,
@@ -528,6 +606,9 @@ fn pattern_to_expr_for_target(
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
     todos: &mut Vec<TodoItem>,
+    hints: &RoleThresholdResourceHints,
+    db: &ParserDB,
+    source_table: &str,
 ) -> UsersetExpr {
     match pattern {
         PatternClass::P1NumericThreshold {
@@ -557,6 +638,16 @@ fn pattern_to_expr_for_target(
                 all_types,
                 role_levels,
                 team_membership_table.is_some(),
+            );
+
+            populate_role_threshold_sources(
+                function_name,
+                source_table,
+                db,
+                registry,
+                hints,
+                table_plan,
+                all_types,
             );
 
             let min_level = match operator {
@@ -597,6 +688,16 @@ fn pattern_to_expr_for_target(
                 team_membership_table.is_some(),
             );
 
+            populate_role_threshold_sources(
+                function_name,
+                source_table,
+                db,
+                registry,
+                hints,
+                table_plan,
+                all_types,
+            );
+
             let mut selected_levels: BTreeSet<i32> = BTreeSet::new();
             for role in role_names {
                 if let Ok(level) = role.parse::<i32>() {
@@ -625,14 +726,30 @@ fn pattern_to_expr_for_target(
                 deny_expr(table_plan)
             }
         }
-        PatternClass::P3DirectOwnership { .. } => {
+        PatternClass::P3DirectOwnership { column } => {
             table_plan.ensure_direct("owner", vec![DirectSubject::Type("user".to_string())]);
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::DirectOwnership {
+                    table: source_table.to_string(),
+                    pk_col,
+                    owner_col: column.clone(),
+                });
+            } else {
+                table_plan.add_source(TupleSource::Todo {
+                    level: ConfidenceLevel::D,
+                    comment: format!(
+                        "-- TODO [Level D]: skipped ownership tuples for {source_table} (missing object identifier column)"
+                    ),
+                    sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+                });
+            }
             UsersetExpr::Computed("owner".to_string())
         }
         PatternClass::P4ExistsMembership {
+            join_table,
             fk_column,
+            user_column,
             extra_predicate_sql,
-            ..
         } => {
             let parent_type = parent_type_from_fk_column(fk_column);
 
@@ -649,6 +766,38 @@ fn pattern_to_expr_for_target(
                     message: format!(
                         "Membership policy carries extra predicate '{extra}' that must be preserved in tuple SQL"
                     ),
+                });
+            }
+
+            // Membership rows: add to table_plan first (for correct ordering in IR renderer),
+            // then also to the parent type's plan for semantic correctness (deduplicated).
+            let membership_source = TupleSource::ExistsMembership {
+                join_table: join_table.clone(),
+                fk_col: fk_column.clone(),
+                user_col: user_column.clone(),
+                extra_predicate_sql: extra_predicate_sql.clone(),
+            };
+            table_plan.add_source(membership_source.clone());
+            all_types
+                .get_mut(&parent_type)
+                .expect("ensure_member_type should have created the parent type entry")
+                .add_source(membership_source);
+
+            // Bridge rows link each source-table row to its parent
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::ParentBridge {
+                    table: source_table.to_string(),
+                    pk_col,
+                    fk_col: fk_column.clone(),
+                    parent_type: parent_type.clone(),
+                });
+            } else {
+                table_plan.add_source(TupleSource::Todo {
+                    level: ConfidenceLevel::D,
+                    comment: format!(
+                        "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge (missing object identifier column)"
+                    ),
+                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
                 });
             }
 
@@ -683,12 +832,46 @@ fn pattern_to_expr_for_target(
                 .entry(parent_relation.clone())
                 .or_insert_with(|| TypePlan::new(&parent_relation));
 
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::ParentBridge {
+                    table: source_table.to_string(),
+                    pk_col,
+                    fk_col: fk_column.clone(),
+                    parent_type: parent_relation.clone(),
+                });
+            } else {
+                table_plan.add_source(TupleSource::Todo {
+                    level: ConfidenceLevel::D,
+                    comment: format!(
+                        "-- TODO [Level D]: skipped {source_table} to {parent_relation} bridge (missing object identifier column)"
+                    ),
+                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
+                });
+            }
+
             UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
                 computed: action_relation_for_target(target).to_string(),
             }
         }
-        PatternClass::P6BooleanFlag { .. } => public_expr(table_plan),
+        PatternClass::P6BooleanFlag { column } => {
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::PublicFlag {
+                    table: source_table.to_string(),
+                    pk_col,
+                    flag_col: column.clone(),
+                });
+            } else {
+                table_plan.add_source(TupleSource::Todo {
+                    level: ConfidenceLevel::D,
+                    comment: format!(
+                        "-- TODO [Level D]: skipped public-flag tuples for {source_table} (missing object identifier column)"
+                    ),
+                    sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+                });
+            }
+            public_expr(table_plan)
+        }
         PatternClass::P7AbacAnd {
             relationship_part,
             attribute_part,
@@ -700,7 +883,9 @@ fn pattern_to_expr_for_target(
                     "Attribute condition '{attribute_part}' still requires runtime enforcement"
                 ),
             });
-            pattern_to_expr_for_target(
+            // Recurse first so relationship sources appear before the attribute Todo
+            // in table_tuple_sources (matching old generate_tuple_queries ordering).
+            let result = pattern_to_expr_for_target(
                 &relationship_part.pattern,
                 policy_name,
                 target,
@@ -708,7 +893,20 @@ fn pattern_to_expr_for_target(
                 all_types,
                 registry,
                 todos,
-            )
+                hints,
+                db,
+                source_table,
+            );
+            table_plan.add_source(TupleSource::Todo {
+                level: ConfidenceLevel::C,
+                comment: format!(
+                    "-- TODO [Level C]: attribute condition '{attribute_part}' on {source_table} requires runtime enforcement; relationship tuples generated above"
+                ),
+                sql: format!(
+                    "-- Tuple query not emitted; attribute filter '{attribute_part}' must be enforced by application logic."
+                ),
+            });
+            result
         }
         PatternClass::P8Composite { op, parts } => {
             let mut child_exprs = Vec::new();
@@ -721,6 +919,9 @@ fn pattern_to_expr_for_target(
                     all_types,
                     registry,
                     todos,
+                    hints,
+                    db,
+                    source_table,
                 ));
             }
             match op {
@@ -738,10 +939,33 @@ fn pattern_to_expr_for_target(
                     "Standalone attribute policy on '{column}' mapped to no_access for safety"
                 ),
             });
+            table_plan.add_source(TupleSource::Todo {
+                level: ConfidenceLevel::D,
+                comment: format!(
+                    "-- TODO [Level D]: skipped tuple generation for {source_table} (unsupported pattern P9)"
+                ),
+                sql: format!(
+                    "-- Tuple query not emitted; attribute condition on '{column}' requires runtime filtering; no static tuple mapping."
+                ),
+            });
             deny_expr(table_plan)
         }
         PatternClass::P10ConstantBool { value } => {
             if *value {
+                if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                    table_plan.add_source(TupleSource::ConstantTrue {
+                        table: source_table.to_string(),
+                        pk_col,
+                    });
+                } else {
+                    table_plan.add_source(TupleSource::Todo {
+                        level: ConfidenceLevel::D,
+                        comment: format!(
+                            "-- TODO [Level D]: skipped constant-TRUE tuples for {source_table} (missing object identifier column)"
+                        ),
+                        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+                    });
+                }
                 public_expr(table_plan)
             } else {
                 deny_expr(table_plan)
@@ -753,6 +977,15 @@ fn pattern_to_expr_for_target(
                 policy_name: policy_name.to_string(),
                 message: format!(
                     "Expression could not be safely translated ({reason}); mapped to no_access"
+                ),
+            });
+            table_plan.add_source(TupleSource::Todo {
+                level: ConfidenceLevel::D,
+                comment: format!(
+                    "-- TODO [Level D]: skipped tuple generation for {source_table} (unsupported pattern Unknown)"
+                ),
+                sql: format!(
+                    "-- Tuple query not emitted; classifier could not translate expression: {reason}."
                 ),
             });
             deny_expr(table_plan)
@@ -881,6 +1114,612 @@ fn exact_roles_expr(
     }
 
     combine_union(children)
+}
+
+// ---------------------------------------------------------------------------
+// Role-threshold resource column pre-pass
+//
+// These functions walk the raw policy Expr AST to infer which column name is
+// passed as the "resource" argument in each P1/P2 role-threshold function
+// call.  The result is threaded into pattern_to_expr_for_target so that the
+// tuple-SQL renderer can emit the correct JOIN column without re-walking the
+// AST a second time.
+//
+// Identical logic exists in tuple_generator.rs and is used from there until
+// Step 5 of the IR migration, at which point the tuple_generator path is
+// removed and this copy becomes the sole source of truth.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn infer_role_threshold_resource_columns(
+    policies: &[ClassifiedPolicy],
+    registry: &FunctionRegistry,
+) -> RoleThresholdResourceHints {
+    let mut hints = RoleThresholdResourceHints::default();
+
+    for cp in policies {
+        collect_policy_resource_column(
+            &cp.table_name(),
+            cp.policy.using.as_ref(),
+            cp.using_classification.as_ref(),
+            registry,
+            &mut hints.columns,
+            &mut hints.conflicts,
+        );
+        collect_policy_resource_column(
+            &cp.table_name(),
+            cp.policy.with_check.as_ref(),
+            cp.with_check_classification.as_ref(),
+            registry,
+            &mut hints.columns,
+            &mut hints.conflicts,
+        );
+    }
+
+    hints
+}
+
+fn collect_policy_resource_column(
+    table: &str,
+    policy_expr: Option<&Expr>,
+    classified: Option<&ClassifiedExpr>,
+    registry: &FunctionRegistry,
+    out: &mut HashMap<(String, String), String>,
+    conflicts: &mut BTreeSet<(String, String)>,
+) {
+    let Some(expr) = policy_expr else {
+        return;
+    };
+
+    for (function_name, resource_param_index) in
+        role_threshold_functions_and_resource_params(classified, registry)
+    {
+        let key = (table.to_string(), function_name);
+        if conflicts.contains(&key) {
+            continue;
+        }
+
+        let resource_cols =
+            extract_resource_columns_for_function(expr, &key.1, resource_param_index);
+        if resource_cols.is_empty() {
+            continue;
+        }
+        if resource_cols.len() > 1 {
+            out.remove(&key);
+            conflicts.insert(key);
+            continue;
+        }
+        let resource_col = resource_cols
+            .into_iter()
+            .next()
+            .expect("non-empty resource column set should contain one value");
+
+        if let Some(existing) = out.get(&key) {
+            if existing != &resource_col {
+                out.remove(&key);
+                conflicts.insert(key);
+            }
+            continue;
+        }
+
+        out.insert(key, resource_col);
+    }
+}
+
+fn role_threshold_functions_and_resource_params(
+    classified: Option<&ClassifiedExpr>,
+    registry: &FunctionRegistry,
+) -> Vec<(String, usize)> {
+    fn walk(
+        classified: &ClassifiedExpr,
+        registry: &FunctionRegistry,
+        out: &mut BTreeSet<(String, usize)>,
+    ) {
+        match &classified.pattern {
+            PatternClass::P1NumericThreshold { function_name, .. }
+            | PatternClass::P2RoleNameInList { function_name, .. } => {
+                let Some(FunctionSemantic::RoleThreshold {
+                    resource_param_index,
+                    ..
+                }) = registry.get(function_name)
+                else {
+                    return;
+                };
+                out.insert((function_name.clone(), *resource_param_index));
+            }
+            PatternClass::P5ParentInheritance { inner_pattern, .. } => {
+                walk(inner_pattern, registry, out);
+            }
+            PatternClass::P7AbacAnd {
+                relationship_part, ..
+            } => {
+                walk(relationship_part, registry, out);
+            }
+            PatternClass::P8Composite { parts, .. } => {
+                for part in parts {
+                    walk(part, registry, out);
+                }
+            }
+            PatternClass::P3DirectOwnership { .. }
+            | PatternClass::P4ExistsMembership { .. }
+            | PatternClass::P6BooleanFlag { .. }
+            | PatternClass::P9AttributeCondition { .. }
+            | PatternClass::P10ConstantBool { .. }
+            | PatternClass::Unknown { .. } => {}
+        }
+    }
+
+    let Some(classified) = classified else {
+        return Vec::new();
+    };
+
+    let mut functions = BTreeSet::new();
+    walk(classified, registry, &mut functions);
+    functions.into_iter().collect()
+}
+
+fn extract_resource_columns_for_function(
+    expr: &Expr,
+    function_name: &str,
+    resource_param_index: usize,
+) -> BTreeSet<String> {
+    let mut functions = Vec::new();
+    collect_function_calls(expr, function_name, &mut functions);
+
+    let mut columns = BTreeSet::new();
+    for function in functions {
+        let Some(arg_expr) = positional_function_arg(function, resource_param_index) else {
+            continue;
+        };
+        let Some(column) = extract_column_name(arg_expr) else {
+            continue;
+        };
+        columns.insert(column);
+    }
+
+    columns
+}
+
+fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec<&'a Function>) {
+    match expr {
+        Expr::Function(function)
+            if normalize_relation_name(&function.name.to_string())
+                == normalize_relation_name(function_name) =>
+        {
+            out.push(function);
+        }
+        Expr::Function(function) => {
+            if let FunctionArguments::List(arg_list) = &function.args {
+                for arg in &arg_list.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+                        | FunctionArg::Named {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        }
+                        | FunctionArg::ExprNamed {
+                            arg: FunctionArgExpr::Expr(expr),
+                            ..
+                        } => collect_function_calls(expr, function_name, out),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right)
+        | Expr::AnyOp { left, right, .. }
+        | Expr::AllOp { left, right, .. } => {
+            collect_function_calls(left, function_name, out);
+            collect_function_calls(right, function_name, out);
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::InSubquery { expr, .. }
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::IsTrue(expr)
+        | Expr::IsFalse(expr)
+        | Expr::IsNotTrue(expr)
+        | Expr::IsNotFalse(expr)
+        | Expr::IsUnknown(expr)
+        | Expr::IsNotUnknown(expr) => collect_function_calls(expr, function_name, out),
+        Expr::Nested(inner) => collect_function_calls(inner, function_name, out),
+        Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => {
+            collect_function_calls_in_query(subquery, function_name, out);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_function_calls(expr, function_name, out);
+            for item in list {
+                collect_function_calls(item, function_name, out);
+            }
+        }
+        Expr::InUnnest {
+            expr, array_expr, ..
+        } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(array_expr, function_name, out);
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(low, function_name, out);
+            collect_function_calls(high, function_name, out);
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(operand) = operand.as_deref() {
+                collect_function_calls(operand, function_name, out);
+            }
+            for when in conditions {
+                collect_function_calls(&when.condition, function_name, out);
+                collect_function_calls(&when.result, function_name, out);
+            }
+            if let Some(else_expr) = else_result.as_deref() {
+                collect_function_calls(else_expr, function_name, out);
+            }
+        }
+        Expr::Like { expr, pattern, .. }
+        | Expr::ILike { expr, pattern, .. }
+        | Expr::SimilarTo { expr, pattern, .. }
+        | Expr::RLike { expr, pattern, .. } => {
+            collect_function_calls(expr, function_name, out);
+            collect_function_calls(pattern, function_name, out);
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_function_calls(item, function_name, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_function_calls_in_query<'a>(
+    query: &'a Query,
+    function_name: &str,
+    out: &mut Vec<&'a Function>,
+) {
+    collect_function_calls_in_set_expr(query.body.as_ref(), function_name, out);
+}
+
+fn collect_function_calls_in_set_expr<'a>(
+    set_expr: &'a SetExpr,
+    function_name: &str,
+    out: &mut Vec<&'a Function>,
+) {
+    match set_expr {
+        SetExpr::Select(select) => {
+            for item in &select.projection {
+                match item {
+                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                        collect_function_calls(expr, function_name, out);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(selection) = &select.selection {
+                collect_function_calls(selection, function_name, out);
+            }
+            if let Some(having) = &select.having {
+                collect_function_calls(having, function_name, out);
+            }
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            collect_function_calls_in_set_expr(left, function_name, out);
+            collect_function_calls_in_set_expr(right, function_name, out);
+        }
+        SetExpr::Query(query) => collect_function_calls_in_query(query, function_name, out),
+        _ => {}
+    }
+}
+
+fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
+    let FunctionArguments::List(arg_list) = &function.args else {
+        return None;
+    };
+    let arg = arg_list.args.get(index)?;
+
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+        | FunctionArg::Named {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        }
+        | FunctionArg::ExprNamed {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        } => Some(expr),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DB-lookup helpers used for TupleSource population (Step 3 of IR migration)
+//
+// These mirror the equivalents in tuple_generator.rs and will be the sole
+// source of truth once the old traversal is removed in Step 6.
+// ---------------------------------------------------------------------------
+
+fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
+    let table_info = lookup_table(db, table)?;
+    table_info
+        .primary_key_column(db)
+        .map(|c| c.column_name().to_string())
+        .or_else(|| {
+            table_info
+                .columns(db)
+                .find(|c| c.column_name() == "id")
+                .map(|c| c.column_name().to_string())
+        })
+}
+
+fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
+    let table_info = lookup_table(db, table)?;
+    for col in table_info.columns(db) {
+        let name = col.column_name();
+        if is_owner_like_column_name(name) {
+            return Some(name.to_string());
+        }
+    }
+    for fk in table_info.foreign_keys(db) {
+        let ref_table = fk.referenced_table(db);
+        let ref_name = ref_table.table_name();
+        let normalized_ref = normalize_relation_name(ref_name);
+        if normalized_ref == "users" || normalized_ref == "owners" {
+            if let Some(col_name) = fk
+                .host_columns(db)
+                .next()
+                .map(|col| col.column_name().to_string())
+            {
+                return Some(col_name);
+            }
+        }
+    }
+    None
+}
+
+fn ir_table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
+    lookup_table(db, table).is_some_and(|t| t.columns(db).any(|c| c.column_name() == col))
+}
+
+fn resolve_principal_info(
+    db: &ParserDB,
+    configured_table: Option<&str>,
+    configured_pk_col: Option<&str>,
+    fallback_candidates: &[&str],
+) -> Option<PrincipalInfo> {
+    if let Some(table) = configured_table {
+        let pk_col = if let Some(pk_col) = configured_pk_col {
+            if !ir_table_has_column(db, table, pk_col) {
+                return None;
+            }
+            pk_col.to_string()
+        } else {
+            resolve_pk_column(table, db)?
+        };
+        return Some(PrincipalInfo {
+            table: table.to_string(),
+            pk_col,
+        });
+    }
+
+    for &candidate in fallback_candidates {
+        if lookup_table(db, candidate).is_none() {
+            continue;
+        }
+        if let Some(pk_col) = resolve_pk_column(candidate, db) {
+            return Some(PrincipalInfo {
+                table: candidate.to_string(),
+                pk_col,
+            });
+        }
+    }
+
+    None
+}
+
+/// Populate `TupleSource` entries on `table_plan` (and `all_types` for team
+/// membership) for the P1/P2 role-threshold patterns.  Called once per unique
+/// `(source_table, function_name)` pair; the renderer deduplicates via
+/// [`TupleSource::dedup_key`].
+#[allow(clippy::too_many_arguments)]
+fn populate_role_threshold_sources(
+    function_name: &str,
+    source_table: &str,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    hints: &RoleThresholdResourceHints,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+) {
+    let Some(FunctionSemantic::RoleThreshold {
+        grant_table,
+        grant_grantee_col,
+        grant_resource_col,
+        grant_role_col,
+        team_membership_table,
+        team_membership_user_col,
+        team_membership_team_col,
+        user_table,
+        user_pk_col,
+        team_table,
+        team_pk_col,
+        role_levels,
+        ..
+    }) = registry.get(function_name)
+    else {
+        return; // error already emitted in the pattern arm
+    };
+
+    let has_team = team_membership_table.is_some();
+    let owner_col = resolve_owner_column(source_table, db);
+    let pk_col = resolve_pk_column(source_table, db);
+
+    let user_principal = resolve_principal_info(
+        db,
+        user_table.as_deref(),
+        user_pk_col.as_deref(),
+        &["users", "user"],
+    );
+    let team_principal = if has_team {
+        resolve_principal_info(
+            db,
+            team_table.as_deref(),
+            team_pk_col.as_deref(),
+            &["teams", "team"],
+        )
+    } else {
+        None
+    };
+
+    // --- Ownership sources ---
+    match (&owner_col, &pk_col) {
+        (Some(oc), Some(pk)) => {
+            if let Some(upi) = user_principal.clone() {
+                table_plan.add_source(TupleSource::RoleOwnerUser {
+                    table: source_table.to_string(),
+                    pk_col: pk.clone(),
+                    owner_col: oc.clone(),
+                    user_table: upi.table,
+                    user_pk_col: upi.pk_col,
+                });
+            } else {
+                table_plan.add_source(TupleSource::Todo {
+                    level: ConfidenceLevel::D,
+                    comment: format!(
+                        "-- TODO [Level D]: skipped user ownership tuples for {source_table} (unresolved user principal table)"
+                    ),
+                    sql: "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string(),
+                });
+            }
+            if has_team {
+                if let Some(tpi) = team_principal.clone() {
+                    table_plan.add_source(TupleSource::RoleOwnerTeam {
+                        table: source_table.to_string(),
+                        pk_col: pk.clone(),
+                        owner_col: oc.clone(),
+                        team_table: tpi.table,
+                        team_pk_col: tpi.pk_col,
+                    });
+                } else {
+                    table_plan.add_source(TupleSource::Todo {
+                        level: ConfidenceLevel::D,
+                        comment: format!(
+                            "-- TODO [Level D]: skipped team ownership tuples for {source_table} (unresolved team principal table)"
+                        ),
+                        sql: "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string(),
+                    });
+                }
+            }
+        }
+        _ => {
+            table_plan.add_source(TupleSource::Todo {
+                level: ConfidenceLevel::D,
+                comment: format!(
+                    "-- TODO [Level D]: skipped ownership tuples for {source_table} (no owner-like column/FK found)"
+                ),
+                sql: "-- Ownership tuples not emitted; review owner mapping.".to_string(),
+            });
+        }
+    }
+
+    // --- Team membership ---
+    // Add to table_plan first so the membership source appears in the correct position
+    // in the IR renderer (between team-ownership and explicit-grants, matching the old
+    // generate_tuple_queries ordering).  Also add to all_types["team"] for semantic
+    // correctness; the renderer deduplicates via dedup_key so it is only emitted once.
+    if let (Some(tm_table), Some(tm_user), Some(tm_team)) = (
+        team_membership_table,
+        team_membership_user_col,
+        team_membership_team_col,
+    ) {
+        let membership_source = TupleSource::TeamMembership {
+            membership_table: tm_table.clone(),
+            team_col: tm_team.clone(),
+            user_col: tm_user.clone(),
+        };
+        table_plan.add_source(membership_source.clone());
+        all_types
+            .entry("team".to_string())
+            .or_insert_with(|| TypePlan::new("team"))
+            .add_source(membership_source);
+    }
+
+    // --- Explicit grants ---
+    let hint_key = (source_table.to_string(), function_name.to_string());
+    if hints.conflicts.contains(&hint_key) {
+        table_plan.add_source(TupleSource::Todo {
+            level: ConfidenceLevel::D,
+            comment: format!(
+                "-- TODO [Level D]: skipped explicit grants for {source_table} (conflicting resource join columns inferred from policies)"
+            ),
+            sql: "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.".to_string(),
+        });
+        return;
+    }
+
+    let grant_join_col = hints
+        .columns
+        .get(&hint_key)
+        .map(String::as_str)
+        .or(owner_col.as_deref());
+
+    let Some(grant_join_col) = grant_join_col else {
+        table_plan.add_source(TupleSource::Todo {
+            level: ConfidenceLevel::D,
+            comment: format!(
+                "-- TODO [Level D]: skipped explicit grants for {source_table} (missing resource join column)"
+            ),
+            sql: "-- Grant tuples not emitted; add function metadata or owner FK.".to_string(),
+        });
+        return;
+    };
+
+    let Some(object_pk) = pk_col else {
+        table_plan.add_source(TupleSource::Todo {
+            level: ConfidenceLevel::D,
+            comment: format!(
+                "-- TODO [Level D]: skipped explicit grant tuples for {source_table} (missing object identifier column)"
+            ),
+            sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
+        });
+        return;
+    };
+
+    let sorted_roles = sorted_role_relation_names(role_levels);
+    if sorted_roles.is_empty() {
+        return;
+    }
+
+    let role_cases: Vec<(i32, String, String)> = sorted_roles
+        .iter()
+        .map(|role| {
+            (
+                role.level,
+                role.grant_relation(),
+                role.original_name.clone(),
+            )
+        })
+        .collect();
+
+    table_plan.add_source(TupleSource::ExplicitGrants {
+        table: source_table.to_string(),
+        pk_col: object_pk,
+        grant_join_col: grant_join_col.to_string(),
+        grant_table: grant_table.clone(),
+        grant_role_col: grant_role_col.clone(),
+        grant_grantee_col: grant_grantee_col.clone(),
+        grant_resource_col: grant_resource_col.clone(),
+        role_cases,
+        user_principal,
+        team_principal,
+    });
 }
 
 fn render_dsl(types: &[TypePlan]) -> String {

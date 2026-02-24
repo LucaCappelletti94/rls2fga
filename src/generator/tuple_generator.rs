@@ -1,18 +1,13 @@
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
-use crate::generator::role_relations::sorted_role_relation_names;
-use crate::parser::expr::extract_column_name;
-use crate::parser::function_analyzer::FunctionSemantic;
+use crate::generator::ir::TupleSource;
+use crate::generator::model_generator::SchemaPlan;
 use crate::parser::names::{
-    canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name, split_qualified_identifier_parts,
-    split_schema_and_relation,
+    canonical_fga_type_name, lookup_table, parent_type_from_fk_column,
+    split_qualified_identifier_parts, split_schema_and_relation,
 };
-use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
-use sqlparser::ast::{
-    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Query, SelectItem, SetExpr,
-};
-use std::collections::{BTreeSet, HashMap};
+use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
+use std::collections::HashSet;
 
 /// A generated tuple query with its descriptive comment.
 #[derive(Debug, Clone)]
@@ -21,30 +16,6 @@ pub struct TupleQuery {
     pub comment: String,
     /// SELECT statement that produces (object, relation, subject) triples.
     pub sql: String,
-}
-
-#[derive(Debug, Clone)]
-struct PrincipalTable {
-    table: String,
-    pk_col: String,
-}
-
-#[derive(Debug, Clone, Default)]
-struct RolePrincipalResolution {
-    user: Option<PrincipalTable>,
-    team: Option<PrincipalTable>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct RoleThresholdResourceHints {
-    columns: HashMap<(String, String), String>,
-    conflicts: BTreeSet<(String, String)>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RoleThresholdResourceJoin<'a> {
-    column: Option<&'a str>,
-    conflict: bool,
 }
 
 /// Format a list of tuple queries into a single SQL string.
@@ -63,6 +34,353 @@ pub fn format_tuples(tuples: &[TupleQuery]) -> String {
     out
 }
 
+/// Generate tuple SQL queries from a pre-built [`SchemaPlan`].
+pub(crate) fn generate_tuple_queries_from_plan(
+    plan: &SchemaPlan,
+    db: &ParserDB,
+) -> Vec<TupleQuery> {
+    let mut queries = Vec::new();
+    let mut generated: HashSet<String> = HashSet::new();
+
+    for type_plan in &plan.types {
+        for source in &type_plan.table_tuple_sources {
+            let key = source.dedup_key();
+            if !generated.insert(key) {
+                continue;
+            }
+            if let Some(query) = render_tuple_source(source, db) {
+                queries.push(query);
+            }
+        }
+    }
+
+    queries
+}
+
+/// Render a single [`TupleSource`] to a [`TupleQuery`].
+///
+/// Returns `None` only when the source has no renderable output (currently
+/// unused; all variants produce at least a comment).
+fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery> {
+    match source {
+        TupleSource::DirectOwnership {
+            table,
+            pk_col,
+            owner_col,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let owner_col_sql = quote_sql_identifier(owner_col);
+            Some(TupleQuery {
+                comment: format!("-- User ownership ({owner_col} references users)"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner' AS relation, \
+                     'user:' || {owner_col_sql} AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {owner_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::RoleOwnerUser {
+            table,
+            pk_col,
+            owner_col,
+            user_table,
+            user_pk_col,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let owner_col_sql = quote_sql_identifier(owner_col);
+            let user_table_sql = quote_sql_identifier(user_table);
+            let user_pk_col_sql = quote_sql_identifier(user_pk_col);
+            Some(TupleQuery {
+                comment: format!("-- User ownership ({owner_col} references {user_table})"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner_user' AS relation, \
+                     'user:' || {owner_col_sql} AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
+                     AND {owner_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::RoleOwnerTeam {
+            table,
+            pk_col,
+            owner_col,
+            team_table,
+            team_pk_col,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let owner_col_sql = quote_sql_identifier(owner_col);
+            let team_table_sql = quote_sql_identifier(team_table);
+            let team_pk_col_sql = quote_sql_identifier(team_pk_col);
+            Some(TupleQuery {
+                comment: format!("-- Team ownership ({owner_col} references {team_table})"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner_team' AS relation, \
+                     'team:' || {owner_col_sql} AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
+                     AND {owner_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::ExplicitGrants {
+            table,
+            pk_col,
+            grant_join_col,
+            grant_table,
+            grant_role_col,
+            grant_grantee_col,
+            grant_resource_col,
+            role_cases,
+            user_principal,
+            team_principal,
+        } => {
+            if role_cases.is_empty() {
+                return None;
+            }
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let grant_join_col_sql = quote_sql_identifier(grant_join_col);
+            let grant_table_sql = quote_sql_identifier(grant_table);
+            let grant_role_col_sql = quote_sql_identifier(grant_role_col);
+            let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col);
+            let grant_resource_col_sql = quote_sql_identifier(grant_resource_col);
+
+            let case_arms: Vec<String> = role_cases
+                .iter()
+                .map(|(level, grant_rel, _)| format!("    WHEN {level} THEN '{grant_rel}'"))
+                .collect();
+
+            let role_ids: Vec<String> = role_cases
+                .iter()
+                .map(|(level, _, _)| level.to_string())
+                .collect();
+            let comment_roles: Vec<String> = role_cases
+                .iter()
+                .map(|(level, _, original)| format!("{level}={original}"))
+                .collect();
+
+            let case_expr = format!(
+                "CASE og.{grant_role_col_sql}\n{}\n  END",
+                case_arms.join("\n")
+            );
+
+            let mut subject_joins: Vec<String> = Vec::new();
+            let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
+                (Some(up), Some(tp)) => {
+                    let user_tbl_sql = quote_sql_identifier(&up.table);
+                    let user_pk_sql = quote_sql_identifier(&up.pk_col);
+                    let team_tbl_sql = quote_sql_identifier(&tp.table);
+                    let team_pk_sql = quote_sql_identifier(&tp.pk_col);
+                    subject_joins.push(format!(
+                        "LEFT JOIN {user_tbl_sql} u ON u.{user_pk_sql} = og.{grant_grantee_col_sql}"
+                    ));
+                    subject_joins.push(format!(
+                        "LEFT JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
+                    ));
+                    format!(
+                        "CASE\n\
+                         \x20   WHEN u.{user_pk_sql} IS NOT NULL THEN 'user:' || og.{grant_grantee_col_sql}\n\
+                         \x20   WHEN t.{team_pk_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
+                         \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
+                         \x20 END"
+                    )
+                }
+                (Some(_) | None, None) => {
+                    format!("'user:' || og.{grant_grantee_col_sql}")
+                }
+                (None, Some(tp)) => {
+                    let team_tbl_sql = quote_sql_identifier(&tp.table);
+                    let team_pk_sql = quote_sql_identifier(&tp.pk_col);
+                    subject_joins.push(format!(
+                        "LEFT JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
+                    ));
+                    format!(
+                        "CASE\n\
+                         \x20   WHEN t.{team_pk_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
+                         \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
+                         \x20 END"
+                    )
+                }
+            };
+
+            let subject_join_sql = if subject_joins.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", subject_joins.join("\n                 "))
+            };
+
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Explicit grants expanded to {table} rows ({grant_role_col}: {})",
+                    comment_roles.join(", ")
+                ),
+                sql: format!(
+                    "SELECT\n\
+                     \x20 '{table_type}:' || resource.{pk_col_sql} AS object,\n\
+                     \x20 {case_expr} AS relation,\n\
+                     \x20 {subject_expr} AS subject\n\
+                     FROM {grant_table_sql} og\n\
+                     JOIN {table_sql} resource ON resource.{grant_join_col_sql} = og.{grant_resource_col_sql}\n\
+                     {subject_join_sql}\
+                     WHERE og.{grant_role_col_sql} IN ({});",
+                    role_ids.join(", ")
+                ),
+            })
+        }
+
+        TupleSource::TeamMembership {
+            membership_table,
+            team_col,
+            user_col,
+        } => {
+            let membership_table_sql = quote_sql_identifier(membership_table);
+            let team_col_sql = quote_sql_identifier(team_col);
+            let user_col_sql = quote_sql_identifier(user_col);
+            Some(TupleQuery {
+                comment: "-- Team memberships".to_string(),
+                sql: format!(
+                    "SELECT 'team:' || {team_col_sql} AS object, 'member' AS relation, \
+                     'user:' || {user_col_sql} AS subject\n\
+                     FROM {membership_table_sql};"
+                ),
+            })
+        }
+
+        TupleSource::ExistsMembership {
+            join_table,
+            fk_col,
+            user_col,
+            extra_predicate_sql,
+        } => {
+            let parent_type = parent_type_from_fk_column(fk_col);
+            let join_table_sql = quote_sql_identifier(join_table);
+            let fk_col_sql = quote_sql_identifier(fk_col);
+            let user_col_sql = quote_sql_identifier(user_col);
+            let where_clause = extra_predicate_sql
+                .as_ref()
+                .map(|e| format!("\nWHERE {e}"))
+                .unwrap_or_default();
+            Some(TupleQuery {
+                comment: format!("-- {parent_type} membership from {join_table}"),
+                sql: format!(
+                    "SELECT '{parent_type}:' || {fk_col_sql} AS object, 'member' AS relation, \
+                     'user:' || {user_col_sql} AS subject\n\
+                     FROM {join_table_sql}{where_clause};"
+                ),
+            })
+        }
+
+        TupleSource::ParentBridge {
+            table,
+            pk_col: _,
+            fk_col,
+            parent_type,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
+            else {
+                return Some(TupleQuery {
+                    comment: format!(
+                        "-- TODO [Level D]: skipped {table} to {parent_type} bridge \
+                         (missing column '{fk_col}')"
+                    ),
+                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
+                });
+            };
+            let table_sql = quote_sql_identifier(table);
+            let object_col_sql = quote_sql_identifier(&object_col);
+            let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
+            Some(TupleQuery {
+                comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {object_col_sql} AS object, \
+                     '{parent_type}' AS relation, \
+                     '{parent_type}:' || {parent_ref_col_sql} AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {object_col_sql} IS NOT NULL\n\
+                     AND {parent_ref_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::PublicFlag {
+            table,
+            pk_col,
+            flag_col,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let flag_col_sql = quote_sql_identifier(flag_col);
+            Some(TupleQuery {
+                comment: format!("-- Public access flag ({flag_col})"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'public_viewer' AS relation, \
+                     'user:*' AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {flag_col_sql} = TRUE;"
+                ),
+            })
+        }
+
+        TupleSource::ConstantTrue { table, pk_col } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            Some(TupleQuery {
+                comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'public_viewer' AS relation, \
+                     'user:*' AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {pk_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::PolicyScope {
+            table,
+            pk_col,
+            scope_relation,
+            pg_role,
+        } => {
+            let table_type = canonical_fga_type_name(table);
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Policy scope: {table} rows require PostgreSQL role '{pg_role}' \
+                     via {scope_relation}"
+                ),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, \
+                     '{scope_relation}' AS relation, \
+                     'pg_role:{pg_role}' AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {pk_col_sql} IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::Todo { comment, sql, .. } => Some(TupleQuery {
+            comment: comment.clone(),
+            sql: sql.clone(),
+        }),
+    }
+}
+
 /// Generate tuple SQL queries from classified policies.
 pub fn generate_tuple_queries(
     policies: &[ClassifiedPolicy],
@@ -70,635 +388,9 @@ pub fn generate_tuple_queries(
     registry: &FunctionRegistry,
     min_confidence: &ConfidenceLevel,
 ) -> Vec<TupleQuery> {
-    let mut queries = Vec::new();
     let filtered = filter_policies_for_output(policies, *min_confidence);
-    let role_threshold_resource_hints = infer_role_threshold_resource_columns(&filtered, registry);
-
-    // Track which tuple types we've already generated to avoid duplicates
-    let mut generated = std::collections::HashSet::new();
-
-    for cp in &filtered {
-        emit_policy_scope_tuples(cp, &cp.table_name(), db, &mut queries, &mut generated);
-        for classified in cp.classifications() {
-            generate_tuples_for_pattern(
-                &classified.pattern,
-                &cp.table_name(),
-                db,
-                registry,
-                &role_threshold_resource_hints,
-                &mut queries,
-                &mut generated,
-            );
-        }
-    }
-
-    queries
-}
-
-fn emit_policy_scope_tuples(
-    cp: &ClassifiedPolicy,
-    table: &str,
-    db: &ParserDB,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    let scoped_roles = cp.scoped_roles();
-    if scoped_roles.is_empty() {
-        return;
-    }
-
-    let table_type = canonical_fga_type_name(table);
-    let Some(object_col) = find_object_column(table, db) else {
-        emit_missing_object_identifier_todo(table, "policy scope tuples", queries, generated);
-        return;
-    };
-    let table_sql = quote_sql_identifier(table);
-    let object_col_sql = quote_sql_identifier(&object_col);
-    let scope_relation = policy_scope_relation_name(cp.name());
-
-    for role in scoped_roles {
-        let role_id = canonical_fga_type_name(&role);
-        let key = format!("scope:{table}:{scope_relation}:{role_id}");
-        if !generated.insert(key) {
-            continue;
-        }
-        queries.push(TupleQuery {
-            comment: format!(
-                "-- Policy scope: {table} rows require PostgreSQL role '{role}' via {scope_relation}"
-            ),
-            sql: format!(
-                "SELECT '{table_type}:' || {object_col_sql} AS object, '{scope_relation}' AS relation, 'pg_role:{role_id}' AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL;"
-            ),
-        });
-    }
-}
-
-fn generate_tuples_for_pattern(
-    pattern: &PatternClass,
-    table: &str,
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    role_threshold_resource_hints: &RoleThresholdResourceHints,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    let table_type = canonical_fga_type_name(table);
-
-    match pattern {
-        PatternClass::P1NumericThreshold { function_name, .. }
-        | PatternClass::P2RoleNameInList { function_name, .. } => {
-            let key = (table.to_string(), function_name.clone());
-            let resource_join = RoleThresholdResourceJoin {
-                column: role_threshold_resource_hints
-                    .columns
-                    .get(&key)
-                    .map(String::as_str),
-                conflict: role_threshold_resource_hints.conflicts.contains(&key),
-            };
-
-            generate_role_threshold_tuples_with_options(
-                function_name,
-                table,
-                resource_join,
-                db,
-                registry,
-                queries,
-                generated,
-            );
-        }
-        PatternClass::P3DirectOwnership { column } => {
-            let key = format!("p3:{table}:{column}");
-            if generated.insert(key) {
-                let Some(object_col) = find_object_column(table, db) else {
-                    emit_missing_object_identifier_todo(
-                        table,
-                        "ownership tuples",
-                        queries,
-                        generated,
-                    );
-                    return;
-                };
-                let table_sql = quote_sql_identifier(table);
-                let object_col_sql = quote_sql_identifier(&object_col);
-                let column_sql = quote_sql_identifier(column);
-                queries.push(TupleQuery {
-                    comment: format!("-- User ownership ({column} references users)"),
-                    sql: format!(
-                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner' AS relation, 'user:' || {column_sql} AS subject\nFROM {table_sql}\nWHERE {column_sql} IS NOT NULL;"
-                    ),
-                });
-            }
-        }
-        PatternClass::P4ExistsMembership {
-            join_table,
-            fk_column,
-            user_column,
-            extra_predicate_sql,
-        } => {
-            let key = format!(
-                "p4:{table}:{join_table}:{fk_column}:{user_column}:{}",
-                extra_predicate_sql.as_deref().unwrap_or("")
-            );
-            if generated.insert(key) {
-                let parent_type = parent_type_from_fk_column(fk_column);
-                let join_table_sql = quote_sql_identifier(join_table);
-                let fk_column_sql = quote_sql_identifier(fk_column);
-                let user_column_sql = quote_sql_identifier(user_column);
-                let where_clause = extra_predicate_sql
-                    .as_ref()
-                    .map(|e| format!("\nWHERE {e}"))
-                    .unwrap_or_default();
-                queries.push(TupleQuery {
-                    comment: format!("-- {parent_type} membership from {join_table}"),
-                    sql: format!(
-                        "SELECT '{parent_type}:' || {fk_column_sql} AS object, 'member' AS relation, 'user:' || {user_column_sql} AS subject\nFROM {join_table_sql}{where_clause};"
-                    ),
-                });
-            }
-
-            emit_bridge_tuple(table, fk_column, db, queries, generated, "p4_bridge");
-        }
-        PatternClass::P5ParentInheritance { fk_column, .. } => {
-            emit_bridge_tuple(table, fk_column, db, queries, generated, "p5_bridge");
-        }
-        PatternClass::P6BooleanFlag { column } => {
-            let key = format!("p6:{table}:{column}");
-            if generated.insert(key) {
-                let Some(object_col) = find_object_column(table, db) else {
-                    emit_missing_object_identifier_todo(
-                        table,
-                        "public-flag tuples",
-                        queries,
-                        generated,
-                    );
-                    return;
-                };
-                let table_sql = quote_sql_identifier(table);
-                let object_col_sql = quote_sql_identifier(&object_col);
-                let column_sql = quote_sql_identifier(column);
-                queries.push(TupleQuery {
-                    comment: format!("-- Public access flag ({column})"),
-                    sql: format!(
-                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql}\nWHERE {column_sql} = TRUE;"
-                    ),
-                });
-            }
-        }
-        PatternClass::P8Composite { parts, .. } => {
-            for part in parts {
-                generate_tuples_for_pattern(
-                    &part.pattern,
-                    table,
-                    db,
-                    registry,
-                    role_threshold_resource_hints,
-                    queries,
-                    generated,
-                );
-            }
-        }
-        PatternClass::P7AbacAnd {
-            relationship_part,
-            attribute_part,
-        } => {
-            generate_tuples_for_pattern(
-                &relationship_part.pattern,
-                table,
-                db,
-                registry,
-                role_threshold_resource_hints,
-                queries,
-                generated,
-            );
-            let key = format!("p7_attr_todo:{table}:{attribute_part}");
-            if generated.insert(key) {
-                queries.push(TupleQuery {
-                    comment: format!(
-                        "-- TODO [Level C]: attribute condition '{attribute_part}' on {table} requires runtime enforcement; relationship tuples generated above"
-                    ),
-                    sql: format!(
-                        "-- Tuple query not emitted; attribute filter '{attribute_part}' must be enforced by application logic."
-                    ),
-                });
-            }
-        }
-        PatternClass::P10ConstantBool { value } => {
-            let key = format!("p10:{table}:{value}");
-            if generated.insert(key) && *value {
-                let Some(object_col) = find_object_column(table, db) else {
-                    emit_missing_object_identifier_todo(
-                        table,
-                        "constant-TRUE tuples",
-                        queries,
-                        generated,
-                    );
-                    return;
-                };
-                let table_sql = quote_sql_identifier(table);
-                let object_col_sql = quote_sql_identifier(&object_col);
-                queries.push(TupleQuery {
-                    comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
-                    sql: format!(
-                        "SELECT '{table_type}:' || {object_col_sql} AS object, 'public_viewer' AS relation, 'user:*' AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL;"
-                    ),
-                });
-            }
-        }
-        PatternClass::P9AttributeCondition { column, .. } => {
-            emit_untranslated_pattern_todo(
-                table,
-                "P9",
-                &format!(
-                    "attribute condition on '{column}' requires runtime filtering; no static tuple mapping"
-                ),
-                queries,
-                generated,
-            );
-        }
-        PatternClass::Unknown { reason, .. } => {
-            emit_untranslated_pattern_todo(
-                table,
-                "Unknown",
-                &format!("classifier could not translate expression: {reason}"),
-                queries,
-                generated,
-            );
-        }
-    }
-}
-
-fn emit_untranslated_pattern_todo(
-    table: &str,
-    pattern: &str,
-    detail: &str,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    let key = format!("todo:unsupported:{table}:{pattern}:{detail}");
-    if !generated.insert(key) {
-        return;
-    }
-
-    queries.push(TupleQuery {
-        comment: format!(
-            "-- TODO [Level D]: skipped tuple generation for {table} (unsupported pattern {pattern})"
-        ),
-        sql: format!("-- Tuple query not emitted; {detail}."),
-    });
-}
-
-#[cfg(test)]
-fn generate_role_threshold_tuples(
-    function_name: &str,
-    table: &str,
-    resource_join_col: Option<&str>,
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    generate_role_threshold_tuples_with_options(
-        function_name,
-        table,
-        RoleThresholdResourceJoin {
-            column: resource_join_col,
-            conflict: false,
-        },
-        db,
-        registry,
-        queries,
-        generated,
-    );
-}
-
-fn generate_role_threshold_tuples_with_options(
-    function_name: &str,
-    table: &str,
-    resource_join: RoleThresholdResourceJoin<'_>,
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    let key = format!("role_threshold:{table}:{function_name}");
-    if !generated.insert(key) {
-        return;
-    }
-
-    let table_type = canonical_fga_type_name(table);
-
-    if let Some(FunctionSemantic::RoleThreshold {
-        grant_table,
-        grant_grantee_col,
-        grant_resource_col,
-        grant_role_col,
-        team_membership_table,
-        team_membership_user_col,
-        team_membership_team_col,
-        user_table,
-        user_pk_col,
-        team_table,
-        team_pk_col,
-        role_levels,
-        ..
-    }) = registry.get(function_name)
-    {
-        let principals = resolve_role_principals(
-            db,
-            user_table.as_deref(),
-            user_pk_col.as_deref(),
-            team_table.as_deref(),
-            team_pk_col.as_deref(),
-            team_membership_table.is_some(),
-        );
-
-        // Identify ownership and object columns.
-        let owner_col = find_owner_column(table, db);
-        let object_col = find_object_column(table, db);
-        let table_sql = quote_sql_identifier(table);
-
-        if let Some(owner_col) = owner_col.as_deref() {
-            if let Some(object_col) = object_col.as_deref() {
-                let object_col_sql = quote_sql_identifier(object_col);
-                let owner_col_sql = quote_sql_identifier(owner_col);
-                // 1. User ownership
-                if let Some(user_principal) = principals.user.as_ref() {
-                    let user_table_sql = quote_sql_identifier(&user_principal.table);
-                    let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
-                    queries.push(TupleQuery {
-                        comment: format!(
-                            "-- User ownership ({owner_col} references {})",
-                            user_principal.table
-                        ),
-                        sql: format!(
-                            "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_user' AS relation, 'user:' || {owner_col_sql} AS subject\n\
-                             FROM {table_sql}\n\
-                             WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
-                             AND {owner_col_sql} IS NOT NULL;"
-                        ),
-                    });
-                } else {
-                    queries.push(TupleQuery {
-                        comment: format!(
-                            "-- TODO [Level D]: skipped user ownership tuples for {table} (unresolved user principal table)"
-                        ),
-                        sql: "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string(),
-                    });
-                }
-
-                // 2. Team ownership (if teams exist)
-                if team_membership_table.is_some() {
-                    if let Some(team_principal) = principals.team.as_ref() {
-                        let team_table_sql = quote_sql_identifier(&team_principal.table);
-                        let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
-                        queries.push(TupleQuery {
-                            comment: format!(
-                                "-- Team ownership ({owner_col} references {})",
-                                team_principal.table
-                            ),
-                            sql: format!(
-                                "SELECT '{table_type}:' || {object_col_sql} AS object, 'owner_team' AS relation, 'team:' || {owner_col_sql} AS subject\n\
-                                 FROM {table_sql}\n\
-                                 WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
-                                 AND {owner_col_sql} IS NOT NULL;"
-                            ),
-                        });
-                    } else {
-                        queries.push(TupleQuery {
-                            comment: format!(
-                                "-- TODO [Level D]: skipped team ownership tuples for {table} (unresolved team principal table)"
-                            ),
-                            sql: "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string(),
-                        });
-                    }
-                }
-            } else {
-                emit_missing_object_identifier_todo(table, "ownership tuples", queries, generated);
-            }
-        } else {
-            queries.push(TupleQuery {
-                comment: format!(
-                    "-- TODO [Level D]: skipped ownership tuples for {table} (no owner-like column/FK found)"
-                ),
-                sql: "-- Ownership tuples not emitted; review owner mapping.".to_string(),
-            });
-        }
-
-        // 3. Team memberships
-        if let (Some(tm_table), Some(tm_user), Some(tm_team)) = (
-            team_membership_table,
-            team_membership_user_col,
-            team_membership_team_col,
-        ) {
-            let tm_key = format!("team_membership:{tm_table}");
-            if generated.insert(tm_key) {
-                let tm_table_sql = quote_sql_identifier(tm_table);
-                let tm_user_sql = quote_sql_identifier(tm_user);
-                let tm_team_sql = quote_sql_identifier(tm_team);
-                queries.push(TupleQuery {
-                    comment: "-- Team memberships".to_string(),
-                    sql: format!(
-                        "SELECT 'team:' || {tm_team_sql} AS object, 'member' AS relation, 'user:' || {tm_user_sql} AS subject\n\
-                         FROM {tm_table_sql};"
-                    ),
-                });
-            }
-        } else if let Some(tm_table) = team_membership_table {
-            let mut missing_fields = Vec::new();
-            if team_membership_user_col.is_none() {
-                missing_fields.push("team_membership_user_col");
-            }
-            if team_membership_team_col.is_none() {
-                missing_fields.push("team_membership_team_col");
-            }
-
-            if !missing_fields.is_empty() {
-                let missing = missing_fields.join(", ");
-                let tm_key = format!("team_membership_todo:{tm_table}:{missing}");
-                if generated.insert(tm_key) {
-                    queries.push(TupleQuery {
-                        comment: format!(
-                            "-- TODO [Level D]: skipped team memberships for {tm_table} (incomplete team membership metadata: missing {missing})"
-                        ),
-                        sql: "-- Team membership tuples not emitted; add missing role_threshold team membership fields.".to_string(),
-                    });
-                }
-            }
-        }
-
-        // 4. Explicit grants
-        let mut role_cases = Vec::new();
-        let mut role_ids = Vec::new();
-        let sorted_roles = sorted_role_relation_names(role_levels);
-
-        if sorted_roles.is_empty() {
-            return;
-        }
-
-        if resource_join.conflict {
-            queries.push(TupleQuery {
-                comment: format!(
-                    "-- TODO [Level D]: skipped explicit grants for {table} (conflicting resource join columns inferred from policies)"
-                ),
-                sql: "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.".to_string(),
-            });
-            return;
-        }
-
-        let Some(grant_join_col) = resource_join.column.or(owner_col.as_deref()) else {
-            queries.push(TupleQuery {
-                comment: format!(
-                    "-- TODO [Level D]: skipped explicit grants for {table} (missing resource join column)"
-                ),
-                sql: "-- Grant tuples not emitted; add function metadata or owner FK.".to_string(),
-            });
-            return;
-        };
-        let Some(object_col) = object_col.as_deref() else {
-            emit_missing_object_identifier_todo(table, "explicit grant tuples", queries, generated);
-            return;
-        };
-        let object_col_sql = quote_sql_identifier(object_col);
-
-        for role in &sorted_roles {
-            role_cases.push(format!(
-                "    WHEN {} THEN '{}'",
-                role.level,
-                role.grant_relation()
-            ));
-            role_ids.push(role.level.to_string());
-        }
-
-        let grant_role_col_sql = quote_sql_identifier(grant_role_col);
-        let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col);
-        let grant_resource_col_sql = quote_sql_identifier(grant_resource_col);
-        let grant_join_col_sql = quote_sql_identifier(grant_join_col);
-        let grant_table_sql = quote_sql_identifier(grant_table);
-
-        let case_expr = format!(
-            "CASE og.{grant_role_col_sql}\n{}\n  END",
-            role_cases.join("\n")
-        );
-        let mut subject_joins: Vec<String> = Vec::new();
-        let subject_expr = match (principals.user.as_ref(), principals.team.as_ref()) {
-            (Some(user_principal), Some(team_principal)) => {
-                let user_table_sql = quote_sql_identifier(&user_principal.table);
-                let user_pk_col_sql = quote_sql_identifier(&user_principal.pk_col);
-                let team_table_sql = quote_sql_identifier(&team_principal.table);
-                let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
-                subject_joins.push(format!(
-                    "LEFT JOIN {user_table_sql} u ON u.{user_pk_col_sql} = og.{grant_grantee_col_sql}"
-                ));
-                subject_joins.push(format!(
-                    "LEFT JOIN {team_table_sql} t ON t.{team_pk_col_sql} = og.{grant_grantee_col_sql}"
-                ));
-                format!(
-                    "CASE\n\
-                     \x20   WHEN u.{user_pk_col_sql} IS NOT NULL THEN 'user:' || og.{grant_grantee_col_sql}\n\
-                     \x20   WHEN t.{team_pk_col_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
-                     \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
-                     \x20 END",
-                )
-            }
-            (Some(_) | None, None) => format!("'user:' || og.{grant_grantee_col_sql}"),
-            (None, Some(team_principal)) => {
-                let team_table_sql = quote_sql_identifier(&team_principal.table);
-                let team_pk_col_sql = quote_sql_identifier(&team_principal.pk_col);
-                subject_joins.push(format!(
-                    "LEFT JOIN {team_table_sql} t ON t.{team_pk_col_sql} = og.{grant_grantee_col_sql}"
-                ));
-                format!(
-                    "CASE\n\
-                     \x20   WHEN t.{team_pk_col_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
-                     \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
-                     \x20 END",
-                )
-            }
-        };
-
-        let subject_join_sql = if subject_joins.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", subject_joins.join("\n                 "))
-        };
-
-        queries.push(TupleQuery {
-            comment: format!(
-                "-- Explicit grants expanded to {table} rows ({}: {})",
-                grant_role_col,
-                sorted_roles
-                    .iter()
-                    .map(|role| format!("{}={}", role.level, role.original_name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            sql: format!(
-                "SELECT\n\
-                 \x20 '{table_type}:' || resource.{object_col_sql} AS object,\n\
-                 \x20 {case_expr} AS relation,\n\
-                 \x20 {subject_expr} AS subject\n\
-                 FROM {grant_table_sql} og\n\
-                 JOIN {table_sql} resource ON resource.{grant_join_col_sql} = og.{grant_resource_col_sql}\n\
-                 {subject_join_sql}\
-                 WHERE og.{grant_role_col_sql} IN ({});",
-                role_ids.join(", ")
-            ),
-        });
-    } else {
-        let (comment, sql) = match registry.get(function_name) {
-            Some(semantic) => (
-                format!(
-                    "-- TODO [Level D]: skipped role-threshold tuples for {table} (function '{function_name}' has incompatible semantic kind '{}')",
-                    semantic_kind(semantic)
-                ),
-                "-- Role-threshold tuples not emitted; function semantic must be 'role_threshold'."
-                    .to_string(),
-            ),
-            None => (
-                format!(
-                    "-- TODO [Level D]: skipped role-threshold tuples for {table} (missing semantic metadata for function '{function_name}')"
-                ),
-                "-- Role-threshold tuples not emitted; add function_registry metadata for this function."
-                    .to_string(),
-            ),
-        };
-        queries.push(TupleQuery { comment, sql });
-    }
-}
-
-fn find_owner_column(table: &str, db: &ParserDB) -> Option<String> {
-    if let Some(table_info) = lookup_table(db, table) {
-        for col in table_info.columns(db) {
-            let name = col.column_name();
-            if is_owner_like_column_name(name) {
-                return Some(name.to_string());
-            }
-        }
-        // Check FK references to users/owners
-        for fk in table_info.foreign_keys(db) {
-            let ref_table = fk.referenced_table(db);
-            let ref_name = ref_table.table_name();
-            let normalized_ref = normalize_relation_name(ref_name);
-            if normalized_ref == "users" || normalized_ref == "owners" {
-                if let Some(col_name) = fk
-                    .host_columns(db)
-                    .next()
-                    .map(|col| col.column_name().to_string())
-                {
-                    return Some(col_name);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn semantic_kind(semantic: &FunctionSemantic) -> &'static str {
-    match semantic {
-        FunctionSemantic::RoleThreshold { .. } => "role_threshold",
-        FunctionSemantic::CurrentUserAccessor { .. } => "current_user_accessor",
-        FunctionSemantic::Unknown { .. } => "unknown",
-    }
+    let plan = crate::generator::model_generator::build_schema_plan(&filtered, db, registry);
+    generate_tuple_queries_from_plan(&plan, db)
 }
 
 fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
@@ -712,439 +404,6 @@ fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
                 .find(|c| c.column_name() == "id")
                 .map(|c| c.column_name().to_string())
         })
-}
-
-fn find_object_column(table: &str, db: &ParserDB) -> Option<String> {
-    resolve_object_column(table, db)
-}
-
-fn emit_missing_object_identifier_todo(
-    table: &str,
-    context: &str,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-) {
-    let key = format!("todo:missing_object_identifier:{table}:{context}");
-    if !generated.insert(key) {
-        return;
-    }
-
-    queries.push(TupleQuery {
-        comment: format!(
-            "-- TODO [Level D]: skipped {context} for {table} (missing object identifier column)"
-        ),
-        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-    });
-}
-
-fn quote_sql_identifier(identifier: &str) -> String {
-    split_qualified_identifier_parts(identifier)
-        .into_iter()
-        .map(|part| quote_sql_identifier_part(&part))
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn quote_sql_identifier_part(part: &str) -> String {
-    let trimmed = part.trim();
-    if trimmed.is_empty() {
-        return "\"\"".to_string();
-    }
-    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        return trimmed.to_string();
-    }
-    if !identifier_needs_quoting(trimmed) {
-        return trimmed.to_string();
-    }
-    format!("\"{}\"", trimmed.replace('"', "\"\""))
-}
-
-fn identifier_needs_quoting(ident: &str) -> bool {
-    const RESERVED: &[&str] = &[
-        "all", "from", "group", "order", "role", "select", "table", "user", "where",
-    ];
-
-    if RESERVED.iter().any(|kw| ident.eq_ignore_ascii_case(kw)) {
-        return true;
-    }
-
-    let mut chars = ident.chars();
-    let Some(first) = chars.next() else {
-        return true;
-    };
-    if !(first.is_ascii_lowercase() || first == '_') {
-        return true;
-    }
-    chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'))
-}
-
-fn resolve_role_principals(
-    db: &ParserDB,
-    user_table: Option<&str>,
-    user_pk_col: Option<&str>,
-    team_table: Option<&str>,
-    team_pk_col: Option<&str>,
-    has_team_support: bool,
-) -> RolePrincipalResolution {
-    let user = resolve_principal_table(db, user_table, user_pk_col, &["users", "user"]);
-    let team = if has_team_support {
-        resolve_principal_table(db, team_table, team_pk_col, &["teams", "team"])
-    } else {
-        None
-    };
-
-    RolePrincipalResolution { user, team }
-}
-
-fn resolve_principal_table(
-    db: &ParserDB,
-    configured_table: Option<&str>,
-    configured_pk_col: Option<&str>,
-    fallback_table_candidates: &[&str],
-) -> Option<PrincipalTable> {
-    if let Some(table) = configured_table {
-        let pk_col = if let Some(pk_col) = configured_pk_col {
-            if !table_has_column(db, table, pk_col) {
-                return None;
-            }
-            pk_col.to_string()
-        } else {
-            resolve_object_column(table, db)?
-        };
-
-        return Some(PrincipalTable {
-            table: table.to_string(),
-            pk_col,
-        });
-    }
-
-    for table in fallback_table_candidates {
-        if lookup_table(db, table).is_none() {
-            continue;
-        }
-        if let Some(pk_col) = resolve_object_column(table, db) {
-            return Some(PrincipalTable {
-                table: (*table).to_string(),
-                pk_col,
-            });
-        }
-    }
-
-    None
-}
-
-fn table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
-    lookup_table(db, table)
-        .is_some_and(|table_info| table_info.columns(db).any(|c| c.column_name() == col))
-}
-
-fn infer_role_threshold_resource_columns(
-    policies: &[ClassifiedPolicy],
-    registry: &FunctionRegistry,
-) -> RoleThresholdResourceHints {
-    let mut hints = RoleThresholdResourceHints::default();
-
-    for cp in policies {
-        collect_policy_resource_column(
-            &cp.table_name(),
-            cp.policy.using.as_ref(),
-            cp.using_classification.as_ref(),
-            registry,
-            &mut hints.columns,
-            &mut hints.conflicts,
-        );
-        collect_policy_resource_column(
-            &cp.table_name(),
-            cp.policy.with_check.as_ref(),
-            cp.with_check_classification.as_ref(),
-            registry,
-            &mut hints.columns,
-            &mut hints.conflicts,
-        );
-    }
-
-    hints
-}
-
-fn collect_policy_resource_column(
-    table: &str,
-    policy_expr: Option<&Expr>,
-    classified: Option<&ClassifiedExpr>,
-    registry: &FunctionRegistry,
-    out: &mut HashMap<(String, String), String>,
-    conflicts: &mut BTreeSet<(String, String)>,
-) {
-    let Some(expr) = policy_expr else {
-        return;
-    };
-
-    for (function_name, resource_param_index) in
-        role_threshold_functions_and_resource_params(classified, registry)
-    {
-        let key = (table.to_string(), function_name);
-        if conflicts.contains(&key) {
-            continue;
-        }
-
-        let resource_cols =
-            extract_resource_columns_for_function(expr, &key.1, resource_param_index);
-        if resource_cols.is_empty() {
-            continue;
-        }
-        if resource_cols.len() > 1 {
-            out.remove(&key);
-            conflicts.insert(key);
-            continue;
-        }
-        let resource_col = resource_cols
-            .into_iter()
-            .next()
-            .expect("non-empty resource column set should contain one value");
-
-        if let Some(existing) = out.get(&key) {
-            if existing != &resource_col {
-                out.remove(&key);
-                conflicts.insert(key);
-            }
-            continue;
-        }
-
-        out.insert(key, resource_col);
-    }
-}
-
-fn role_threshold_functions_and_resource_params(
-    classified: Option<&ClassifiedExpr>,
-    registry: &FunctionRegistry,
-) -> Vec<(String, usize)> {
-    fn walk(
-        classified: &ClassifiedExpr,
-        registry: &FunctionRegistry,
-        out: &mut BTreeSet<(String, usize)>,
-    ) {
-        match &classified.pattern {
-            PatternClass::P1NumericThreshold { function_name, .. }
-            | PatternClass::P2RoleNameInList { function_name, .. } => {
-                let Some(FunctionSemantic::RoleThreshold {
-                    resource_param_index,
-                    ..
-                }) = registry.get(function_name)
-                else {
-                    return;
-                };
-                out.insert((function_name.clone(), *resource_param_index));
-            }
-            PatternClass::P5ParentInheritance { inner_pattern, .. } => {
-                walk(inner_pattern, registry, out);
-            }
-            PatternClass::P7AbacAnd {
-                relationship_part, ..
-            } => {
-                walk(relationship_part, registry, out);
-            }
-            PatternClass::P8Composite { parts, .. } => {
-                for part in parts {
-                    walk(part, registry, out);
-                }
-            }
-            PatternClass::P3DirectOwnership { .. }
-            | PatternClass::P4ExistsMembership { .. }
-            | PatternClass::P6BooleanFlag { .. }
-            | PatternClass::P9AttributeCondition { .. }
-            | PatternClass::P10ConstantBool { .. }
-            | PatternClass::Unknown { .. } => {}
-        }
-    }
-
-    let Some(classified) = classified else {
-        return Vec::new();
-    };
-
-    let mut functions = BTreeSet::new();
-    walk(classified, registry, &mut functions);
-    functions.into_iter().collect()
-}
-
-fn extract_resource_columns_for_function(
-    expr: &Expr,
-    function_name: &str,
-    resource_param_index: usize,
-) -> BTreeSet<String> {
-    let mut functions = Vec::new();
-    collect_function_calls(expr, function_name, &mut functions);
-
-    let mut columns = BTreeSet::new();
-    for function in functions {
-        let Some(arg_expr) = positional_function_arg(function, resource_param_index) else {
-            continue;
-        };
-        let Some(column) = extract_column_name(arg_expr) else {
-            continue;
-        };
-        columns.insert(column);
-    }
-
-    columns
-}
-
-fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec<&'a Function>) {
-    match expr {
-        Expr::Function(function)
-            if normalize_relation_name(&function.name.to_string())
-                == normalize_relation_name(function_name) =>
-        {
-            out.push(function);
-        }
-        Expr::Function(function) => {
-            if let FunctionArguments::List(arg_list) = &function.args {
-                for arg in &arg_list.args {
-                    match arg {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-                        | FunctionArg::Named {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        }
-                        | FunctionArg::ExprNamed {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        } => collect_function_calls(expr, function_name, out),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        Expr::BinaryOp { left, right, .. }
-        | Expr::IsDistinctFrom(left, right)
-        | Expr::IsNotDistinctFrom(left, right)
-        | Expr::AnyOp { left, right, .. }
-        | Expr::AllOp { left, right, .. } => {
-            collect_function_calls(left, function_name, out);
-            collect_function_calls(right, function_name, out);
-        }
-        Expr::UnaryOp { expr, .. }
-        | Expr::Cast { expr, .. }
-        | Expr::InSubquery { expr, .. }
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::IsTrue(expr)
-        | Expr::IsFalse(expr)
-        | Expr::IsNotTrue(expr)
-        | Expr::IsNotFalse(expr)
-        | Expr::IsUnknown(expr)
-        | Expr::IsNotUnknown(expr) => collect_function_calls(expr, function_name, out),
-        Expr::Nested(inner) => collect_function_calls(inner, function_name, out),
-        Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => {
-            collect_function_calls_in_query(subquery, function_name, out);
-        }
-        Expr::InList { expr, list, .. } => {
-            collect_function_calls(expr, function_name, out);
-            for item in list {
-                collect_function_calls(item, function_name, out);
-            }
-        }
-        Expr::InUnnest {
-            expr, array_expr, ..
-        } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(array_expr, function_name, out);
-        }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(low, function_name, out);
-            collect_function_calls(high, function_name, out);
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            if let Some(operand) = operand.as_deref() {
-                collect_function_calls(operand, function_name, out);
-            }
-            for when in conditions {
-                collect_function_calls(&when.condition, function_name, out);
-                collect_function_calls(&when.result, function_name, out);
-            }
-            if let Some(else_expr) = else_result.as_deref() {
-                collect_function_calls(else_expr, function_name, out);
-            }
-        }
-        Expr::Like { expr, pattern, .. }
-        | Expr::ILike { expr, pattern, .. }
-        | Expr::SimilarTo { expr, pattern, .. }
-        | Expr::RLike { expr, pattern, .. } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(pattern, function_name, out);
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                collect_function_calls(item, function_name, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_function_calls_in_query<'a>(
-    query: &'a Query,
-    function_name: &str,
-    out: &mut Vec<&'a Function>,
-) {
-    collect_function_calls_in_set_expr(query.body.as_ref(), function_name, out);
-}
-
-fn collect_function_calls_in_set_expr<'a>(
-    set_expr: &'a SetExpr,
-    function_name: &str,
-    out: &mut Vec<&'a Function>,
-) {
-    match set_expr {
-        SetExpr::Select(select) => {
-            for item in &select.projection {
-                match item {
-                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                        collect_function_calls(expr, function_name, out);
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(selection) = &select.selection {
-                collect_function_calls(selection, function_name, out);
-            }
-            if let Some(having) = &select.having {
-                collect_function_calls(having, function_name, out);
-            }
-        }
-        SetExpr::SetOperation { left, right, .. } => {
-            collect_function_calls_in_set_expr(left, function_name, out);
-            collect_function_calls_in_set_expr(right, function_name, out);
-        }
-        SetExpr::Query(query) => collect_function_calls_in_query(query, function_name, out),
-        _ => {}
-    }
-}
-
-fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
-    let FunctionArguments::List(arg_list) = &function.args else {
-        return None;
-    };
-    let arg = arg_list.args.get(index)?;
-
-    match arg {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-        | FunctionArg::Named {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        }
-        | FunctionArg::ExprNamed {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        } => Some(expr),
-        _ => None,
-    }
 }
 
 fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option<(String, String)> {
@@ -1202,99 +461,52 @@ fn singular_candidates(relation: &str) -> Vec<String> {
     candidates
 }
 
-fn emit_bridge_tuple(
-    table: &str,
-    fk_column: &str,
-    db: &ParserDB,
-    queries: &mut Vec<TupleQuery>,
-    generated: &mut std::collections::HashSet<String>,
-    kind: &str,
-) {
-    let table_type = canonical_fga_type_name(table);
-    let parent_type = parent_type_from_fk_column(fk_column);
-    let bridge_key = format!("{kind}:{table}:{fk_column}:{parent_type}");
-    if !generated.insert(bridge_key) {
-        return;
+fn quote_sql_identifier(identifier: &str) -> String {
+    split_qualified_identifier_parts(identifier)
+        .into_iter()
+        .map(|part| quote_sql_identifier_part(&part))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn quote_sql_identifier_part(part: &str) -> String {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return "\"\"".to_string();
     }
-    let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_column, db) else {
-        queries.push(TupleQuery {
-            comment: format!(
-                "-- TODO [Level D]: skipped {table} to {parent_type} bridge (missing column '{fk_column}')"
-            ),
-            sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
-        });
-        return;
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        return trimmed.to_string();
+    }
+    if !identifier_needs_quoting(trimmed) {
+        return trimmed.to_string();
+    }
+    format!("\"{}\"", trimmed.replace('"', "\"\""))
+}
+
+fn identifier_needs_quoting(ident: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "all", "from", "group", "order", "role", "select", "table", "user", "where",
+    ];
+
+    if RESERVED.iter().any(|kw| ident.eq_ignore_ascii_case(kw)) {
+        return true;
+    }
+
+    let mut chars = ident.chars();
+    let Some(first) = chars.next() else {
+        return true;
     };
-    let table_sql = quote_sql_identifier(table);
-    let object_col_sql = quote_sql_identifier(&object_col);
-    let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
-    queries.push(TupleQuery {
-        comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
-        sql: format!(
-            "SELECT '{table_type}:' || {object_col_sql} AS object, '{parent_type}' AS relation, '{parent_type}:' || {parent_ref_col_sql} AS subject\nFROM {table_sql}\nWHERE {object_col_sql} IS NOT NULL\nAND {parent_ref_col_sql} IS NOT NULL;"
-        ),
-    });
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return true;
+    }
+    chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::names::policy_scope_relation_name;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    fn parse_expr(expr_sql: &str) -> Expr {
-        Parser::new(&PostgreSqlDialect {})
-            .try_with_sql(expr_sql)
-            .expect("expression should parse")
-            .parse_expr()
-            .expect("expression should parse")
-    }
-
-    fn registry_with_role_threshold(team_support: bool) -> FunctionRegistry {
-        let mut registry = FunctionRegistry::new();
-        let team_fields = if team_support {
-            r#",
-    "team_membership_table": "team_memberships",
-    "team_membership_user_col": "user_id",
-    "team_membership_team_col": "team_id""#
-        } else {
-            ""
-        };
-        let json = format!(
-            r#"{{
-  "role_level": {{
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {{"viewer": 1, "editor": 2}},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"{team_fields}
-  }}
-}}"#
-        );
-        registry
-            .load_from_json(&json)
-            .expect("registry json should parse");
-        registry
-    }
-
-    fn db_with_resources() -> ParserDB {
-        parse_schema(
-            r"
-CREATE TABLE users(id uuid primary key);
-CREATE TABLE teams(id uuid primary key);
-CREATE TABLE docs(id uuid primary key, owner_id uuid references users(id), project_id uuid);
-CREATE TABLE doc_members(doc_id uuid, user_id uuid, role text);
-CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
-CREATE TABLE team_memberships(user_id uuid, team_id uuid);
-CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
-",
-        )
-        .expect("schema should parse")
-    }
 
     #[test]
     fn format_tuples_trims_trailing_newlines() {
@@ -1311,176 +523,6 @@ CREATE TABLE project_links(resource_uuid uuid, project_uuid uuid);
         let formatted = format_tuples(&tuples);
         assert!(formatted.ends_with("SELECT 2;"));
         assert!(!formatted.ends_with('\n'));
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_supports_team_membership_and_dedup() {
-        let db = db_with_resources();
-        let registry = registry_with_role_threshold(true);
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("User ownership (owner_id references users)")));
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("Team ownership (owner_id references teams)")));
-        assert!(queries.iter().any(|q| q.comment == "-- Team memberships"));
-        assert!(queries
-            .iter()
-            .any(|q| q.comment.contains("Explicit grants expanded to docs rows")));
-
-        let team_membership_count = queries
-            .iter()
-            .filter(|q| q.comment == "-- Team memberships")
-            .count();
-        assert_eq!(
-            team_membership_count, 1,
-            "team membership tuples should be deduplicated"
-        );
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_emits_todo_for_missing_function_semantics() {
-        let db = db_with_resources();
-        let registry = FunctionRegistry::new();
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-
-        generate_role_threshold_tuples(
-            "unknown_role_fn",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("missing semantic metadata for function 'unknown_role_fn'")));
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_emits_todo_for_incompatible_function_semantics() {
-        let db = db_with_resources();
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "auth_current_user_id": {
-    "kind": "current_user_accessor",
-    "returns": "uuid"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-
-        generate_role_threshold_tuples(
-            "auth_current_user_id",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(queries.iter().any(|q| {
-            q.comment
-                .contains("incompatible semantic kind 'current_user_accessor'")
-        }));
-    }
-
-    #[test]
-    fn find_owner_column_prefers_named_owner_then_fk_then_none() {
-        let db = parse_schema(
-            r"
-CREATE TABLE users(id uuid primary key);
-CREATE TABLE owners(id uuid primary key);
-CREATE TABLE docs(id uuid primary key, owner_id uuid);
-CREATE TABLE notes(id uuid primary key, owner_ref uuid references users(id));
-CREATE TABLE posts(id uuid primary key, owner_ref uuid references owners(id));
-",
-        )
-        .expect("schema should parse");
-
-        assert_eq!(find_owner_column("docs", &db), Some("owner_id".to_string()));
-        assert_eq!(
-            find_owner_column("notes", &db),
-            Some("owner_ref".to_string())
-        );
-        assert_eq!(
-            find_owner_column("posts", &db),
-            Some("owner_ref".to_string())
-        );
-        assert_eq!(find_owner_column("missing_table", &db), None);
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_emits_todo_when_team_membership_columns_missing() {
-        let db = db_with_resources();
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level",
-    "team_membership_table": "team_memberships"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(!queries.iter().any(|q| q.comment == "-- Team memberships"));
-        assert!(
-            queries
-                .iter()
-                .any(|q| q.comment.contains("incomplete team membership metadata")),
-            "missing team membership columns should produce an explicit TODO"
-        );
     }
 
     #[test]
@@ -1519,235 +561,6 @@ CREATE TABLE categories(id uuid primary key);
             Some(("id".to_string(), "id".to_string()))
         );
         assert_eq!(resolve_bridge_columns("links", "project_id", &db), None);
-    }
-
-    #[test]
-    fn emit_bridge_tuple_emits_todo_for_unsafe_missing_fk_column() {
-        let db = parse_schema(
-            r"
-CREATE TABLE links(resource_uuid uuid, project_uuid uuid);
-",
-        )
-        .expect("schema should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        emit_bridge_tuple(
-            "links",
-            "project_id",
-            &db,
-            &mut queries,
-            &mut generated,
-            "p4_bridge",
-        );
-
-        assert!(
-            queries.iter().any(|q| q
-                .comment
-                .contains("TODO [Level D]: skipped links to project bridge")),
-            "expected TODO marker for skipped unsafe bridge, got: {queries:?}"
-        );
-    }
-
-    #[test]
-    fn emit_bridge_tuple_does_not_collapse_distinct_fk_columns() {
-        let db = parse_schema(
-            r"
-CREATE TABLE tasks(
-  id uuid primary key,
-  source_project_id uuid,
-  target_project_id uuid
-);
-",
-        )
-        .expect("schema should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        emit_bridge_tuple(
-            "tasks",
-            "source_project_id",
-            &db,
-            &mut queries,
-            &mut generated,
-            "p5_bridge",
-        );
-        emit_bridge_tuple(
-            "tasks",
-            "target_project_id",
-            &db,
-            &mut queries,
-            &mut generated,
-            "p5_bridge",
-        );
-
-        let bridge_count = queries
-            .iter()
-            .filter(|q| q.comment.contains("bridge for tuple-to-userset"))
-            .count();
-        assert_eq!(
-            bridge_count, 2,
-            "distinct FK columns should each produce bridge tuples"
-        );
-    }
-
-    #[test]
-    fn generate_tuples_for_pattern_handles_p4_bridge_p7_p8_and_p10() {
-        let db = db_with_resources();
-        let registry = registry_with_role_threshold(false);
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        let role_threshold_resource_hints = RoleThresholdResourceHints::default();
-
-        let p4 = PatternClass::P4ExistsMembership {
-            join_table: "doc_members".to_string(),
-            fk_column: "project_id".to_string(),
-            user_column: "user_id".to_string(),
-            extra_predicate_sql: Some("doc_members.role = 'admin'".to_string()),
-        };
-        generate_tuples_for_pattern(
-            &p4,
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-        generate_tuples_for_pattern(
-            &p4,
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-
-        let p7 = PatternClass::P7AbacAnd {
-            relationship_part: Box::new(ClassifiedExpr {
-                pattern: PatternClass::P3DirectOwnership {
-                    column: "owner_id".to_string(),
-                },
-                confidence: ConfidenceLevel::A,
-            }),
-            attribute_part: "status".to_string(),
-        };
-        generate_tuples_for_pattern(
-            &p7,
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-
-        let composite = PatternClass::P8Composite {
-            op: BoolOp::Or,
-            parts: vec![
-                ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag {
-                        column: "is_public".to_string(),
-                    },
-                    confidence: ConfidenceLevel::A,
-                },
-                ClassifiedExpr {
-                    pattern: PatternClass::P10ConstantBool { value: true },
-                    confidence: ConfidenceLevel::A,
-                },
-                ClassifiedExpr {
-                    pattern: PatternClass::P10ConstantBool { value: false },
-                    confidence: ConfidenceLevel::A,
-                },
-            ],
-        };
-        generate_tuples_for_pattern(
-            &composite,
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(queries
-            .iter()
-            .any(|q| q.comment.contains("-- project membership from doc_members")));
-        assert!(queries
-            .iter()
-            .any(|q| q.comment.contains("bridge for tuple-to-userset")));
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("User ownership (owner_id references users)")));
-        assert!(queries
-            .iter()
-            .any(|q| q.comment.contains("Constant TRUE policy")));
-        let constant_true = queries
-            .iter()
-            .find(|q| q.comment.contains("Constant TRUE policy"))
-            .expect("expected constant true tuple query");
-        assert!(
-            constant_true.sql.contains("WHERE id IS NOT NULL;"),
-            "constant TRUE tuple generation must fail closed for null object IDs"
-        );
-
-        let p4_membership_count = queries
-            .iter()
-            .filter(|q| q.comment.contains("-- project membership from doc_members"))
-            .count();
-        assert_eq!(
-            p4_membership_count, 1,
-            "P4 membership tuples should be deduplicated"
-        );
-    }
-
-    #[test]
-    fn generate_tuples_for_pattern_emits_todos_for_unhandled_patterns() {
-        let db = db_with_resources();
-        let registry = FunctionRegistry::new();
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        let role_threshold_resource_hints = RoleThresholdResourceHints::default();
-
-        generate_tuples_for_pattern(
-            &PatternClass::P9AttributeCondition {
-                column: "status".to_string(),
-                value_description: "'published'".to_string(),
-            },
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-        generate_tuples_for_pattern(
-            &PatternClass::Unknown {
-                sql_text: "owner_id IS NULL".to_string(),
-                reason: "unsupported".to_string(),
-            },
-            "docs",
-            &db,
-            &registry,
-            &role_threshold_resource_hints,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(
-            queries
-                .iter()
-                .any(|q| q.comment.contains("unsupported pattern P9")),
-            "expected TODO entry for unsupported P9 tuple generation"
-        );
-        assert!(
-            queries
-                .iter()
-                .any(|q| q.comment.contains("unsupported pattern Unknown")),
-            "expected TODO entry for unsupported Unknown tuple generation"
-        );
     }
 
     #[test]
@@ -2045,198 +858,6 @@ CREATE POLICY docs_select ON docs FOR SELECT
     }
 
     #[test]
-    fn generate_role_threshold_tuples_emit_todos_when_owner_and_join_columns_are_missing() {
-        let db = parse_schema(
-            r"
-CREATE TABLE docs(doc_uuid uuid primary key, title text);
-CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
-",
-        )
-        .expect("schema should parse");
-
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("TODO [Level D]: skipped ownership tuples for docs")));
-        assert!(queries.iter().any(|q| q
-            .comment
-            .contains("TODO [Level D]: skipped explicit grants for docs")));
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_uses_configured_principal_tables() {
-        let db = parse_schema(
-            r"
-CREATE TABLE accounts(account_id uuid primary key);
-CREATE TABLE groups(group_id uuid primary key);
-CREATE TABLE docs(id uuid primary key, owner_id uuid);
-CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
-CREATE TABLE team_memberships(user_id uuid, team_id uuid);
-",
-        )
-        .expect("schema should parse");
-
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level",
-    "team_membership_table": "team_memberships",
-    "team_membership_user_col": "user_id",
-    "team_membership_team_col": "team_id",
-    "user_table": "accounts",
-    "user_pk_col": "account_id",
-    "team_table": "groups",
-    "team_pk_col": "group_id"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            None,
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        let user_ownership = queries
-            .iter()
-            .find(|q| q.comment.contains("User ownership"))
-            .expect("expected user ownership query");
-        assert!(user_ownership
-            .sql
-            .contains("SELECT account_id FROM accounts"));
-
-        let team_ownership = queries
-            .iter()
-            .find(|q| q.comment.contains("Team ownership"))
-            .expect("expected team ownership query");
-        assert!(team_ownership.sql.contains("SELECT group_id FROM groups"));
-
-        let grants = queries
-            .iter()
-            .find(|q| q.comment.contains("Explicit grants expanded to docs rows"))
-            .expect("expected grant query");
-        assert!(grants
-            .sql
-            .contains("LEFT JOIN accounts u ON u.account_id = og.grantee_id"));
-        assert!(grants
-            .sql
-            .contains("LEFT JOIN groups t ON t.group_id = og.grantee_id"));
-    }
-
-    #[test]
-    fn generate_role_threshold_tuples_sanitizes_grant_relation_names() {
-        let db = parse_schema(
-            r"
-CREATE TABLE users(id uuid primary key);
-CREATE TABLE docs(id uuid primary key, owner_id uuid);
-CREATE TABLE object_grants(grantee_id uuid, resource_id uuid, role_level integer);
-",
-        )
-        .expect("schema should parse");
-
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"read-write": 1, "Team Admin": 2},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let mut queries = Vec::new();
-        let mut generated = std::collections::HashSet::new();
-        generate_role_threshold_tuples(
-            "role_level",
-            "docs",
-            Some("id"),
-            &db,
-            &registry,
-            &mut queries,
-            &mut generated,
-        );
-
-        let grants = queries
-            .iter()
-            .find(|q| q.comment.contains("Explicit grants expanded to docs rows"))
-            .expect("expected explicit grants query");
-
-        assert!(grants.sql.contains("WHEN 1 THEN 'grant_read_write'"));
-        assert!(grants.sql.contains("WHEN 2 THEN 'grant_team_admin'"));
-        assert!(!grants.sql.contains("grant_read-write"));
-        assert!(!grants.sql.contains("grant_Team Admin"));
-    }
-
-    #[test]
-    fn find_owner_column_returns_none_when_owner_columns_missing() {
-        let db = parse_schema(
-            r"
-CREATE TABLE docs(doc_uuid uuid primary key, title text);
-",
-        )
-        .expect("schema should parse");
-
-        assert_eq!(
-            find_owner_column("docs", &db),
-            None,
-            "expected no owner mapping when no owner-like columns are present"
-        );
-    }
-
-    #[test]
     fn aliased_p4_membership_tuples_do_not_leak_correlated_or_current_user_predicates() {
         let db = parse_schema(
             r"
@@ -2284,63 +905,6 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
             !membership_query.sql.contains("dm."),
             "join-table alias should not leak into tuple SQL when FROM has no alias, got:\n{}",
             membership_query.sql
-        );
-    }
-
-    #[test]
-    fn extract_resource_columns_for_function_walks_case_between_and_subquery_nodes() {
-        let case_expr =
-            parse_expr("CASE WHEN TRUE THEN role_level(auth_current_user_id(), doc_id) ELSE 0 END");
-        assert_eq!(
-            extract_resource_columns_for_function(&case_expr, "role_level", 1),
-            BTreeSet::from(["doc_id".to_string()])
-        );
-
-        let between_expr = parse_expr("role_level(auth_current_user_id(), id) BETWEEN 1 AND 5");
-        assert_eq!(
-            extract_resource_columns_for_function(&between_expr, "role_level", 1),
-            BTreeSet::from(["id".to_string()])
-        );
-
-        let in_subquery_expr =
-            parse_expr("role_level(auth_current_user_id(), id) IN (SELECT doc_id FROM docs)");
-        assert_eq!(
-            extract_resource_columns_for_function(&in_subquery_expr, "role_level", 1),
-            BTreeSet::from(["id".to_string()])
-        );
-
-        let exists_expr = parse_expr(
-            "EXISTS (
-               SELECT 1
-               FROM docs d
-               WHERE role_level(auth_current_user_id(), d.id) >= 2
-             )",
-        );
-        assert_eq!(
-            extract_resource_columns_for_function(&exists_expr, "role_level", 1),
-            BTreeSet::from(["id".to_string()])
-        );
-
-        let having_expr = parse_expr(
-            "EXISTS (
-               SELECT count(*)
-               FROM docs d
-               GROUP BY d.id
-               HAVING role_level(auth_current_user_id(), d.id) >= 2
-             )",
-        );
-        assert_eq!(
-            extract_resource_columns_for_function(&having_expr, "role_level", 1),
-            BTreeSet::from(["id".to_string()])
-        );
-
-        let conflicting_expr = parse_expr(
-            "(role_level(auth_current_user_id(), id) >= 2)
-             OR (role_level(auth_current_user_id(), project_id) >= 2)",
-        );
-        assert_eq!(
-            extract_resource_columns_for_function(&conflicting_expr, "role_level", 1),
-            BTreeSet::from(["id".to_string(), "project_id".to_string()])
         );
     }
 
