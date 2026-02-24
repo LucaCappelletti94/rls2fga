@@ -17,29 +17,37 @@ pub fn normalize_identifier(ident: &str) -> String {
 /// Split a potentially schema-qualified name into `(schema, relation)`.
 ///
 /// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
-pub fn split_schema_and_relation(name: &str) -> Option<(String, String)> {
+pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
     let mut in_quotes = false;
     let mut start = 0usize;
-    let mut parts: Vec<&str> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
 
     for (idx, ch) in name.char_indices() {
         match ch {
             '"' => in_quotes = !in_quotes,
             '.' if !in_quotes => {
-                parts.push(name[start..idx].trim());
+                parts.push(name[start..idx].trim().to_string());
                 start = idx + 1;
             }
             _ => {}
         }
     }
-    parts.push(name[start..].trim());
+    parts.push(name[start..].trim().to_string());
 
+    parts
+}
+
+/// Split a potentially schema-qualified name into `(schema, relation)`.
+///
+/// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
+pub fn split_schema_and_relation(name: &str) -> Option<(String, String)> {
+    let parts = split_qualified_identifier_parts(name);
     if parts.len() < 2 {
         return None;
     }
 
-    let schema = unquote_identifier(parts[parts.len() - 2]).to_string();
-    let relation = unquote_identifier(parts[parts.len() - 1]).to_string();
+    let schema = unquote_identifier(&parts[parts.len() - 2]).to_string();
+    let relation = unquote_identifier(&parts[parts.len() - 1]).to_string();
     Some((schema, relation))
 }
 
@@ -112,7 +120,7 @@ pub fn canonical_fga_type_name(name: &str) -> String {
     canonical
 }
 
-fn stable_hex_suffix(input: &str) -> String {
+pub(crate) fn stable_hex_suffix(input: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in input.as_bytes() {
         hash ^= u64::from(*byte);
@@ -168,7 +176,13 @@ pub fn table_lookup_candidates(name: &str) -> Vec<(Option<String>, String)> {
         candidates.push((None, name.to_string()));
         candidates.push((None, relation));
     } else {
-        candidates.push((None, name.to_string()));
+        let raw = name.to_string();
+        candidates.push((None, raw.clone()));
+
+        let unquoted = unquote_identifier(name.trim()).to_string();
+        if unquoted != raw {
+            candidates.push((None, unquoted));
+        }
     }
 
     let mut deduped = Vec::new();
@@ -206,6 +220,14 @@ mod tests {
     }
 
     #[test]
+    fn split_qualified_identifier_parts_handles_quoted_dots() {
+        assert_eq!(
+            split_qualified_identifier_parts(r#""my.schema"."table.name""#),
+            vec!["\"my.schema\"".to_string(), "\"table.name\"".to_string()]
+        );
+    }
+
+    #[test]
     fn table_lookup_candidates_prioritize_schema_then_fallbacks() {
         let candidates = table_lookup_candidates("app.docs");
         assert_eq!(
@@ -214,6 +236,18 @@ mod tests {
                 (Some("app".to_string()), "docs".to_string()),
                 (None, "app.docs".to_string()),
                 (None, "docs".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn table_lookup_candidates_include_unquoted_variant_for_quoted_relations() {
+        let candidates = table_lookup_candidates(r#""Doc Items""#);
+        assert_eq!(
+            candidates,
+            vec![
+                (None, r#""Doc Items""#.to_string()),
+                (None, "Doc Items".to_string()),
             ]
         );
     }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::parser::names::canonical_fga_type_name;
+use crate::parser::names::{canonical_fga_type_name, stable_hex_suffix};
 
 /// Normalized relation naming metadata for a role level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,15 +66,6 @@ pub(crate) fn sorted_role_relation_names(
     }
 
     out
-}
-
-fn stable_hex_suffix(input: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in input.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{:08x}", (hash & 0xffff_ffff) as u32)
 }
 
 #[cfg(test)]
