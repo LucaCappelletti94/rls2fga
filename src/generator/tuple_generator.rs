@@ -837,6 +837,9 @@ fn find_function_call_in_set_expr<'a>(
             if let Some(selection) = &select.selection {
                 return find_function_call(selection, function_name);
             }
+            if let Some(having) = &select.having {
+                return find_function_call(having, function_name);
+            }
             None
         }
         SetExpr::SetOperation { left, right, .. } => {
@@ -1821,6 +1824,19 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
         );
         assert_eq!(
             extract_resource_column_for_function(&exists_expr, "role_level", 1).as_deref(),
+            Some("id")
+        );
+
+        let having_expr = parse_expr(
+            "EXISTS (
+               SELECT count(*)
+               FROM docs d
+               GROUP BY d.id
+               HAVING role_level(auth_current_user_id(), d.id) >= 2
+             )",
+        );
+        assert_eq!(
+            extract_resource_column_for_function(&having_expr, "role_level", 1).as_deref(),
             Some("id")
         );
     }
