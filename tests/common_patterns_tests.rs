@@ -58,8 +58,8 @@ fn classify_fixture_with_json_registry(
 fn tenant_isolation_is_classified() {
     let (classified, _db, _reg) = classify_fixture("tenant_isolation", |reg| {
         reg.register_if_absent(
-            "current_tenant_id".to_string(),
-            FunctionSemantic::CurrentUserAccessor {
+            "current_tenant_id",
+            &FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             },
         );
@@ -96,8 +96,8 @@ fn tenant_isolation_is_classified() {
 fn compound_or_owner_or_public() {
     let (classified, db, registry) = classify_fixture("compound_or", |reg| {
         reg.register_if_absent(
-            "auth_current_user_id".to_string(),
-            FunctionSemantic::CurrentUserAccessor {
+            "auth_current_user_id",
+            &FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             },
         );
@@ -150,43 +150,33 @@ fn compound_or_owner_or_public() {
 #[test]
 fn supabase_auth_uid_pattern() {
     let sql = std::fs::read_to_string("tests/fixtures/supabase_auth/input.sql").unwrap();
-    let db = match sql_parser::parse_schema(&sql) {
-        Ok(db) => db,
-        Err(e) => {
-            eprintln!("KNOWN GAP: Supabase auth schema parse failed: {e}");
-            return;
-        }
-    };
+    let db = sql_parser::parse_schema(&sql).expect("Supabase auth schema should parse");
 
     let mut registry = FunctionRegistry::new();
     registry.register_if_absent(
-        "auth.uid".to_string(),
-        FunctionSemantic::CurrentUserAccessor {
+        "auth.uid",
+        &FunctionSemantic::CurrentUserAccessor {
             returns: "uuid".to_string(),
         },
     );
 
     let classified = policy_classifier::classify_policies(&db, &registry);
 
+    assert_eq!(classified.len(), 2, "expected both Supabase policies");
     for cp in &classified {
         let classification = cp
             .using_classification
             .as_ref()
-            .or(cp.with_check_classification.as_ref());
-
-        if let Some(c) = classification {
-            match &c.pattern {
-                PatternClass::P3DirectOwnership { column } => {
-                    assert_eq!(column, "user_id");
-                }
-                PatternClass::Unknown { reason, .. } => {
-                    eprintln!("  KNOWN GAP: auth.uid() pattern falls to Unknown. Reason: {reason}");
-                }
-                other => {
-                    eprintln!("  UNEXPECTED: classified as {other:?}");
-                }
-            }
-        }
+            .or(cp.with_check_classification.as_ref())
+            .expect("expected Supabase policy classification");
+        assert!(
+            matches!(
+                classification.pattern,
+                PatternClass::P3DirectOwnership { ref column } if column == "user_id"
+            ),
+            "auth.uid() should classify as direct ownership, got: {:?}",
+            classification.pattern
+        );
     }
 }
 
@@ -199,8 +189,8 @@ fn supabase_auth_uid_pattern() {
 fn in_subquery_membership() {
     let (classified, _db, _reg) = classify_fixture("in_subquery_membership", |reg| {
         reg.register_if_absent(
-            "auth_current_user_id".to_string(),
-            FunctionSemantic::CurrentUserAccessor {
+            "auth_current_user_id",
+            &FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             },
         );
@@ -261,8 +251,8 @@ fn current_user_keyword_equality() {
 fn multi_policy_table_classification() {
     let (classified, db, registry) = classify_fixture("multi_policy_table", |reg| {
         reg.register_if_absent(
-            "auth_current_user_id".to_string(),
-            FunctionSemantic::CurrentUserAccessor {
+            "auth_current_user_id",
+            &FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             },
         );
@@ -364,8 +354,8 @@ fn pipeline_summary_all_common_patterns() {
         let db = sql_parser::parse_schema(&sql).unwrap();
         let mut registry = FunctionRegistry::new();
         registry.register_if_absent(
-            "auth_current_user_id".to_string(),
-            FunctionSemantic::CurrentUserAccessor {
+            "auth_current_user_id",
+            &FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             },
         );

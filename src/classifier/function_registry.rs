@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
 use crate::parser::function_analyzer::FunctionSemantic;
+use crate::parser::names::{
+    normalize_identifier, normalize_relation_name, split_schema_and_relation,
+};
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
 
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
@@ -11,6 +14,25 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
+    fn normalized_function_keys(name: &str) -> Vec<String> {
+        let mut keys = vec![normalize_identifier(&name.replace('"', ""))];
+
+        if let Some((schema, relation)) = split_schema_and_relation(name) {
+            keys.push(format!(
+                "{}.{}",
+                normalize_identifier(&schema),
+                normalize_identifier(&relation)
+            ));
+            keys.push(normalize_relation_name(&relation));
+        } else {
+            keys.push(normalize_relation_name(name));
+        }
+
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -24,19 +46,27 @@ impl FunctionRegistry {
             .map_err(|e| format!("Invalid function registry JSON: {e}"))?;
         // Registry takes precedence over analyzed functions
         for (name, semantic) in parsed {
-            self.functions.insert(name, semantic);
+            for key in Self::normalized_function_keys(&name) {
+                self.functions.insert(key, semantic.clone());
+            }
         }
         Ok(())
     }
 
     /// Get the semantic for a function by name.
     pub fn get(&self, name: &str) -> Option<&FunctionSemantic> {
-        self.functions.get(name)
+        Self::normalized_function_keys(name)
+            .into_iter()
+            .find_map(|key| self.functions.get(&key))
     }
 
     /// Register a function semantic (analyzed results, won't overwrite registry entries).
-    pub fn register_if_absent(&mut self, name: String, semantic: FunctionSemantic) {
-        self.functions.entry(name).or_insert(semantic);
+    pub fn register_if_absent(&mut self, name: &str, semantic: &FunctionSemantic) {
+        for key in Self::normalized_function_keys(name) {
+            self.functions
+                .entry(key)
+                .or_insert_with(|| semantic.clone());
+        }
     }
 
     /// Check if a function is a known role-threshold function.
@@ -65,7 +95,7 @@ impl FunctionRegistry {
                 .map(ToString::to_string)
                 .unwrap_or_default();
             if let Some(semantic) = FunctionSemantic::analyze_body(body, &return_type, "sql") {
-                self.register_if_absent(function.name().to_string(), semantic);
+                self.register_if_absent(function.name(), &semantic);
             }
         }
     }
@@ -139,5 +169,20 @@ CREATE FUNCTION current_tenant_id() RETURNS UUID
             "functions without bodies should be ignored"
         );
         assert!(registry.is_current_user_accessor("current_tenant_id"));
+    }
+
+    #[test]
+    fn function_lookup_normalizes_schema_and_quotes() {
+        let mut registry = FunctionRegistry::new();
+        registry.register_if_absent(
+            r#""auth"."uid""#,
+            &FunctionSemantic::CurrentUserAccessor {
+                returns: "uuid".to_string(),
+            },
+        );
+
+        assert!(registry.is_current_user_accessor("auth.uid"));
+        assert!(registry.is_current_user_accessor(r#""auth"."uid""#));
+        assert!(registry.is_current_user_accessor("UID"));
     }
 }

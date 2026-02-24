@@ -7,9 +7,26 @@ use crate::parser::sql_parser::{DatabaseLike, ParserDB};
 
 /// Classify all policies in the database.
 pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<ClassifiedPolicy> {
+    classify_policies_with_effective_registry(db, registry).0
+}
+
+/// Classify all policies and return the enriched function registry used by the classifier.
+pub fn classify_policies_with_effective_registry(
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
     effective_registry.enrich_from_schema(db);
 
+    let classified = classify_policies_with_registry(db, &effective_registry);
+    (classified, effective_registry)
+}
+
+/// Classify all policies using the provided (already prepared) function registry.
+pub fn classify_policies_with_registry(
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+) -> Vec<ClassifiedPolicy> {
     db.policies()
         .map(|policy| {
             let table_name = policy.table_name.to_string();
@@ -21,12 +38,12 @@ pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<Clas
             let using_classification = policy
                 .using
                 .as_ref()
-                .map(|expr| classify_expr(expr, db, &effective_registry, &table_name, &command));
+                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
 
             let with_check_classification = policy
                 .with_check
                 .as_ref()
-                .map(|expr| classify_expr(expr, db, &effective_registry, &table_name, &command));
+                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
 
             ClassifiedPolicy {
                 policy: policy.clone(),
@@ -78,22 +95,26 @@ pub fn classify_expr(
                 let right_attr = recognizers::is_attribute_check(right);
 
                 if let Some(attr) = left_attr {
-                    return ClassifiedExpr {
-                        pattern: PatternClass::P7AbacAnd {
-                            relationship_part: Box::new(right_class),
-                            attribute_part: attr,
-                        },
-                        confidence: ConfidenceLevel::C,
-                    };
+                    if is_relationship_pattern_for_p7(&right_class.pattern) {
+                        return ClassifiedExpr {
+                            pattern: PatternClass::P7AbacAnd {
+                                relationship_part: Box::new(right_class),
+                                attribute_part: attr,
+                            },
+                            confidence: ConfidenceLevel::C,
+                        };
+                    }
                 }
                 if let Some(attr) = right_attr {
-                    return ClassifiedExpr {
-                        pattern: PatternClass::P7AbacAnd {
-                            relationship_part: Box::new(left_class),
-                            attribute_part: attr,
-                        },
-                        confidence: ConfidenceLevel::C,
-                    };
+                    if is_relationship_pattern_for_p7(&left_class.pattern) {
+                        return ClassifiedExpr {
+                            pattern: PatternClass::P7AbacAnd {
+                                relationship_part: Box::new(left_class),
+                                attribute_part: attr,
+                            },
+                            confidence: ConfidenceLevel::C,
+                        };
+                    }
                 }
 
                 // Both relationship-based → intersection (Level B)
@@ -133,6 +154,11 @@ pub fn classify_expr(
 
     // Try P3: direct ownership
     if let Some(classified) = recognizers::recognize_p3(expr, db, registry) {
+        return classified;
+    }
+
+    // Try P5: parent inheritance via correlated EXISTS
+    if let Some(classified) = recognizers::recognize_p5(expr, db, registry, table, command) {
         return classified;
     }
 
@@ -210,6 +236,29 @@ fn describe_comparison_value(expr: &Expr) -> String {
     "unknown".to_string()
 }
 
+fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
+    match pattern {
+        PatternClass::P1NumericThreshold { .. }
+        | PatternClass::P2RoleNameInList { .. }
+        | PatternClass::P3DirectOwnership { .. }
+        | PatternClass::P4ExistsMembership { .. }
+        | PatternClass::P5ParentInheritance { .. }
+        | PatternClass::P6BooleanFlag { .. } => true,
+        PatternClass::P7AbacAnd {
+            relationship_part, ..
+        } => is_relationship_pattern_for_p7(&relationship_part.pattern),
+        PatternClass::P8Composite { parts, .. } => {
+            !parts.is_empty()
+                && parts
+                    .iter()
+                    .all(|part| is_relationship_pattern_for_p7(&part.pattern))
+        }
+        PatternClass::P9AttributeCondition { .. }
+        | PatternClass::P10ConstantBool { .. }
+        | PatternClass::Unknown { .. } => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +330,24 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             ));
             assert_eq!(classified.confidence, ConfidenceLevel::C);
         }
+    }
+
+    #[test]
+    fn classify_and_with_attribute_and_non_relationship_side_stays_composite() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("status = 'published' AND TRUE");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P8Composite {
+                op: BoolOp::And,
+                parts
+            } if parts.len() == 2
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::C);
     }
 
     #[test]
