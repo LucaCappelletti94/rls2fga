@@ -202,7 +202,7 @@ impl std::str::FromStr for ConfidenceLevel {
 /// A classified expression with its pattern and confidence.
 #[derive(Debug, Clone)]
 pub struct ClassifiedExpr {
-    /// The matched pattern (P1–P8 or Unknown).
+    /// The matched pattern (P1–P10 or Unknown).
     pub pattern: PatternClass,
     /// How confident the classifier is in this match.
     pub confidence: ConfidenceLevel,

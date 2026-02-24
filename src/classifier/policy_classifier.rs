@@ -3,6 +3,7 @@ use sqlparser::ast::{BinaryOperator, Expr, Value};
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
+use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::sql_parser::{DatabaseLike, ParserDB};
 
 /// Classify all policies in the database.
@@ -217,12 +218,23 @@ pub fn classify_expr(
     // Check for function call with unknown function → Level D
     if let Some(func_name) = recognizers::extract_function_name(expr) {
         if !registry.is_current_user_accessor(&func_name) {
+            let reason = match registry.get(&func_name) {
+                Some(FunctionSemantic::Unknown { reason }) => {
+                    format!("Function '{func_name}' is registered as Unknown: {reason}")
+                }
+                None => {
+                    format!("Function '{func_name}' not in registry and body not available")
+                }
+                _ => {
+                    format!(
+                        "Function '{func_name}' did not match any recognized translation pattern"
+                    )
+                }
+            };
             return ClassifiedExpr {
                 pattern: PatternClass::Unknown {
                     sql_text: expr.to_string(),
-                    reason: format!(
-                        "Function '{func_name}' not in registry and body not available"
-                    ),
+                    reason,
                 },
                 confidence: ConfidenceLevel::D,
             };
@@ -553,6 +565,34 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             &classified.pattern,
             PatternClass::Unknown { reason, .. } if reason == "Expression does not match any known pattern"
         ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_function_registered_as_unknown_semantic_has_accurate_reason() {
+        let db = docs_db();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "mystery_auth": {"kind": "unknown", "reason": "custom business logic, cannot be inferred"}
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let expr = parse_expr("mystery_auth(owner_id)");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::Unknown { reason, .. }
+                    if reason.contains("registered as Unknown")
+                    && !reason.contains("not in registry")
+            ),
+            "when a function is in the registry as Unknown, the reason should say so, got: {:?}",
+            classified.pattern
+        );
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
 
