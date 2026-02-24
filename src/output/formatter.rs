@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path};
 
 use crate::classifier::patterns::ClassifiedPolicy;
 use crate::generator::model_generator::GeneratedModel;
@@ -13,6 +13,8 @@ pub fn write_output(
     tuples: &[TupleQuery],
     policies: &[ClassifiedPolicy],
 ) -> Result<(), String> {
+    validate_output_name(name)?;
+
     std::fs::create_dir_all(output_dir)
         .map_err(|e| format!("Failed to create output directory: {e}"))?;
 
@@ -33,6 +35,34 @@ pub fn write_output(
     std::fs::write(&report_path, &report_content)
         .map_err(|e| format!("Failed to write {}: {e}", report_path.display()))?;
 
+    Ok(())
+}
+
+fn validate_output_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Output name must not be empty".to_string());
+    }
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        return Err(format!(
+            "Invalid output name '{name}': absolute paths are not allowed"
+        ));
+    }
+    if candidate.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(format!(
+            "Invalid output name '{name}': traversal segments are not allowed"
+        ));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "Invalid output name '{name}': path separators are not allowed"
+        ));
+    }
     Ok(())
 }
 
@@ -73,14 +103,17 @@ mod tests {
     }
 
     #[test]
-    fn write_output_reports_write_errors_for_invalid_name_path() {
+    fn write_output_rejects_unsafe_name_paths() {
         let dir = unique_path("rls2fga_formatter_dir");
         std::fs::create_dir_all(&dir).expect("should create temp directory");
 
         let err = write_output(&dir, "nested/output", &empty_model(), &[], &[])
-            .expect_err("writing nested name without parent directory should fail");
-        assert!(err.contains("Failed to write"));
-        assert!(err.contains("nested/output.fga"));
+            .expect_err("unsafe output name should fail validation");
+        assert!(err.contains("Invalid output name"));
+
+        let err = write_output(&dir, "../escape", &empty_model(), &[], &[])
+            .expect_err("path traversal should fail validation");
+        assert!(err.contains("Invalid output name"));
     }
 
     #[test]
