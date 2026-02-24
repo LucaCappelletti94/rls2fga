@@ -37,12 +37,9 @@ fn multi_policy_table_combines_patterns_for_select() {
     let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
 
     assert!(
-        model
-            .dsl
-            .contains("define can_select: owner or public_viewer")
-            || model
-                .dsl
-                .contains("define can_select: public_viewer or owner"),
+        model.dsl.contains("define can_select: owner or no_access")
+            || model.dsl.contains("define can_select: no_access or owner")
+            || model.dsl.contains("define can_select: owner"),
         "expected composed select permission, got:\n{}",
         model.dsl
     );
@@ -288,6 +285,47 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
 }
 
 #[test]
+fn schema_qualified_tables_use_real_columns_in_tuple_sql() {
+    let sql = r"
+CREATE SCHEMA app;
+CREATE TABLE app.users (uid UUID PRIMARY KEY);
+CREATE TABLE app.docs (
+  doc_uuid UUID PRIMARY KEY,
+  owner_user UUID REFERENCES app.users(uid)
+);
+CREATE FUNCTION app.auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
+  USING (owner_user = app.auth_current_user_id());
+";
+    let reg_json = r#"{
+      "app.auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+
+    assert!(
+        tuples.contains("'docs:' || doc_uuid AS object"),
+        "tuple SQL should canonicalize schema-qualified table names while using real PK columns, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("'user:' || owner_user AS subject"),
+        "tuple SQL should use the real owner FK column, got:\n{tuples}"
+    );
+    assert!(
+        !tuples.contains("'docs:' || id AS object"),
+        "tuple SQL must not fall back to non-existent id column for canonicalized schema-qualified tables, got:\n{tuples}"
+    );
+}
+
+#[test]
 fn p4_membership_queries_are_not_deduped_only_by_join_table() {
     let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
@@ -339,6 +377,45 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
     assert!(
         tuples.contains("'task:' || task_id"),
         "expected task membership tuples, got:\n{tuples}"
+    );
+}
+
+#[test]
+fn casted_current_user_accessor_is_classified_as_direct_ownership() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
+  USING (owner_id = CAST(auth_current_user_id() AS UUID));
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, _db, _registry) = classify_sql(sql, Some(reg_json));
+    let policy = classified
+        .iter()
+        .find(|cp| cp.name() == "p_select")
+        .expect("expected p_select policy");
+
+    let using = policy
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(
+            using.pattern,
+            rls2fga::classifier::patterns::PatternClass::P3DirectOwnership { .. }
+        ),
+        "casted current-user equality should classify as P3, got: {:?}",
+        using.pattern
     );
 }
 
@@ -629,5 +706,77 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
     assert!(
         rels.contains_key("can_select"),
         "json missing can_select relation"
+    );
+}
+
+#[test]
+fn p5_parent_inheritance_classifies_and_translates_end_to_end() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR SELECT TO PUBLIC
+  USING (owner_id = current_user);
+CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
+  EXISTS (
+    SELECT 1
+    FROM projects p
+    WHERE p.id = tasks.project_id
+      AND p.owner_id = current_user
+  )
+);
+";
+
+    let (classified, db, registry) = classify_sql(sql, None);
+    let task_policy = classified
+        .iter()
+        .find(|cp| cp.name() == "tasks_inherit_project")
+        .expect("expected tasks_inherit_project policy");
+
+    let using = task_policy
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(
+            &using.pattern,
+            rls2fga::classifier::patterns::PatternClass::P5ParentInheritance {
+                parent_table,
+                fk_column,
+                ..
+            } if parent_table == "projects" && fk_column == "project_id"
+        ),
+        "expected tasks policy to classify as P5, got: {:?}",
+        using.pattern
+    );
+
+    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    assert!(
+        model.dsl.contains("type tasks"),
+        "expected tasks type in model, got:\n{}",
+        model.dsl
+    );
+    assert!(
+        model.dsl.contains("define can_select: project->can_select"),
+        "expected task select permission to inherit from project can_select, got:\n{}",
+        model.dsl
+    );
+
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+    ));
+    assert!(
+        tuples.contains("'project' AS relation"),
+        "expected tasks->project bridge tuples for P5 inheritance, got:\n{tuples}"
     );
 }

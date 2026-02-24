@@ -6,7 +6,8 @@ use sqlparser::ast::Owner;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::sql_parser::{DatabaseLike, ParserDB, TableLike};
+use crate::parser::names::{canonical_fga_type_name, lookup_table};
+use crate::parser::sql_parser::{ParserDB, TableLike};
 
 /// Generated ``OpenFGA`` model output.
 #[derive(Debug, Clone)]
@@ -119,36 +120,6 @@ pub fn generate_model(
     }
 }
 
-fn filter_policies_for_output(
-    policies: &[ClassifiedPolicy],
-    min_confidence: ConfidenceLevel,
-) -> Vec<ClassifiedPolicy> {
-    policies
-        .iter()
-        .filter_map(|cp| {
-            let mut filtered = cp.clone();
-            filtered.using_classification = cp
-                .using_classification
-                .as_ref()
-                .filter(|c| c.confidence >= min_confidence)
-                .cloned();
-            filtered.with_check_classification = cp
-                .with_check_classification
-                .as_ref()
-                .filter(|c| c.confidence >= min_confidence)
-                .cloned();
-
-            if filtered.using_classification.is_some()
-                || filtered.with_check_classification.is_some()
-            {
-                Some(filtered)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 pub(crate) fn build_schema_plan(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
@@ -158,15 +129,18 @@ pub(crate) fn build_schema_plan(
     let mut todos = Vec::new();
     let mut confidence_summary = Vec::new();
 
-    // Group policies by table
+    // Group policies by source table
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
         by_table.entry(cp.table_name()).or_default().push(cp);
     }
 
-    for (table_name, table_policies) in by_table {
+    for (source_table_name, table_policies) in by_table {
+        let canonical_table_name = canonical_fga_type_name(&source_table_name);
+
         // Only generate resource types for RLS-enabled tables.
-        let Some(table) = db.table(None, &table_name) else {
+        let table_lookup = lookup_table(db, &source_table_name);
+        let Some(table) = table_lookup else {
             continue;
         };
         if !table.has_row_level_security(db) {
@@ -174,8 +148,8 @@ pub(crate) fn build_schema_plan(
         }
 
         let mut table_plan = all_types
-            .remove(&table_name)
-            .unwrap_or_else(|| TypePlan::new(&table_name));
+            .remove(&canonical_table_name)
+            .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
 
         let mut action_buckets: HashMap<ActionTarget, ModeBuckets> = HashMap::new();
 
@@ -208,48 +182,18 @@ pub(crate) fn build_schema_plan(
                 }
             }
 
-            let using_expr = cp.using_classification.as_ref().map(|c| {
-                pattern_to_expr(
-                    &c.pattern,
+            for_each_policy_target_expr(cp, |target, classified| {
+                let expr = pattern_to_expr_for_target(
+                    &classified.pattern,
                     cp.name(),
+                    target,
                     &mut table_plan,
                     &mut all_types,
                     registry,
                     &mut todos,
-                )
+                );
+                push_action_expr(&mut action_buckets, target, cp.mode(), expr);
             });
-            let mut with_check_expr = cp.with_check_classification.as_ref().map(|c| {
-                pattern_to_expr(
-                    &c.pattern,
-                    cp.name(),
-                    &mut table_plan,
-                    &mut all_types,
-                    registry,
-                    &mut todos,
-                )
-            });
-
-            // PostgreSQL behavior when WITH CHECK is absent for UPDATE/INSERT/ALL is often
-            // interpreted as USING-equivalent gating for write paths.
-            if with_check_expr.is_none()
-                && matches!(
-                    cp.command(),
-                    PolicyCommand::All | PolicyCommand::Update | PolicyCommand::Insert
-                )
-            {
-                with_check_expr.clone_from(&using_expr);
-            }
-
-            if let Some(expr) = using_expr.clone() {
-                for target in using_targets(&cp.command()) {
-                    push_action_expr(&mut action_buckets, target, cp.mode(), expr.clone());
-                }
-            }
-            if let Some(expr) = with_check_expr.clone() {
-                for target in with_check_targets(&cp.command()) {
-                    push_action_expr(&mut action_buckets, target, cp.mode(), expr.clone());
-                }
-            }
         }
 
         let mut select_expr =
@@ -302,13 +246,17 @@ pub(crate) fn build_schema_plan(
         if !table_plan.has_relations() {
             todos.push(TodoItem {
                 level: ConfidenceLevel::D,
-                policy_name: table_name.clone(),
-                message: format!("No translatable relations generated for table '{table_name}'"),
+                policy_name: source_table_name.clone(),
+                message: format!(
+                    "No translatable relations generated for table '{source_table_name}'"
+                ),
             });
         }
 
-        all_types.insert(table_name.clone(), table_plan);
+        all_types.insert(canonical_table_name, table_plan);
     }
+
+    rewrite_p5_update_phases(&mut all_types);
 
     all_types
         .entry("user".to_string())
@@ -362,6 +310,47 @@ fn with_check_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
     }
 }
 
+fn policy_uses_using_for_missing_with_check(command: &PolicyCommand) -> bool {
+    matches!(
+        command,
+        PolicyCommand::All | PolicyCommand::Update | PolicyCommand::Insert
+    )
+}
+
+fn for_each_policy_target_expr<F>(cp: &ClassifiedPolicy, mut f: F)
+where
+    F: FnMut(ActionTarget, &ClassifiedExpr),
+{
+    if let Some(using) = cp.using_classification.as_ref() {
+        for target in using_targets(&cp.command()) {
+            f(target, using);
+        }
+    }
+
+    let with_check_pattern = cp.with_check_classification.as_ref().or_else(|| {
+        if policy_uses_using_for_missing_with_check(&cp.command()) {
+            cp.using_classification.as_ref()
+        } else {
+            None
+        }
+    });
+
+    if let Some(with_check) = with_check_pattern {
+        for target in with_check_targets(&cp.command()) {
+            f(target, with_check);
+        }
+    }
+}
+
+fn action_relation_for_target(target: ActionTarget) -> &'static str {
+    match target {
+        ActionTarget::Select => "can_select",
+        ActionTarget::Insert => "can_insert",
+        ActionTarget::UpdateUsing | ActionTarget::UpdateCheck => "can_update",
+        ActionTarget::Delete => "can_delete",
+    }
+}
+
 fn push_action_expr(
     action_buckets: &mut HashMap<ActionTarget, ModeBuckets>,
     target: ActionTarget,
@@ -384,12 +373,22 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
     match (permissive, restrictive) {
         (Some(p), Some(r)) => Some(UsersetExpr::Intersection(vec![p, r])),
         (Some(p), None) => Some(p),
-        (None, Some(_)) => {
-            table_plan.ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
-            Some(UsersetExpr::Computed("no_access".to_string()))
-        }
+        (None, Some(_)) => Some(deny_expr(table_plan)),
         (None, None) => None,
     }
+}
+
+fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
+    table_plan.ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
+    UsersetExpr::Computed("no_access".to_string())
+}
+
+fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
+    table_plan.ensure_direct(
+        "public_viewer",
+        vec![DirectSubject::Wildcard("user".to_string())],
+    );
+    UsersetExpr::Computed("public_viewer".to_string())
 }
 
 fn combine_union(mut exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
@@ -412,9 +411,98 @@ fn combine_intersection(mut exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
     Some(UsersetExpr::Intersection(exprs))
 }
 
+fn rewrite_p5_update_phases(all_types: &mut BTreeMap<String, TypePlan>) {
+    let relation_index: HashMap<String, BTreeSet<String>> = all_types
+        .iter()
+        .map(|(type_name, plan)| {
+            let mut rels: BTreeSet<String> = plan.computed_relations.keys().cloned().collect();
+            rels.extend(plan.direct_relations.keys().cloned());
+            (type_name.clone(), rels)
+        })
+        .collect();
+
+    for plan in all_types.values_mut() {
+        for target_relation in ["can_update_using", "can_update_check"] {
+            let Some(expr) = plan.computed_relations.get_mut(target_relation) else {
+                continue;
+            };
+            rewrite_update_phase_expr(
+                expr,
+                target_relation,
+                &plan.direct_relations,
+                &relation_index,
+            );
+        }
+    }
+}
+
+fn rewrite_update_phase_expr(
+    expr: &mut UsersetExpr,
+    target_relation: &str,
+    direct_relations: &BTreeMap<String, Vec<DirectSubject>>,
+    relation_index: &HashMap<String, BTreeSet<String>>,
+) {
+    match expr {
+        UsersetExpr::TupleToUserset { tupleset, computed } => {
+            if computed != "can_update" {
+                return;
+            }
+
+            let Some(subjects) = direct_relations.get(tupleset) else {
+                return;
+            };
+            let parent_types: Vec<&str> = subjects
+                .iter()
+                .filter_map(|s| match s {
+                    DirectSubject::Type(t) => Some(t.as_str()),
+                    DirectSubject::Wildcard(_) => None,
+                })
+                .collect();
+            if parent_types.is_empty() {
+                return;
+            }
+
+            if parent_types.iter().all(|parent_type| {
+                relation_index
+                    .get(*parent_type)
+                    .is_some_and(|rels| rels.contains(target_relation))
+            }) {
+                *computed = target_relation.to_string();
+            }
+        }
+        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => {
+            for child in children {
+                rewrite_update_phase_expr(child, target_relation, direct_relations, relation_index);
+            }
+        }
+        UsersetExpr::Computed(_) => {}
+    }
+}
+
+#[cfg(test)]
 fn pattern_to_expr(
     pattern: &PatternClass,
     policy_name: &str,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    registry: &FunctionRegistry,
+    todos: &mut Vec<TodoItem>,
+) -> UsersetExpr {
+    pattern_to_expr_for_target(
+        pattern,
+        policy_name,
+        ActionTarget::Select,
+        table_plan,
+        all_types,
+        registry,
+        todos,
+    )
+}
+
+fn pattern_to_expr_for_target(
+    pattern: &PatternClass,
+    policy_name: &str,
+    target: ActionTarget,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
@@ -433,8 +521,6 @@ fn pattern_to_expr(
                 ..
             }) = registry.get(function_name)
             else {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
                 todos.push(TodoItem {
                     level: ConfidenceLevel::D,
                     policy_name: policy_name.to_string(),
@@ -442,7 +528,7 @@ fn pattern_to_expr(
                         "Role-threshold function '{function_name}' missing semantic metadata"
                     ),
                 });
-                return UsersetExpr::Computed("no_access".to_string());
+                return deny_expr(table_plan);
             };
 
             let sorted_roles = ensure_role_threshold_scaffold(
@@ -460,9 +546,7 @@ fn pattern_to_expr(
             if let Some(role_relation) = role_for_level(&sorted_roles, min_level) {
                 UsersetExpr::Computed(role_relation)
             } else {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
-                UsersetExpr::Computed("no_access".to_string())
+                deny_expr(table_plan)
             }
         }
         PatternClass::P2RoleNameInList {
@@ -475,8 +559,6 @@ fn pattern_to_expr(
                 ..
             }) = registry.get(function_name)
             else {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
                 todos.push(TodoItem {
                     level: ConfidenceLevel::D,
                     policy_name: policy_name.to_string(),
@@ -484,7 +566,7 @@ fn pattern_to_expr(
                         "Role-list function '{function_name}' missing semantic metadata"
                     ),
                 });
-                return UsersetExpr::Computed("no_access".to_string());
+                return deny_expr(table_plan);
             };
 
             let sorted_roles = ensure_role_threshold_scaffold(
@@ -509,9 +591,7 @@ fn pattern_to_expr(
             }
 
             if selected_levels.is_empty() {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
-                return UsersetExpr::Computed("no_access".to_string());
+                return deny_expr(table_plan);
             }
 
             if let Some(expr) = exact_roles_expr(
@@ -521,9 +601,7 @@ fn pattern_to_expr(
             ) {
                 expr
             } else {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
-                UsersetExpr::Computed("no_access".to_string())
+                deny_expr(table_plan)
             }
         }
         PatternClass::P3DirectOwnership { .. } => {
@@ -535,10 +613,8 @@ fn pattern_to_expr(
             extra_predicate_sql,
             ..
         } => {
-            let parent_type = fk_column
-                .strip_suffix("_id")
-                .unwrap_or(fk_column)
-                .to_string();
+            let parent_type =
+                canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column));
 
             table_plan.ensure_direct(
                 parent_type.clone(),
@@ -561,13 +637,39 @@ fn pattern_to_expr(
                 computed: "member".to_string(),
             }
         }
-        PatternClass::P6BooleanFlag { .. } => {
+        PatternClass::P5ParentInheritance {
+            parent_table,
+            fk_column,
+            inner_pattern,
+        } => {
+            if matches!(inner_pattern.pattern, PatternClass::Unknown { .. }) {
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::D,
+                    policy_name: policy_name.to_string(),
+                    message: format!(
+                        "Parent inheritance from '{parent_table}' has unknown inner rule; mapped to no_access"
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
+
+            let parent_relation =
+                canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(parent_table));
+
             table_plan.ensure_direct(
-                "public_viewer",
-                vec![DirectSubject::Wildcard("user".to_string())],
+                parent_relation.clone(),
+                vec![DirectSubject::Type(parent_relation.clone())],
             );
-            UsersetExpr::Computed("public_viewer".to_string())
+            all_types
+                .entry(parent_relation.clone())
+                .or_insert_with(|| TypePlan::new(&parent_relation));
+
+            UsersetExpr::TupleToUserset {
+                tupleset: parent_relation,
+                computed: action_relation_for_target(target).to_string(),
+            }
         }
+        PatternClass::P6BooleanFlag { .. } => public_expr(table_plan),
         PatternClass::P7AbacAnd {
             relationship_part,
             attribute_part,
@@ -579,9 +681,10 @@ fn pattern_to_expr(
                     "Attribute condition '{attribute_part}' still requires runtime enforcement"
                 ),
             });
-            pattern_to_expr(
+            pattern_to_expr_for_target(
                 &relationship_part.pattern,
                 policy_name,
+                target,
                 table_plan,
                 all_types,
                 registry,
@@ -591,9 +694,10 @@ fn pattern_to_expr(
         PatternClass::P8Composite { op, parts } => {
             let mut child_exprs = Vec::new();
             for part in parts {
-                child_exprs.push(pattern_to_expr(
+                child_exprs.push(pattern_to_expr_for_target(
                     &part.pattern,
                     policy_name,
+                    target,
                     table_plan,
                     all_types,
                     registry,
@@ -601,10 +705,10 @@ fn pattern_to_expr(
                 ));
             }
             match op {
-                BoolOp::Or => combine_union(child_exprs)
-                    .unwrap_or_else(|| UsersetExpr::Computed("no_access".to_string())),
-                BoolOp::And => combine_intersection(child_exprs)
-                    .unwrap_or_else(|| UsersetExpr::Computed("no_access".to_string())),
+                BoolOp::Or => combine_union(child_exprs).unwrap_or_else(|| deny_expr(table_plan)),
+                BoolOp::And => {
+                    combine_intersection(child_exprs).unwrap_or_else(|| deny_expr(table_plan))
+                }
             }
         }
         PatternClass::P9AttributeCondition { column, .. } => {
@@ -612,37 +716,26 @@ fn pattern_to_expr(
                 level: ConfidenceLevel::C,
                 policy_name: policy_name.to_string(),
                 message: format!(
-                    "Standalone attribute policy on '{column}' mapped to placeholder public relation"
+                    "Standalone attribute policy on '{column}' mapped to no_access for safety"
                 ),
             });
-            table_plan.ensure_direct(
-                "public_viewer",
-                vec![DirectSubject::Wildcard("user".to_string())],
-            );
-            UsersetExpr::Computed("public_viewer".to_string())
+            deny_expr(table_plan)
         }
         PatternClass::P10ConstantBool { value } => {
             if *value {
-                table_plan.ensure_direct(
-                    "public_viewer",
-                    vec![DirectSubject::Wildcard("user".to_string())],
-                );
-                UsersetExpr::Computed("public_viewer".to_string())
+                public_expr(table_plan)
             } else {
-                table_plan
-                    .ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
-                UsersetExpr::Computed("no_access".to_string())
+                deny_expr(table_plan)
             }
         }
-        PatternClass::P5ParentInheritance { .. } | PatternClass::Unknown { .. } => {
-            table_plan.ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
+        PatternClass::Unknown { .. } => {
             todos.push(TodoItem {
                 level: ConfidenceLevel::D,
                 policy_name: policy_name.to_string(),
                 message: "Expression could not be safely translated; mapped to no_access"
                     .to_string(),
             });
-            UsersetExpr::Computed("no_access".to_string())
+            deny_expr(table_plan)
         }
     }
 }
@@ -1024,6 +1117,23 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             op: BoolOp::And,
             parts: Vec::new(),
         };
+        let p9 = PatternClass::P9AttributeCondition {
+            column: "status".to_string(),
+            value_description: "'published'".to_string(),
+        };
+        let p8_and_attr_true = PatternClass::P8Composite {
+            op: BoolOp::And,
+            parts: vec![
+                ClassifiedExpr {
+                    pattern: p9.clone(),
+                    confidence: ConfidenceLevel::C,
+                },
+                ClassifiedExpr {
+                    pattern: PatternClass::P10ConstantBool { value: true },
+                    confidence: ConfidenceLevel::A,
+                },
+            ],
+        };
         let p10_false = PatternClass::P10ConstantBool { value: false };
         let p5 = PatternClass::P5ParentInheritance {
             parent_table: "projects".to_string(),
@@ -1067,6 +1177,22 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             &registry,
             &mut todos,
         );
+        let p9_expr = pattern_to_expr(
+            &p9,
+            "p9",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
+        let p8_and_attr_true_expr = pattern_to_expr(
+            &p8_and_attr_true,
+            "p8_and_attr_true",
+            &mut table_plan,
+            &mut all_types,
+            &registry,
+            &mut todos,
+        );
         let p5_expr = pattern_to_expr(
             &p5,
             "p5",
@@ -1088,11 +1214,35 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert_eq!(p8_or_expr, UsersetExpr::Computed("no_access".to_string()));
         assert_eq!(p8_and_expr, UsersetExpr::Computed("no_access".to_string()));
         assert_eq!(p10_expr, UsersetExpr::Computed("no_access".to_string()));
-        assert_eq!(p5_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert_eq!(p9_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert!(
+            matches!(
+                &p8_and_attr_true_expr,
+                UsersetExpr::Computed(name) if name == "no_access"
+            ) || matches!(
+                &p8_and_attr_true_expr,
+                UsersetExpr::Intersection(children)
+                    if children
+                        .iter()
+                        .any(|child| matches!(child, UsersetExpr::Computed(name) if name == "no_access"))
+            ),
+            "attribute + constant-true composite should remain deny-biased, got: {p8_and_attr_true_expr:?}"
+        );
+        assert_eq!(
+            p5_expr,
+            UsersetExpr::TupleToUserset {
+                tupleset: "project".to_string(),
+                computed: "can_select".to_string(),
+            }
+        );
         assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
+        assert!(table_plan.direct_relations.contains_key("project"));
         assert!(todos
             .iter()
             .any(|t| t.message.contains("still requires runtime enforcement")));
+        assert!(todos
+            .iter()
+            .any(|t| t.message.contains("mapped to no_access for safety")));
         assert!(todos
             .iter()
             .any(|t| t.message.contains("could not be safely translated")));
@@ -1274,6 +1424,38 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
     }
 
     #[test]
+    fn build_schema_plan_canonicalizes_schema_qualified_table_names() {
+        let db = parse_schema(
+            r"
+CREATE TABLE app.docs(id uuid primary key, owner_id uuid);
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let classified = classified_from_policy(
+            policy,
+            Some(PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            }),
+            None,
+        );
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&[classified], &db, &registry);
+
+        assert!(
+            plan.types.iter().any(|t| t.type_name == "docs"),
+            "schema-qualified table name should canonicalize to relation name"
+        );
+        assert!(
+            !plan.types.iter().any(|t| t.type_name == "app.docs"),
+            "raw schema-qualified table name should not appear in output types"
+        );
+    }
+
+    #[test]
     fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
         let db = docs_db_with_policy(
             "CREATE POLICY docs_update ON docs FOR UPDATE USING (owner_id = current_user);",
@@ -1380,5 +1562,99 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
         assert!(using_targets(&PolicyCommand::Insert).is_empty());
         assert!(with_check_targets(&PolicyCommand::Select).is_empty());
         assert!(with_check_targets(&PolicyCommand::Delete).is_empty());
+    }
+
+    #[test]
+    fn rewrite_p5_update_phases_promotes_phase_specific_parent_relations() {
+        let mut all_types = BTreeMap::new();
+
+        let mut parent = TypePlan::new("project");
+        parent.set_computed(
+            "can_update_using",
+            UsersetExpr::Computed("owner".to_string()),
+        );
+        parent.set_computed(
+            "can_update_check",
+            UsersetExpr::Computed("editor".to_string()),
+        );
+        parent.set_computed(
+            "can_update",
+            UsersetExpr::Intersection(vec![
+                UsersetExpr::Computed("can_update_using".to_string()),
+                UsersetExpr::Computed("can_update_check".to_string()),
+            ]),
+        );
+        all_types.insert("project".to_string(), parent);
+
+        let mut child = TypePlan::new("task");
+        child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
+        child.set_computed(
+            "can_update_using",
+            UsersetExpr::TupleToUserset {
+                tupleset: "project".to_string(),
+                computed: "can_update".to_string(),
+            },
+        );
+        child.set_computed(
+            "can_update_check",
+            UsersetExpr::TupleToUserset {
+                tupleset: "project".to_string(),
+                computed: "can_update".to_string(),
+            },
+        );
+        all_types.insert("task".to_string(), child);
+
+        rewrite_p5_update_phases(&mut all_types);
+
+        let task = all_types.get("task").expect("task type should exist");
+        assert!(matches!(
+            task.computed_relations.get("can_update_using"),
+            Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update_using"
+        ));
+        assert!(matches!(
+            task.computed_relations.get("can_update_check"),
+            Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update_check"
+        ));
+    }
+
+    #[test]
+    fn rewrite_p5_update_phases_keeps_can_update_when_parent_types_are_mixed() {
+        let mut all_types = BTreeMap::new();
+
+        let mut project = TypePlan::new("project");
+        project.set_computed(
+            "can_update_using",
+            UsersetExpr::Computed("owner".to_string()),
+        );
+        all_types.insert("project".to_string(), project);
+
+        let mut org = TypePlan::new("org");
+        org.set_computed("can_update", UsersetExpr::Computed("admin".to_string()));
+        all_types.insert("org".to_string(), org);
+
+        let mut task = TypePlan::new("task");
+        task.ensure_direct(
+            "parent",
+            vec![
+                DirectSubject::Type("project".to_string()),
+                DirectSubject::Type("org".to_string()),
+            ],
+        );
+        task.set_computed(
+            "can_update_using",
+            UsersetExpr::TupleToUserset {
+                tupleset: "parent".to_string(),
+                computed: "can_update".to_string(),
+            },
+        );
+        all_types.insert("task".to_string(), task);
+
+        rewrite_p5_update_phases(&mut all_types);
+
+        let task = all_types.get("task").expect("task type should exist");
+        assert!(matches!(
+            task.computed_relations.get("can_update_using"),
+            Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
+        ));
     }
 }
