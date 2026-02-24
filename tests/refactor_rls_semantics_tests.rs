@@ -833,3 +833,41 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         "expected tasks->project bridge tuples for P5 inheritance, got:\n{tuples}"
     );
 }
+
+#[test]
+fn p7_abac_and_emits_tuple_warning_for_dropped_attribute() {
+    let sql = r"
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id),
+  status TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
+  USING (status = 'active' AND owner_id = auth_current_user_id());
+";
+    let reg_json = r#"{
+      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
+    }"#;
+
+    let (classified, db, registry) = classify_sql(sql, Some(reg_json));
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        &ConfidenceLevel::D,
+    ));
+
+    assert!(
+        tuples.contains("'owner' AS relation"),
+        "P7 should still emit relationship tuples, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("attribute condition"),
+        "P7 should emit a warning about the dropped attribute guard, got:\n{tuples}"
+    );
+}

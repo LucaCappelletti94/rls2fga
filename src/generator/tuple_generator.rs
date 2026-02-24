@@ -258,7 +258,8 @@ fn generate_tuples_for_pattern(
             }
         }
         PatternClass::P7AbacAnd {
-            relationship_part, ..
+            relationship_part,
+            attribute_part,
         } => {
             generate_tuples_for_pattern(
                 &relationship_part.pattern,
@@ -269,6 +270,17 @@ fn generate_tuples_for_pattern(
                 queries,
                 generated,
             );
+            let key = format!("p7_attr_todo:{table}:{attribute_part}");
+            if generated.insert(key) {
+                queries.push(TupleQuery {
+                    comment: format!(
+                        "-- TODO [Level C]: attribute condition '{attribute_part}' on {table} requires runtime enforcement; relationship tuples generated above"
+                    ),
+                    sql: format!(
+                        "-- Tuple query not emitted; attribute filter '{attribute_part}' must be enforced by application logic."
+                    ),
+                });
+            }
         }
         PatternClass::P10ConstantBool { value } => {
             let key = format!("p10:{table}:{value}");
