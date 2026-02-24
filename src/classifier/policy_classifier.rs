@@ -172,6 +172,26 @@ pub fn classify_expr(
         return classified;
     }
 
+    if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, table) {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason,
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+
+    if let Some(reason) = recognizers::diagnose_p4_membership_ambiguity(expr, db, registry) {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason,
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+
     // Try P6: boolean flag
     if let Some(classified) = recognizers::recognize_p6(expr, db, registry) {
         return classified;
@@ -419,6 +439,67 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(matches!(
             &classified.pattern,
             PatternClass::Unknown { reason, .. } if reason.contains("Function 'mystery_auth' not in registry")
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_membership_ambiguity_has_specific_reason() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm1
+               JOIN doc_members dm2 ON dm1.doc_id = dm2.doc_id
+               WHERE dm1.doc_id = docs.id
+                 AND dm1.user_id = current_user
+                 AND dm2.doc_id = docs.id
+                 AND dm2.user_id = current_user
+             )",
+        );
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_parent_inheritance_ambiguity_has_specific_reason() {
+        let db = parse_schema(
+            r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE accounts(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE tasks(
+  id UUID PRIMARY KEY,
+  project_id UUID REFERENCES projects(id),
+  account_id UUID REFERENCES accounts(id)
+);
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM projects p, accounts a
+               WHERE p.id = tasks.project_id
+                 AND p.owner_id = current_user
+                 AND a.id = tasks.account_id
+                 AND a.owner_id = current_user
+             )",
+        );
+
+        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous parent inheritance pattern")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }

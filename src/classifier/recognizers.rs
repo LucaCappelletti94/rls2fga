@@ -348,6 +348,179 @@ fn classify_membership_select(
     })
 }
 
+pub(crate) fn diagnose_p4_membership_ambiguity(
+    expr: &Expr,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+) -> Option<String> {
+    fn diagnose_select(
+        select: &Select,
+        db: &ParserDB,
+        registry: &FunctionRegistry,
+        projected_fk: Option<&str>,
+    ) -> Option<String> {
+        let matches = membership_matches(select, db, registry, projected_fk);
+        if matches.len() > 1 {
+            return Some(
+                "Ambiguous membership pattern: multiple candidate membership sources matched"
+                    .to_string(),
+            );
+        }
+        if matches.is_empty() && selection_references_current_user(select, registry) {
+            return Some(
+                "Ambiguous membership pattern: could not infer a unique membership join"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    match expr {
+        Expr::Exists { subquery, negated } if !negated => {
+            let query = subquery.as_ref();
+            let body = query.body.as_ref();
+            if let sqlparser::ast::SetExpr::Select(select) = body {
+                return diagnose_select(select.as_ref(), db, registry, None);
+            }
+            None
+        }
+        Expr::InSubquery {
+            expr: lhs,
+            subquery,
+            negated,
+        } if !negated => {
+            let lhs_col = extract_column_name(lhs)?;
+            let query = subquery.as_ref();
+            let body = query.body.as_ref();
+            if let sqlparser::ast::SetExpr::Select(select) = body {
+                let projected_fk = extract_projection_column(select.as_ref())
+                    .unwrap_or(lhs_col)
+                    .clone();
+                return diagnose_select(select.as_ref(), db, registry, Some(&projected_fk));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
+    expr: &Expr,
+    db: &ParserDB,
+    outer_table: &str,
+) -> Option<String> {
+    let Expr::Exists { subquery, negated } = expr else {
+        return None;
+    };
+    if *negated {
+        return None;
+    }
+
+    let query = subquery.as_ref();
+    let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    let sources = relation_sources(select.as_ref());
+    if sources.is_empty() {
+        return None;
+    }
+
+    let outer_table_meta = lookup_table(db, outer_table)?;
+    let selection = select.selection.as_ref()?;
+
+    let outer_cols: Vec<String> = outer_table_meta
+        .columns(db)
+        .map(|c| c.column_name().to_string())
+        .collect();
+    let mut predicates = Vec::new();
+    flatten_and_predicates(selection, &mut predicates);
+
+    let mut candidate_matches = 0usize;
+    let mut saw_conflicting_join = false;
+
+    for source in sources {
+        let Some(parent_table) = lookup_table(db, &source.table_name) else {
+            continue;
+        };
+        let parent_cols: Vec<String> = parent_table
+            .columns(db)
+            .map(|c| c.column_name().to_string())
+            .collect();
+
+        let mut fk_column: Option<String> = None;
+        let mut inner_predicates = 0usize;
+        let mut invalid_join = false;
+
+        for pred in &predicates {
+            if let Some((outer_fk, _parent_col)) = extract_parent_join_columns(
+                pred,
+                outer_table,
+                &outer_cols,
+                &source.table_name,
+                source.alias.as_deref(),
+                &parent_cols,
+            ) {
+                if fk_column
+                    .as_ref()
+                    .is_none_or(|existing| existing == &outer_fk)
+                {
+                    fk_column = Some(outer_fk);
+                    continue;
+                }
+                invalid_join = true;
+                break;
+            }
+            inner_predicates += 1;
+        }
+
+        if invalid_join {
+            saw_conflicting_join = true;
+            continue;
+        }
+        let Some(fk_column) = fk_column else {
+            continue;
+        };
+        if inner_predicates == 0 {
+            continue;
+        }
+        if !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name) {
+            continue;
+        }
+
+        candidate_matches += 1;
+    }
+
+    if candidate_matches > 1 {
+        return Some(
+            "Ambiguous parent inheritance pattern: multiple candidate parent sources matched"
+                .to_string(),
+        );
+    }
+    if saw_conflicting_join {
+        return Some(
+            "Ambiguous parent inheritance pattern: conflicting outer FK join columns in EXISTS predicate"
+                .to_string(),
+        );
+    }
+    None
+}
+
+fn selection_references_current_user(select: &Select, registry: &FunctionRegistry) -> bool {
+    let Some(selection) = select.selection.as_ref() else {
+        return false;
+    };
+    let mut predicates = Vec::new();
+    flatten_and_predicates(selection, &mut predicates);
+    predicates.into_iter().any(|predicate| match predicate {
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right) => {
+            is_current_user_expr(left, registry) || is_current_user_expr(right, registry)
+        }
+        _ => is_current_user_expr(predicate, registry),
+    })
+}
+
 /// Try to recognize P10: constant boolean policies (`TRUE` / `FALSE`).
 pub fn recognize_p10_constant_bool(
     expr: &Expr,
