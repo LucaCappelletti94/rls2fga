@@ -54,7 +54,12 @@ jobs:
 
       - name: Run quality checks (non-Windows)
         if: runner.os != 'Windows'
-        run: cargo run --locked --bin xtask -- ci --locked
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --features db --locked --lib --tests
+          cargo test --all-features --locked --no-run --lib --tests
+          cargo test --doc --all-features --locked
 
       - name: Run quality checks (Windows)
         if: runner.os == 'Windows'
@@ -125,7 +130,7 @@ jobs:
         run: docker version
 
       - name: Run ignored integration tests
-        run: cargo run --locked --bin xtask -- docker-tests --locked
+        run: cargo test --features db --locked --tests -- --ignored
 
   coverage:
     name: Coverage (Codecov)
@@ -154,7 +159,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --features db --locked --lib --tests --ignore-filename-regex 'src/(main\.rs|bin/xtask\.rs)' --lcov --output-path lcov.info
+        run: cargo llvm-cov --features db --locked --lib --tests --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

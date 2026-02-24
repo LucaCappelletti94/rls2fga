@@ -4,4 +4,4 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-cargo run --quiet --bin xtask -- commit-msg "$1"
+./scripts/validate-commit-msg.sh "$1"
