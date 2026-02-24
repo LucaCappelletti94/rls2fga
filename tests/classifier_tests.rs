@@ -2,18 +2,11 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
-use rls2fga::parser::sql_parser;
 
-fn load_emi_fixture() -> (sql_parser::ParserDB, FunctionRegistry) {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+mod support;
 
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
-
-    (db, registry)
+fn load_emi_fixture() -> (rls2fga::parser::sql_parser::ParserDB, FunctionRegistry) {
+    support::load_fixture_db_and_registry("earth_metabolome")
 }
 
 #[test]
@@ -91,14 +84,13 @@ fn classify_emi_delete_threshold() {
 
 #[test]
 fn classify_simple_ownership_as_p3() {
-    let sql = std::fs::read_to_string("tests/fixtures/simple_ownership/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("simple_ownership");
 
     let mut registry = FunctionRegistry::new();
     // Register auth_current_user_id from the parsed functions
     registry.register_if_absent(
-        "auth_current_user_id".to_string(),
-        FunctionSemantic::CurrentUserAccessor {
+        "auth_current_user_id",
+        &FunctionSemantic::CurrentUserAccessor {
             returns: "uuid".to_string(),
         },
     );
@@ -125,8 +117,7 @@ fn classify_simple_ownership_as_p3() {
 
 #[test]
 fn classify_public_flag_as_p6() {
-    let sql = std::fs::read_to_string("tests/fixtures/public_flag/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("public_flag");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -144,13 +135,7 @@ fn classify_public_flag_as_p6() {
 
 #[test]
 fn classify_abac_status_as_p7() {
-    let sql = std::fs::read_to_string("tests/fixtures/abac_status/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
-
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/abac_status/function_registry.json").unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
+    let (db, registry) = support::load_fixture_db_and_registry("abac_status");
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
@@ -167,8 +152,7 @@ fn classify_abac_status_as_p7() {
 
 #[test]
 fn classify_tenant_isolation_without_registry_via_function_body_inference() {
-    let sql = std::fs::read_to_string("tests/fixtures/tenant_isolation/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("tenant_isolation");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);

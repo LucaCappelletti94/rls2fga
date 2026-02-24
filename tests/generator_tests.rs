@@ -5,20 +5,15 @@ use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
-use rls2fga::parser::sql_parser;
+
+mod support;
 
 fn load_emi() -> (
     Vec<rls2fga::classifier::patterns::ClassifiedPolicy>,
-    sql_parser::ParserDB,
+    rls2fga::parser::sql_parser::ParserDB,
     FunctionRegistry,
 ) {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
-
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
+    let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     (classified, db, registry)
@@ -47,13 +42,12 @@ fn generate_emi_json_model() {
 
 #[test]
 fn generate_simple_ownership_model() {
-    let sql = std::fs::read_to_string("tests/fixtures/simple_ownership/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("simple_ownership");
 
     let mut registry = FunctionRegistry::new();
     registry.register_if_absent(
-        "auth_current_user_id".to_string(),
-        FunctionSemantic::CurrentUserAccessor {
+        "auth_current_user_id",
+        &FunctionSemantic::CurrentUserAccessor {
             returns: "uuid".to_string(),
         },
     );
@@ -65,8 +59,7 @@ fn generate_simple_ownership_model() {
 
 #[test]
 fn generate_public_flag_model() {
-    let sql = std::fs::read_to_string("tests/fixtures/public_flag/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("public_flag");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);

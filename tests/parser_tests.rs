@@ -1,10 +1,10 @@
-use rls2fga::parser::sql_parser;
 use sql_traits::prelude::*;
+
+mod support;
 
 #[test]
 fn parse_emi_schema_tables() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     assert_eq!(db.number_of_tables(), 5, "Expected 5 tables");
     assert!(db.table(None, "users").is_some());
@@ -16,8 +16,7 @@ fn parse_emi_schema_tables() {
 
 #[test]
 fn parse_emi_schema_columns() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     let ownables = db.table(None, "ownables").expect("ownables table");
     let cols: Vec<String> = ownables
@@ -35,8 +34,7 @@ fn parse_emi_schema_columns() {
 
 #[test]
 fn parse_emi_schema_foreign_keys() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     let team_members = db.table(None, "team_members").expect("team_members table");
     let fk_count = team_members.foreign_keys(&db).count();
@@ -48,8 +46,7 @@ fn parse_emi_schema_foreign_keys() {
 
 #[test]
 fn parse_emi_functions() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     // sql-traits tracks all function references, not just CREATE FUNCTION statements.
     // Verify the two user-defined functions are present.
@@ -59,8 +56,7 @@ fn parse_emi_functions() {
 
 #[test]
 fn parse_emi_policies() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     let policies: Vec<_> = db.policies().collect();
     assert_eq!(policies.len(), 4, "Expected 4 policies");
@@ -112,8 +108,7 @@ fn parse_emi_policies() {
 
 #[test]
 fn parse_emi_rls_enabled() {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db("earth_metabolome");
 
     let rls_tables: Vec<_> = db.rls_tables().collect();
     assert_eq!(rls_tables.len(), 1);
