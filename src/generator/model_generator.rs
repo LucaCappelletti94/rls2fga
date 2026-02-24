@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
-use sqlparser::ast::Owner;
-
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::names::{canonical_fga_type_name, lookup_table};
+use crate::parser::names::{
+    canonical_fga_type_name, lookup_table, parent_type_from_fk_column, policy_scope_relation_name,
+};
 use crate::parser::sql_parser::{ParserDB, TableLike};
 
 /// Generated ``OpenFGA`` model output.
@@ -128,6 +128,7 @@ pub(crate) fn build_schema_plan(
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut todos = Vec::new();
     let mut confidence_summary = Vec::new();
+    let mut has_role_scopes = false;
 
     // Group policies by source table
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
@@ -161,26 +162,26 @@ pub(crate) fn build_schema_plan(
                 confidence_summary.push((format!("{} (WITH CHECK)", cp.name()), c.confidence));
             }
 
-            if let Some(to) = cp.policy.to.as_ref() {
-                let only_public = to.len() == 1
-                    && matches!(
-                        &to[0],
-                        Owner::Ident(i) if i.value.eq_ignore_ascii_case("public")
-                    );
-                if !only_public {
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: cp.name().to_string(),
-                        message: format!(
-                            "Policy role scope TO ({}) is not explicitly modeled in OpenFGA output",
-                            to.iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    });
-                }
-            }
+            let scoped_roles = cp.scoped_roles();
+            let scope_relation = if scoped_roles.is_empty() {
+                None
+            } else {
+                has_role_scopes = true;
+                let relation = policy_scope_relation_name(cp.name());
+                table_plan.ensure_direct(
+                    relation.clone(),
+                    vec![DirectSubject::Type("pg_role".to_string())],
+                );
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: cp.name().to_string(),
+                    message: format!(
+                        "Policy role scope TO ({}) mapped to relation '{relation}'; ensure pg_role memberships are loaded",
+                        scoped_roles.join(", ")
+                    ),
+                });
+                Some(relation)
+            };
 
             for_each_policy_target_expr(cp, |target, classified| {
                 let expr = pattern_to_expr_for_target(
@@ -192,6 +193,11 @@ pub(crate) fn build_schema_plan(
                     registry,
                     &mut todos,
                 );
+                let expr = if let Some(scope_relation) = scope_relation.as_deref() {
+                    scoped_policy_expr(expr, scope_relation)
+                } else {
+                    expr
+                };
                 push_action_expr(&mut action_buckets, target, cp.mode(), expr);
             });
         }
@@ -258,6 +264,10 @@ pub(crate) fn build_schema_plan(
 
     rewrite_p5_update_phases(&mut all_types);
 
+    if has_role_scopes {
+        ensure_pg_role_type(&mut all_types);
+    }
+
     all_types
         .entry("user".to_string())
         .or_insert_with(|| TypePlan::new("user"));
@@ -285,6 +295,16 @@ pub(crate) fn build_schema_plan(
         todos,
         confidence_summary,
     }
+}
+
+fn scoped_policy_expr(expr: UsersetExpr, scope_relation: &str) -> UsersetExpr {
+    UsersetExpr::Intersection(vec![
+        expr,
+        UsersetExpr::TupleToUserset {
+            tupleset: scope_relation.to_string(),
+            computed: "member".to_string(),
+        },
+    ])
 }
 
 fn using_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
@@ -613,8 +633,7 @@ fn pattern_to_expr_for_target(
             extra_predicate_sql,
             ..
         } => {
-            let parent_type =
-                canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column));
+            let parent_type = parent_type_from_fk_column(fk_column);
 
             table_plan.ensure_direct(
                 parent_type.clone(),
@@ -653,8 +672,7 @@ fn pattern_to_expr_for_target(
                 return deny_expr(table_plan);
             }
 
-            let parent_relation =
-                canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(parent_table));
+            let parent_relation = parent_type_from_fk_column(fk_column);
 
             table_plan.ensure_direct(
                 parent_relation.clone(),
@@ -744,6 +762,13 @@ fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &st
     let entry = all_types
         .entry(type_name.to_string())
         .or_insert_with(|| TypePlan::new(type_name));
+    entry.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
+}
+
+fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
+    let entry = all_types
+        .entry("pg_role".to_string())
+        .or_insert_with(|| TypePlan::new("pg_role"));
     entry.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
 }
 
@@ -1272,6 +1297,51 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(plan.todos.iter().any(|t| t
             .message
             .contains("Expression could not be safely translated")));
+    }
+
+    #[test]
+    fn build_schema_plan_models_non_public_scope_via_pg_role() {
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (owner_id = current_user);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let scope_relation = policy_scope_relation_name("docs_select");
+        let classified = classified_from_policy(
+            policy,
+            Some(PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            }),
+            None,
+        );
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(&[classified], &db, &registry);
+
+        let docs = plan
+            .types
+            .iter()
+            .find(|t| t.type_name == "docs")
+            .expect("docs type should exist");
+        assert!(docs.direct_relations.contains_key(&scope_relation));
+        assert!(matches!(
+            docs.computed_relations.get("can_select"),
+            Some(UsersetExpr::Intersection(children))
+                if children.iter().any(|c| matches!(c, UsersetExpr::Computed(name) if name == "owner"))
+                    && children.iter().any(|c| matches!(
+                        c,
+                        UsersetExpr::TupleToUserset { tupleset, computed }
+                            if tupleset == &scope_relation && computed == "member"
+                    ))
+        ));
+
+        let pg_role = plan
+            .types
+            .iter()
+            .find(|t| t.type_name == "pg_role")
+            .expect("pg_role type should exist");
+        assert!(matches!(
+            pg_role.direct_relations.get("member"),
+            Some(subjects) if subjects == &vec![DirectSubject::Type("user".to_string())]
+        ));
     }
 
     #[test]

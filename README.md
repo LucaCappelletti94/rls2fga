@@ -6,6 +6,18 @@
 
 Rust crate to convert Postgres Row Level Security (RLS) to `OpenFGA`'s Fine Grained Authorization
 
+## Policy Role Scope Translation
+
+When a policy uses `TO <role>` (and not `TO PUBLIC`), generated output now models
+that scope explicitly:
+
+- model generation adds a policy scope relation per scoped policy
+- model generation adds a `pg_role` type with `member` relation
+- tuple generation emits `pg_role:<role>` scope tuples per protected row
+
+You still need to load `pg_role#member` tuples in your environment so users are
+mapped to the right `PostgreSQL` roles.
+
 ## Pre-commit hook (Rust-based)
 
 Install the repository hooks:

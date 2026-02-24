@@ -4,10 +4,12 @@ use crate::parser::expr::extract_column_name;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
-    split_schema_and_relation,
+    parent_type_from_fk_column, policy_scope_relation_name, split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
-use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{
+    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Query, SelectItem, SetExpr,
+};
 use std::collections::{BTreeSet, HashMap};
 
 /// A generated tuple query with its descriptive comment.
@@ -60,6 +62,7 @@ pub fn generate_tuple_queries(
     let mut generated = std::collections::HashSet::new();
 
     for cp in policies {
+        emit_policy_scope_tuples(cp, &cp.table_name(), db, &mut queries, &mut generated);
         for classified in cp.classifications() {
             generate_tuples_for_pattern(
                 &classified.pattern,
@@ -74,6 +77,39 @@ pub fn generate_tuple_queries(
     }
 
     queries
+}
+
+fn emit_policy_scope_tuples(
+    cp: &ClassifiedPolicy,
+    table: &str,
+    db: &ParserDB,
+    queries: &mut Vec<TupleQuery>,
+    generated: &mut std::collections::HashSet<String>,
+) {
+    let scoped_roles = cp.scoped_roles();
+    if scoped_roles.is_empty() {
+        return;
+    }
+
+    let table_type = canonical_fga_type_name(table);
+    let object_col = find_object_column(table, db);
+    let scope_relation = policy_scope_relation_name(cp.name());
+
+    for role in scoped_roles {
+        let role_id = canonical_fga_type_name(&role);
+        let key = format!("scope:{table}:{scope_relation}:{role_id}");
+        if !generated.insert(key) {
+            continue;
+        }
+        queries.push(TupleQuery {
+            comment: format!(
+                "-- Policy scope: {table} rows require PostgreSQL role '{role}' via {scope_relation}"
+            ),
+            sql: format!(
+                "SELECT '{table_type}:' || {object_col} AS object, '{scope_relation}' AS relation, 'pg_role:{role_id}' AS subject\nFROM {table}\nWHERE {object_col} IS NOT NULL;"
+            ),
+        });
+    }
 }
 
 fn generate_tuples_for_pattern(
@@ -127,8 +163,7 @@ fn generate_tuples_for_pattern(
                 extra_predicate_sql.as_deref().unwrap_or("")
             );
             if generated.insert(key) {
-                let parent_type =
-                    canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column));
+                let parent_type = parent_type_from_fk_column(fk_column);
                 let where_clause = extra_predicate_sql
                     .as_ref()
                     .map(|e| format!("\nWHERE {e}"))
@@ -660,6 +695,9 @@ fn find_function_call<'a>(expr: &'a Expr, function_name: &str) -> Option<&'a Fun
         | Expr::IsUnknown(expr)
         | Expr::IsNotUnknown(expr) => find_function_call(expr, function_name),
         Expr::Nested(inner) => find_function_call(inner, function_name),
+        Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => {
+            find_function_call_in_query(subquery, function_name)
+        }
         Expr::InList { expr, list, .. } => find_function_call(expr, function_name).or_else(|| {
             list.iter()
                 .find_map(|item| find_function_call(item, function_name))
@@ -705,6 +743,41 @@ fn find_function_call<'a>(expr: &'a Expr, function_name: &str) -> Option<&'a Fun
         Expr::Tuple(items) => items
             .iter()
             .find_map(|item| find_function_call(item, function_name)),
+        _ => None,
+    }
+}
+
+fn find_function_call_in_query<'a>(query: &'a Query, function_name: &str) -> Option<&'a Function> {
+    find_function_call_in_set_expr(query.body.as_ref(), function_name)
+}
+
+fn find_function_call_in_set_expr<'a>(
+    set_expr: &'a SetExpr,
+    function_name: &str,
+) -> Option<&'a Function> {
+    match set_expr {
+        SetExpr::Select(select) => {
+            for item in &select.projection {
+                let found = match item {
+                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                        find_function_call(expr, function_name)
+                    }
+                    _ => None,
+                };
+                if found.is_some() {
+                    return found;
+                }
+            }
+            if let Some(selection) = &select.selection {
+                return find_function_call(selection, function_name);
+            }
+            None
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            find_function_call_in_set_expr(left, function_name)
+                .or_else(|| find_function_call_in_set_expr(right, function_name))
+        }
+        SetExpr::Query(query) => find_function_call_in_query(query, function_name),
         _ => None,
     }
 }
@@ -793,7 +866,7 @@ fn emit_bridge_tuple(
     kind: &str,
 ) {
     let table_type = canonical_fga_type_name(table);
-    let parent_type = canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column));
+    let parent_type = parent_type_from_fk_column(fk_column);
     let bridge_key = format!("{kind}:{table}:{fk_column}:{parent_type}");
     if !generated.insert(bridge_key) {
         return;
@@ -1274,6 +1347,34 @@ CREATE POLICY docs_update ON docs FOR UPDATE
     }
 
     #[test]
+    fn generate_tuple_queries_emit_policy_scope_tuples_for_non_public_roles() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id uuid primary key, owner_id uuid);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
+  USING (owner_id = current_user);
+",
+        )
+        .expect("schema should parse");
+
+        let classified =
+            crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
+        let queries = generate_tuple_queries(&classified, &db, &FunctionRegistry::new());
+        let scope_relation = policy_scope_relation_name("docs_select");
+
+        assert!(queries
+            .iter()
+            .any(|q| q.sql.contains(&format!("'{scope_relation}' AS relation"))));
+        assert!(queries
+            .iter()
+            .any(|q| q.sql.contains("'pg_role:app_user' AS subject")));
+        assert!(queries
+            .iter()
+            .any(|q| q.sql.contains("'pg_role:auditors' AS subject")));
+    }
+
+    #[test]
     fn generate_role_threshold_tuples_uses_policy_resource_column_for_grant_join() {
         let db = parse_schema(
             r"
@@ -1588,6 +1689,18 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
             parse_expr("role_level(auth_current_user_id(), id) IN (SELECT doc_id FROM docs)");
         assert_eq!(
             extract_resource_column_for_function(&in_subquery_expr, "role_level", 1).as_deref(),
+            Some("id")
+        );
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM docs d
+               WHERE role_level(auth_current_user_id(), d.id) >= 2
+             )",
+        );
+        assert_eq!(
+            extract_resource_column_for_function(&exists_expr, "role_level", 1).as_deref(),
             Some("id")
         );
     }

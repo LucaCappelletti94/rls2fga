@@ -112,6 +112,27 @@ pub fn canonical_fga_type_name(name: &str) -> String {
     canonical
 }
 
+fn stable_hex_suffix(input: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:08x}", (hash & 0xffff_ffff) as u32)
+}
+
+/// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
+pub fn policy_scope_relation_name(policy_name: &str) -> String {
+    let base = canonical_fga_type_name(policy_name);
+    let suffix = stable_hex_suffix(policy_name);
+    format!("scope_{base}_{suffix}")
+}
+
+/// Infer the parent `OpenFGA` type from a foreign-key-like column name.
+pub fn parent_type_from_fk_column(fk_column: &str) -> String {
+    canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column))
+}
+
 /// True when the name looks like a public-visibility column.
 pub fn is_public_flag_column_name(name: &str) -> bool {
     let lower = normalize_identifier(name);
@@ -221,5 +242,25 @@ mod tests {
         );
         assert_eq!(canonical_fga_type_name("___"), "resource");
         assert_eq!(canonical_fga_type_name("123-items"), "t_123_items");
+    }
+
+    #[test]
+    fn policy_scope_relation_name_is_stable_and_namespaced() {
+        let first = policy_scope_relation_name("EditorsOnly");
+        let second = policy_scope_relation_name("EditorsOnly");
+        let third = policy_scope_relation_name("editors_only");
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("scope_"));
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn parent_type_from_fk_column_handles_fk_suffix() {
+        assert_eq!(parent_type_from_fk_column("project_id"), "project");
+        assert_eq!(
+            parent_type_from_fk_column("organization_uuid"),
+            "organization_uuid"
+        );
     }
 }

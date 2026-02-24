@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
 use std::fmt;
 
+use crate::parser::names::normalize_identifier;
+
 /// The command a policy applies to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PolicyCommand {
@@ -255,6 +257,78 @@ impl ClassifiedPolicy {
             .as_ref()
             .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
     }
+
+    /// Iterate over all classified policy expressions (`USING` and `WITH CHECK`).
+    pub fn classifications(&self) -> impl Iterator<Item = &ClassifiedExpr> {
+        [
+            self.using_classification.as_ref(),
+            self.with_check_classification.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Roles in `TO (...)` that constrain policy applicability.
+    ///
+    /// Returns an empty vector when no explicit role scope is present or when
+    /// scope includes `PUBLIC`.
+    pub fn scoped_roles(&self) -> Vec<String> {
+        let Some(to) = self.policy.to.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut roles: Vec<String> = to
+            .iter()
+            .map(ToString::to_string)
+            .map(|role| role.trim().to_string())
+            .filter(|role| !role.is_empty())
+            .collect();
+        if roles.is_empty() {
+            return Vec::new();
+        }
+
+        if roles
+            .iter()
+            .any(|role| normalize_identifier(role) == "public")
+        {
+            return Vec::new();
+        }
+
+        roles.sort();
+        roles.dedup();
+        roles
+    }
+}
+
+/// Keep only policy classifications at or above the requested confidence level.
+pub fn filter_policies_for_output(
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) -> Vec<ClassifiedPolicy> {
+    policies
+        .iter()
+        .filter_map(|cp| {
+            let mut filtered = cp.clone();
+            filtered.using_classification = cp
+                .using_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+            filtered.with_check_classification = cp
+                .with_check_classification
+                .as_ref()
+                .filter(|c| c.confidence >= min_confidence)
+                .cloned();
+
+            if filtered.using_classification.is_some()
+                || filtered.with_check_classification.is_some()
+            {
+                Some(filtered)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -358,5 +432,35 @@ CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
         assert_eq!(cp_explicit.table_name(), "docs");
         assert_eq!(cp_explicit.command(), PolicyCommand::Delete);
         assert_eq!(cp_explicit.mode(), PolicyMode::Restrictive);
+    }
+
+    #[test]
+    fn classified_policy_scoped_roles_excludes_public_and_dedupes() {
+        let scoped_sql = r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_scoped ON docs FOR SELECT TO app_user, app_user, auditors USING (TRUE);
+";
+        let scoped = ClassifiedPolicy {
+            policy: first_policy(scoped_sql),
+            using_classification: None,
+            with_check_classification: None,
+        };
+        assert_eq!(
+            scoped.scoped_roles(),
+            vec!["app_user".to_string(), "auditors".to_string()]
+        );
+
+        let public_sql = r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
+";
+        let public = ClassifiedPolicy {
+            policy: first_policy(public_sql),
+            using_classification: None,
+            with_check_classification: None,
+        };
+        assert!(public.scoped_roles().is_empty());
     }
 }
