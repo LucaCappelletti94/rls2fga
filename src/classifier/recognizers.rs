@@ -175,33 +175,7 @@ pub fn recognize_p4(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            let sources = relation_sources(select.as_ref());
-            if sources.is_empty() {
-                return None;
-            }
-
-            let mut matches: Vec<(String, String, String, Option<String>)> = Vec::new();
-            for source in sources {
-                let Some(table) = lookup_table(db, &source.table_name) else {
-                    continue;
-                };
-
-                let col_names: Vec<String> = table
-                    .columns(db)
-                    .map(|c| c.column_name().to_string())
-                    .collect();
-
-                if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
-                    select.as_ref(),
-                    &source.table_name,
-                    source.alias.as_deref(),
-                    &col_names,
-                    registry,
-                    None,
-                ) {
-                    matches.push((source.table_name, fk_col, user_col, extra_predicate_sql));
-                }
-            }
+            let matches = membership_matches(select.as_ref(), db, registry, None);
 
             if matches.len() == 1 {
                 let (join_table, fk_column, user_column, extra_predicate_sql) =
@@ -356,36 +330,12 @@ pub fn recognize_p4_in_subquery(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            let sources = relation_sources(select.as_ref());
-            if sources.is_empty() {
-                return None;
-            }
-
             let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-            let mut matches: Vec<(String, String, Option<String>)> = Vec::new();
-            for source in sources {
-                let Some(table) = lookup_table(db, &source.table_name) else {
-                    continue;
-                };
-                let col_names: Vec<String> = table
-                    .columns(db)
-                    .map(|c| c.column_name().to_string())
-                    .collect();
-
-                if let Some((_fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
-                    select.as_ref(),
-                    &source.table_name,
-                    source.alias.as_deref(),
-                    &col_names,
-                    registry,
-                    Some(projected_col.as_str()),
-                ) {
-                    matches.push((source.table_name, user_col, extra_predicate_sql));
-                }
-            }
+            let matches = membership_matches(select.as_ref(), db, registry, Some(&projected_col));
 
             if matches.len() == 1 {
-                let (join_table, user_column, extra_predicate_sql) = matches.into_iter().next()?;
+                let (join_table, _fk_column, user_column, extra_predicate_sql) =
+                    matches.into_iter().next()?;
                 return Some(ClassifiedExpr {
                     pattern: PatternClass::P4ExistsMembership {
                         join_table,
@@ -497,13 +447,22 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
 
 /// Extract an integer value from an expression.
 fn extract_integer_value(expr: &Expr) -> Option<i32> {
-    if let Expr::Value(v) = expr {
-        match &v.value {
+    match expr {
+        Expr::Value(v) => match &v.value {
             Value::Number(n, _) => n.parse().ok(),
             _ => None,
-        }
-    } else {
-        None
+        },
+        Expr::Nested(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::UnaryOp {
+            op: UnaryOperator::Plus,
+            expr: inner,
+        } => extract_integer_value(inner),
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr: inner,
+        } => extract_integer_value(inner).map(|value| -value),
+        _ => None,
     }
 }
 
@@ -551,6 +510,36 @@ fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource>
         table_name: extract_table_name_from_table_factor(tf)?,
         alias: extract_table_alias_from_table_factor(tf),
     })
+}
+
+fn membership_matches(
+    select: &Select,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    projected_fk_hint: Option<&str>,
+) -> Vec<(String, String, String, Option<String>)> {
+    let mut matches = Vec::new();
+    for source in relation_sources(select) {
+        let Some(table) = lookup_table(db, &source.table_name) else {
+            continue;
+        };
+        let col_names: Vec<String> = table
+            .columns(db)
+            .map(|c| c.column_name().to_string())
+            .collect();
+
+        if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
+            select,
+            &source.table_name,
+            source.alias.as_deref(),
+            &col_names,
+            registry,
+            projected_fk_hint,
+        ) {
+            matches.push((source.table_name, fk_col, user_col, extra_predicate_sql));
+        }
+    }
+    matches
 }
 
 fn extract_projection_column(select: &Select) -> Option<String> {
@@ -984,7 +973,16 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
 }
 
 fn is_literal_value(expr: &Expr) -> bool {
-    matches!(expr, Expr::Value(_))
+    match expr {
+        Expr::Value(_) => true,
+        Expr::Nested(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::UnaryOp {
+            op: UnaryOperator::Plus | UnaryOperator::Minus | UnaryOperator::Not,
+            expr: inner,
+        } => is_literal_value(inner),
+        _ => false,
+    }
 }
 
 fn is_user_related_column(col: &str) -> bool {
@@ -1401,6 +1399,99 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = auth_current_user_id()
+                 AND dm.role = 'admin'
+             )",
+        );
+        let in_subquery = parse_expr(
+            "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+                 AND dm.role = 'admin'
+             )",
+        );
+
+        let exists = recognize_p4(&exists_expr, &db, &registry).expect("expected EXISTS match");
+        let in_sub = recognize_p4_in_subquery(&in_subquery, &db, &registry)
+            .expect("expected IN-subquery match");
+
+        let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicate_sql) =
+            match exists.pattern {
+                PatternClass::P4ExistsMembership {
+                    join_table,
+                    fk_column,
+                    user_column,
+                    extra_predicate_sql,
+                } => (join_table, fk_column, user_column, extra_predicate_sql),
+                other => panic!("expected P4 EXISTS classification, got: {other:?}"),
+            };
+
+        let (in_join_table, in_fk_column, in_user_column, in_extra_predicate_sql) =
+            match in_sub.pattern {
+                PatternClass::P4ExistsMembership {
+                    join_table,
+                    fk_column,
+                    user_column,
+                    extra_predicate_sql,
+                } => (join_table, fk_column, user_column, extra_predicate_sql),
+                other => panic!("expected P4 IN-subquery classification, got: {other:?}"),
+            };
+
+        assert_eq!(exists_join_table, in_join_table);
+        assert_eq!(exists_fk_column, in_fk_column);
+        assert_eq!(exists_user_column, in_user_column);
+        assert_eq!(exists_extra_predicate_sql, in_extra_predicate_sql);
+    }
+
+    #[test]
+    fn recognize_p4_paths_fail_closed_on_ambiguous_sources() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE memberships(doc_id UUID, user_id UUID);
+",
+        )
+        .expect("schema should parse");
+        let registry = registry_with_role_level();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM memberships a
+               JOIN memberships b ON b.doc_id = a.doc_id
+               WHERE a.user_id = auth_current_user_id()
+             )",
+        );
+        let in_subquery = parse_expr(
+            "id IN (
+               SELECT a.doc_id
+               FROM memberships a
+               JOIN memberships b ON b.doc_id = a.doc_id
+               WHERE a.user_id = auth_current_user_id()
+             )",
+        );
+
+        assert!(
+            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            "ambiguous EXISTS sources should fail closed"
+        );
+        assert!(
+            recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+            "ambiguous IN-subquery sources should fail closed"
+        );
+    }
+
+    #[test]
     fn recognize_p10_and_p6_cover_non_matching_variants() {
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
@@ -1556,6 +1647,21 @@ CREATE TABLE doc_members (
 
         let not_equal = parse_expr("status <> 'draft'");
         assert_eq!(is_attribute_check(&not_equal).as_deref(), Some("status"));
+    }
+
+    #[test]
+    fn extract_integer_value_supports_nested_cast_and_signed_literals() {
+        let nested_cast = parse_expr("CAST((2) AS INTEGER)");
+        assert_eq!(extract_integer_value(&nested_cast), Some(2));
+
+        let signed = parse_expr("-2");
+        assert_eq!(extract_integer_value(&signed), Some(-2));
+    }
+
+    #[test]
+    fn is_attribute_check_accepts_casted_literal_values() {
+        let expr = parse_expr("status = CAST('draft' AS TEXT)");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"));
     }
 
     #[test]
