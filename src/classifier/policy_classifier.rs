@@ -250,6 +250,22 @@ pub fn classify_expr(
         };
     }
 
+    // Detect negated public-flag: `is_public = FALSE`, `col IS FALSE`, `col IS NOT TRUE`.
+    // These fall through P6 because they're not an allowlist — they must not degrade silently
+    // to P9 (attribute condition) since they cannot be expressed as static OpenFGA tuples.
+    if let Some(col) = recognizers::is_negated_boolean_flag(expr) {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: format!(
+                    "Negated boolean-flag check on column '{col}' cannot be expressed as static \
+                     OpenFGA tuples; negation requires runtime filtering"
+                ),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+
     // Try P6: boolean flag
     if let Some(classified) = recognizers::recognize_p6(expr, db, registry) {
         return classified;
@@ -347,8 +363,11 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         | PatternClass::P2RoleNameInList { .. }
         | PatternClass::P3DirectOwnership { .. }
         | PatternClass::P4ExistsMembership { .. }
-        | PatternClass::P5ParentInheritance { .. }
-        | PatternClass::P6BooleanFlag { .. } => true,
+        | PatternClass::P5ParentInheritance { .. } => true,
+        // P6 (boolean public flag) is a resource-attribute check, not a user-resource
+        // relationship. Including it here would misclassify e.g.
+        // `is_public = TRUE AND status = 'published'` as P7 (ABAC+relationship)
+        // when it is really two attribute conditions with no user dimension.
         PatternClass::P7AbacAnd {
             relationship_part, ..
         } => is_relationship_pattern_for_p7(&relationship_part.pattern),
@@ -358,7 +377,8 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
                     .iter()
                     .all(|part| is_relationship_pattern_for_p7(&part.pattern))
         }
-        PatternClass::P9AttributeCondition { .. }
+        PatternClass::P6BooleanFlag { .. }
+        | PatternClass::P9AttributeCondition { .. }
         | PatternClass::P10ConstantBool { .. }
         | PatternClass::Unknown { .. } => false,
     }
@@ -767,5 +787,57 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         let policy = &classified[0];
         assert!(policy.using_classification.is_some());
         assert!(policy.with_check_classification.is_some());
+    }
+
+    #[test]
+    fn classify_negated_public_flag_is_unknown_not_p9() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let cases = [
+            "is_public = FALSE",
+            "FALSE = is_public",
+            "is_public IS FALSE",
+            "is_public IS NOT TRUE",
+        ];
+
+        for expr_sql in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            assert!(
+                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                    if reason.contains("Negated boolean-flag check")),
+                "`{expr_sql}`: expected Unknown with negated-flag reason, got: {:?}",
+                classified.pattern
+            );
+            assert_eq!(
+                classified.confidence,
+                ConfidenceLevel::D,
+                "`{expr_sql}` should be D-confidence"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_p6_and_attribute_does_not_trigger_p7() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        // `is_public = TRUE AND status = 'published'`: both are attribute-like checks;
+        // P6 must NOT be treated as the "relationship side" of P7.
+        let expr = parse_expr("status = 'published' AND is_public = TRUE");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::P8Composite {
+                    op: BoolOp::And,
+                    ..
+                }
+            ),
+            "P6 AND attribute should be P8Composite, not P7, got: {:?}",
+            classified.pattern
+        );
     }
 }

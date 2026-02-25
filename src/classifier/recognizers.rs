@@ -588,6 +588,45 @@ pub fn recognize_p6(
     None
 }
 
+/// Returns the column name if the expression is a negated public-flag check
+/// (`col = FALSE`, `FALSE = col`, `col IS FALSE`, `col IS NOT TRUE`).
+///
+/// These forms look similar to P6 but cannot be expressed as static `OpenFGA`
+/// tuples because they filter OUT rows rather than granting access.
+pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } => {
+            let (col_name, value) = if let (Some(col), Some(v)) =
+                (extract_column_name(left), constant_bool_value(right))
+            {
+                (col, v)
+            } else if let (Some(v), Some(col)) =
+                (constant_bool_value(left), extract_column_name(right))
+            {
+                (col, v)
+            } else {
+                return None;
+            };
+            if !value && is_public_flag_column_name(&col_name) {
+                return Some(col_name);
+            }
+            None
+        }
+        Expr::IsFalse(inner) | Expr::IsNotTrue(inner) => {
+            let col_name = extract_column_name(inner)?;
+            if is_public_flag_column_name(&col_name) {
+                return Some(col_name);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn constant_bool_value(expr: &Expr) -> Option<bool> {
     match expr {
         Expr::Value(v) => match &v.value {
@@ -957,10 +996,9 @@ fn strip_qualifier_outside_literals(sql: &str, qualifier: &str) -> String {
             continue;
         }
 
-        let ch = rest
-            .chars()
-            .next()
-            .expect("slice should have at least one char");
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         let ch_len = ch.len_utf8();
 
         if ch == '\'' {
