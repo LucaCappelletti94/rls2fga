@@ -284,7 +284,6 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
 
         TupleSource::ParentBridge {
             table,
-            pk_col: _,
             fk_col,
             parent_type,
         } => {
@@ -474,18 +473,127 @@ fn quote_sql_identifier_part(part: &str) -> String {
     if trimmed.is_empty() {
         return "\"\"".to_string();
     }
-    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        return trimmed.to_string();
+    // Strip pre-existing outer quotes and re-escape through the normal path.
+    // This prevents pre-quoted strings from bypassing validation (e.g. a
+    // function_registry.json entry containing `"foo" OR 1=1--`).
+    let raw = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        trimmed[1..trimmed.len() - 1].replace("\"\"", "\"")
+    } else {
+        trimmed.to_string()
+    };
+    if !identifier_needs_quoting(&raw) {
+        return raw;
     }
-    if !identifier_needs_quoting(trimmed) {
-        return trimmed.to_string();
-    }
-    format!("\"{}\"", trimmed.replace('"', "\"\""))
+    format!("\"{}\"", raw.replace('"', "\"\""))
 }
 
 fn identifier_needs_quoting(ident: &str) -> bool {
+    // Expanded list of PostgreSQL reserved and commonly-conflicting keywords.
+    // Column or table names matching any of these must be double-quoted.
     const RESERVED: &[&str] = &[
-        "all", "from", "group", "order", "role", "select", "table", "user", "where",
+        "all",
+        "analyse",
+        "analyze",
+        "and",
+        "any",
+        "array",
+        "as",
+        "asc",
+        "asymmetric",
+        "authorization",
+        "between",
+        "binary",
+        "both",
+        "case",
+        "cast",
+        "check",
+        "collate",
+        "collation",
+        "column",
+        "concurrently",
+        "constraint",
+        "create",
+        "cross",
+        "current_catalog",
+        "current_date",
+        "current_role",
+        "current_schema",
+        "current_time",
+        "current_timestamp",
+        "current_user",
+        "default",
+        "deferrable",
+        "desc",
+        "distinct",
+        "do",
+        "else",
+        "end",
+        "except",
+        "false",
+        "fetch",
+        "for",
+        "foreign",
+        "freeze",
+        "from",
+        "full",
+        "grant",
+        "group",
+        "having",
+        "ilike",
+        "in",
+        "initially",
+        "inner",
+        "intersect",
+        "into",
+        "is",
+        "isnull",
+        "join",
+        "lateral",
+        "leading",
+        "left",
+        "like",
+        "limit",
+        "localtime",
+        "localtimestamp",
+        "natural",
+        "not",
+        "notnull",
+        "null",
+        "offset",
+        "on",
+        "only",
+        "or",
+        "order",
+        "outer",
+        "overlaps",
+        "placing",
+        "primary",
+        "references",
+        "returning",
+        "right",
+        "role",
+        "row",
+        "select",
+        "session_user",
+        "similar",
+        "some",
+        "symmetric",
+        "table",
+        "tablesample",
+        "then",
+        "to",
+        "trailing",
+        "true",
+        "union",
+        "unique",
+        "user",
+        "using",
+        "variadic",
+        "verbose",
+        "when",
+        "where",
+        "window",
+        "with",
     ];
 
     if RESERVED.iter().any(|kw| ident.eq_ignore_ascii_case(kw)) {
@@ -1005,5 +1113,35 @@ CREATE POLICY docs_select ON docs FOR SELECT
             !queries.iter().any(|q| q.comment.contains("User ownership")),
             "ownership tuples should not be emitted without a stable object identifier column"
         );
+    }
+
+    #[test]
+    fn quote_sql_identifier_part_re_escapes_pre_quoted_identifiers() {
+        // A pre-quoted identifier must be stripped and re-quoted through the
+        // normal path rather than returned verbatim, preventing injection via
+        // malformed entries (e.g. function_registry.json).
+        assert_eq!(
+            quote_sql_identifier_part("\"simple\""),
+            "simple",
+            "simple pre-quoted identifier should round-trip to unquoted form"
+        );
+        assert_eq!(
+            quote_sql_identifier_part("\"mixed Case\""),
+            "\"mixed Case\"",
+            "pre-quoted identifier with spaces must be re-quoted"
+        );
+        // A pre-quoted identifier with inner doubled-quotes (SQL escaping):
+        // strip outer quotes → unescape `""` → `"` → re-escape → `""` → re-quote.
+        assert_eq!(
+            quote_sql_identifier_part("\"with\"\"inner\"\"quotes\""),
+            "\"with\"\"inner\"\"quotes\"",
+            "inner doubled quotes should be unescaped then properly re-escaped"
+        );
+        // New keywords in the expanded list must be quoted.
+        assert_eq!(quote_sql_identifier_part("null"), "\"null\"");
+        assert_eq!(quote_sql_identifier_part("with"), "\"with\"");
+        assert_eq!(quote_sql_identifier_part("join"), "\"join\"");
+        assert_eq!(quote_sql_identifier_part("default"), "\"default\"");
+        assert_eq!(quote_sql_identifier_part("case"), "\"case\"");
     }
 }

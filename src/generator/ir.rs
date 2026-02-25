@@ -151,11 +151,12 @@ pub(crate) enum TupleSource {
     /// Produces: `(parent_type:fk_col_val, relation, type:pk)`.
     ///
     /// Maps from: **P4** (resource bridge) and **P5** `ParentInheritance`.
+    ///
+    /// The object column is resolved at render time via `resolve_bridge_columns`
+    /// rather than being stored here, to keep the IR free of schema lookups.
     ParentBridge {
         /// Child resource table.
         table: String,
-        /// Primary-key column of `table`.
-        pk_col: String,
         /// FK column in `table` that references the parent entity.
         fk_col: String,
         /// `OpenFGA` type name of the parent entity.
@@ -243,27 +244,39 @@ impl TupleSource {
                 format!("role_owner_team:{table}:{owner_col}")
             }
             Self::ExplicitGrants {
+                table,
                 grant_table,
                 grant_role_col,
+                role_cases,
                 ..
             } => {
-                format!("grants:{grant_table}:{grant_role_col}")
+                let levels: Vec<String> =
+                    role_cases.iter().map(|(l, _, _)| l.to_string()).collect();
+                format!(
+                    "grants:{table}:{grant_table}:{grant_role_col}:{}",
+                    levels.join(",")
+                )
             }
             Self::TeamMembership {
-                membership_table, ..
+                membership_table,
+                team_col,
+                user_col,
             } => {
-                format!("team_membership:{membership_table}")
+                format!("team_membership:{membership_table}:{team_col}:{user_col}")
             }
             Self::ExistsMembership {
-                join_table, fk_col, ..
+                join_table,
+                fk_col,
+                user_col,
+                extra_predicate_sql,
             } => {
-                format!("p4:{join_table}:{fk_col}")
+                let extra = extra_predicate_sql.as_deref().unwrap_or("");
+                format!("p4:{join_table}:{fk_col}:{user_col}:{extra}")
             }
             Self::ParentBridge {
                 table,
                 fk_col,
                 parent_type,
-                ..
             } => {
                 format!("bridge:{table}:{fk_col}:{parent_type}")
             }
@@ -283,9 +296,110 @@ impl TupleSource {
             } => {
                 format!("scope:{table}:{scope_relation}:{pg_role}")
             }
-            Self::Todo { comment, .. } => {
-                format!("todo:{comment}")
+            Self::Todo {
+                level,
+                comment,
+                sql,
+            } => {
+                format!("todo:{level}:{comment}:{sql}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classifier::patterns::ConfidenceLevel;
+
+    #[test]
+    fn dedup_key_differentiates_explicit_grants_across_tables() {
+        let grants_a = TupleSource::ExplicitGrants {
+            table: "table_a".to_string(),
+            pk_col: "id".to_string(),
+            grant_join_col: "resource_id".to_string(),
+            grant_table: "grants".to_string(),
+            grant_role_col: "role".to_string(),
+            grant_grantee_col: "grantee".to_string(),
+            grant_resource_col: "resource_id".to_string(),
+            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            user_principal: None,
+            team_principal: None,
+        };
+        let grants_b = TupleSource::ExplicitGrants {
+            table: "table_b".to_string(),
+            pk_col: "id".to_string(),
+            grant_join_col: "resource_id".to_string(),
+            grant_table: "grants".to_string(),
+            grant_role_col: "role".to_string(),
+            grant_grantee_col: "grantee".to_string(),
+            grant_resource_col: "resource_id".to_string(),
+            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            user_principal: None,
+            team_principal: None,
+        };
+        assert_ne!(
+            grants_a.dedup_key(),
+            grants_b.dedup_key(),
+            "ExplicitGrants from different tables must have different dedup keys"
+        );
+    }
+
+    #[test]
+    fn dedup_key_differentiates_team_membership_by_columns() {
+        let mem_a = TupleSource::TeamMembership {
+            membership_table: "team_members".to_string(),
+            team_col: "team_id".to_string(),
+            user_col: "user_id".to_string(),
+        };
+        let mem_b = TupleSource::TeamMembership {
+            membership_table: "team_members".to_string(),
+            team_col: "group_id".to_string(),
+            user_col: "member_id".to_string(),
+        };
+        assert_ne!(
+            mem_a.dedup_key(),
+            mem_b.dedup_key(),
+            "TeamMembership with different columns must have different dedup keys"
+        );
+    }
+
+    #[test]
+    fn dedup_key_differentiates_exists_membership_by_user_col_and_predicate() {
+        let base = TupleSource::ExistsMembership {
+            join_table: "members".to_string(),
+            fk_col: "project_id".to_string(),
+            user_col: "user_id".to_string(),
+            extra_predicate_sql: None,
+        };
+        let different_user = TupleSource::ExistsMembership {
+            join_table: "members".to_string(),
+            fk_col: "project_id".to_string(),
+            user_col: "member_id".to_string(),
+            extra_predicate_sql: None,
+        };
+        let with_predicate = TupleSource::ExistsMembership {
+            join_table: "members".to_string(),
+            fk_col: "project_id".to_string(),
+            user_col: "user_id".to_string(),
+            extra_predicate_sql: Some("role = 'admin'".to_string()),
+        };
+        assert_ne!(base.dedup_key(), different_user.dedup_key());
+        assert_ne!(base.dedup_key(), with_predicate.dedup_key());
+    }
+
+    #[test]
+    fn dedup_key_differentiates_todo_by_sql_and_level() {
+        let todo_c = TupleSource::Todo {
+            level: ConfidenceLevel::C,
+            comment: "-- TODO".to_string(),
+            sql: "-- query not emitted".to_string(),
+        };
+        let todo_d_diff_sql = TupleSource::Todo {
+            level: ConfidenceLevel::D,
+            comment: "-- TODO".to_string(),
+            sql: "-- different".to_string(),
+        };
+        assert_ne!(todo_c.dedup_key(), todo_d_diff_sql.dedup_key());
     }
 }

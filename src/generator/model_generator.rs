@@ -783,11 +783,12 @@ fn pattern_to_expr_for_target(
                 .expect("ensure_member_type should have created the parent type entry")
                 .add_source(membership_source);
 
-            // Bridge rows link each source-table row to its parent
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            // Bridge rows link each source-table row to its parent.
+            // The pk_col is resolved at render time via resolve_bridge_columns;
+            // we emit a Todo here only if the table has no identifiable PK at all.
+            if resolve_pk_column(source_table, db).is_some() {
                 table_plan.add_source(TupleSource::ParentBridge {
                     table: source_table.to_string(),
-                    pk_col,
                     fk_col: fk_column.clone(),
                     parent_type: parent_type.clone(),
                 });
@@ -832,10 +833,9 @@ fn pattern_to_expr_for_target(
                 .entry(parent_relation.clone())
                 .or_insert_with(|| TypePlan::new(&parent_relation));
 
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            if resolve_pk_column(source_table, db).is_some() {
                 table_plan.add_source(TupleSource::ParentBridge {
                     table: source_table.to_string(),
-                    pk_col,
                     fk_col: fk_column.clone(),
                     parent_type: parent_relation.clone(),
                 });
