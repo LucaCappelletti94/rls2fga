@@ -175,4 +175,4 @@ When a `PostgreSQL` policy targets a specific role — for example `CREATE POLIC
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the MIT License. See `LICENSE`.
