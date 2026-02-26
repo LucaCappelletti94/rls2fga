@@ -6,54 +6,10 @@ use testcontainers::{
     GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::json_model;
-use rls2fga::parser::sql_parser;
 
-fn load_emi() -> (
-    Vec<rls2fga::classifier::patterns::ClassifiedPolicy>,
-    sql_parser::ParserDB,
-    FunctionRegistry,
-) {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
-
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
-
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry)
-}
-
-async fn check(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model_id: &str,
-    user: &str,
-    relation: &str,
-    object: &str,
-) -> bool {
-    let res = client
-        .post(format!("{base}/stores/{store_id}/check"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "tuple_key": {
-                "user": user,
-                "relation": relation,
-                "object": object
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    let body: Value = res.json().await.unwrap();
-    body["allowed"].as_bool().unwrap()
-}
+mod support;
 
 #[tokio::test]
 #[ignore = "requires Docker and OpenFGA container"]
@@ -73,37 +29,13 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
     let client = Client::new();
 
     // 2. Create store
-    let res = client
-        .post(format!("{base}/stores"))
-        .json(&json!({"name": "integration-test"}))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        res.status().is_success(),
-        "Store creation failed: {:?}",
-        res.status()
-    );
-    let store: Value = res.json().await.unwrap();
-    let store_id = store["id"].as_str().unwrap();
+    let store_id = support::openfga::create_store(&client, &base, "integration-test").await;
 
     // 3. Write authorization model
-    let (classified, db, registry) = load_emi();
+    let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
     let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-
-    let res = client
-        .post(format!("{base}/stores/{store_id}/authorization-models"))
-        .json(&model)
-        .send()
-        .await
-        .unwrap();
-    let status = res.status();
-    let body: Value = res.json().await.unwrap();
-    assert!(
-        status.is_success(),
-        "Model write failed ({status}): {body:#}"
-    );
-    let model_id = body["authorization_model_id"].as_str().unwrap();
+    let model_id =
+        support::openfga::write_authorization_model(&client, &base, &store_id, &model).await;
 
     // 4. Write tuples
     let tuples = [
@@ -121,21 +53,7 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
         .map(|(obj, rel, user)| json!({"user": user, "relation": rel, "object": obj}))
         .collect();
 
-    let res = client
-        .post(format!("{base}/stores/{store_id}/write"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "writes": { "tuple_keys": writes }
-        }))
-        .send()
-        .await
-        .unwrap();
-    let status = res.status();
-    let body: Value = res.json().await.unwrap();
-    assert!(
-        status.is_success(),
-        "Tuple write failed ({status}): {body:#}"
-    );
+    support::openfga::write_tuple_keys(&client, &base, &store_id, &model_id, &writes).await;
 
     // 5. Check assertions
     let checks: Vec<(&str, &str, &str, bool)> = vec![
@@ -170,7 +88,10 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
 
     let mut failures = Vec::new();
     for (user, relation, object, expected) in &checks {
-        let allowed = check(&client, &base, store_id, model_id, user, relation, object).await;
+        let allowed = support::openfga::check_allowed(
+            &client, &base, &store_id, &model_id, user, relation, object,
+        )
+        .await;
         if allowed != *expected {
             failures.push(format!(
                 "  {user} {relation} {object}: expected {expected}, got {allowed}"

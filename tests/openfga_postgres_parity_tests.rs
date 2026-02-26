@@ -9,19 +9,18 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::{Integer, Text};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use testcontainers::{
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
     GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
-use rls2fga::classifier::policy_classifier;
+use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
 use rls2fga::generator::tuple_generator::{self, TupleQuery};
-use rls2fga::parser::sql_parser;
+
+mod support;
 
 const PG_USER: &str = "postgres";
 const PG_PASSWORD: &str = "postgres";
@@ -60,24 +59,6 @@ struct TupleRow {
 struct RoleRow {
     #[diesel(sql_type = Integer)]
     role: i32,
-}
-
-fn load_emi() -> (
-    Vec<ClassifiedPolicy>,
-    sql_parser::ParserDB,
-    FunctionRegistry,
-    String,
-) {
-    let sql = std::fs::read_to_string("tests/fixtures/earth_metabolome/input.sql").unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
-
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
-
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry, sql)
 }
 
 fn connect_postgres_with_retry(database_url: &str) -> PgConnection {
@@ -154,116 +135,6 @@ fn execute_tuple_queries(conn: &mut PgConnection, tuple_queries: &[TupleQuery]) 
     keys.into_iter().collect()
 }
 
-async fn create_store(client: &Client, base: &str) -> String {
-    let response = client
-        .post(format!("{base}/stores"))
-        .json(&json!({"name": "pg18-parity-test"}))
-        .send()
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
-    assert!(
-        status.is_success(),
-        "Store creation failed ({status}): {body:#}"
-    );
-
-    body["id"].as_str().expect("missing store id").to_string()
-}
-
-async fn write_authorization_model(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model: &json_model::AuthorizationModel,
-) -> String {
-    let response = client
-        .post(format!("{base}/stores/{store_id}/authorization-models"))
-        .json(model)
-        .send()
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
-    assert!(
-        status.is_success(),
-        "Model write failed ({status}): {body:#}"
-    );
-
-    body["authorization_model_id"]
-        .as_str()
-        .expect("missing authorization_model_id")
-        .to_string()
-}
-
-async fn write_tuples(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model_id: &str,
-    tuple_keys: &[TupleKey],
-) {
-    let writes: Vec<Value> = tuple_keys
-        .iter()
-        .map(|tuple| {
-            json!({
-                "user": tuple.subject,
-                "relation": tuple.relation,
-                "object": tuple.object
-            })
-        })
-        .collect();
-
-    let response = client
-        .post(format!("{base}/stores/{store_id}/write"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "writes": { "tuple_keys": writes }
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
-    assert!(
-        status.is_success(),
-        "Tuple write failed ({status}): {body:#}"
-    );
-}
-
-async fn check_openfga(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model_id: &str,
-    user: &str,
-    relation: &str,
-    object: &str,
-) -> bool {
-    let response = client
-        .post(format!("{base}/stores/{store_id}/check"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "tuple_key": {
-                "user": user,
-                "relation": relation,
-                "object": object
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
-    assert!(status.is_success(), "Check failed ({status}): {body:#}");
-
-    body["allowed"].as_bool().expect("missing check result")
-}
-
 fn postgres_role_for_user_and_doc(conn: &mut PgConnection, user_id: &str, doc_id: &str) -> i32 {
     let row: RoleRow = diesel::sql_query(
         "SELECT get_owner_role($1::text::uuid, owner_id)
@@ -297,7 +168,8 @@ async fn translated_schema_parity_postgres18_and_openfga() {
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
     let mut conn = connect_postgres_with_retry(&pg_url);
 
-    let (classified, db, registry, schema_sql) = load_emi();
+    let schema_sql = support::read_fixture_sql("earth_metabolome");
+    let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&mut conn);
@@ -324,9 +196,20 @@ async fn translated_schema_parity_postgres18_and_openfga() {
     let base = format!("http://localhost:{openfga_port}");
     let client = Client::new();
 
-    let store_id = create_store(&client, &base).await;
-    let model_id = write_authorization_model(&client, &base, &store_id, &model).await;
-    write_tuples(&client, &base, &store_id, &model_id, &tuple_keys).await;
+    let store_id = support::openfga::create_store(&client, &base, "pg18-parity-test").await;
+    let model_id =
+        support::openfga::write_authorization_model(&client, &base, &store_id, &model).await;
+    let writes: Vec<_> = tuple_keys
+        .iter()
+        .map(|tuple| {
+            json!({
+                "user": tuple.subject,
+                "relation": tuple.relation,
+                "object": tuple.object
+            })
+        })
+        .collect();
+    support::openfga::write_tuple_keys(&client, &base, &store_id, &model_id, &writes).await;
 
     let users = [USER_ALICE, USER_BOB, USER_CAROL, USER_DAVE, USER_EVE];
     let docs = [DOC_1, DOC_2];
@@ -346,7 +229,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
 
             for (relation, threshold) in relations {
                 let expected = role >= threshold;
-                let actual = check_openfga(
+                let actual = support::openfga::check_allowed(
                     &client, &base, &store_id, &model_id, &user, relation, &object,
                 )
                 .await;

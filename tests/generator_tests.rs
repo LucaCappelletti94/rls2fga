@@ -14,10 +14,7 @@ fn load_emi() -> (
     sql_parser::ParserDB,
     FunctionRegistry,
 ) {
-    let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
-
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry)
+    support::load_fixture_classified("earth_metabolome")
 }
 
 #[test]

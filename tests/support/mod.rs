@@ -1,8 +1,12 @@
 #![allow(dead_code)]
 
+pub(crate) mod openfga;
+
 use std::path::PathBuf;
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::patterns::ClassifiedPolicy;
+use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::sql_parser::{self, ParserDB};
 
 pub(crate) fn fixture_dir(fixture: &str) -> PathBuf {
@@ -33,4 +37,12 @@ pub(crate) fn load_fixture_registry(fixture: &str) -> FunctionRegistry {
 
 pub(crate) fn load_fixture_db_and_registry(fixture: &str) -> (ParserDB, FunctionRegistry) {
     (parse_fixture_db(fixture), load_fixture_registry(fixture))
+}
+
+pub(crate) fn load_fixture_classified(
+    fixture: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let (db, registry) = load_fixture_db_and_registry(fixture);
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
 }
