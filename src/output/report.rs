@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::classifier::patterns::ClassifiedPolicy;
+use crate::classifier::patterns::{ClassifiedExpr, ClassifiedPolicy};
 use crate::generator::model_generator::GeneratedModel;
 
 /// Escape a user-controlled string for safe embedding in a Markdown table cell.
@@ -28,29 +28,20 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
     writeln!(report, "|--------|---------|------------|-------|").unwrap();
 
     for cp in policies {
-        if let Some(ref c) = cp.using_classification {
-            writeln!(
-                report,
-                "| {} (USING) | {} | {} | {} |",
-                md_escape(cp.name()),
-                md_escape(&format_pattern(&c.pattern)),
-                c.confidence,
-                md_escape(&format_notes(&c.pattern))
-            )
-            .unwrap();
-        }
-        if let Some(ref c) = cp.with_check_classification {
-            writeln!(
-                report,
-                "| {} (WITH CHECK) | {} | {} | {} |",
-                md_escape(cp.name()),
-                md_escape(&format_pattern(&c.pattern)),
-                c.confidence,
-                md_escape(&format_notes(&c.pattern))
-            )
-            .unwrap();
-        }
-        if cp.using_classification.is_none() && cp.with_check_classification.is_none() {
+        let mut wrote_row = false;
+        wrote_row |= write_classification_row(
+            &mut report,
+            cp.name(),
+            "USING",
+            cp.using_classification.as_ref(),
+        );
+        wrote_row |= write_classification_row(
+            &mut report,
+            cp.name(),
+            "WITH CHECK",
+            cp.with_check_classification.as_ref(),
+        );
+        if !wrote_row {
             writeln!(report, "| {} | N/A | N/A |  |", md_escape(cp.name())).unwrap();
         }
     }
@@ -72,6 +63,28 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
     }
 
     report
+}
+
+fn write_classification_row(
+    report: &mut String,
+    policy_name: &str,
+    clause_label: &str,
+    classification: Option<&ClassifiedExpr>,
+) -> bool {
+    let Some(classification) = classification else {
+        return false;
+    };
+    writeln!(
+        report,
+        "| {} ({}) | {} | {} | {} |",
+        md_escape(policy_name),
+        clause_label,
+        md_escape(&format_pattern(&classification.pattern)),
+        classification.confidence,
+        md_escape(&format_notes(&classification.pattern))
+    )
+    .unwrap();
+    true
 }
 
 fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String {
