@@ -369,70 +369,15 @@ pub fn recognize_p5(
         let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
             return None;
         };
-        let sources = relation_sources(select.as_ref());
-        if sources.is_empty() {
-            return None;
-        }
-        let outer_table_meta = lookup_table(db, outer_table)?;
-        let selection = select.selection.as_ref()?;
-
-        let outer_cols: Vec<String> = outer_table_meta
-            .columns(db)
-            .map(|c| c.column_name().to_string())
-            .collect();
-
-        let mut predicates = Vec::new();
-        flatten_and_predicates(selection, &mut predicates);
+        let analysis = analyze_p5_parent_inheritance(select.as_ref(), db, outer_table)?;
 
         let mut matches = Vec::new();
-        for source in sources {
-            let Some(parent_table) = lookup_table(db, &source.table_name) else {
-                continue;
-            };
-            let parent_cols: Vec<String> = parent_table
-                .columns(db)
-                .map(|c| c.column_name().to_string())
-                .collect();
-
-            let mut fk_column: Option<String> = None;
-            let mut inner_predicates: Vec<Expr> = Vec::new();
-            let mut invalid_join = false;
-
-            for pred in &predicates {
-                if let Some((outer_fk, _parent_col)) = extract_parent_join_columns(
-                    pred,
-                    outer_table,
-                    &outer_cols,
-                    &source.table_name,
-                    source.alias.as_deref(),
-                    &parent_cols,
-                ) {
-                    if fk_column
-                        .as_ref()
-                        .is_none_or(|existing| existing == &outer_fk)
-                    {
-                        fk_column = Some(outer_fk);
-                        continue;
-                    }
-                    invalid_join = true;
-                    break;
-                }
-                inner_predicates.push((*pred).clone());
-            }
-
-            if invalid_join {
-                continue;
-            }
-            let Some(fk_column) = fk_column else {
-                continue;
-            };
-            if inner_predicates.is_empty() {
-                continue;
-            }
-            if !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name) {
-                continue;
-            }
-
+        for candidate in analysis.candidates {
+            let P5InheritanceCandidate {
+                parent_table,
+                fk_column,
+                inner_predicates,
+            } = candidate;
             let Some(inner_expr) = combine_predicates_with_and(inner_predicates) else {
                 continue;
             };
@@ -440,7 +385,7 @@ pub fn recognize_p5(
                 &inner_expr,
                 db,
                 registry,
-                &source.table_name,
+                &parent_table,
                 command,
             );
             // Only accept user-resource relationship patterns as inner patterns.
@@ -462,7 +407,7 @@ pub fn recognize_p5(
             matches.push(ClassifiedExpr {
                 confidence: inner_classified.confidence,
                 pattern: PatternClass::P5ParentInheritance {
-                    parent_table: source.table_name,
+                    parent_table,
                     fk_column,
                     inner_pattern: Box::new(inner_classified),
                 },
@@ -682,7 +627,42 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
     let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
         return None;
     };
-    let sources = relation_sources(select.as_ref());
+    let analysis = analyze_p5_parent_inheritance(select.as_ref(), db, outer_table)?;
+
+    if analysis.candidates.len() > 1 {
+        return Some(
+            "Ambiguous parent inheritance pattern: multiple candidate parent sources matched"
+                .to_string(),
+        );
+    }
+    if analysis.saw_conflicting_join {
+        return Some(
+            "Ambiguous parent inheritance pattern: conflicting outer FK join columns in EXISTS predicate"
+                .to_string(),
+        );
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+struct P5InheritanceCandidate {
+    parent_table: String,
+    fk_column: String,
+    inner_predicates: Vec<Expr>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct P5InheritanceAnalysis {
+    candidates: Vec<P5InheritanceCandidate>,
+    saw_conflicting_join: bool,
+}
+
+fn analyze_p5_parent_inheritance(
+    select: &Select,
+    db: &ParserDB,
+    outer_table: &str,
+) -> Option<P5InheritanceAnalysis> {
+    let sources = relation_sources(select);
     if sources.is_empty() {
         return None;
     }
@@ -697,8 +677,7 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
     let mut predicates = Vec::new();
     flatten_and_predicates(selection, &mut predicates);
 
-    let mut candidate_matches = 0usize;
-    let mut saw_conflicting_join = false;
+    let mut analysis = P5InheritanceAnalysis::default();
 
     for source in sources {
         let Some(parent_table) = lookup_table(db, &source.table_name) else {
@@ -710,7 +689,7 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
             .collect();
 
         let mut fk_column: Option<String> = None;
-        let mut inner_predicates = 0usize;
+        let mut inner_predicates = Vec::new();
         let mut invalid_join = false;
 
         for pred in &predicates {
@@ -732,39 +711,31 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
                 invalid_join = true;
                 break;
             }
-            inner_predicates += 1;
+            inner_predicates.push((*pred).clone());
         }
 
         if invalid_join {
-            saw_conflicting_join = true;
+            analysis.saw_conflicting_join = true;
             continue;
         }
         let Some(fk_column) = fk_column else {
             continue;
         };
-        if inner_predicates == 0 {
+        if inner_predicates.is_empty() {
             continue;
         }
         if !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name) {
             continue;
         }
 
-        candidate_matches += 1;
+        analysis.candidates.push(P5InheritanceCandidate {
+            parent_table: source.table_name,
+            fk_column,
+            inner_predicates,
+        });
     }
 
-    if candidate_matches > 1 {
-        return Some(
-            "Ambiguous parent inheritance pattern: multiple candidate parent sources matched"
-                .to_string(),
-        );
-    }
-    if saw_conflicting_join {
-        return Some(
-            "Ambiguous parent inheritance pattern: conflicting outer FK join columns in EXISTS predicate"
-                .to_string(),
-        );
-    }
-    None
+    Some(analysis)
 }
 
 fn selection_references_current_user(select: &Select, registry: &FunctionRegistry) -> bool {
@@ -814,34 +785,19 @@ pub fn recognize_p6(
         }
     }
 
-    match expr {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Eq,
-            right,
-        } => {
-            // Check for `column = TRUE` or `TRUE = column`.
-            let (col_name, is_true) = if let (Some(col), Some(value)) =
-                (extract_column_name(left), constant_bool_value(right))
-            {
-                (col, value)
-            } else if let (Some(value), Some(col)) =
-                (constant_bool_value(left), extract_column_name(right))
-            {
-                (col, value)
-            } else {
-                return None;
-            };
-
-            if is_true && is_public_flag_column_name(&col_name) {
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag {
-                        column: col_name.clone(),
-                    },
-                    confidence: p6_confidence(&col_name, registry),
-                });
-            }
+    if let Some((col_name, is_true)) = extract_boolean_column_equality(expr) {
+        if is_true && is_public_flag_column_name(&col_name) {
+            return Some(ClassifiedExpr {
+                pattern: PatternClass::P6BooleanFlag {
+                    column: col_name.clone(),
+                },
+                confidence: p6_confidence(&col_name, registry),
+            });
         }
+        return None;
+    }
+
+    match expr {
         Expr::IsTrue(inner) | Expr::IsNotFalse(inner) => {
             let col_name = extract_column_name(inner)?;
             if is_public_flag_column_name(&col_name) {
@@ -875,28 +831,14 @@ pub fn recognize_p6(
 /// These forms look similar to P6 but cannot be expressed as static `OpenFGA`
 /// tuples because they filter OUT rows rather than granting access.
 pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Eq,
-            right,
-        } => {
-            let (col_name, value) = if let (Some(col), Some(v)) =
-                (extract_column_name(left), constant_bool_value(right))
-            {
-                (col, v)
-            } else if let (Some(v), Some(col)) =
-                (constant_bool_value(left), extract_column_name(right))
-            {
-                (col, v)
-            } else {
-                return None;
-            };
-            if !value && is_public_flag_column_name(&col_name) {
-                return Some(col_name);
-            }
-            None
+    if let Some((col_name, value)) = extract_boolean_column_equality(expr) {
+        if !value && is_public_flag_column_name(&col_name) {
+            return Some(col_name);
         }
+        return None;
+    }
+
+    match expr {
         Expr::IsFalse(inner) | Expr::IsNotTrue(inner) => {
             let col_name = extract_column_name(inner)?;
             if is_public_flag_column_name(&col_name) {
@@ -906,6 +848,26 @@ pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn extract_boolean_column_equality(expr: &Expr) -> Option<(String, bool)> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    else {
+        return None;
+    };
+
+    if let (Some(col), Some(value)) = (extract_column_name(left), constant_bool_value(right)) {
+        return Some((col, value));
+    }
+    if let (Some(value), Some(col)) = (constant_bool_value(left), extract_column_name(right)) {
+        return Some((col, value));
+    }
+
+    None
 }
 
 fn constant_bool_value(expr: &Expr) -> Option<bool> {
