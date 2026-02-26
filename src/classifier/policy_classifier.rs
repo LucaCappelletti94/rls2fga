@@ -77,6 +77,16 @@ pub fn classify_policies_with_registry(
 /// stack overflows from adversarially-nested SQL.
 const MAX_CLASSIFY_DEPTH: u32 = 64;
 
+fn unknown_d(expr: &Expr, reason: impl Into<String>) -> ClassifiedExpr {
+    ClassifiedExpr {
+        pattern: PatternClass::Unknown {
+            sql_text: expr.to_string(),
+            reason: reason.into(),
+        },
+        confidence: ConfidenceLevel::D,
+    }
+}
+
 /// Recursively classify an expression using the pattern decision tree.
 pub fn classify_expr(
     expr: &Expr,
@@ -97,16 +107,13 @@ fn classify_expr_depth(
     depth: u32,
 ) -> ClassifiedExpr {
     if depth > MAX_CLASSIFY_DEPTH {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: format!(
-                    "Expression exceeds maximum nesting depth ({MAX_CLASSIFY_DEPTH}); \
-                     manual review required"
-                ),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            format!(
+                "Expression exceeds maximum nesting depth ({MAX_CLASSIFY_DEPTH}); \
+                 manual review required"
+            ),
+        );
     }
     classify_expr_inner(expr, db, registry, table, command, depth)
 }
@@ -212,53 +219,38 @@ fn classify_expr_inner(
         }
         let inner_classified = classify_expr_depth(inner, db, registry, table, command, depth + 1);
         let desc = pattern_short_name(&inner_classified.pattern);
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: format!(
-                    "NOT applied to {desc}; negation cannot be expressed as a static \
-                     OpenFGA tuple — consider rewriting as an allowlist policy"
-                ),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            format!(
+                "NOT applied to {desc}; negation cannot be expressed as a static \
+                 OpenFGA tuple — consider rewriting as an allowlist policy"
+            ),
+        );
     }
 
     // Handle negated structural forms (NOT IN list / NOT EXISTS / NOT IN subquery).
     // Each recognizer already returns None for these, so intercept them here to give
     // a specific diagnostic reason instead of the generic "unknown pattern" fallback.
     if let Expr::InList { negated: true, .. } = expr {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: "NOT IN (...) cannot be represented as static OpenFGA tuples; \
-                         negation requires runtime filtering"
-                    .to_string(),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            "NOT IN (...) cannot be represented as static OpenFGA tuples; \
+             negation requires runtime filtering",
+        );
     }
     if let Expr::Exists { negated: true, .. } = expr {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: "NOT EXISTS cannot be represented as static OpenFGA membership tuples; \
-                         negation requires runtime filtering"
-                    .to_string(),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            "NOT EXISTS cannot be represented as static OpenFGA membership tuples; \
+             negation requires runtime filtering",
+        );
     }
     if let Expr::InSubquery { negated: true, .. } = expr {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: "NOT IN (subquery) cannot be represented as static OpenFGA membership \
-                         tuples; negation requires runtime filtering"
-                    .to_string(),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            "NOT IN (subquery) cannot be represented as static OpenFGA membership \
+             tuples; negation requires runtime filtering",
+        );
     }
 
     // Try P1: numeric threshold
@@ -292,39 +284,24 @@ fn classify_expr_inner(
     }
 
     if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, table) {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason,
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(expr, reason);
     }
 
     if let Some(reason) = recognizers::diagnose_p4_membership_ambiguity(expr, db, registry) {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason,
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(expr, reason);
     }
 
     // Detect negated public-flag: `is_public = FALSE`, `col IS FALSE`, `col IS NOT TRUE`.
     // These fall through P6 because they're not an allowlist — they must not degrade silently
     // to P9 (attribute condition) since they cannot be expressed as static OpenFGA tuples.
     if let Some(col) = recognizers::is_negated_boolean_flag(expr) {
-        return ClassifiedExpr {
-            pattern: PatternClass::Unknown {
-                sql_text: expr.to_string(),
-                reason: format!(
-                    "Negated boolean-flag check on column '{col}' cannot be expressed as static \
-                     OpenFGA tuples; negation requires runtime filtering"
-                ),
-            },
-            confidence: ConfidenceLevel::D,
-        };
+        return unknown_d(
+            expr,
+            format!(
+                "Negated boolean-flag check on column '{col}' cannot be expressed as static \
+                 OpenFGA tuples; negation requires runtime filtering"
+            ),
+        );
     }
 
     // Try P6: boolean flag
@@ -370,24 +347,12 @@ fn classify_expr_inner(
                     )
                 }
             };
-            return ClassifiedExpr {
-                pattern: PatternClass::Unknown {
-                    sql_text: expr.to_string(),
-                    reason,
-                },
-                confidence: ConfidenceLevel::D,
-            };
+            return unknown_d(expr, reason);
         }
     }
 
     // Fallback: Unknown
-    ClassifiedExpr {
-        pattern: PatternClass::Unknown {
-            sql_text: expr.to_string(),
-            reason: "Expression does not match any known pattern".to_string(),
-        },
-        confidence: ConfidenceLevel::D,
-    }
+    unknown_d(expr, "Expression does not match any known pattern")
 }
 
 /// Extract a human-readable description of the comparison value in a binary expression.

@@ -1,5 +1,6 @@
 use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
 
+use crate::classifier::ast_args::function_arg_expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
@@ -122,7 +123,7 @@ pub fn recognize_p2(
 /// Recognise `pg_has_role(user, 'role', privilege)` / `pg_has_role('role', privilege)`.
 /// Maps to `P2RoleNameInList` at confidence A since the built-in has fixed semantics.
 fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
-    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+    use sqlparser::ast::FunctionArguments;
 
     let Expr::Function(func) = expr else {
         return None;
@@ -134,22 +135,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
         return None;
     };
 
-    let args: Vec<&Expr> = arg_list
-        .args
-        .iter()
-        .filter_map(|a| match a {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
-            | FunctionArg::Named {
-                arg: FunctionArgExpr::Expr(e),
-                ..
-            }
-            | FunctionArg::ExprNamed {
-                arg: FunctionArgExpr::Expr(e),
-                ..
-            } => Some(e),
-            _ => None,
-        })
-        .collect();
+    let args: Vec<&Expr> = arg_list.args.iter().filter_map(function_arg_expr).collect();
 
     let role_expr = match args.as_slice() {
         // Three-arg: pg_has_role(user, 'role', privilege) — user must be current_user.
@@ -955,22 +941,6 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
 /// Used by the P1/P2 recognizers to guard against false positives where a
 /// role-threshold function is called with non-user arguments, e.g.
 /// `get_owner_role(owner_id, id) >= 2`.
-fn function_arg_to_expr(arg: &sqlparser::ast::FunctionArg) -> Option<&Expr> {
-    use sqlparser::ast::{FunctionArg, FunctionArgExpr};
-    match arg {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
-        | FunctionArg::Named {
-            arg: FunctionArgExpr::Expr(e),
-            ..
-        }
-        | FunctionArg::ExprNamed {
-            arg: FunctionArgExpr::Expr(e),
-            ..
-        } => Some(e),
-        _ => None,
-    }
-}
-
 fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bool {
     use sqlparser::ast::FunctionArguments;
     let Expr::Function(func) = expr else {
@@ -982,7 +952,7 @@ fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bo
     arg_list
         .args
         .iter()
-        .filter_map(function_arg_to_expr)
+        .filter_map(function_arg_expr)
         .any(|e| is_current_user_expr(e, registry))
 }
 

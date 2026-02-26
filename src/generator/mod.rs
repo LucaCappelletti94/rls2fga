@@ -1,3 +1,5 @@
+/// Shared schema lookup helpers used by model/tuple generation.
+pub(crate) mod db_lookup;
 /// Shared authorization intermediate representation (`TupleSource` and friends).
 pub(crate) mod ir;
 /// `OpenFGA` JSON authorization model structs and builder.

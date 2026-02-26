@@ -1,5 +1,6 @@
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
 use crate::parser::names::{
@@ -414,19 +415,6 @@ pub fn generate_tuple_queries(
     generate_tuple_queries_from_plan(&plan, db)
 }
 
-fn resolve_object_column(table: &str, db: &ParserDB) -> Option<String> {
-    let table_info = lookup_table(db, table)?;
-    table_info
-        .primary_key_column(db)
-        .map(|c| c.column_name().to_string())
-        .or_else(|| {
-            table_info
-                .columns(db)
-                .find(|c| c.column_name() == "id")
-                .map(|c| c.column_name().to_string())
-        })
-}
-
 fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option<(String, String)> {
     let table_info = lookup_table(db, table)?;
     let cols: Vec<String> = table_info
@@ -434,7 +422,7 @@ fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option
         .map(|c| c.column_name().to_string())
         .collect();
 
-    let object_col = resolve_object_column(table, db)?;
+    let object_col = resolve_pk_column(table, db)?;
 
     if cols.iter().any(|c| c == fk_column) {
         return Some((object_col, fk_column.to_string()));

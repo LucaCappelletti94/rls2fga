@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
+use crate::classifier::ast_args::function_arg_expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::generator::db_lookup::{resolve_pk_column, table_has_column};
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::parser::expr::extract_column_name;
@@ -12,9 +14,7 @@ use crate::parser::names::{
     parent_type_from_fk_column, policy_scope_relation_name, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
-use sqlparser::ast::{
-    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Query, SelectItem, SetExpr,
-};
+use sqlparser::ast::{Expr, Function, FunctionArguments, Query, SelectItem, SetExpr};
 
 /// Generated ``OpenFGA`` model output.
 #[derive(Debug, Clone)]
@@ -1403,17 +1403,8 @@ fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec
         Expr::Function(function) => {
             if let FunctionArguments::List(arg_list) = &function.args {
                 for arg in &arg_list.args {
-                    match arg {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-                        | FunctionArg::Named {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        }
-                        | FunctionArg::ExprNamed {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        } => collect_function_calls(expr, function_name, out),
-                        _ => {}
+                    if let Some(expr) = function_arg_expr(arg) {
+                        collect_function_calls(expr, function_name, out);
                     }
                 }
             }
@@ -1537,39 +1528,7 @@ fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
         return None;
     };
     let arg = arg_list.args.get(index)?;
-
-    match arg {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-        | FunctionArg::Named {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        }
-        | FunctionArg::ExprNamed {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        } => Some(expr),
-        _ => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DB-lookup helpers used for TupleSource population (Step 3 of IR migration)
-//
-// These mirror the equivalents in tuple_generator.rs and will be the sole
-// source of truth once the old traversal is removed in Step 6.
-// ---------------------------------------------------------------------------
-
-fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
-    let table_info = lookup_table(db, table)?;
-    table_info
-        .primary_key_column(db)
-        .map(|c| c.column_name().to_string())
-        .or_else(|| {
-            table_info
-                .columns(db)
-                .find(|c| c.column_name() == "id")
-                .map(|c| c.column_name().to_string())
-        })
+    function_arg_expr(arg)
 }
 
 fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
@@ -1597,10 +1556,6 @@ fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
     None
 }
 
-fn ir_table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
-    lookup_table(db, table).is_some_and(|t| t.columns(db).any(|c| c.column_name() == col))
-}
-
 /// Returns the name of the table that `fk_column` in `table` references, or
 /// `None` if no matching FK constraint is found in the schema.
 fn referenced_table_for_fk_col<'db>(
@@ -1626,7 +1581,7 @@ fn resolve_principal_info(
 ) -> Option<PrincipalInfo> {
     if let Some(table) = configured_table {
         let pk_col = if let Some(pk_col) = configured_pk_col {
-            if !ir_table_has_column(db, table, pk_col) {
+            if !table_has_column(db, table, pk_col) {
                 return None;
             }
             pk_col.to_string()
