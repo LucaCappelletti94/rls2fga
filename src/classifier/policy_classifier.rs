@@ -840,4 +840,77 @@ CREATE POLICY docs_update ON docs FOR UPDATE
             classified.pattern
         );
     }
+
+    #[test]
+    fn classify_p3_does_not_match_column_to_column_equality() {
+        let db = parse_schema(
+            "CREATE TABLE tasks(id uuid primary key, assigned_to uuid, manager_id uuid);",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        // `assigned_to = manager_id`: both sides are bare column references.
+        // Even though `manager_id` contains "user_id" as a substring, it is not
+        // a current-user accessor and must not be mistaken for one.
+        let expr = parse_expr("assigned_to = manager_id");
+        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+
+        assert!(
+            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            "column = column must not classify as P3DirectOwnership, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn classify_p4_exists_any_row_without_user_predicate_is_unknown() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id uuid primary key);
+CREATE TABLE doc_members(doc_id uuid, user_id uuid);
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        // EXISTS with no current-user filter is an "exists any member" check —
+        // it does not identify the current user and must not classify as P4.
+        let expr = parse_expr("EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id)");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(
+            !matches!(&classified.pattern, PatternClass::P4ExistsMembership { .. }),
+            "EXISTS with no user predicate must not classify as P4, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn classify_p5_rejects_attribute_only_inner_pattern() {
+        let db = parse_schema(
+            r"
+CREATE TABLE projects(id uuid primary key, status text);
+CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id), status text);
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        // `EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.status = 'active')`
+        // The inner expression `p.status = 'active'` is a P9 attribute condition, not a
+        // user-resource relationship. P5 must not wrap it.
+        let expr = parse_expr(
+            "EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.status = 'active')",
+        );
+        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+
+        assert!(
+            !matches!(
+                &classified.pattern,
+                PatternClass::P5ParentInheritance { .. }
+            ),
+            "P5 with attribute-only inner pattern must be rejected, got: {:?}",
+            classified.pattern
+        );
+    }
 }

@@ -131,10 +131,7 @@ pub fn recognize_p3(
 
     if !is_registry_confirmed && !is_sql_keyword {
         // Heuristic accessor name check
-        if !accessor_lower.contains("current_user")
-            && !accessor_lower.contains("auth")
-            && !accessor_lower.contains("user_id")
-        {
+        if !accessor_lower.contains("current_user") && !accessor_lower.contains("auth") {
             return None;
         }
 
@@ -272,7 +269,19 @@ pub fn recognize_p5(
                 &source.table_name,
                 command,
             );
-            if matches!(inner_classified.pattern, PatternClass::Unknown { .. }) {
+            // Only accept user-resource relationship patterns as inner patterns.
+            // Attribute checks (P6, P9, P10) do not represent a relationship
+            // between a user and the parent resource and must not become P5.
+            if !matches!(
+                inner_classified.pattern,
+                PatternClass::P1NumericThreshold { .. }
+                    | PatternClass::P2RoleNameInList { .. }
+                    | PatternClass::P3DirectOwnership { .. }
+                    | PatternClass::P4ExistsMembership { .. }
+                    | PatternClass::P5ParentInheritance { .. }
+                    | PatternClass::P7AbacAnd { .. }
+                    | PatternClass::P8Composite { .. }
+            ) {
                 continue;
             }
 
@@ -329,6 +338,19 @@ fn classify_membership_select(
     registry: &FunctionRegistry,
     projected_fk: Option<String>,
 ) -> Option<ClassifiedExpr> {
+    // Fail closed when the same table appears more than once (self-join).
+    // Self-joins add constraints we cannot express as static membership tuples;
+    // accepting them would produce tuples more permissive than the original policy.
+    let all_sources = relation_sources(select);
+    let unique_table_count = all_sources
+        .iter()
+        .map(|s| normalize_relation_name(&s.table_name))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if unique_table_count != all_sources.len() {
+        return None;
+    }
+
     let matches = membership_matches(select, db, registry, projected_fk.as_deref());
     if matches.len() != 1 {
         return None;
@@ -853,13 +875,6 @@ fn extract_membership_columns(
                 join_alias,
             ));
         }
-    }
-
-    if user_col.is_none() {
-        user_col = join_cols
-            .iter()
-            .find(|c| c.contains("user_id") || c.contains("member_id"))
-            .cloned();
     }
 
     if fk_col.is_none() {
@@ -1777,7 +1792,10 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     }
 
     #[test]
-    fn membership_column_extraction_falls_back_when_join_predicates_missing() {
+    fn membership_column_extraction_requires_explicit_user_predicate() {
+        // WHERE clause has only a role predicate, no current-user equality.
+        // Without an explicit user predicate, extract_membership_columns must
+        // return None to avoid "exists any admin" false positives.
         let select = parse_select(
             "SELECT dm.doc_id
              FROM doc_members dm
@@ -1790,15 +1808,11 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
             "role".to_string(),
         ];
 
-        let extracted =
+        assert!(
             extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
-                .expect("fallback should infer membership columns");
-        assert_eq!(extracted.0, "doc_id");
-        assert_eq!(extracted.1, "member_id");
-        assert!(extracted
-            .2
-            .as_deref()
-            .is_some_and(|s| s.contains("role = 'admin'")));
+                .is_none(),
+            "membership without user predicate must fail closed"
+        );
     }
 
     #[test]
@@ -1997,26 +2011,27 @@ CREATE TABLE odd_members(alpha text, beta text);
     }
 
     #[test]
-    fn recognize_p4_and_in_subquery_accept_unambiguous_multi_from_subqueries() {
+    fn recognize_p4_multi_from_requires_user_predicate() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
 
-        let exists_multi_from = parse_expr(
+        // No user predicate in EXISTS → must fail closed even when the membership
+        // table is present alongside a second resource table.
+        let exists_no_user = parse_expr(
             "EXISTS (
                SELECT 1
                FROM doc_members dm, docs d
                WHERE dm.doc_id = d.id
              )",
         );
-        assert!(matches!(
-            recognize_p4(&exists_multi_from, &db, &registry),
-            Some(ClassifiedExpr {
-                pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
-                ..
-            }) if join_table == "doc_members"
-        ));
+        assert!(
+            recognize_p4(&exists_no_user, &db, &registry).is_none(),
+            "EXISTS with no user predicate is an 'exists any row' false positive"
+        );
 
-        let in_multi_from = parse_expr(
+        // IN-subquery with an explicit user predicate over one of the sources
+        // should still be accepted; the second source just provides a FK join.
+        let in_with_user = parse_expr(
             "doc_id IN (
                SELECT dm.doc_id
                FROM doc_members dm, docs d
@@ -2024,7 +2039,7 @@ CREATE TABLE odd_members(alpha text, beta text);
              )",
         );
         assert!(matches!(
-            recognize_p4_in_subquery(&in_multi_from, &db, &registry),
+            recognize_p4_in_subquery(&in_with_user, &db, &registry),
             Some(ClassifiedExpr {
                 pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
                 ..
@@ -2076,7 +2091,8 @@ CREATE TABLE odd_members(alpha text, beta text);
     }
 
     #[test]
-    fn extract_membership_columns_handles_queries_without_selection() {
+    fn extract_membership_columns_returns_none_without_user_predicate() {
+        // No WHERE clause at all → no user predicate → must fail closed.
         let select = parse_select("SELECT dm.doc_id FROM doc_members dm");
         let registry = registry_with_role_level();
         let cols = vec![
@@ -2085,16 +2101,17 @@ CREATE TABLE odd_members(alpha text, beta text);
             "role".to_string(),
         ];
 
-        let extracted =
+        assert!(
             extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
-                .expect("fallback should infer columns even without WHERE");
-        assert_eq!(extracted.0, "doc_id");
-        assert_eq!(extracted.1, "user_id");
-        assert!(extracted.2.is_none());
+                .is_none(),
+            "membership without any WHERE must fail closed"
+        );
     }
 
     #[test]
-    fn membership_column_extraction_prefers_relation_hint_over_scope_ids() {
+    fn membership_column_extraction_requires_user_predicate_not_just_role() {
+        // WHERE has only a role predicate and no current-user equality:
+        // even with a tenant_id column present, must still fail closed.
         let select = parse_select(
             "SELECT dm.doc_id
              FROM doc_members dm
@@ -2108,10 +2125,11 @@ CREATE TABLE odd_members(alpha text, beta text);
             "role".to_string(),
         ];
 
-        let extracted =
+        assert!(
             extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
-                .expect("relation hint should select doc_id");
-        assert_eq!(extracted.0, "doc_id");
+                .is_none(),
+            "membership with only a role predicate must fail closed"
+        );
     }
 
     #[test]
