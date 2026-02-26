@@ -61,6 +61,42 @@ pub(crate) fn generate_tuple_queries_from_plan(
     queries
 }
 
+fn render_ownership_tuple_source(
+    table: &str,
+    pk_col: &str,
+    owner_col: &str,
+    relation: &str,
+    subject_prefix: &str,
+    comment: String,
+    owner_filter: Option<(&str, &str)>,
+) -> TupleQuery {
+    let table_type = canonical_fga_type_name(table);
+    let table_sql = quote_sql_identifier(table);
+    let pk_col_sql = quote_sql_identifier(pk_col);
+    let owner_col_sql = quote_sql_identifier(owner_col);
+
+    let where_clause = if let Some((principal_table, principal_pk_col)) = owner_filter {
+        let principal_table_sql = quote_sql_identifier(principal_table);
+        let principal_pk_col_sql = quote_sql_identifier(principal_pk_col);
+        format!(
+            "WHERE {owner_col_sql} IN (SELECT {principal_pk_col_sql} FROM {principal_table_sql})\n\
+             AND {owner_col_sql} IS NOT NULL;"
+        )
+    } else {
+        format!("WHERE {owner_col_sql} IS NOT NULL;")
+    };
+
+    TupleQuery {
+        comment,
+        sql: format!(
+            "SELECT '{table_type}:' || {pk_col_sql} AS object, '{relation}' AS relation, \
+             '{subject_prefix}:' || {owner_col_sql} AS subject\n\
+             FROM {table_sql}\n\
+             {where_clause}"
+        ),
+    }
+}
+
 /// Render a single [`TupleSource`] to a [`TupleQuery`].
 ///
 /// Returns `None` only when the source has no renderable output (currently
@@ -71,21 +107,15 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             table,
             pk_col,
             owner_col,
-        } => {
-            let table_type = canonical_fga_type_name(table);
-            let table_sql = quote_sql_identifier(table);
-            let pk_col_sql = quote_sql_identifier(pk_col);
-            let owner_col_sql = quote_sql_identifier(owner_col);
-            Some(TupleQuery {
-                comment: format!("-- User ownership ({owner_col} references users)"),
-                sql: format!(
-                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner' AS relation, \
-                     'user:' || {owner_col_sql} AS subject\n\
-                     FROM {table_sql}\n\
-                     WHERE {owner_col_sql} IS NOT NULL;"
-                ),
-            })
-        }
+        } => Some(render_ownership_tuple_source(
+            table,
+            pk_col,
+            owner_col,
+            "owner",
+            "user",
+            format!("-- User ownership ({owner_col} references users)"),
+            None,
+        )),
 
         TupleSource::RoleOwnerUser {
             table,
@@ -93,24 +123,15 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             owner_col,
             user_table,
             user_pk_col,
-        } => {
-            let table_type = canonical_fga_type_name(table);
-            let table_sql = quote_sql_identifier(table);
-            let pk_col_sql = quote_sql_identifier(pk_col);
-            let owner_col_sql = quote_sql_identifier(owner_col);
-            let user_table_sql = quote_sql_identifier(user_table);
-            let user_pk_col_sql = quote_sql_identifier(user_pk_col);
-            Some(TupleQuery {
-                comment: format!("-- User ownership ({owner_col} references {user_table})"),
-                sql: format!(
-                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner_user' AS relation, \
-                     'user:' || {owner_col_sql} AS subject\n\
-                     FROM {table_sql}\n\
-                     WHERE {owner_col_sql} IN (SELECT {user_pk_col_sql} FROM {user_table_sql})\n\
-                     AND {owner_col_sql} IS NOT NULL;"
-                ),
-            })
-        }
+        } => Some(render_ownership_tuple_source(
+            table,
+            pk_col,
+            owner_col,
+            "owner_user",
+            "user",
+            format!("-- User ownership ({owner_col} references {user_table})"),
+            Some((user_table, user_pk_col)),
+        )),
 
         TupleSource::RoleOwnerTeam {
             table,
@@ -118,24 +139,15 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             owner_col,
             team_table,
             team_pk_col,
-        } => {
-            let table_type = canonical_fga_type_name(table);
-            let table_sql = quote_sql_identifier(table);
-            let pk_col_sql = quote_sql_identifier(pk_col);
-            let owner_col_sql = quote_sql_identifier(owner_col);
-            let team_table_sql = quote_sql_identifier(team_table);
-            let team_pk_col_sql = quote_sql_identifier(team_pk_col);
-            Some(TupleQuery {
-                comment: format!("-- Team ownership ({owner_col} references {team_table})"),
-                sql: format!(
-                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'owner_team' AS relation, \
-                     'team:' || {owner_col_sql} AS subject\n\
-                     FROM {table_sql}\n\
-                     WHERE {owner_col_sql} IN (SELECT {team_pk_col_sql} FROM {team_table_sql})\n\
-                     AND {owner_col_sql} IS NOT NULL;"
-                ),
-            })
-        }
+        } => Some(render_ownership_tuple_source(
+            table,
+            pk_col,
+            owner_col,
+            "owner_team",
+            "team",
+            format!("-- Team ownership ({owner_col} references {team_table})"),
+            Some((team_table, team_pk_col)),
+        )),
 
         TupleSource::ExplicitGrants {
             table,

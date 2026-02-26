@@ -289,13 +289,11 @@ pub(crate) fn build_schema_plan(
                         });
                     }
                 } else {
-                    table_plan.add_source(TupleSource::Todo {
-                        level: ConfidenceLevel::D,
-                        comment: format!(
-                            "-- TODO [Level D]: skipped policy scope tuples for {source_table_name} (missing object identifier column)"
-                        ),
-                        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-                    });
+                    add_missing_object_identifier_todo(
+                        &mut table_plan,
+                        &source_table_name,
+                        "policy scope tuples",
+                    );
                 }
                 Some(relation)
             };
@@ -668,45 +666,27 @@ fn pattern_to_expr_for_target(
             threshold,
             ..
         } => {
-            let Some(FunctionSemantic::RoleThreshold {
-                role_levels,
-                team_membership_table,
-                ..
-            }) = registry.get(function_name)
-            else {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::D,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Role-threshold function '{function_name}' missing semantic metadata"
-                    ),
-                });
-                return deny_expr(table_plan);
-            };
-
-            let sorted_roles = ensure_role_threshold_scaffold(
+            let Some(prepared) = prepare_role_threshold_translation(
+                function_name,
+                "Role-threshold",
+                policy_name,
+                source_table,
                 table_plan,
                 all_types,
-                role_levels,
-                team_membership_table.is_some(),
-            );
-
-            populate_role_threshold_sources(
-                function_name,
-                source_table,
-                db,
                 registry,
                 hints,
-                table_plan,
-                all_types,
-            );
+                db,
+                todos,
+            ) else {
+                return deny_expr(table_plan);
+            };
 
             let min_level = match operator {
                 ThresholdOperator::Gte => *threshold,
                 ThresholdOperator::Gt => threshold.saturating_add(1),
             };
 
-            if let Some(role_relation) = role_for_level(&sorted_roles, min_level) {
+            if let Some(role_relation) = role_for_level(&prepared.sorted_roles, min_level) {
                 UsersetExpr::Computed(role_relation)
             } else {
                 deny_expr(table_plan)
@@ -716,38 +696,20 @@ fn pattern_to_expr_for_target(
             function_name,
             role_names,
         } => {
-            let Some(FunctionSemantic::RoleThreshold {
-                role_levels,
-                team_membership_table,
-                ..
-            }) = registry.get(function_name)
-            else {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::D,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Role-list function '{function_name}' missing semantic metadata"
-                    ),
-                });
-                return deny_expr(table_plan);
-            };
-
-            let sorted_roles = ensure_role_threshold_scaffold(
+            let Some(prepared) = prepare_role_threshold_translation(
+                function_name,
+                "Role-list",
+                policy_name,
+                source_table,
                 table_plan,
                 all_types,
-                role_levels,
-                team_membership_table.is_some(),
-            );
-
-            populate_role_threshold_sources(
-                function_name,
-                source_table,
-                db,
                 registry,
                 hints,
-                table_plan,
-                all_types,
-            );
+                db,
+                todos,
+            ) else {
+                return deny_expr(table_plan);
+            };
 
             // Collect the exact set of role names that the policy grants access to.
             //
@@ -761,7 +723,7 @@ fn pattern_to_expr_for_target(
             for role in role_names {
                 if let Ok(level) = role.parse::<i32>() {
                     // Numeric string → expand to all role names at this level.
-                    for r in &sorted_roles {
+                    for r in &prepared.sorted_roles {
                         if r.level == level {
                             selected_names.insert(r.original_name.to_lowercase());
                         }
@@ -777,9 +739,9 @@ fn pattern_to_expr_for_target(
             }
 
             if let Some(expr) = exact_roles_expr(
-                &sorted_roles,
+                &prepared.sorted_roles,
                 &selected_names,
-                team_membership_table.is_some(),
+                prepared.has_team_support,
             ) {
                 expr
             } else {
@@ -795,13 +757,7 @@ fn pattern_to_expr_for_target(
                     owner_col: column.clone(),
                 });
             } else {
-                table_plan.add_source(TupleSource::Todo {
-                    level: ConfidenceLevel::D,
-                    comment: format!(
-                        "-- TODO [Level D]: skipped ownership tuples for {source_table} (missing object identifier column)"
-                    ),
-                    sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-                });
+                add_missing_object_identifier_todo(table_plan, source_table, "ownership tuples");
             }
             UsersetExpr::Computed("owner".to_string())
         }
@@ -861,13 +817,7 @@ fn pattern_to_expr_for_target(
                     parent_type: parent_type.clone(),
                 });
             } else {
-                table_plan.add_source(TupleSource::Todo {
-                    level: ConfidenceLevel::D,
-                    comment: format!(
-                        "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge (missing object identifier column)"
-                    ),
-                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
-                });
+                add_missing_bridge_todo(table_plan, source_table, &parent_type);
             }
 
             UsersetExpr::TupleToUserset {
@@ -944,13 +894,7 @@ fn pattern_to_expr_for_target(
                     parent_type: parent_relation.clone(),
                 });
             } else {
-                table_plan.add_source(TupleSource::Todo {
-                    level: ConfidenceLevel::D,
-                    comment: format!(
-                        "-- TODO [Level D]: skipped {source_table} to {parent_relation} bridge (missing object identifier column)"
-                    ),
-                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
-                });
+                add_missing_bridge_todo(table_plan, source_table, &parent_relation);
             }
 
             UsersetExpr::TupleToUserset {
@@ -966,13 +910,7 @@ fn pattern_to_expr_for_target(
                     flag_col: column.clone(),
                 });
             } else {
-                table_plan.add_source(TupleSource::Todo {
-                    level: ConfidenceLevel::D,
-                    comment: format!(
-                        "-- TODO [Level D]: skipped public-flag tuples for {source_table} (missing object identifier column)"
-                    ),
-                    sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-                });
+                add_missing_object_identifier_todo(table_plan, source_table, "public-flag tuples");
             }
             public_expr(table_plan)
         }
@@ -1062,13 +1000,11 @@ fn pattern_to_expr_for_target(
                         pk_col,
                     });
                 } else {
-                    table_plan.add_source(TupleSource::Todo {
-                        level: ConfidenceLevel::D,
-                        comment: format!(
-                            "-- TODO [Level D]: skipped constant-TRUE tuples for {source_table} (missing object identifier column)"
-                        ),
-                        sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-                    });
+                    add_missing_object_identifier_todo(
+                        table_plan,
+                        source_table,
+                        "constant-TRUE tuples",
+                    );
                 }
                 public_expr(table_plan)
             } else {
@@ -1095,6 +1031,98 @@ fn pattern_to_expr_for_target(
             deny_expr(table_plan)
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct RoleThresholdPrepared {
+    sorted_roles: Vec<RoleRelationName>,
+    has_team_support: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_role_threshold_translation(
+    function_name: &str,
+    function_kind_label: &str,
+    policy_name: &str,
+    source_table: &str,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    registry: &FunctionRegistry,
+    hints: &RoleThresholdResourceHints,
+    db: &ParserDB,
+    todos: &mut Vec<TodoItem>,
+) -> Option<RoleThresholdPrepared> {
+    let Some(FunctionSemantic::RoleThreshold {
+        role_levels,
+        team_membership_table,
+        ..
+    }) = registry.get(function_name)
+    else {
+        todos.push(TodoItem {
+            level: ConfidenceLevel::D,
+            policy_name: policy_name.to_string(),
+            message: format!(
+                "{function_kind_label} function '{function_name}' missing semantic metadata"
+            ),
+        });
+        return None;
+    };
+
+    let has_team_support = team_membership_table.is_some();
+    let sorted_roles =
+        ensure_role_threshold_scaffold(table_plan, all_types, role_levels, has_team_support);
+    populate_role_threshold_sources(
+        function_name,
+        source_table,
+        db,
+        registry,
+        hints,
+        table_plan,
+        all_types,
+    );
+
+    Some(RoleThresholdPrepared {
+        sorted_roles,
+        has_team_support,
+    })
+}
+
+const MISSING_OBJECT_IDENTIFIER_SQL: &str =
+    "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.";
+
+fn add_missing_object_identifier_todo(table_plan: &mut TypePlan, source_table: &str, what: &str) {
+    table_plan.add_source(TupleSource::Todo {
+        level: ConfidenceLevel::D,
+        comment: format!(
+            "-- TODO [Level D]: skipped {what} for {source_table} (missing object identifier column)"
+        ),
+        sql: MISSING_OBJECT_IDENTIFIER_SQL.to_string(),
+    });
+}
+
+fn add_missing_bridge_todo(table_plan: &mut TypePlan, source_table: &str, parent_type: &str) {
+    table_plan.add_source(TupleSource::Todo {
+        level: ConfidenceLevel::D,
+        comment: format!(
+            "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge (missing object identifier column)"
+        ),
+        sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
+    });
+}
+
+fn add_explicit_grants_todo(
+    table_plan: &mut TypePlan,
+    source_table: &str,
+    reason: &str,
+    sql: &str,
+) {
+    table_plan.add_source(TupleSource::Todo {
+        level: ConfidenceLevel::D,
+        comment: format!(
+            "-- TODO [Level D]: skipped explicit grants for {source_table} ({reason})"
+        ),
+        sql: sql.to_string(),
+    });
 }
 
 fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &str) {
@@ -1237,10 +1265,6 @@ fn exact_roles_expr(
 // call.  The result is threaded into pattern_to_expr_for_target so that the
 // tuple-SQL renderer can emit the correct JOIN column without re-walking the
 // AST a second time.
-//
-// Identical logic exists in tuple_generator.rs and is used from there until
-// Step 5 of the IR migration, at which point the tuple_generator path is
-// removed and this copy becomes the sole source of truth.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn infer_role_threshold_resource_columns(
@@ -1739,13 +1763,12 @@ fn populate_role_threshold_sources(
     // --- Explicit grants ---
     let hint_key = (source_table.to_string(), function_name.to_string());
     if hints.conflicts.contains(&hint_key) {
-        table_plan.add_source(TupleSource::Todo {
-            level: ConfidenceLevel::D,
-            comment: format!(
-                "-- TODO [Level D]: skipped explicit grants for {source_table} (conflicting resource join columns inferred from policies)"
-            ),
-            sql: "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.".to_string(),
-        });
+        add_explicit_grants_todo(
+            table_plan,
+            source_table,
+            "conflicting resource join columns inferred from policies",
+            "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.",
+        );
         return;
     }
 
@@ -1756,24 +1779,17 @@ fn populate_role_threshold_sources(
         .or(owner_col.as_deref());
 
     let Some(grant_join_col) = grant_join_col else {
-        table_plan.add_source(TupleSource::Todo {
-            level: ConfidenceLevel::D,
-            comment: format!(
-                "-- TODO [Level D]: skipped explicit grants for {source_table} (missing resource join column)"
-            ),
-            sql: "-- Grant tuples not emitted; add function metadata or owner FK.".to_string(),
-        });
+        add_explicit_grants_todo(
+            table_plan,
+            source_table,
+            "missing resource join column",
+            "-- Grant tuples not emitted; add function metadata or owner FK.",
+        );
         return;
     };
 
     let Some(object_pk) = pk_col else {
-        table_plan.add_source(TupleSource::Todo {
-            level: ConfidenceLevel::D,
-            comment: format!(
-                "-- TODO [Level D]: skipped explicit grant tuples for {source_table} (missing object identifier column)"
-            ),
-            sql: "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.".to_string(),
-        });
+        add_missing_object_identifier_todo(table_plan, source_table, "explicit grant tuples");
         return;
     };
 
