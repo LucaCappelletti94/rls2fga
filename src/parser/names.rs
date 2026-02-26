@@ -142,9 +142,14 @@ pub fn parent_type_from_fk_column(fk_column: &str) -> String {
 }
 
 /// True when the name looks like a public-visibility column.
+///
+/// Uses underscore-delimited word-boundary matching to avoid false positives on
+/// names like `publication_id` (contains "public") or `is_invisible` (contains "visible").
 pub fn is_public_flag_column_name(name: &str) -> bool {
     let lower = normalize_identifier(name);
-    lower.contains("public") || lower.contains("published") || lower.contains("visible")
+    lower
+        .split('_')
+        .any(|token| matches!(token, "public" | "published" | "visible"))
 }
 
 /// True when the name looks like a user/owner column.
@@ -265,6 +270,22 @@ mod tests {
         assert!(is_user_related_column_name("created_by"));
         assert!(is_public_flag_column_name("is_public"));
         assert!(!is_public_flag_column_name("tenant_id"));
+    }
+
+    #[test]
+    fn is_public_flag_column_name_uses_word_boundaries() {
+        // Positive: exact word match after splitting on '_'.
+        assert!(is_public_flag_column_name("is_public"));
+        assert!(is_public_flag_column_name("public"));
+        assert!(is_public_flag_column_name("is_published"));
+        assert!(is_public_flag_column_name("is_visible"));
+        assert!(is_public_flag_column_name("visible"));
+
+        // Negative: "public" is a substring of the token, not the whole token.
+        assert!(!is_public_flag_column_name("publication_id"));
+        assert!(!is_public_flag_column_name("publicly_accessible")); // "publicly" ≠ "public"
+        assert!(!is_public_flag_column_name("is_invisible")); // "invisible" ≠ "visible"
+        assert!(!is_public_flag_column_name("republish_count")); // "republish" ≠ "published"
     }
 
     #[test]
