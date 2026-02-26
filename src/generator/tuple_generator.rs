@@ -418,6 +418,10 @@ fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option
         return Some((object_col, fk_column.to_string()));
     }
 
+    // The FK column isn't a real column of this table, but the inferred parent
+    // type matches the table's own name.  Emit the sentinel self-reference tuple
+    // (`project:X  project  project:X`) that OpenFGA needs for tuple-to-userset
+    // when the membership table FK points back to the same resource type.
     if is_self_parent_bridge(table, fk_column) {
         return Some((object_col.clone(), object_col));
     }
@@ -652,6 +656,8 @@ CREATE TABLE categories(id uuid primary key);
             resolve_bridge_columns("docs", "project_id", &db),
             Some(("id".to_string(), "project_id".to_string()))
         );
+        // Sentinel self-reference: fk_col not in table columns but parent type
+        // matches table name → used for OpenFGA tuple-to-userset navigation.
         assert_eq!(
             resolve_bridge_columns("projects", "project_id", &db),
             Some(("id".to_string(), "id".to_string()))
