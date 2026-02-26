@@ -10,6 +10,8 @@ use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser;
 
+mod support;
+
 // ============================================================================
 // Helper
 // ============================================================================
@@ -22,8 +24,7 @@ fn classify_fixture(
     sql_parser::ParserDB,
     FunctionRegistry,
 ) {
-    let sql = std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql")).unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
+    let db = support::parse_fixture_db(fixture);
     let mut registry = FunctionRegistry::new();
     registry_setup(&mut registry);
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -37,13 +38,7 @@ fn classify_fixture_with_json_registry(
     sql_parser::ParserDB,
     FunctionRegistry,
 ) {
-    let sql = std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql")).unwrap();
-    let db = sql_parser::parse_schema(&sql).unwrap();
-    let reg_json =
-        std::fs::read_to_string(format!("tests/fixtures/{fixture}/function_registry.json"))
-            .unwrap();
-    let mut registry = FunctionRegistry::new();
-    registry.load_from_json(&reg_json).unwrap();
+    let (db, registry) = support::load_fixture_db_and_registry(fixture);
     let classified = policy_classifier::classify_policies(&db, &registry);
     (classified, db, registry)
 }

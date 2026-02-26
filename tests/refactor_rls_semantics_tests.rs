@@ -7,6 +7,8 @@ use rls2fga::generator::tuple_generator;
 use rls2fga::output::report;
 use rls2fga::parser::sql_parser;
 
+mod support;
+
 fn classify_sql(
     sql: &str,
     registry_json: Option<&str>,
@@ -28,7 +30,7 @@ fn classify_sql(
 
 #[test]
 fn multi_policy_table_combines_patterns_for_select() {
-    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let sql = support::read_fixture_sql("multi_policy_table");
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -111,8 +113,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
   USING (get_owner_role(auth_current_user_id(), owner_id) >= 2)
   WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
 ";
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
+    let reg_json = support::read_fixture_registry_json("earth_metabolome");
 
     let (classified, db, registry) = classify_sql(sql, Some(&reg_json));
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
@@ -460,9 +461,8 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
 
 #[test]
 fn p2_role_in_list_generates_action_permissions() {
-    let sql = std::fs::read_to_string("tests/fixtures/role_in_list/input.sql").unwrap();
-    let reg_json =
-        std::fs::read_to_string("tests/fixtures/role_in_list/function_registry.json").unwrap();
+    let sql = support::read_fixture_sql("role_in_list");
+    let reg_json = support::read_fixture_registry_json("role_in_list");
 
     let (classified, db, registry) = classify_sql(&sql, Some(&reg_json));
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
@@ -556,7 +556,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
 
 #[test]
 fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
-    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let sql = support::read_fixture_sql("multi_policy_table");
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -581,7 +581,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
 
 #[test]
 fn json_model_respects_min_confidence_threshold() {
-    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let sql = support::read_fixture_sql("multi_policy_table");
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -607,7 +607,7 @@ fn json_model_respects_min_confidence_threshold() {
 
 #[test]
 fn model_generation_respects_min_confidence_threshold() {
-    let sql = std::fs::read_to_string("tests/fixtures/multi_policy_table/input.sql").unwrap();
+    let sql = support::read_fixture_sql("multi_policy_table");
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
@@ -730,7 +730,7 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 
 #[test]
 fn json_and_dsl_are_semantically_aligned_for_composite() {
-    let sql = std::fs::read_to_string("tests/fixtures/compound_or/input.sql").unwrap();
+    let sql = support::read_fixture_sql("compound_or");
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;

@@ -60,3 +60,37 @@ fn function_arg_extraction_has_single_source_of_truth() {
         "expected a single function_arg_expr implementation, found {expr_defs}"
     );
 }
+
+#[test]
+fn missing_object_identifier_todo_message_is_centralized() {
+    let source = read("src/generator/model_generator.rs");
+    let count = source
+        .matches("table needs a primary key or `id` column for stable object IDs.")
+        .count();
+    assert_eq!(
+        count, 1,
+        "expected missing-object-id TODO SQL to be centralized in one helper, found {count}"
+    );
+}
+
+#[test]
+fn p5_inheritance_analysis_has_single_source_of_truth() {
+    let source = read("src/classifier/recognizers.rs");
+    let definitions = source.matches("fn analyze_p5_parent_inheritance(").count();
+    assert_eq!(
+        definitions, 1,
+        "expected a single P5 inheritance analysis helper, found {definitions}"
+    );
+}
+
+#[test]
+fn bool_equality_extraction_has_single_source_of_truth() {
+    let source = read("src/classifier/recognizers.rs");
+    let definitions = source
+        .matches("fn extract_boolean_column_equality(")
+        .count();
+    assert_eq!(
+        definitions, 1,
+        "expected a single boolean equality extractor helper, found {definitions}"
+    );
+}
