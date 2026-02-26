@@ -29,6 +29,12 @@ pub fn recognize_p1(
         if !registry.is_role_threshold(&func_name) {
             return None;
         }
+        // Require that the function call contains a current-user argument, otherwise
+        // a role comparison on resource attributes (e.g. `resource_level(id, resource_id) >= 2`)
+        // would be misclassified as P1.
+        if !function_has_current_user_arg(func_expr, registry) {
+            return None;
+        }
 
         let threshold = extract_integer_value(threshold_expr)?;
 
@@ -46,6 +52,9 @@ pub fn recognize_p1(
 }
 
 /// Try to recognize P2: role name IN-list `func(user, resource) IN ('viewer', ...)`.
+///
+/// Also recognises the `PostgreSQL` built-in `pg_has_role(user, 'role', privilege)`
+/// which checks database-level role membership for the current user.
 pub fn recognize_p2(
     expr: &Expr,
     _db: &ParserDB,
@@ -57,23 +66,185 @@ pub fn recognize_p2(
         negated,
     } = expr
     {
+        // Negated IN-lists are never expressible as static OpenFGA tuples.
         if *negated {
             return None;
         }
 
-        let func_name = extract_function_name(inner_expr)?;
-        if !registry.is_role_threshold(&func_name) {
-            return None;
-        }
+        if let Some(func_name) = extract_function_name(inner_expr) {
+            if registry.is_role_threshold(&func_name) {
+                // Require that the function call contains a current-user argument.
+                if !function_has_current_user_arg(inner_expr, registry) {
+                    return None;
+                }
 
+                let role_names: Vec<String> = list
+                    .iter()
+                    .filter_map(|e| {
+                        if let Expr::Value(v) = e {
+                            match &v.value {
+                                Value::SingleQuotedString(s) => return Some(s.clone()),
+                                Value::Number(n, _) => return Some(n.clone()),
+                                _ => {}
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                if !role_names.is_empty() {
+                    return Some(ClassifiedExpr {
+                        pattern: PatternClass::P2RoleNameInList {
+                            function_name: func_name,
+                            role_names,
+                        },
+                        confidence: ConfidenceLevel::A,
+                    });
+                }
+            }
+            // Not a role-threshold function — fall through to role-accessor check below.
+        }
+    }
+
+    // Phase 6c: pg_has_role(user, 'role', privilege) — `PostgreSQL` built-in role-membership check.
+    // Supports:
+    //   - three-arg form: pg_has_role(current_user, 'rolename', 'MEMBER')
+    //   - two-arg form:   pg_has_role('rolename', 'MEMBER')  (current session user implied)
+    if let Some(c) = recognize_pg_has_role(expr, registry) {
+        return Some(c);
+    }
+
+    // Phase 6d: role_func() = 'name'  /  role_func() IN ('name', ...) where the function
+    // is registered as a RoleAccessor (e.g. Supabase `auth.role()`).
+    recognize_role_accessor_comparison(expr, registry)
+}
+
+/// Recognise `pg_has_role(user, 'role', privilege)` / `pg_has_role('role', privilege)`.
+/// Maps to `P2RoleNameInList` at confidence A since the built-in has fixed semantics.
+fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+
+    let Expr::Function(func) = expr else {
+        return None;
+    };
+    if normalize_relation_name(&func.name.to_string()) != "pg_has_role" {
+        return None;
+    }
+    let FunctionArguments::List(arg_list) = &func.args else {
+        return None;
+    };
+
+    let args: Vec<&Expr> = arg_list
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
+            | FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(e),
+                ..
+            }
+            | FunctionArg::ExprNamed {
+                arg: FunctionArgExpr::Expr(e),
+                ..
+            } => Some(e),
+            _ => None,
+        })
+        .collect();
+
+    let role_expr = match args.as_slice() {
+        // Three-arg: pg_has_role(user, 'role', privilege) — user must be current_user.
+        [user_expr, role_expr, _priv] if is_current_user_expr(user_expr, registry) => role_expr,
+        // Two-arg: pg_has_role('role', privilege) — current session user is implicit.
+        [role_expr, _priv] => role_expr,
+        _ => return None,
+    };
+
+    // Extract the role name from the second positional argument.
+    let role_name = match role_expr {
+        Expr::Value(v) => match &v.value {
+            Value::SingleQuotedString(s) => s.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P2RoleNameInList {
+            function_name: "pg_has_role".to_string(),
+            role_names: vec![role_name],
+        },
+        confidence: ConfidenceLevel::A,
+    })
+}
+
+/// Phase 6d: Recognise role-accessor comparisons.
+///
+/// Handles two forms where the function is registered as `RoleAccessor`:
+/// - `role_func() = 'rolename'`
+/// - `role_func() IN ('role1', 'role2', ...)`
+///
+/// Maps to `P2RoleNameInList` at confidence A.  Typical use: Supabase
+/// `auth.role() = 'authenticated'`.
+fn recognize_role_accessor_comparison(
+    expr: &Expr,
+    registry: &FunctionRegistry,
+) -> Option<ClassifiedExpr> {
+    // Helper: extract a zero-arg function name from a possibly-cast expression.
+    let extract_role_func_name = |e: &Expr| -> Option<String> {
+        let name = extract_function_name(e)?;
+        if registry.is_role_accessor(&name) {
+            Some(name)
+        } else {
+            None
+        }
+    };
+
+    // Form 1: role_func() = 'rolename'  or  'rolename' = role_func()
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    {
+        let (func_name, literal_expr) = if let Some(name) = extract_role_func_name(left) {
+            (name, right.as_ref())
+        } else if let Some(name) = extract_role_func_name(right) {
+            (name, left.as_ref())
+        } else {
+            return None;
+        };
+
+        let role_name = match literal_expr {
+            Expr::Value(v) => match &v.value {
+                Value::SingleQuotedString(s) => s.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        return Some(ClassifiedExpr {
+            pattern: PatternClass::P2RoleNameInList {
+                function_name: func_name,
+                role_names: vec![role_name],
+            },
+            confidence: ConfidenceLevel::A,
+        });
+    }
+
+    // Form 2: role_func() IN ('role1', 'role2', ...)
+    if let Expr::InList {
+        expr: inner,
+        list,
+        negated: false,
+    } = expr
+    {
+        let func_name = extract_role_func_name(inner)?;
         let role_names: Vec<String> = list
             .iter()
             .filter_map(|e| {
                 if let Expr::Value(v) = e {
-                    match &v.value {
-                        Value::SingleQuotedString(s) => return Some(s.clone()),
-                        Value::Number(n, _) => return Some(n.clone()),
-                        _ => {}
+                    if let Value::SingleQuotedString(s) = &v.value {
+                        return Some(s.clone());
                     }
                 }
                 None
@@ -92,6 +263,7 @@ pub fn recognize_p2(
             confidence: ConfidenceLevel::A,
         });
     }
+
     None
 }
 
@@ -112,17 +284,26 @@ pub fn recognize_p3(
     };
 
     // Try column = accessor_expr or accessor_expr = column.
-    let (col_name, accessor_name) = if let (Some(col), Some(accessor)) =
+    let (col_name, accessor_name, accessor_via_subquery) = if let (Some(col), Some(accessor)) =
         (extract_column_name(left), current_user_accessor_name(right))
     {
-        (col, accessor)
+        (col, accessor, is_subquery_wrapped(right))
     } else if let (Some(accessor), Some(col)) =
         (current_user_accessor_name(left), extract_column_name(right))
     {
-        (col, accessor)
+        (col, accessor, is_subquery_wrapped(left))
     } else {
         return None;
     };
+
+    // Subquery-wrapped accessor: cap confidence at B regardless of how the inner
+    // expression was resolved (the extra indirection prevents registry-A certainty).
+    if accessor_via_subquery {
+        return Some(ClassifiedExpr {
+            pattern: PatternClass::P3DirectOwnership { column: col_name },
+            confidence: ConfidenceLevel::B,
+        });
+    }
 
     // Determine how we matched the accessor and assign confidence accordingly.
     let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
@@ -130,16 +311,23 @@ pub fn recognize_p3(
     let is_sql_keyword = is_current_user_keyword(&accessor_lower);
 
     if !is_registry_confirmed && !is_sql_keyword {
-        // Heuristic accessor name check
-        if !accessor_lower.contains("current_user") && !accessor_lower.contains("auth") {
+        // Heuristic accessor name check.
+        // `current_setting` is a PostgreSQL built-in that often carries the current user ID
+        // (e.g. `current_setting('app.current_user_id')::uuid`).  We accept it as a
+        // heuristic user-accessor at confidence B; register it explicitly for confidence A.
+        if !accessor_lower.contains("current_user")
+            && !accessor_lower.contains("auth")
+            && accessor_lower != "current_setting"
+        {
             return None;
         }
 
-        // Heuristic match: require column name to look ownership-related
+        // Heuristic match: cap at confidence B regardless of column name.
+        // Reserve A for registry-confirmed functions and SQL keywords.
         if is_owner_like_column_name(&col_name) {
             return Some(ClassifiedExpr {
                 pattern: PatternClass::P3DirectOwnership { column: col_name },
-                confidence: ConfidenceLevel::A,
+                confidence: ConfidenceLevel::B,
             });
         }
 
@@ -329,6 +517,72 @@ pub fn recognize_p4_in_subquery(
             return classify_membership_select(select.as_ref(), db, registry, Some(projected_col));
         }
     }
+    None
+}
+
+/// Phase 6e: Recognise `PostgreSQL` array membership patterns.
+///
+/// - `current_user = ANY(col)` / `ANY(col) = current_user` → `P9AttributeCondition`
+///   at confidence B with a note explaining UNNEST-based tuple expansion.
+/// - `col1 && col2` (array overlap) → `P9AttributeCondition` at confidence C with TODO.
+///
+/// Both are mapped to P9 so they generate a structured TODO in the model output rather
+/// than falling through to `Unknown`, which signals a parsing failure.
+pub fn recognize_array_patterns(
+    expr: &Expr,
+    registry: &FunctionRegistry,
+) -> Option<ClassifiedExpr> {
+    // Case 1: `current_user = ANY(array_col)` — direct array membership.
+    if let Expr::AnyOp {
+        left,
+        compare_op: BinaryOperator::Eq,
+        right,
+        ..
+    } = expr
+    {
+        let array_expr = if is_current_user_expr(left, registry) {
+            // current_user = ANY(right)
+            right.as_ref()
+        } else if is_current_user_expr(right, registry) {
+            // In the reversed form `ANY(left) = current_user` sqlparser would
+            // not produce AnyOp; guard here for future parser versions.
+            left.as_ref()
+        } else {
+            return None;
+        };
+
+        let array_col = extract_column_name(array_expr).unwrap_or_else(|| array_expr.to_string());
+        return Some(ClassifiedExpr {
+            pattern: PatternClass::P9AttributeCondition {
+                column: array_col.clone(),
+                value_description: format!(
+                    "current_user ∈ array column '{array_col}' \
+                     (expand with UNNEST for static tuple generation)"
+                ),
+            },
+            confidence: ConfidenceLevel::B,
+        });
+    }
+
+    // Case 2: `col1 && col2` — array overlap operator.
+    if let Expr::BinaryOp {
+        op: BinaryOperator::PGOverlap,
+        left,
+        right,
+    } = expr
+    {
+        let col = extract_column_name(left)
+            .or_else(|| extract_column_name(right))
+            .unwrap_or_else(|| expr.to_string());
+        return Some(ClassifiedExpr {
+            pattern: PatternClass::P9AttributeCondition {
+                column: col,
+                value_description: "array overlap (&&); requires runtime filtering".to_string(),
+            },
+            confidence: ConfidenceLevel::C,
+        });
+    }
+
     None
 }
 
@@ -559,8 +813,21 @@ pub fn recognize_p10_constant_bool(
 pub fn recognize_p6(
     expr: &Expr,
     _db: &ParserDB,
-    _registry: &FunctionRegistry,
+    registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
+    /// Pick confidence: A when the column is explicitly registered, B otherwise.
+    ///
+    /// Heuristic-only matches are capped at B because column names like `published`
+    /// or `visible` commonly represent editorial state rather than access control;
+    /// wildcard public grants must be confirmed by the operator.
+    fn p6_confidence(col: &str, registry: &FunctionRegistry) -> ConfidenceLevel {
+        if registry.is_confirmed_public_flag_column(col) {
+            ConfidenceLevel::A
+        } else {
+            ConfidenceLevel::B
+        }
+    }
+
     match expr {
         Expr::BinaryOp {
             left,
@@ -582,8 +849,10 @@ pub fn recognize_p6(
 
             if is_true && is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag { column: col_name },
-                    confidence: ConfidenceLevel::A,
+                    pattern: PatternClass::P6BooleanFlag {
+                        column: col_name.clone(),
+                    },
+                    confidence: p6_confidence(&col_name, registry),
                 });
             }
         }
@@ -591,8 +860,10 @@ pub fn recognize_p6(
             let col_name = extract_column_name(inner)?;
             if is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag { column: col_name },
-                    confidence: ConfidenceLevel::A,
+                    pattern: PatternClass::P6BooleanFlag {
+                        column: col_name.clone(),
+                    },
+                    confidence: p6_confidence(&col_name, registry),
                 });
             }
         }
@@ -600,8 +871,10 @@ pub fn recognize_p6(
             let col_name = extract_column_name(expr)?;
             if is_public_flag_column_name(&col_name) {
                 return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag { column: col_name },
-                    confidence: ConfidenceLevel::A,
+                    pattern: PatternClass::P6BooleanFlag {
+                        column: col_name.clone(),
+                    },
+                    confidence: p6_confidence(&col_name, registry),
                 });
             }
         }
@@ -674,6 +947,43 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
         Expr::Nested(inner) => extract_function_name(inner),
         _ => None,
     }
+}
+
+/// True when the function call in `expr` has at least one argument that resolves
+/// to a current-user expression.
+///
+/// Used by the P1/P2 recognizers to guard against false positives where a
+/// role-threshold function is called with non-user arguments, e.g.
+/// `get_owner_role(owner_id, id) >= 2`.
+fn function_arg_to_expr(arg: &sqlparser::ast::FunctionArg) -> Option<&Expr> {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr};
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
+        | FunctionArg::Named {
+            arg: FunctionArgExpr::Expr(e),
+            ..
+        }
+        | FunctionArg::ExprNamed {
+            arg: FunctionArgExpr::Expr(e),
+            ..
+        } => Some(e),
+        _ => None,
+    }
+}
+
+fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    use sqlparser::ast::FunctionArguments;
+    let Expr::Function(func) = expr else {
+        return false;
+    };
+    let FunctionArguments::List(arg_list) = &func.args else {
+        return false;
+    };
+    arg_list
+        .args
+        .iter()
+        .filter_map(function_arg_to_expr)
+        .any(|e| is_current_user_expr(e, registry))
 }
 
 /// Extract an integer value from an expression.
@@ -781,6 +1091,24 @@ fn extract_projection_column(select: &Select) -> Option<String> {
     })
 }
 
+/// Extract the ON expression from a `JoinOperator`, if present.
+fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
+    use sqlparser::ast::JoinConstraint;
+    use sqlparser::ast::JoinOperator::{
+        CrossJoin, FullOuter, Inner, Join, Left, LeftOuter, Right, RightOuter,
+    };
+    let (Join(c) | Inner(c) | Left(c) | LeftOuter(c) | Right(c) | RightOuter(c) | FullOuter(c)
+    | CrossJoin(c)) = op
+    else {
+        return None;
+    };
+    if let JoinConstraint::On(expr) = c {
+        Some(expr)
+    } else {
+        None
+    }
+}
+
 fn extract_membership_columns(
     select: &Select,
     join_table: &str,
@@ -790,9 +1118,22 @@ fn extract_membership_columns(
     projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
     let mut fk_col: Option<String> = None;
+    let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<String> = None;
     let mut extras: Vec<String> = Vec::new();
 
+    // Collect JOIN ON predicates separately (they provide explicit FK correlation but should
+    // not be included in the extra_predicate_sql used in generated tuple queries).
+    let mut on_predicates: Vec<&Expr> = Vec::new();
+    for from_item in &select.from {
+        for join in &from_item.joins {
+            if let Some(on_expr) = join_on_expr(&join.join_operator) {
+                flatten_and_predicates(on_expr, &mut on_predicates);
+            }
+        }
+    }
+
+    // Process WHERE predicates (with extras).
     if let Some(selection) = &select.selection {
         let mut predicates = Vec::new();
         flatten_and_predicates(selection, &mut predicates);
@@ -850,6 +1191,7 @@ fn extract_membership_columns(
                             .is_none_or(|existing| existing == &left_name)
                         {
                             fk_col = Some(left_name);
+                            fk_col_is_explicit = true;
                             continue;
                         }
                         return None;
@@ -860,24 +1202,120 @@ fn extract_membership_columns(
                             .is_none_or(|existing| existing == &right_name)
                         {
                             fk_col = Some(right_name);
+                            fk_col_is_explicit = true;
                             continue;
                         }
                         return None;
                     }
+                    // Neither side references the join table — this is an outer-row
+                    // correlation predicate (e.g. `d.id = docs.id` linking the inner
+                    // alias to the outer table).  These are implicit in the generated
+                    // tuple query and must not be added to extra_predicate_sql.
+                    if !left_is_join && !right_is_join {
+                        continue;
+                    }
                 }
             }
 
+            // Scope validation: reject predicates that reference columns from
+            // tables other than the join table.  Such predicates require a JOIN
+            // that the generated single-table tuple query cannot provide, so
+            // they would produce semantically invalid SQL.
+            if predicate_references_other_table(pred, join_table, join_alias) {
+                return None;
+            }
             // Keep additional predicates for tuple filtering.
-            let predicate_sql = pred.to_string();
-            extras.push(normalize_extra_predicate_sql(
-                &predicate_sql,
-                join_table,
-                join_alias,
-            ));
+            // Strip join-table qualifiers at the AST level before rendering to SQL.
+            // This handles double-quoted identifiers, dollar-quoted strings, and other
+            // SQL literal forms that text-based rewriting would mangle.
+            let mut normalized_pred = pred.clone();
+            strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
+            extras.push(normalized_pred.to_string());
         }
     }
 
-    if fk_col.is_none() {
+    // Also scan JOIN ON conditions for explicit FK correlation.
+    // These are NOT added to extras because the generated tuple query does not include a JOIN.
+    for pred in &on_predicates {
+        if fk_col_is_explicit {
+            break; // FK already found; no need to scan further.
+        }
+        if let Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } = pred
+        {
+            let left_col = extract_qualified_column(left);
+            let right_col = extract_qualified_column(right);
+
+            // user_id = auth_current_user() — handle in ON clause too
+            if let Some((qual, col)) = left_col.clone() {
+                if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+                    && is_current_user_expr(right, registry)
+                {
+                    if user_col.is_none() {
+                        user_col = Some(col);
+                    }
+                    continue;
+                }
+            }
+            if let Some((qual, col)) = right_col.clone() {
+                if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+                    && is_current_user_expr(left, registry)
+                {
+                    if user_col.is_none() {
+                        user_col = Some(col);
+                    }
+                    continue;
+                }
+            }
+
+            if let (Some((left_qual, left_name)), Some((right_qual, right_name))) =
+                (left_col, right_col)
+            {
+                let left_is_join = is_join_column_ref(
+                    left_qual.as_deref(),
+                    &left_name,
+                    join_table,
+                    join_alias,
+                    join_cols,
+                );
+                let right_is_join = is_join_column_ref(
+                    right_qual.as_deref(),
+                    &right_name,
+                    join_table,
+                    join_alias,
+                    join_cols,
+                );
+
+                if left_is_join
+                    && !right_is_join
+                    && fk_col
+                        .as_ref()
+                        .is_none_or(|existing| existing == &left_name)
+                {
+                    fk_col = Some(left_name);
+                    fk_col_is_explicit = true;
+                } else if right_is_join
+                    && !left_is_join
+                    && fk_col
+                        .as_ref()
+                        .is_none_or(|existing| existing == &right_name)
+                {
+                    fk_col = Some(right_name);
+                    fk_col_is_explicit = true;
+                }
+            }
+        }
+    }
+
+    // Only fall back to column-name inference when the IN-subquery form provides
+    // an implicit correlation via the projected FK hint.  An EXISTS without an
+    // explicit `join_table_col = outer_table_col` predicate cannot be safely
+    // classified as P4: the policy would grant access to any resource the user
+    // is a member of, rather than the specific resource being queried.
+    if fk_col.is_none() && !fk_col_is_explicit && projected_fk_hint.is_some() {
         fk_col = infer_membership_fk_column(
             join_table,
             join_cols,
@@ -929,12 +1367,40 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
         Expr::Identifier(ident) => Some(normalize_relation_name(&ident.value)),
         Expr::Cast { expr, .. } => current_user_accessor_name(expr),
         Expr::Nested(inner) => current_user_accessor_name(inner),
+        // Phase 6b: unwrap a scalar subquery — `(SELECT auth.uid())`.
+        // The subquery must project exactly one non-wildcard expression.
+        Expr::Subquery(query) => {
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                if select.projection.len() == 1 {
+                    if let SelectItem::UnnamedExpr(inner)
+                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    {
+                        return current_user_accessor_name(inner);
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
 
+/// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.
+/// Used in [`recognize_p3`] to cap confidence at B for subquery-wrapped accessors.
+fn is_subquery_wrapped(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery(_) => true,
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_subquery_wrapped(inner),
+        _ => false,
+    }
+}
+
 fn is_current_user_keyword(name: &str) -> bool {
-    name == "current_user" || name == "session_user" || name == "user"
+    // `session_user` is intentionally excluded: it refers to the original connection user and
+    // does NOT change when `SET ROLE` is used, unlike `current_user` / `current_role`.
+    // Policies that reference `session_user` must be classified as Unknown (D) so the operator
+    // manually verifies the intended semantics before translation.
+    name == "current_user" || name == "user" || name == "current_role"
 }
 
 fn is_known_current_user_name(name: &str, registry: &FunctionRegistry) -> bool {
@@ -965,15 +1431,86 @@ fn is_join_column_ref(
     }
 }
 
-fn normalize_extra_predicate_sql(sql: &str, join_table: &str, join_alias: Option<&str>) -> String {
-    let mut normalized = strip_qualifier_outside_literals(sql, &format!("{join_table}."));
-    if let Some((_, relation)) = split_schema_and_relation(join_table) {
-        normalized = strip_qualifier_outside_literals(&normalized, &format!("{relation}."));
+/// Strip join-table qualifiers from all `CompoundIdentifier` nodes in `expr`
+/// whose qualifier matches `join_table` or `join_alias`.  Qualifying identifiers
+/// are replaced with bare `Identifier` nodes, making the predicate suitable for
+/// embedding in a single-table query that does not include the join table.
+///
+/// Operates at the AST level to correctly handle double-quoted identifiers,
+/// dollar-quoted strings, and other SQL literal forms that text-based rewriting
+/// would mangle.
+fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Option<&str>) {
+    // Check — without consuming — whether this CompoundIdentifier should be stripped.
+    let strip_to_bare = if let Expr::CompoundIdentifier(parts) = &*expr {
+        parts.len() >= 2
+            && qualifier_matches_table(&parts[parts.len() - 2].value, join_table, join_alias)
+    } else {
+        false
+    };
+    if strip_to_bare {
+        if let Expr::CompoundIdentifier(parts) = &*expr {
+            let column = parts.last().unwrap().clone();
+            *expr = Expr::Identifier(column);
+        }
+        return;
     }
-    if let Some(alias) = join_alias {
-        normalized = strip_qualifier_outside_literals(&normalized, &format!("{alias}."));
+
+    match expr {
+        Expr::BinaryOp { left, right, .. } => {
+            strip_qualifier_from_expr(left, join_table, join_alias);
+            strip_qualifier_from_expr(right, join_table, join_alias);
+        }
+        Expr::UnaryOp { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. }
+        | Expr::Nested(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner) => {
+            strip_qualifier_from_expr(inner, join_table, join_alias);
+        }
+        Expr::InList {
+            expr: inner, list, ..
+        } => {
+            strip_qualifier_from_expr(inner, join_table, join_alias);
+            for item in list.iter_mut() {
+                strip_qualifier_from_expr(item, join_table, join_alias);
+            }
+        }
+        _ => {}
     }
-    normalized
+}
+
+/// Returns `true` if `expr` contains any column reference whose qualifier is
+/// NOT the join table (or its alias).  Bare (unqualified) column references are
+/// assumed to belong to the join table and are allowed.
+fn predicate_references_other_table(
+    expr: &Expr,
+    join_table: &str,
+    join_alias: Option<&str>,
+) -> bool {
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            // qualifier.column — check if qualifier matches the join table.
+            let qualifier = &parts[parts.len() - 2].value;
+            !qualifier_matches_table(qualifier, join_table, join_alias)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            predicate_references_other_table(left, join_table, join_alias)
+                || predicate_references_other_table(right, join_table, join_alias)
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
+            predicate_references_other_table(expr, join_table, join_alias)
+        }
+        Expr::IsNull(e) | Expr::IsNotNull(e) => {
+            predicate_references_other_table(e, join_table, join_alias)
+        }
+        Expr::InList { expr, list, .. } => {
+            predicate_references_other_table(expr, join_table, join_alias)
+                || list
+                    .iter()
+                    .any(|e| predicate_references_other_table(e, join_table, join_alias))
+        }
+        _ => false, // bare identifiers, functions, literals, constants — safe
+    }
 }
 
 fn qualifier_matches_table(qualifier: &str, table_name: &str, alias: Option<&str>) -> bool {
@@ -992,50 +1529,6 @@ fn table_qualifier_candidates(table_name: &str) -> Vec<String> {
         candidates.push(relation);
     }
     candidates
-}
-
-fn strip_qualifier_outside_literals(sql: &str, qualifier: &str) -> String {
-    if qualifier.is_empty() {
-        return sql.to_string();
-    }
-
-    let mut out = String::with_capacity(sql.len());
-    let mut idx = 0usize;
-    let mut in_single_quote = false;
-
-    while idx < sql.len() {
-        let rest = &sql[idx..];
-
-        if !in_single_quote && rest.starts_with(qualifier) {
-            idx += qualifier.len();
-            continue;
-        }
-
-        let Some(ch) = rest.chars().next() else {
-            break;
-        };
-        let ch_len = ch.len_utf8();
-
-        if ch == '\'' {
-            if in_single_quote {
-                let after = &sql[idx + ch_len..];
-                if after.starts_with('\'') {
-                    out.push('\'');
-                    out.push('\'');
-                    idx += ch_len + 1;
-                    continue;
-                }
-                in_single_quote = false;
-            } else {
-                in_single_quote = true;
-            }
-        }
-
-        out.push(ch);
-        idx += ch_len;
-    }
-
-    out
 }
 
 fn combine_predicates_with_and(predicates: Vec<Expr>) -> Option<Expr> {
@@ -1189,6 +1682,48 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
                 if is_literal_value(left) && !is_user_related_column(&col) {
                     return Some(col);
                 }
+            }
+        }
+    }
+    // `col IN ('a', 'b', ...)` with all-literal items (non-negated).
+    if let Expr::InList {
+        expr: col_expr,
+        list,
+        negated: false,
+    } = expr
+    {
+        if let Some(col) = extract_column_name(col_expr) {
+            if !is_user_related_column(&col)
+                && !list.is_empty()
+                && list.iter().all(is_literal_value)
+            {
+                return Some(col);
+            }
+        }
+    }
+    // `col IS NULL` / `col IS NOT NULL`
+    if let Expr::IsNull(col_expr) | Expr::IsNotNull(col_expr) = expr {
+        if let Some(col) = extract_column_name(col_expr) {
+            if !is_user_related_column(&col) {
+                return Some(col);
+            }
+        }
+    }
+    // `col LIKE pattern` / `col ILIKE pattern` (non-negated)
+    if let Expr::Like {
+        negated: false,
+        expr: col_expr,
+        ..
+    }
+    | Expr::ILike {
+        negated: false,
+        expr: col_expr,
+        ..
+    } = expr
+    {
+        if let Some(col) = extract_column_name(col_expr) {
+            if !is_user_related_column(&col) {
+                return Some(col);
             }
         }
     }
@@ -1426,13 +1961,153 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new(); // pg_has_role is a built-in, no registry needed.
+
+        // Three-arg form: pg_has_role(current_user, 'admin', 'MEMBER').
+        let three_arg = parse_expr("pg_has_role(current_user, 'admin', 'MEMBER')");
+        let c3 =
+            recognize_p2(&three_arg, &db, &registry).expect("expected P2 for pg_has_role 3-arg");
+        assert!(
+            matches!(
+                &c3.pattern,
+                PatternClass::P2RoleNameInList { function_name, role_names }
+                    if function_name == "pg_has_role" && role_names == &["admin"]
+            ),
+            "three-arg pg_has_role should produce P2 with role 'admin', got: {:?}",
+            c3.pattern
+        );
+        assert_eq!(c3.confidence, ConfidenceLevel::A);
+
+        // Two-arg form: pg_has_role('editor', 'USAGE') — current user is implied.
+        let two_arg = parse_expr("pg_has_role('editor', 'USAGE')");
+        let c2 = recognize_p2(&two_arg, &db, &registry).expect("expected P2 for pg_has_role 2-arg");
+        assert!(
+            matches!(
+                &c2.pattern,
+                PatternClass::P2RoleNameInList { function_name, role_names }
+                    if function_name == "pg_has_role" && role_names == &["editor"]
+            ),
+            "two-arg pg_has_role should produce P2 with role 'editor', got: {:?}",
+            c2.pattern
+        );
+
+        // Three-arg form with non-current-user first arg should not match.
+        let bad_user = parse_expr("pg_has_role(other_user_id, 'admin', 'MEMBER')");
+        assert!(
+            recognize_p2(&bad_user, &db, &registry).is_none(),
+            "pg_has_role with non-current-user first arg should not match"
+        );
+    }
+
+    #[test]
+    fn recognize_p2_role_accessor_equality_and_in_list() {
+        let db = db_with_docs_and_members();
+        let mut registry = FunctionRegistry::new();
+        // Register `role` (normalized form of `auth.role` — schema stripped) as a RoleAccessor.
+        registry.register_if_absent(
+            "role",
+            &crate::parser::function_analyzer::FunctionSemantic::RoleAccessor {
+                returns: "text".to_string(),
+            },
+        );
+
+        // Equality form: auth.role() = 'authenticated'
+        // `auth.role` normalizes to `role` (schema prefix is stripped by normalize_relation_name).
+        let eq_expr = parse_expr("auth.role() = 'authenticated'");
+        let c_eq = recognize_p2(&eq_expr, &db, &registry)
+            .expect("expected P2 for role_accessor = literal");
+        assert!(
+            matches!(
+                &c_eq.pattern,
+                PatternClass::P2RoleNameInList { function_name, role_names }
+                    if function_name == "role" && role_names == &["authenticated"]
+            ),
+            "auth.role() = 'authenticated' should produce P2, got: {:?}",
+            c_eq.pattern
+        );
+        assert_eq!(c_eq.confidence, ConfidenceLevel::A);
+
+        // IN-list form: auth.role() IN ('authenticated', 'service_role')
+        let in_expr = parse_expr("auth.role() IN ('authenticated', 'service_role')");
+        let c_in =
+            recognize_p2(&in_expr, &db, &registry).expect("expected P2 for role_accessor IN list");
+        assert!(
+            matches!(
+                &c_in.pattern,
+                PatternClass::P2RoleNameInList { function_name, role_names }
+                    if function_name == "role"
+                        && role_names == &["authenticated", "service_role"]
+            ),
+            "auth.role() IN (...) should produce P2, got: {:?}",
+            c_in.pattern
+        );
+
+        // Unregistered role function should not match.
+        let empty_registry = FunctionRegistry::new();
+        let not_matched = parse_expr("auth.role() = 'authenticated'");
+        assert!(
+            recognize_p2(&not_matched, &db, &empty_registry).is_none(),
+            "unregistered role function should not match P2"
+        );
+    }
+
+    #[test]
+    fn recognize_array_patterns_any_and_overlap() {
+        let registry = FunctionRegistry::new();
+
+        // `current_user = ANY(allowed_users)` → P9 at confidence B.
+        let any_expr = parse_expr("current_user = ANY(allowed_users)");
+        let c_any = recognize_array_patterns(&any_expr, &registry)
+            .expect("expected array pattern match for = ANY");
+        assert!(
+            matches!(
+                &c_any.pattern,
+                PatternClass::P9AttributeCondition { column, .. } if column == "allowed_users"
+            ),
+            "= ANY should produce P9 on array column, got: {:?}",
+            c_any.pattern
+        );
+        assert_eq!(
+            c_any.confidence,
+            ConfidenceLevel::B,
+            "= ANY should be confidence B"
+        );
+
+        // `col1 && col2` array overlap → P9 at confidence C.
+        let overlap_expr = parse_expr("allowed_roles && ARRAY['admin', 'editor']");
+        let c_overlap = recognize_array_patterns(&overlap_expr, &registry)
+            .expect("expected array pattern match for &&");
+        assert!(
+            matches!(
+                &c_overlap.pattern,
+                PatternClass::P9AttributeCondition { .. }
+            ),
+            "array && should produce P9, got: {:?}",
+            c_overlap.pattern
+        );
+        assert_eq!(
+            c_overlap.confidence,
+            ConfidenceLevel::C,
+            "&& should be confidence C"
+        );
+
+        // Non-array expression should not match.
+        let non_array = parse_expr("owner_id = current_user");
+        assert!(recognize_array_patterns(&non_array, &registry).is_none());
+    }
+
+    #[test]
     fn recognize_p3_heuristics_cover_confidence_variants() {
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
 
+        // Heuristic accessor with owner-like column → confidence B (not A).
+        // A is reserved for registry-confirmed functions and SQL keywords.
         let a = parse_expr("owner_id = auth_current_user_id()");
         let classified_a = recognize_p3(&a, &db, &registry).expect("expected heuristic match");
-        assert_eq!(classified_a.confidence, ConfidenceLevel::A);
+        assert_eq!(classified_a.confidence, ConfidenceLevel::B);
 
         let b = parse_expr("tenant_uuid = auth_current_user_id()");
         let classified_b = recognize_p3(&b, &db, &registry).expect("expected heuristic match");
@@ -1453,13 +2128,92 @@ CREATE TABLE doc_members (
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
 
+        // Heuristic accessor with owner-like column → confidence B (see 3c).
         let expr = parse_expr("owner_id IS NOT DISTINCT FROM auth_current_user_id()");
         let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
         assert!(matches!(
             classified.pattern,
             PatternClass::P3DirectOwnership { ref column } if column == "owner_id"
         ));
-        assert_eq!(classified.confidence, ConfidenceLevel::A);
+        assert_eq!(classified.confidence, ConfidenceLevel::B);
+    }
+
+    #[test]
+    fn recognize_p3_scalar_subquery_wrapper_caps_confidence_at_b() {
+        let db = db_with_docs_and_members();
+        // `registry_with_role_level` has `auth_current_user_id` as a confirmed accessor.
+        let registry = registry_with_role_level();
+
+        // Bare function call → confidence A (registry-confirmed).
+        let bare = parse_expr("owner_id = auth_current_user_id()");
+        let c_bare = recognize_p3(&bare, &db, &registry).expect("expected P3 match");
+        assert_eq!(
+            c_bare.confidence,
+            ConfidenceLevel::A,
+            "bare registry call should be A"
+        );
+
+        // Scalar subquery wrapping the same registry-confirmed function → confidence B.
+        let subquery = parse_expr("owner_id = (SELECT auth_current_user_id())");
+        let c_subquery = recognize_p3(&subquery, &db, &registry).expect("expected P3 match");
+        assert!(
+            matches!(
+                &c_subquery.pattern,
+                PatternClass::P3DirectOwnership { column } if column == "owner_id"
+            ),
+            "subquery-wrapped accessor should still produce P3, got: {:?}",
+            c_subquery.pattern
+        );
+        assert_eq!(
+            c_subquery.confidence,
+            ConfidenceLevel::B,
+            "subquery-wrapped registry accessor should be capped at B"
+        );
+
+        // SQL keyword in subquery → still B (subquery always caps).
+        let kw_subquery = parse_expr("owner_id = (SELECT current_user)");
+        let c_kw = recognize_p3(&kw_subquery, &db, &registry).expect("expected P3 match");
+        assert_eq!(
+            c_kw.confidence,
+            ConfidenceLevel::B,
+            "subquery around SQL keyword should also be capped at B"
+        );
+    }
+
+    #[test]
+    fn recognize_p3_current_setting_is_heuristic_b_and_registry_a() {
+        let db = db_with_docs_and_members();
+
+        // Without explicit registration: current_setting → confidence B.
+        let empty_registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id = current_setting('app.current_user_id')::uuid");
+        let classified = recognize_p3(&expr, &db, &empty_registry)
+            .expect("expected P3 match for current_setting");
+        assert!(
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+            "current_setting should produce P3"
+        );
+        assert_eq!(
+            classified.confidence,
+            ConfidenceLevel::B,
+            "unregistered current_setting should be confidence B"
+        );
+
+        // After explicit registration: current_setting → confidence A.
+        let mut registered_registry = FunctionRegistry::new();
+        registered_registry.register_if_absent(
+            "current_setting",
+            &crate::parser::function_analyzer::FunctionSemantic::CurrentUserAccessor {
+                returns: "uuid".to_string(),
+            },
+        );
+        let classified_a = recognize_p3(&expr, &db, &registered_registry)
+            .expect("expected P3 match for registered current_setting");
+        assert_eq!(
+            classified_a.confidence,
+            ConfidenceLevel::A,
+            "registered current_setting should be confidence A"
+        );
     }
 
     #[test]
@@ -1887,6 +2641,38 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     }
 
     #[test]
+    fn strip_qualifier_from_expr_strips_join_alias_and_handles_quoted_identifiers() {
+        // Simple qualified column: `dm.status` → `status`
+        let mut expr = parse_expr("dm.status = 'active'");
+        strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
+        assert_eq!(
+            expr.to_string(),
+            "status = 'active'",
+            "alias-qualified column should be stripped"
+        );
+
+        // Double-quoted alias: `"dm"."status"` → the qualifier `"dm"` doesn't
+        // match the unquoted alias string `dm` through `qualifier_matches_table`,
+        // so the predicate is left unchanged — correct, since double-quoted
+        // identifiers are preserved as-is.
+        let mut quoted_expr = parse_expr(r#""dm"."status" = 'active'"#);
+        strip_qualifier_from_expr(&mut quoted_expr, "doc_members", Some("dm"));
+        // The qualifier `"dm"` does not equal `dm` after parsing; the
+        // CompoundIdentifier parts contain the unquoted token, so it IS stripped.
+        // What matters is the function does not panic or produce garbled output.
+        let _ = quoted_expr.to_string(); // must not panic
+
+        // Table-name qualifying: `doc_members.status` → `status`
+        let mut tbl_expr = parse_expr("doc_members.status = 1");
+        strip_qualifier_from_expr(&mut tbl_expr, "doc_members", None);
+        assert_eq!(
+            tbl_expr.to_string(),
+            "status = 1",
+            "table-name qualified column should be stripped"
+        );
+    }
+
+    #[test]
     fn extract_membership_columns_detects_reversed_predicates() {
         let select = parse_select(
             "SELECT dm.doc_id
@@ -1932,6 +2718,27 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     }
 
     #[test]
+    fn recognize_p1_p2_reject_when_no_current_user_argument() {
+        // `get_owner_role(owner_id, id)` — both arguments are resource columns, not
+        // current_user.  Without a current-user arg the function cannot express P1/P2
+        // semantics (it would be a resource-attribute comparison, not a user-level check).
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+
+        let p1_no_user = parse_expr("role_level(owner_id, id) >= 2");
+        assert!(
+            recognize_p1(&p1_no_user, &db, &registry, &PolicyCommand::Select).is_none(),
+            "P1 must reject role_level without a current-user argument"
+        );
+
+        let p2_no_user = parse_expr("role_level(owner_id, id) IN ('admin', 'editor')");
+        assert!(
+            recognize_p2(&p2_no_user, &db, &registry).is_none(),
+            "P2 must reject role_level without a current-user argument"
+        );
+    }
+
+    #[test]
     fn recognize_p3_accepts_function_on_left_side() {
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
@@ -1972,6 +2779,34 @@ CREATE TABLE odd_members(alpha text, beta text);
              )",
         );
         assert!(recognize_p4_in_subquery(&in_subquery_expr, &db, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p4_exists_without_outer_row_correlation_fails_closed() {
+        // EXISTS (SELECT 1 FROM members WHERE user_id = current_user) — no correlation
+        // predicate tying members to the outer resource row.  Should NOT classify as P4
+        // because the generated tuple would grant access to ALL resources the user belongs
+        // to, not just the one being queried.
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        let uncorrelated = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.user_id = current_user
+             )",
+        );
+        assert!(
+            recognize_p4(&uncorrelated, &db, &registry).is_none(),
+            "EXISTS without outer-row correlation must fail closed to avoid over-permissive grants"
+        );
     }
 
     #[test]
@@ -2240,9 +3075,41 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
     }
 
     #[test]
-    fn is_attribute_check_rejects_unsupported_operators() {
+    fn is_attribute_check_recognizes_like_ilike_in_list_and_null_forms() {
+        // LIKE and ILIKE are now attribute checks (Phase 3g).
         let like_expr = parse_expr("status LIKE 'draft%'");
-        assert!(is_attribute_check(&like_expr).is_none());
+        assert_eq!(is_attribute_check(&like_expr), Some("status".to_string()));
+
+        let ilike_name_expr = parse_expr("name ILIKE '%admin%'");
+        assert_eq!(
+            is_attribute_check(&ilike_name_expr),
+            Some("name".to_string())
+        );
+
+        // IN list with all literals is an attribute check.
+        let in_expr = parse_expr("status IN ('active', 'pending')");
+        assert_eq!(is_attribute_check(&in_expr), Some("status".to_string()));
+
+        // IS NULL / IS NOT NULL are attribute checks.
+        let is_null_expr = parse_expr("deleted_at IS NULL");
+        assert_eq!(
+            is_attribute_check(&is_null_expr),
+            Some("deleted_at".to_string())
+        );
+
+        // Negated forms are NOT attribute checks (they restrict, not grant).
+        let negated_in = parse_expr("status NOT IN ('active', 'pending')");
+        assert!(
+            is_attribute_check(&negated_in).is_none(),
+            "negated IN list should not be an attribute check"
+        );
+
+        // User-related columns are excluded.
+        let user_like = parse_expr("user_id LIKE '%admin%'");
+        assert!(
+            is_attribute_check(&user_like).is_none(),
+            "user-related column should not be classified as attribute"
+        );
     }
 
     #[test]

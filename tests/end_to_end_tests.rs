@@ -17,12 +17,12 @@ fn end_to_end_earth_metabolome() {
     assert_eq!(classified.len(), 4, "Should classify all 4 policies");
 
     // Stage 5: Generate model
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("emi_model", model.dsl.trim());
 
     // Stage 6: Generate tuples
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(&tuples));
 
     // Verify no TODOs for Level A/B output

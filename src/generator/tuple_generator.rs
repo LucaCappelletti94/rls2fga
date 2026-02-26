@@ -3,8 +3,8 @@ use crate::classifier::patterns::*;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
 use crate::parser::names::{
-    canonical_fga_type_name, lookup_table, parent_type_from_fk_column,
-    split_qualified_identifier_parts, split_schema_and_relation,
+    canonical_fga_type_name, lookup_table, split_qualified_identifier_parts,
+    split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
 use std::collections::HashSet;
@@ -27,11 +27,14 @@ pub fn format_tuples(tuples: &[TupleQuery]) -> String {
         out.push_str(&query.sql);
         out.push_str("\n\n");
     }
-    // Remove trailing newline to match snapshot expectations
-    while out.ends_with('\n') {
-        out.pop();
+    // Normalise to exactly one trailing newline.
+    let trimmed = out.trim_end_matches('\n');
+    if trimmed.is_empty() {
+        return String::new();
     }
-    out
+    let mut result = trimmed.to_string();
+    result.push('\n');
+    result
 }
 
 /// Generate tuple SQL queries from a pre-built [`SchemaPlan`].
@@ -176,6 +179,18 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                 case_arms.join("\n")
             );
 
+            // Fail closed when neither user nor team principal can be resolved.
+            if user_principal.is_none() && team_principal.is_none() {
+                return Some(TupleQuery {
+                    comment: format!(
+                        "-- TODO [Level C]: ExplicitGrants on '{grant_table}' could not resolve \
+                         principal type (no user or team table identified). \
+                         Review the grant table schema and register the principal tables."
+                    ),
+                    sql: format!("-- Unresolved: SELECT ... FROM {grant_table_sql} og ...;"),
+                });
+            }
+
             let mut subject_joins: Vec<String> = Vec::new();
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
                 (Some(up), Some(tp)) => {
@@ -197,7 +212,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                          \x20 END"
                     )
                 }
-                (Some(_) | None, None) => {
+                (Some(_), None) => {
                     format!("'user:' || og.{grant_grantee_col_sql}")
                 }
                 (None, Some(tp)) => {
@@ -213,6 +228,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                          \x20 END"
                     )
                 }
+                (None, None) => unreachable!("handled by early return above"),
             };
 
             let subject_join_sql = if subject_joins.is_empty() {
@@ -253,7 +269,9 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                 sql: format!(
                     "SELECT 'team:' || {team_col_sql} AS object, 'member' AS relation, \
                      'user:' || {user_col_sql} AS subject\n\
-                     FROM {membership_table_sql};"
+                     FROM {membership_table_sql}\n\
+                     WHERE {team_col_sql} IS NOT NULL\n\
+                     AND {user_col_sql} IS NOT NULL;"
                 ),
             })
         }
@@ -262,16 +280,19 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             join_table,
             fk_col,
             user_col,
+            parent_type,
             extra_predicate_sql,
         } => {
-            let parent_type = parent_type_from_fk_column(fk_col);
             let join_table_sql = quote_sql_identifier(join_table);
             let fk_col_sql = quote_sql_identifier(fk_col);
             let user_col_sql = quote_sql_identifier(user_col);
-            let where_clause = extra_predicate_sql
-                .as_ref()
-                .map(|e| format!("\nWHERE {e}"))
-                .unwrap_or_default();
+            // Build the WHERE clause: always include NULL guards; append any
+            // extra membership-table predicate (e.g. `role = 'admin'`).
+            let null_guards = format!("{fk_col_sql} IS NOT NULL AND {user_col_sql} IS NOT NULL");
+            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+                || format!("\nWHERE {null_guards}"),
+                |e| format!("\nWHERE {null_guards}\nAND {e}"),
+            );
             Some(TupleQuery {
                 comment: format!("-- {parent_type} membership from {join_table}"),
                 sql: format!(
@@ -329,7 +350,8 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                     "SELECT '{table_type}:' || {pk_col_sql} AS object, 'public_viewer' AS relation, \
                      'user:*' AS subject\n\
                      FROM {table_sql}\n\
-                     WHERE {flag_col_sql} = TRUE;"
+                     WHERE {pk_col_sql} IS NOT NULL\n\
+                     AND {flag_col_sql} = TRUE;"
                 ),
             })
         }
@@ -385,9 +407,9 @@ pub fn generate_tuple_queries(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
-    min_confidence: &ConfidenceLevel,
+    min_confidence: ConfidenceLevel,
 ) -> Vec<TupleQuery> {
-    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let filtered = filter_policies_for_output(policies, min_confidence);
     let plan = crate::generator::model_generator::build_schema_plan(&filtered, db, registry);
     generate_tuple_queries_from_plan(&plan, db)
 }
@@ -485,133 +507,9 @@ fn quote_sql_identifier_part(part: &str) -> String {
     } else {
         trimmed.to_string()
     };
-    if !identifier_needs_quoting(&raw) {
-        return raw;
-    }
+    // Always double-quote the identifier: this is semantically equivalent to unquoted
+    // lowercase identifiers and avoids the need for an ever-growing reserved-keyword list.
     format!("\"{}\"", raw.replace('"', "\"\""))
-}
-
-fn identifier_needs_quoting(ident: &str) -> bool {
-    // Expanded list of PostgreSQL reserved and commonly-conflicting keywords.
-    // Column or table names matching any of these must be double-quoted.
-    const RESERVED: &[&str] = &[
-        "all",
-        "analyse",
-        "analyze",
-        "and",
-        "any",
-        "array",
-        "as",
-        "asc",
-        "asymmetric",
-        "authorization",
-        "between",
-        "binary",
-        "both",
-        "case",
-        "cast",
-        "check",
-        "collate",
-        "collation",
-        "column",
-        "concurrently",
-        "constraint",
-        "create",
-        "cross",
-        "current_catalog",
-        "current_date",
-        "current_role",
-        "current_schema",
-        "current_time",
-        "current_timestamp",
-        "current_user",
-        "default",
-        "deferrable",
-        "desc",
-        "distinct",
-        "do",
-        "else",
-        "end",
-        "except",
-        "false",
-        "fetch",
-        "for",
-        "foreign",
-        "freeze",
-        "from",
-        "full",
-        "grant",
-        "group",
-        "having",
-        "ilike",
-        "in",
-        "initially",
-        "inner",
-        "intersect",
-        "into",
-        "is",
-        "isnull",
-        "join",
-        "lateral",
-        "leading",
-        "left",
-        "like",
-        "limit",
-        "localtime",
-        "localtimestamp",
-        "natural",
-        "not",
-        "notnull",
-        "null",
-        "offset",
-        "on",
-        "only",
-        "or",
-        "order",
-        "outer",
-        "overlaps",
-        "placing",
-        "primary",
-        "references",
-        "returning",
-        "right",
-        "role",
-        "row",
-        "select",
-        "session_user",
-        "similar",
-        "some",
-        "symmetric",
-        "table",
-        "tablesample",
-        "then",
-        "to",
-        "trailing",
-        "true",
-        "union",
-        "unique",
-        "user",
-        "using",
-        "variadic",
-        "verbose",
-        "when",
-        "where",
-        "window",
-        "with",
-    ];
-
-    if RESERVED.iter().any(|kw| ident.eq_ignore_ascii_case(kw)) {
-        return true;
-    }
-
-    let mut chars = ident.chars();
-    let Some(first) = chars.next() else {
-        return true;
-    };
-    if !(first.is_ascii_lowercase() || first == '_') {
-        return true;
-    }
-    chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'))
 }
 
 #[cfg(test)]
@@ -621,7 +519,7 @@ mod tests {
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
 
     #[test]
-    fn format_tuples_trims_trailing_newlines() {
+    fn format_tuples_ends_with_exactly_one_newline() {
         let tuples = vec![
             TupleQuery {
                 comment: "-- one".to_string(),
@@ -633,8 +531,14 @@ mod tests {
             },
         ];
         let formatted = format_tuples(&tuples);
-        assert!(formatted.ends_with("SELECT 2;"));
-        assert!(!formatted.ends_with('\n'));
+        // Must end with exactly one newline after the last SQL statement.
+        assert!(formatted.ends_with("SELECT 2;\n"));
+        assert!(!formatted.ends_with("SELECT 2;\n\n"));
+    }
+
+    #[test]
+    fn format_tuples_empty_input_returns_empty_string() {
+        assert_eq!(format_tuples(&[]), String::new());
     }
 
     #[test]
@@ -705,13 +609,15 @@ CREATE POLICY docs_update ON docs FOR UPDATE
                 },
                 confidence: ConfidenceLevel::A,
             }),
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         };
 
         let queries = generate_tuple_queries(
             &[classified],
             &db,
             &FunctionRegistry::new(),
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         );
         assert!(queries.iter().any(|q| q
             .comment
@@ -739,7 +645,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
             &classified,
             &db,
             &FunctionRegistry::new(),
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         );
         let scope_relation = policy_scope_relation_name("docs_select");
 
@@ -791,7 +697,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         let explicit_grants = queries
             .iter()
@@ -801,7 +707,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         assert!(
             explicit_grants
                 .sql
-                .contains("JOIN docs resource ON resource.id = og.resource_id"),
+                .contains("JOIN \"docs\" resource ON resource.\"id\" = og.\"resource_id\""),
             "expected grants join to use policy resource column `id`, got:\n{}",
             explicit_grants.sql
         );
@@ -844,7 +750,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         let explicit_grants = queries
             .iter()
@@ -853,7 +759,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         assert!(
             explicit_grants
                 .sql
-                .contains("JOIN docs resource ON resource.id = og.resource_id"),
+                .contains("JOIN \"docs\" resource ON resource.\"id\" = og.\"resource_id\""),
             "expected composite policy extraction to preserve join on `id`, got:\n{}",
             explicit_grants.sql
         );
@@ -898,7 +804,7 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         assert!(
             queries
@@ -955,7 +861,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         assert!(
             queries
@@ -993,7 +899,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
 
         let registry = FunctionRegistry::new();
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         let membership_query = queries
             .iter()
@@ -1001,7 +907,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
             .expect("expected doc membership tuple query");
 
         assert!(
-            membership_query.sql.contains("WHERE role = 'admin'"),
+            membership_query.sql.contains("role = 'admin'"),
             "expected role filter to be preserved, got:\n{}",
             membership_query.sql
         );
@@ -1039,7 +945,7 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
             &classified,
             &db,
             &FunctionRegistry::new(),
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         );
 
         let ownership_query = queries
@@ -1071,7 +977,7 @@ CREATE POLICY docs_select ON "Doc Items" FOR SELECT
             &classified,
             &db,
             &FunctionRegistry::new(),
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         );
 
         let ownership_query = queries
@@ -1107,7 +1013,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
         let registry = FunctionRegistry::new();
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        let queries = generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
 
         assert!(
             queries
@@ -1122,14 +1028,22 @@ CREATE POLICY docs_select ON docs FOR SELECT
     }
 
     #[test]
-    fn quote_sql_identifier_part_re_escapes_pre_quoted_identifiers() {
-        // A pre-quoted identifier must be stripped and re-quoted through the
-        // normal path rather than returned verbatim, preventing injection via
-        // malformed entries (e.g. function_registry.json).
+    fn quote_sql_identifier_part_always_double_quotes() {
+        // All identifiers — simple or keyword — are now always double-quoted.
+        // This prevents any reserved-word confusion without requiring a keyword list.
+        assert_eq!(quote_sql_identifier_part("simple"), "\"simple\"");
+        assert_eq!(quote_sql_identifier_part("null"), "\"null\"");
+        assert_eq!(quote_sql_identifier_part("with"), "\"with\"");
+        assert_eq!(quote_sql_identifier_part("join"), "\"join\"");
+        assert_eq!(quote_sql_identifier_part("default"), "\"default\"");
+        assert_eq!(quote_sql_identifier_part("case"), "\"case\"");
+
+        // Pre-quoted identifiers are stripped, unescaped, and re-quoted through
+        // the normal path to prevent injection via malformed registry entries.
         assert_eq!(
             quote_sql_identifier_part("\"simple\""),
-            "simple",
-            "simple pre-quoted identifier should round-trip to unquoted form"
+            "\"simple\"",
+            "pre-quoted simple identifier should round-trip as double-quoted"
         );
         assert_eq!(
             quote_sql_identifier_part("\"mixed Case\""),
@@ -1143,11 +1057,41 @@ CREATE POLICY docs_select ON docs FOR SELECT
             "\"with\"\"inner\"\"quotes\"",
             "inner doubled quotes should be unescaped then properly re-escaped"
         );
-        // New keywords in the expanded list must be quoted.
-        assert_eq!(quote_sql_identifier_part("null"), "\"null\"");
-        assert_eq!(quote_sql_identifier_part("with"), "\"with\"");
-        assert_eq!(quote_sql_identifier_part("join"), "\"join\"");
-        assert_eq!(quote_sql_identifier_part("default"), "\"default\"");
-        assert_eq!(quote_sql_identifier_part("case"), "\"case\"");
+    }
+
+    #[test]
+    fn explicit_grants_with_no_principal_tables_emits_todo_not_user_prefix() {
+        use crate::generator::ir::TupleSource;
+        // Build the IR directly and call render_tuple_source.
+        // Both user_principal and team_principal are None → fail-closed path.
+        let source = TupleSource::ExplicitGrants {
+            table: "docs".to_string(),
+            pk_col: "id".to_string(),
+            grant_join_col: "doc_id".to_string(),
+            grant_table: "doc_grants".to_string(),
+            grant_role_col: "role_level".to_string(),
+            grant_grantee_col: "grantee_id".to_string(),
+            grant_resource_col: "doc_id".to_string(),
+            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            user_principal: None,
+            team_principal: None,
+        };
+        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
+        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        assert!(
+            query.comment.contains("TODO [Level C]"),
+            "expected a TODO comment, got: {}",
+            query.comment
+        );
+        assert!(
+            query.comment.contains("doc_grants"),
+            "TODO should mention the grant table, got: {}",
+            query.comment
+        );
+        assert!(
+            !query.sql.contains("'user:'"),
+            "should not emit user: prefix when principal is unresolvable, got: {}",
+            query.sql
+        );
     }
 }

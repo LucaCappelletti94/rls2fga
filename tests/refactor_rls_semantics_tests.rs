@@ -34,7 +34,7 @@ fn multi_policy_table_combines_patterns_for_select() {
     }"#;
 
     let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.dsl.contains("define can_select: owner or no_access")
@@ -68,7 +68,7 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model
@@ -115,7 +115,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
         std::fs::read_to_string("tests/fixtures/earth_metabolome/function_registry.json").unwrap();
 
     let (classified, db, registry) = classify_sql(sql, Some(&reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.dsl.contains("define can_update_using:"),
@@ -171,7 +171,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
@@ -212,12 +212,12 @@ CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
@@ -270,7 +270,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
@@ -278,11 +278,11 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
         "expected membership tuples, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("'project' AS relation"),
+        tuples.contains("'projects' AS relation"),
         "expected resource bridge tuples for tuple-to-userset relation, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("FROM projects"),
+        tuples.contains("FROM \"projects\""),
         "expected bridge tuples sourced from resource table, got:\n{tuples}"
     );
 }
@@ -312,19 +312,19 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
-        tuples.contains("'docs:' || doc_uuid AS object"),
+        tuples.contains("'docs:' || \"doc_uuid\" AS object"),
         "tuple SQL should canonicalize schema-qualified table names while using real PK columns, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("'user:' || owner_user AS subject"),
+        tuples.contains("'user:' || \"owner_user\" AS subject"),
         "tuple SQL should use the real owner FK column, got:\n{tuples}"
     );
     assert!(
-        !tuples.contains("'docs:' || id AS object"),
+        !tuples.contains("'docs:' || \"id\" AS object"),
         "tuple SQL must not fall back to non-existent id column for canonicalized schema-qualified tables, got:\n{tuples}"
     );
 }
@@ -372,15 +372,15 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
-        tuples.contains("'doc:' || doc_id"),
+        tuples.contains("'docs:' || \"doc_id\""),
         "expected doc membership tuples, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("'task:' || task_id"),
+        tuples.contains("'tasks:' || \"task_id\""),
         "expected task membership tuples, got:\n{tuples}"
     );
 }
@@ -445,7 +445,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     let report_md = report::build_report(&model, &classified);
 
     assert!(
@@ -465,7 +465,7 @@ fn p2_role_in_list_generates_action_permissions() {
         std::fs::read_to_string("tests/fixtures/role_in_list/function_registry.json").unwrap();
 
     let (classified, db, registry) = classify_sql(&sql, Some(&reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.dsl.contains("define can_select:"),
@@ -505,7 +505,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.dsl.contains("define can_select: role_admin"),
@@ -545,7 +545,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         !model.dsl.contains("define can_select: role_viewer"),
@@ -566,7 +566,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
@@ -587,7 +587,7 @@ fn json_model_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
-    let json = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::A);
+    let json = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::A);
 
     let posts = json
         .type_definitions
@@ -613,7 +613,7 @@ fn model_generation_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::A);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::A);
 
     assert!(
         !model.dsl.contains("public_viewer"),
@@ -647,7 +647,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::A,
+        ConfidenceLevel::A,
     ));
 
     assert!(
@@ -659,7 +659,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(
@@ -688,7 +688,7 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
     }"#;
 
     let (classified, db, registry) = classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert!(
@@ -714,7 +714,7 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 ";
 
     let (classified, db, registry) = classify_sql(sql, None);
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(
         !model.dsl.contains("TODO [Level D]"),
@@ -736,8 +736,8 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
     }"#;
 
     let (classified, db, registry) = classify_sql(&sql, Some(reg_json));
-    let dsl = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D).dsl;
-    let json = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let dsl = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D).dsl;
+    let json = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::D);
 
     assert!(dsl.contains("type documents"), "dsl missing documents type");
     let doc_type = json
@@ -810,15 +810,17 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         using.pattern
     );
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     assert!(
         model.dsl.contains("type tasks"),
         "expected tasks type in model, got:\n{}",
         model.dsl
     );
     assert!(
-        model.dsl.contains("define can_select: project->can_select"),
-        "expected task select permission to inherit from project can_select, got:\n{}",
+        model
+            .dsl
+            .contains("define can_select: projects->can_select"),
+        "expected task select permission to inherit from projects can_select, got:\n{}",
         model.dsl
     );
 
@@ -826,11 +828,11 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
     assert!(
-        tuples.contains("'project' AS relation"),
-        "expected tasks->project bridge tuples for P5 inheritance, got:\n{tuples}"
+        tuples.contains("'projects' AS relation"),
+        "expected tasks->projects bridge tuples for P5 inheritance, got:\n{tuples}"
     );
 }
 
@@ -859,7 +861,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &classified,
         &db,
         &registry,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     ));
 
     assert!(

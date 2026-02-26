@@ -9,7 +9,7 @@ use crate::parser::expr::extract_column_name;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name,
+    parent_type_from_fk_column, policy_scope_relation_name, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{
@@ -65,8 +65,6 @@ pub(crate) struct TypePlan {
     pub tuple_sources: BTreeMap<String, Vec<TupleSource>>,
     /// Table-level tuple sources not tied to a specific relation (e.g. policy
     /// scope tuples).
-    // Populated in Step 3 of the IR migration; read in Step 4.
-    #[allow(dead_code)]
     pub table_tuple_sources: Vec<TupleSource>,
 }
 
@@ -83,16 +81,32 @@ impl TypePlan {
 
     fn ensure_direct(&mut self, relation: impl Into<String>, subjects: Vec<DirectSubject>) {
         let relation = relation.into();
+        // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
+        debug_assert!(
+            !self.computed_relations.contains_key(&relation),
+            "relation '{relation}' already registered as computed; cannot also register as direct"
+        );
         self.direct_relations.entry(relation).or_insert(subjects);
     }
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) {
         let relation = relation.into();
+        // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
+        debug_assert!(
+            !self.direct_relations.contains_key(&relation),
+            "relation '{relation}' already registered as direct; cannot also register as computed"
+        );
         self.computed_relations.entry(relation).or_insert(expr);
     }
 
     fn set_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) {
-        self.computed_relations.insert(relation.into(), expr);
+        let relation = relation.into();
+        // Guard: if this relation was already registered as direct, that is a programming error.
+        debug_assert!(
+            !self.direct_relations.contains_key(&relation),
+            "relation '{relation}' already registered as direct; cannot overwrite as computed"
+        );
+        self.computed_relations.insert(relation, expr);
     }
 
     fn has_relations(&self) -> bool {
@@ -154,9 +168,9 @@ pub fn generate_model(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
-    min_confidence: &ConfidenceLevel,
+    min_confidence: ConfidenceLevel,
 ) -> GeneratedModel {
-    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let filtered = filter_policies_for_output(policies, min_confidence);
     let plan = build_schema_plan(&filtered, db, registry);
     let dsl = render_dsl(&plan.types);
 
@@ -182,6 +196,10 @@ pub(crate) fn build_schema_plan(
     let mut confidence_summary = Vec::new();
     let mut has_role_scopes = false;
 
+    // Track which source table first claimed each canonical OpenFGA type name so we can
+    // detect and disambiguate collisions (e.g. `app.users` and `auth.users` both → `users`).
+    let mut canonical_name_owners: BTreeMap<String, String> = BTreeMap::new();
+
     // Group policies by source table
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
@@ -189,7 +207,35 @@ pub(crate) fn build_schema_plan(
     }
 
     for (source_table_name, table_policies) in by_table {
-        let canonical_table_name = canonical_fga_type_name(&source_table_name);
+        let base_canonical = canonical_fga_type_name(&source_table_name);
+
+        // Detect canonical-name collision: two distinct source tables mapping to the same
+        // OpenFGA type identifier.  Disambiguate by appending a stable hex suffix of the
+        // original qualified name so each table gets its own type.
+        let canonical_table_name =
+            if let Some(prior_owner) = canonical_name_owners.get(&base_canonical) {
+                if prior_owner == &source_table_name {
+                    base_canonical
+                } else {
+                    // Disambiguate: append a short stable hash of the qualified name.
+                    let suffix = stable_hex_suffix(&source_table_name);
+                    let disambiguated = format!("{base_canonical}_{suffix}");
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: source_table_name.clone(),
+                        message: format!(
+                            "Type name collision: '{source_table_name}' and '{prior_owner}' both \
+                             canonicalize to '{base_canonical}'. Renamed to '{disambiguated}'. \
+                             Update your OpenFGA model references accordingly."
+                        ),
+                    });
+                    canonical_name_owners.insert(disambiguated.clone(), source_table_name.clone());
+                    disambiguated
+                }
+            } else {
+                canonical_name_owners.insert(base_canonical.clone(), source_table_name.clone());
+                base_canonical
+            };
 
         // Only generate resource types for RLS-enabled tables.
         let table_lookup = lookup_table(db, &source_table_name);
@@ -421,8 +467,13 @@ where
         }
     }
 
+    // Mirror USING → WITH CHECK only when the policy genuinely has no WITH CHECK
+    // expression (i.e. it was never present in the SQL, not filtered by confidence).
+    // If `with_check_was_filtered` is true, the expression existed but was dropped
+    // due to low confidence; fall closed rather than promoting a low-confidence
+    // USING expression as a WITH CHECK substitute.
     let with_check_pattern = cp.with_check_classification.as_ref().or_else(|| {
-        if policy_uses_using_for_missing_with_check(&cp.command()) {
+        if !cp.with_check_was_filtered && policy_uses_using_for_missing_with_check(&cp.command()) {
             cp.using_classification.as_ref()
         } else {
             None
@@ -698,27 +749,36 @@ fn pattern_to_expr_for_target(
                 all_types,
             );
 
-            let mut selected_levels: BTreeSet<i32> = BTreeSet::new();
+            // Collect the exact set of role names that the policy grants access to.
+            //
+            // Role names are matched by name (case-insensitive), not by integer
+            // level, to avoid conflating two roles that happen to share the same
+            // level (e.g. `viewer=1` and `guest=1`).
+            //
+            // Numeric items in the IN list (e.g. `IN (2, 4)`) are treated as
+            // level values: all roles at the given level are included.
+            let mut selected_names: BTreeSet<String> = BTreeSet::new();
             for role in role_names {
                 if let Ok(level) = role.parse::<i32>() {
-                    selected_levels.insert(level);
+                    // Numeric string → expand to all role names at this level.
+                    for r in &sorted_roles {
+                        if r.level == level {
+                            selected_names.insert(r.original_name.to_lowercase());
+                        }
+                    }
                     continue;
                 }
-                if let Some(level) = role_levels
-                    .iter()
-                    .find_map(|(name, level)| name.eq_ignore_ascii_case(role).then_some(*level))
-                {
-                    selected_levels.insert(level);
-                }
+                // Role name string → insert directly (case-insensitive).
+                selected_names.insert(role.to_lowercase());
             }
 
-            if selected_levels.is_empty() {
+            if selected_names.is_empty() {
                 return deny_expr(table_plan);
             }
 
             if let Some(expr) = exact_roles_expr(
                 &sorted_roles,
-                &selected_levels,
+                &selected_names,
                 team_membership_table.is_some(),
             ) {
                 expr
@@ -751,7 +811,14 @@ fn pattern_to_expr_for_target(
             user_column,
             extra_predicate_sql,
         } => {
-            let parent_type = parent_type_from_fk_column(fk_column);
+            // Prefer the table that fk_column actually references (e.g. "teams"
+            // for team_members.team_id → teams.id).  Fall back to the FK-column
+            // name heuristic when no FK constraint metadata is available
+            // (e.g. "doc_id" → "doc" for an undeclared reference).
+            let parent_type = referenced_table_for_fk_col(db, join_table, fk_column).map_or_else(
+                || parent_type_from_fk_column(fk_column),
+                canonical_fga_type_name,
+            );
 
             table_plan.ensure_direct(
                 parent_type.clone(),
@@ -775,6 +842,7 @@ fn pattern_to_expr_for_target(
                 join_table: join_table.clone(),
                 fk_col: fk_column.clone(),
                 user_col: user_column.clone(),
+                parent_type: parent_type.clone(),
                 extra_predicate_sql: extra_predicate_sql.clone(),
             };
             table_plan.add_source(membership_source.clone());
@@ -823,15 +891,51 @@ fn pattern_to_expr_for_target(
                 return deny_expr(table_plan);
             }
 
-            let parent_relation = parent_type_from_fk_column(fk_column);
+            let parent_relation = canonical_fga_type_name(parent_table);
 
             table_plan.ensure_direct(
                 parent_relation.clone(),
                 vec![DirectSubject::Type(parent_relation.clone())],
             );
-            all_types
+            // Pre-populate the parent TypePlan with the relations derived from the
+            // inner pattern.  This ensures the parent has the correct action relation
+            // even if its own policies haven't been processed yet.
+            let parent_plan = all_types
                 .entry(parent_relation.clone())
                 .or_insert_with(|| TypePlan::new(&parent_relation));
+            // Temporarily take the parent plan out to call pattern_to_expr_for_target.
+            // We'll re-insert it afterwards.
+            let mut parent_plan_owned =
+                std::mem::replace(parent_plan, TypePlan::new(&parent_relation));
+            let inner_expr = pattern_to_expr_for_target(
+                &inner_pattern.pattern,
+                policy_name,
+                target,
+                &mut parent_plan_owned,
+                all_types,
+                registry,
+                todos,
+                hints,
+                db,
+                parent_table,
+            );
+            // Re-insert the (now populated) parent plan.
+            *all_types
+                .entry(parent_relation.clone())
+                .or_insert_with(|| TypePlan::new(&parent_relation)) = parent_plan_owned;
+
+            if matches!(inner_expr, UsersetExpr::Computed(ref name) if name == "no_access") {
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: policy_name.to_string(),
+                    message: format!(
+                        "Parent inheritance from '{parent_table}' inner pattern could not be \
+                         safely translated; '{parent_table}' may not expose '{}' \
+                         (check parent table's RLS policies)",
+                        action_relation_for_target(target)
+                    ),
+                });
+            }
 
             if resolve_pk_column(source_table, db).is_some() {
                 table_plan.add_source(TupleSource::ParentBridge {
@@ -1078,15 +1182,22 @@ fn role_for_level(sorted_roles: &[RoleRelationName], min_level: i32) -> Option<S
         .map(RoleRelationName::role_relation)
 }
 
+/// Build the `OpenFGA` userset expression for a P2 role-name-in-list policy.
+///
+/// `selected_names` is the set of role **original names** (lowercased) that the
+/// policy grants access to.  Roles that share an integer level but have a
+/// *different* name are intentionally excluded — this prevents the conflation
+/// bug where `viewer=1` and `guest=1` both grant access when only `'viewer'`
+/// is listed in the SQL policy.
 fn exact_roles_expr(
     sorted_roles: &[RoleRelationName],
-    selected_levels: &BTreeSet<i32>,
+    selected_names: &BTreeSet<String>,
     has_team_support: bool,
 ) -> Option<UsersetExpr> {
     let mut children = Vec::new();
 
     for role in sorted_roles {
-        if selected_levels.contains(&role.level) {
+        if selected_names.contains(&role.original_name.to_lowercase()) {
             let grant_name = role.grant_relation();
             children.push(UsersetExpr::Computed(grant_name.clone()));
             if has_team_support {
@@ -1098,18 +1209,20 @@ fn exact_roles_expr(
         }
     }
 
-    if sorted_roles
-        .iter()
-        .map(|role| role.level)
-        .max()
-        .is_some_and(|max| selected_levels.contains(&max))
-    {
-        children.push(UsersetExpr::Computed("owner_user".to_string()));
-        if has_team_support {
-            children.push(UsersetExpr::TupleToUserset {
-                tupleset: "owner_team".to_string(),
-                computed: "member".to_string(),
-            });
+    // Include owner_user / owner_team when the highest-level role is selected.
+    let max_level = sorted_roles.iter().map(|role| role.level).max();
+    if let Some(max) = max_level {
+        let max_is_selected = sorted_roles
+            .iter()
+            .any(|r| r.level == max && selected_names.contains(&r.original_name.to_lowercase()));
+        if max_is_selected {
+            children.push(UsersetExpr::Computed("owner_user".to_string()));
+            if has_team_support {
+                children.push(UsersetExpr::TupleToUserset {
+                    tupleset: "owner_team".to_string(),
+                    computed: "member".to_string(),
+                });
+            }
         }
     }
 
@@ -1488,6 +1601,23 @@ fn ir_table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
     lookup_table(db, table).is_some_and(|t| t.columns(db).any(|c| c.column_name() == col))
 }
 
+/// Returns the name of the table that `fk_column` in `table` references, or
+/// `None` if no matching FK constraint is found in the schema.
+fn referenced_table_for_fk_col<'db>(
+    db: &'db ParserDB,
+    table: &str,
+    fk_column: &str,
+) -> Option<&'db str> {
+    let table_info = lookup_table(db, table)?;
+    for fk in table_info.foreign_keys(db) {
+        let uses_col = fk.host_columns(db).any(|c| c.column_name() == fk_column);
+        if uses_col {
+            return Some(fk.referenced_table(db).table_name());
+        }
+    }
+    None
+}
+
 fn resolve_principal_info(
     db: &ParserDB,
     configured_table: Option<&str>,
@@ -1697,8 +1827,13 @@ fn populate_role_threshold_sources(
         return;
     }
 
+    // Deduplicate by integer level: two role names at the same level produce
+    // duplicate WHEN arms in the generated CASE expression (second is unreachable).
+    // Keep only the first occurrence of each level (sorted by (level, name)).
+    let mut seen_levels = std::collections::HashSet::new();
     let role_cases: Vec<(i32, String, String)> = sorted_roles
         .iter()
+        .filter(|role| seen_levels.insert(role.level))
         .map(|role| {
             (
                 role.level,
@@ -1853,6 +1988,8 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                 pattern,
                 confidence: ConfidenceLevel::A,
             }),
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         }
     }
 
@@ -2090,12 +2227,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert_eq!(
             p5_expr,
             UsersetExpr::TupleToUserset {
-                tupleset: "project".to_string(),
+                tupleset: "projects".to_string(),
                 computed: "can_select".to_string(),
             }
         );
         assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
-        assert!(table_plan.direct_relations.contains_key("project"));
+        assert!(table_plan.direct_relations.contains_key("projects"));
         assert!(todos
             .iter()
             .any(|t| t.message.contains("still requires runtime enforcement")));
@@ -2210,6 +2347,50 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     }
 
     #[test]
+    fn exact_roles_expr_does_not_conflate_roles_at_same_level() {
+        // `viewer=1` and `guest=1` share the same integer level.  Selecting only
+        // `'viewer'` by name must NOT include `grant_guest`.
+        let mut table_plan = TypePlan::new("docs");
+        let mut all_types = BTreeMap::new();
+        let role_levels = HashMap::from([
+            ("viewer".to_string(), 1),
+            ("guest".to_string(), 1),
+            ("editor".to_string(), 2),
+        ]);
+
+        let sorted =
+            ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+
+        // Select only "viewer" by name.
+        let selected = BTreeSet::from(["viewer".to_string()]);
+        let expr =
+            exact_roles_expr(&sorted, &selected, false).expect("should produce an expression");
+
+        // The expression must include grant_viewer.
+        let contains_viewer = match &expr {
+            UsersetExpr::Computed(n) => n == "grant_viewer",
+            UsersetExpr::Union(children) => children
+                .iter()
+                .any(|c| matches!(c, UsersetExpr::Computed(n) if n == "grant_viewer")),
+            _ => false,
+        };
+        assert!(contains_viewer, "grant_viewer must be included");
+
+        // The expression must NOT include grant_guest.
+        let contains_guest = match &expr {
+            UsersetExpr::Computed(n) => n == "grant_guest",
+            UsersetExpr::Union(children) => children
+                .iter()
+                .any(|c| matches!(c, UsersetExpr::Computed(n) if n == "grant_guest")),
+            _ => false,
+        };
+        assert!(
+            !contains_guest,
+            "grant_guest must not be included when only 'viewer' was selected"
+        );
+    }
+
+    #[test]
     fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclusion() {
         let mut table_plan = TypePlan::new("docs");
         let mut all_types = BTreeMap::new();
@@ -2225,7 +2406,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(table_plan.direct_relations.contains_key("grant_admin"));
         assert!(all_types.contains_key("team"));
 
-        let selected = BTreeSet::from([3]);
+        let selected = BTreeSet::from(["admin".to_string()]);
         let expr =
             exact_roles_expr(&sorted, &selected, true).expect("roles should produce expression");
         assert!(matches!(&expr, UsersetExpr::Union(children) if children
@@ -2617,5 +2798,81 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
             task.computed_relations.get("can_update_using"),
             Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
         ));
+    }
+
+    #[test]
+    fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
+        // UPDATE policy: USING has high-confidence P3, WITH CHECK has low-confidence (would
+        // normally be filtered).  After confidence filtering, with_check_was_filtered = true
+        // → the USING→WITH CHECK mirror must NOT be applied.
+        let db = docs_db_with_policy(
+            "CREATE POLICY docs_upd ON docs FOR UPDATE \
+             USING (owner_id = current_user) WITH CHECK (owner_id = current_user);",
+        );
+        let policy = db.policies().next().expect("policy should exist").clone();
+        let p3 = PatternClass::P3DirectOwnership {
+            column: "owner_id".to_string(),
+        };
+        // Construct a policy where WITH CHECK has low confidence (B) and USING has high (A).
+        let mut classified = ClassifiedPolicy {
+            policy,
+            using_classification: Some(ClassifiedExpr {
+                pattern: p3.clone(),
+                confidence: ConfidenceLevel::A,
+            }),
+            with_check_classification: Some(ClassifiedExpr {
+                pattern: p3.clone(),
+                confidence: ConfidenceLevel::B,
+            }),
+            using_was_filtered: false,
+            with_check_was_filtered: false,
+        };
+        // Filter at level A: WITH CHECK (B) gets filtered out → with_check_was_filtered = true.
+        let filtered = filter_policies_for_output(&[classified.clone()], ConfidenceLevel::A);
+        let filtered_cp = filtered.first().expect("USING should survive at A");
+        assert!(
+            filtered_cp.with_check_was_filtered,
+            "with_check_was_filtered should be true after filtering"
+        );
+        assert!(
+            filtered_cp.with_check_classification.is_none(),
+            "with_check_classification should be None after filtering"
+        );
+
+        // Build a schema plan from the filtered policy.
+        let registry = FunctionRegistry::new();
+        let plan = build_schema_plan(std::slice::from_ref(filtered_cp), &db, &registry);
+        let docs = plan
+            .types
+            .iter()
+            .find(|t| t.type_name == "docs")
+            .expect("docs type should exist");
+        // USING survived → can_update_using should be defined.
+        assert!(
+            docs.computed_relations.contains_key("can_update"),
+            "can_update relation should exist from USING expression"
+        );
+        // WITH CHECK was filtered, NOT mirrored → can_insert or can_update_check should NOT
+        // exist (we don't mirror low-confidence USING into WITH CHECK slot).
+        // For UPDATE the check target is can_update_check — it should be absent.
+        assert!(
+            !docs.computed_relations.contains_key("can_update_check"),
+            "can_update_check must not be silently mirrored from USING when with_check was filtered; \
+             relations present: {:?}",
+            docs.computed_relations.keys().collect::<Vec<_>>()
+        );
+        // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
+        classified.with_check_classification = None; // never present
+        classified.with_check_was_filtered = false;
+        let plan2 = build_schema_plan(&[classified], &db, &registry);
+        let docs2 = plan2
+            .types
+            .iter()
+            .find(|t| t.type_name == "docs")
+            .expect("docs type");
+        assert!(
+            docs2.computed_relations.contains_key("can_update"),
+            "mirror should still apply when with_check was never present"
+        );
     }
 }

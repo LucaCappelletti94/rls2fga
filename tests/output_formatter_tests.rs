@@ -24,9 +24,9 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::D);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::D);
     let expected = tuple_generator::format_tuples(&tuples);
 
     let out_dir = unique_temp_dir("rls2fga_formatter");
@@ -36,7 +36,7 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
         &model,
         &tuples,
         &classified,
-        &ConfidenceLevel::D,
+        ConfidenceLevel::D,
     )
     .unwrap();
     let written = std::fs::read_to_string(out_dir.join("emi_tuples.sql")).unwrap();
@@ -61,9 +61,9 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
 
     let out_dir = unique_temp_dir("rls2fga_formatter_report_threshold");
     formatter::write_output(
@@ -72,7 +72,7 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
         &model,
         &tuples,
         &classified,
-        &ConfidenceLevel::B,
+        ConfidenceLevel::B,
     )
     .expect("write_output should succeed");
 

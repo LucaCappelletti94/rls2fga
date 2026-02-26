@@ -9,9 +9,9 @@ type user
 
 type projects
   relations
-    define team: [team]
-    define can_select: team->member
+    define teams: [teams]
+    define can_select: teams->member
 
-type team
+type teams
   relations
     define member: [user]

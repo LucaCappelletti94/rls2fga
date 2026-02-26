@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
@@ -10,7 +10,17 @@ use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
     /// Function name → semantic classification lookup table.
-    pub functions: HashMap<String, FunctionSemantic>,
+    pub(crate) functions: HashMap<String, FunctionSemantic>,
+    /// Explicitly registered public-flag column names (normalized to lowercase).
+    ///
+    /// When non-empty, only these columns will produce a high-confidence (A) `P6BooleanFlag`
+    /// classification.  Columns that match the heuristic (`is_public_flag_column_name`) but
+    /// are *not* in this set receive `ConfidenceLevel::B` instead, signalling that manual
+    /// review is recommended before granting wildcard public access.
+    ///
+    /// When empty (the default), all heuristic matches receive `ConfidenceLevel::B` —
+    /// ensuring that implicit public-access grants always surface for review.
+    pub(crate) public_flag_columns: HashSet<String>,
 }
 
 impl FunctionRegistry {
@@ -37,7 +47,24 @@ impl FunctionRegistry {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
+            public_flag_columns: HashSet::new(),
         }
+    }
+
+    /// Register a column name as a confirmed public-flag column (e.g. `"is_public"`).
+    ///
+    /// Registered columns produce a `P6BooleanFlag` at `ConfidenceLevel::A`.
+    /// Unregistered columns that match the name heuristic still produce `P6BooleanFlag`
+    /// but at `ConfidenceLevel::B` to encourage manual review.
+    pub fn register_public_flag_column(&mut self, column: impl Into<String>) {
+        self.public_flag_columns
+            .insert(normalize_identifier(&column.into()));
+    }
+
+    /// True when `column` is an explicitly registered public-flag column.
+    pub(crate) fn is_confirmed_public_flag_column(&self, column: &str) -> bool {
+        self.public_flag_columns
+            .contains(&normalize_identifier(column))
     }
 
     /// Load function semantics from a JSON string.
@@ -80,6 +107,11 @@ impl FunctionRegistry {
             self.get(name),
             Some(FunctionSemantic::CurrentUserAccessor { .. })
         )
+    }
+
+    /// Check if a function is a role-name accessor (returns the current user's role as a string).
+    pub fn is_role_accessor(&self, name: &str) -> bool {
+        matches!(self.get(name), Some(FunctionSemantic::RoleAccessor { .. }))
     }
 
     /// Infer function semantics from parsed in-schema function bodies.

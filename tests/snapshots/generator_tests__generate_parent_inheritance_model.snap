@@ -7,8 +7,6 @@ model
 
 type user
 
-type project
-
 type projects
   relations
     define owner: [user]
@@ -16,5 +14,5 @@ type projects
 
 type tasks
   relations
-    define project: [project]
-    define can_select: project->can_select
+    define projects: [projects]
+    define can_select: projects->can_select

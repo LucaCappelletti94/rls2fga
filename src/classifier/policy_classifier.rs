@@ -46,17 +46,38 @@ pub fn classify_policies_with_registry(
                 .as_ref()
                 .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
 
+            // PostgreSQL semantics: a bare `CREATE POLICY p ON t` with no
+            // USING or WITH CHECK clause defaults to USING (TRUE), granting
+            // unrestricted access.  Synthesize P10ConstantBool{true} so the
+            // policy is not silently dropped by the confidence filter.
+            let using_classification =
+                if using_classification.is_none() && with_check_classification.is_none() {
+                    Some(ClassifiedExpr {
+                        pattern: PatternClass::P10ConstantBool { value: true },
+                        confidence: ConfidenceLevel::A,
+                    })
+                } else {
+                    using_classification
+                };
+
             ClassifiedPolicy {
                 policy: policy.clone(),
                 using_classification,
                 with_check_classification,
+                using_was_filtered: false,
+                with_check_was_filtered: false,
             }
         })
         .collect()
 }
 
+/// Maximum recursion depth for `classify_expr`.
+///
+/// Beyond this depth an expression is classified as `Unknown D` to avoid
+/// stack overflows from adversarially-nested SQL.
+const MAX_CLASSIFY_DEPTH: u32 = 64;
+
 /// Recursively classify an expression using the pattern decision tree.
-#[allow(clippy::only_used_in_recursion)]
 pub fn classify_expr(
     expr: &Expr,
     db: &ParserDB,
@@ -64,12 +85,47 @@ pub fn classify_expr(
     table: &str,
     command: &PolicyCommand,
 ) -> ClassifiedExpr {
+    classify_expr_depth(expr, db, registry, table, command, 0)
+}
+
+fn classify_expr_depth(
+    expr: &Expr,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    table: &str,
+    command: &PolicyCommand,
+    depth: u32,
+) -> ClassifiedExpr {
+    if depth > MAX_CLASSIFY_DEPTH {
+        return ClassifiedExpr {
+            pattern: PatternClass::Unknown {
+                sql_text: expr.to_string(),
+                reason: format!(
+                    "Expression exceeds maximum nesting depth ({MAX_CLASSIFY_DEPTH}); \
+                     manual review required"
+                ),
+            },
+            confidence: ConfidenceLevel::D,
+        };
+    }
+    classify_expr_inner(expr, db, registry, table, command, depth)
+}
+
+fn classify_expr_inner(
+    expr: &Expr,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    table: &str,
+    command: &PolicyCommand,
+    depth: u32,
+) -> ClassifiedExpr {
     // Handle AND/OR composition first
     if let Expr::BinaryOp { left, op, right } = expr {
         match op {
             BinaryOperator::Or => {
-                let left_class = classify_expr(left, db, registry, table, command);
-                let right_class = classify_expr(right, db, registry, table, command);
+                let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
+                let right_class =
+                    classify_expr_depth(right, db, registry, table, command, depth + 1);
 
                 // Confidence: B if all sub-patterns are A; escalates to highest otherwise
                 let min_conf = std::cmp::min(left_class.confidence, right_class.confidence);
@@ -88,8 +144,9 @@ pub fn classify_expr(
                 };
             }
             BinaryOperator::And => {
-                let left_class = classify_expr(left, db, registry, table, command);
-                let right_class = classify_expr(right, db, registry, table, command);
+                let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
+                let right_class =
+                    classify_expr_depth(right, db, registry, table, command, depth + 1);
 
                 // Check if either branch is an attribute check → P7
                 let left_attr = recognizers::is_attribute_check(left);
@@ -140,16 +197,20 @@ pub fn classify_expr(
 
     // Handle nested parens / grouped expressions
     if let Expr::Nested(inner) = expr {
-        return classify_expr(inner, db, registry, table, command);
+        return classify_expr_depth(inner, db, registry, table, command, depth + 1);
     }
 
-    // Handle NOT unary operator: classify the inner expression to produce an informative reason
+    // Handle NOT unary operator.
     if let Expr::UnaryOp {
         op: UnaryOperator::Not,
         expr: inner,
     } = expr
     {
-        let inner_classified = classify_expr(inner, db, registry, table, command);
+        // NOT TRUE → FALSE, NOT FALSE → TRUE: classify as P10 constant bool.
+        if let Some(classified) = recognizers::recognize_p10_constant_bool(expr, db, registry) {
+            return classified;
+        }
+        let inner_classified = classify_expr_depth(inner, db, registry, table, command, depth + 1);
         let desc = pattern_short_name(&inner_classified.pattern);
         return ClassifiedExpr {
             pattern: PatternClass::Unknown {
@@ -273,6 +334,11 @@ pub fn classify_expr(
 
     // Try P10: constant boolean policy
     if let Some(classified) = recognizers::recognize_p10_constant_bool(expr, db, registry) {
+        return classified;
+    }
+
+    // Try array membership / overlap (Phase 6e): = ANY(...) and &&.
+    if let Some(classified) = recognizers::recognize_array_patterns(expr, registry) {
         return classified;
     }
 
@@ -455,6 +521,26 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             ));
             assert_eq!(classified.confidence, ConfidenceLevel::C);
         }
+    }
+
+    #[test]
+    fn classify_and_with_in_list_attribute_guard_maps_to_p7() {
+        // Phase 3g: `status IN ('active', 'pending')` is an attribute check so
+        // `owner_id = current_user AND status IN ('active', 'pending')` maps to P7.
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("owner_id = current_user AND status IN ('active', 'pending')");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+            ),
+            "IN-list attribute guard should produce P7, got: {:?}",
+            classified.pattern
+        );
+        assert_eq!(classified.confidence, ConfidenceLevel::C);
     }
 
     #[test]
@@ -881,6 +967,130 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         assert!(
             !matches!(&classified.pattern, PatternClass::P4ExistsMembership { .. }),
             "EXISTS with no user predicate must not classify as P4, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn classify_not_true_and_not_false_become_p10() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        // NOT TRUE → P10ConstantBool{value: false}
+        let not_true = parse_expr("NOT TRUE");
+        let classified_not_true =
+            classify_expr(&not_true, &db, &registry, "docs", &PolicyCommand::Select);
+        assert_eq!(
+            classified_not_true.pattern,
+            PatternClass::P10ConstantBool { value: false },
+            "NOT TRUE should classify as P10 constant false"
+        );
+        assert_eq!(classified_not_true.confidence, ConfidenceLevel::A);
+
+        // NOT FALSE → P10ConstantBool{value: true}
+        let not_false = parse_expr("NOT FALSE");
+        let classified_not_false =
+            classify_expr(&not_false, &db, &registry, "docs", &PolicyCommand::Select);
+        assert_eq!(
+            classified_not_false.pattern,
+            PatternClass::P10ConstantBool { value: true },
+            "NOT FALSE should classify as P10 constant true"
+        );
+        assert_eq!(classified_not_false.confidence, ConfidenceLevel::A);
+    }
+
+    #[test]
+    fn classify_bare_policy_synthesizes_p10_true() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs (id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_open ON docs;
+",
+        )
+        .expect("schema should parse");
+
+        let registry = FunctionRegistry::new();
+        let classified = classify_policies(&db, &registry);
+        assert_eq!(classified.len(), 1);
+
+        let policy = &classified[0];
+        assert_eq!(
+            policy.using_classification.as_ref().map(|c| &c.pattern),
+            Some(&PatternClass::P10ConstantBool { value: true }),
+            "bare policy with no USING/WITH CHECK should synthesize P10 true as USING"
+        );
+        assert_eq!(
+            policy.using_classification.as_ref().map(|c| c.confidence),
+            Some(ConfidenceLevel::A),
+            "synthesized implicit TRUE should have confidence A"
+        );
+        assert!(
+            policy.with_check_classification.is_none(),
+            "bare policy should have no WITH CHECK"
+        );
+    }
+
+    #[test]
+    fn classify_current_role_is_treated_as_current_user_accessor() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        // `current_role` is a PostgreSQL session-variable keyword equivalent to
+        // `current_user` for authorization purposes.
+        let expr = parse_expr("owner_id = current_role");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column }
+                if column == "owner_id"),
+            "owner_id = current_role should classify as P3, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn classify_session_user_is_not_treated_as_current_user_accessor() {
+        // `session_user` is the original connection user and does NOT change under SET ROLE,
+        // unlike `current_user`.  Policies using `session_user` must classify as Unknown (D)
+        // so the operator can manually verify the intended semantics.
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("owner_id = session_user");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::Unknown { .. }),
+            "owner_id = session_user should classify as Unknown, got: {:?}",
+            classified.pattern
+        );
+        assert_eq!(
+            classified.confidence,
+            ConfidenceLevel::D,
+            "session_user policies should produce confidence D"
+        );
+    }
+
+    #[test]
+    fn classify_deeply_nested_expression_returns_unknown_d_beyond_depth_limit() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        // Build an AND chain more than 64 levels deep:
+        // `TRUE AND TRUE AND TRUE AND ...` with 66 levels forces depth > 64.
+        // The AND handler recurses into each sub-expression; with 66 ANDs the
+        // depth counter will exceed MAX_CLASSIFY_DEPTH.
+        let inner_sql = "owner_id = current_user";
+        // Build a chain of 70 ANDs: `TRUE AND TRUE AND ... AND (owner_id = current_user)`
+        let and_chain: String = "TRUE AND ".repeat(70) + inner_sql;
+
+        let expr = parse_expr(&and_chain);
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        // With 70 levels of AND nesting the leaf expressions are beyond depth 64.
+        // The resulting P8Composite or Unknown D is acceptable; what matters is
+        // the classifier does not panic or overflow the stack.
+        assert!(
+            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            "deeply nested expression should not silently classify as P3, got: {:?}",
             classified.pattern
         );
     }

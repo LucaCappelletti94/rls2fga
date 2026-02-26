@@ -130,7 +130,7 @@ fn compound_or_owner_or_public() {
     }
 
     // Verify model contains the composite relation
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     assert!(
         model.dsl.contains("owner or public_viewer"),
         "Model should contain 'owner or public_viewer', got:\n{}",
@@ -139,7 +139,7 @@ fn compound_or_owner_or_public() {
 
     // Verify tuple generation
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
@@ -291,7 +291,7 @@ fn multi_policy_table_classification() {
     );
 
     // Check that the model generates something reasonable
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -331,7 +331,7 @@ fn role_in_list_classification() {
     }
 
     // Verify model generation produces role threshold output
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -363,12 +363,12 @@ fn pipeline_summary_all_common_patterns() {
 
         let classified = policy_classifier::classify_policies(&db, &registry);
         let model =
-            model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::D);
+            model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
         let tuples = tuple_generator::generate_tuple_queries(
             &classified,
             &db,
             &registry,
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         );
 
         let all_a = classified.iter().all(|cp| {

@@ -68,7 +68,7 @@ impl fmt::Display for PolicyCommand {
 }
 
 /// Boolean operator for composite patterns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BoolOp {
     /// Logical conjunction: all sub-conditions must hold.
     And,
@@ -77,7 +77,7 @@ pub enum BoolOp {
 }
 
 /// Classified pattern for an expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PatternClass {
     /// P1: Numeric role threshold — `role_level(user, resource) >= N`.
     P1NumericThreshold {
@@ -200,7 +200,7 @@ impl std::str::FromStr for ConfidenceLevel {
 }
 
 /// A classified expression with its pattern and confidence.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClassifiedExpr {
     /// The matched pattern (P1–P10 or Unknown).
     pub pattern: PatternClass,
@@ -229,6 +229,14 @@ pub struct ClassifiedPolicy {
     pub using_classification: Option<ClassifiedExpr>,
     /// Classification of the WITH CHECK expression, if present.
     pub with_check_classification: Option<ClassifiedExpr>,
+    /// Set to `true` when `using_classification` was present but dropped by
+    /// `filter_policies_for_output` due to insufficient confidence.
+    /// Distinguishes "expression never existed" from "expression was filtered".
+    pub using_was_filtered: bool,
+    /// Set to `true` when `with_check_classification` was present but dropped
+    /// by `filter_policies_for_output` due to insufficient confidence.
+    /// When `true`, the USING→WITH CHECK mirror fallback must not be applied.
+    pub with_check_was_filtered: bool,
 }
 
 impl ClassifiedPolicy {
@@ -309,16 +317,22 @@ pub fn filter_policies_for_output(
         .iter()
         .filter_map(|cp| {
             let mut filtered = cp.clone();
-            filtered.using_classification = cp
+            let using_kept = cp
                 .using_classification
                 .as_ref()
                 .filter(|c| c.confidence >= min_confidence)
                 .cloned();
-            filtered.with_check_classification = cp
+            filtered.using_was_filtered = cp.using_classification.is_some() && using_kept.is_none();
+            filtered.using_classification = using_kept;
+
+            let with_check_kept = cp
                 .with_check_classification
                 .as_ref()
                 .filter(|c| c.confidence >= min_confidence)
                 .cloned();
+            filtered.with_check_was_filtered =
+                cp.with_check_classification.is_some() && with_check_kept.is_none();
+            filtered.with_check_classification = with_check_kept;
 
             if filtered.using_classification.is_some()
                 || filtered.with_check_classification.is_some()
@@ -417,6 +431,8 @@ CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
             policy: first_policy(sql_default),
             using_classification: None,
             with_check_classification: None,
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         };
         assert_eq!(cp_default.name(), "p_default");
         assert_eq!(cp_default.table_name(), "docs");
@@ -427,6 +443,8 @@ CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
             policy: first_policy(sql_explicit),
             using_classification: None,
             with_check_classification: None,
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         };
         assert_eq!(cp_explicit.name(), "p_explicit");
         assert_eq!(cp_explicit.table_name(), "docs");
@@ -445,6 +463,8 @@ CREATE POLICY p_scoped ON docs FOR SELECT TO app_user, app_user, auditors USING 
             policy: first_policy(scoped_sql),
             using_classification: None,
             with_check_classification: None,
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         };
         assert_eq!(
             scoped.scoped_roles(),
@@ -460,6 +480,8 @@ CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
             policy: first_policy(public_sql),
             using_classification: None,
             with_check_classification: None,
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         };
         assert!(public.scoped_roles().is_empty());
     }

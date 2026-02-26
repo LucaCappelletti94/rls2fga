@@ -12,7 +12,7 @@ pub fn write_output(
     model: &GeneratedModel,
     tuples: &[TupleQuery],
     policies: &[ClassifiedPolicy],
-    min_confidence: &ConfidenceLevel,
+    min_confidence: ConfidenceLevel,
 ) -> Result<(), String> {
     validate_output_name(name)?;
 
@@ -32,7 +32,7 @@ pub fn write_output(
 
     // Write _report.md
     let report_path = output_dir.join(format!("{name}_report.md"));
-    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let filtered = filter_policies_for_output(policies, min_confidence);
     let report_content = report::build_report(model, &filtered);
     std::fs::write(&report_path, &report_content)
         .map_err(|e| format!("Failed to write {}: {e}", report_path.display()))?;
@@ -40,9 +40,40 @@ pub fn write_output(
     Ok(())
 }
 
+/// Windows reserved device names that must not be used as output names.
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 fn validate_output_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("Output name must not be empty".to_string());
+    }
+    // Reject names containing null bytes or other control characters.
+    if name.chars().any(char::is_control) {
+        return Err(format!(
+            "Invalid output name '{name}': control characters are not allowed"
+        ));
+    }
+    // Reject a bare dot (current directory reference).
+    if name == "." || name == ".." {
+        return Err(format!(
+            "Invalid output name '{name}': '.' and '..' are not allowed"
+        ));
+    }
+    // Reject colons (Windows drive separator; also problematic on macOS).
+    if name.contains(':') {
+        return Err(format!(
+            "Invalid output name '{name}': colons are not allowed"
+        ));
+    }
+    // Reject Windows reserved device names (case-insensitive).
+    let upper = name.to_uppercase();
+    if WINDOWS_RESERVED.contains(&upper.as_str()) {
+        return Err(format!(
+            "Invalid output name '{name}': Windows reserved device name"
+        ));
     }
     let candidate = Path::new(name);
     if candidate.is_absolute() {
@@ -105,7 +136,7 @@ mod tests {
             &empty_model(),
             &[],
             &[],
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         )
         .expect_err("directory creation should fail");
         assert!(err.contains("Failed to create output directory"));
@@ -122,7 +153,7 @@ mod tests {
             &empty_model(),
             &[],
             &[],
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         )
         .expect_err("unsafe output name should fail validation");
         assert!(err.contains("Invalid output name"));
@@ -133,7 +164,7 @@ mod tests {
             &empty_model(),
             &[],
             &[],
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         )
         .expect_err("path traversal should fail validation");
         assert!(err.contains("Invalid output name"));
@@ -153,7 +184,7 @@ mod tests {
             &empty_model(),
             &tuples,
             &[],
-            &ConfidenceLevel::D,
+            ConfidenceLevel::D,
         )
         .expect("write_output should succeed");
 
@@ -166,5 +197,56 @@ mod tests {
         assert_eq!(fga, "model");
         assert!(tuple_sql.contains("SELECT 1;"));
         assert!(report.contains("# rls2fga Translation Report"));
+    }
+
+    #[test]
+    fn validate_output_name_rejects_dot_and_dotdot() {
+        assert!(
+            validate_output_name(".").is_err(),
+            "bare dot should be rejected"
+        );
+        assert!(
+            validate_output_name("..").is_err(),
+            "dotdot should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_output_name_rejects_control_characters() {
+        let with_null = "name\x00suffix";
+        assert!(
+            validate_output_name(with_null).is_err(),
+            "null byte should be rejected"
+        );
+        let with_newline = "name\nsuffix";
+        assert!(
+            validate_output_name(with_newline).is_err(),
+            "newline should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_output_name_rejects_colons() {
+        assert!(
+            validate_output_name("C:name").is_err(),
+            "colon should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_output_name_rejects_windows_reserved_names() {
+        for reserved in &["CON", "con", "NUL", "nul", "COM1", "LPT9"] {
+            assert!(
+                validate_output_name(reserved).is_err(),
+                "Windows reserved name '{reserved}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_output_name_accepts_normal_names() {
+        assert!(validate_output_name("my_output").is_ok());
+        assert!(validate_output_name("schema-v1").is_ok());
+        assert!(validate_output_name("report_2024").is_ok());
     }
 }

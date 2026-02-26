@@ -142,6 +142,9 @@ pub(crate) enum TupleSource {
         fk_col: String,
         /// Column in `join_table` referencing the user.
         user_col: String,
+        /// Resolved `OpenFGA` type name for the parent resource (derived from the
+        /// table that `fk_col` references, not from the FK-column-name heuristic).
+        parent_type: String,
         /// Additional predicate SQL, if any (e.g. `role = 'admin'`).
         extra_predicate_sql: Option<String>,
     },
@@ -229,32 +232,48 @@ impl TupleSource {
     pub(crate) fn dedup_key(&self) -> String {
         match self {
             Self::DirectOwnership {
-                table, owner_col, ..
+                table,
+                pk_col,
+                owner_col,
             } => {
-                format!("p3:{table}:{owner_col}")
+                format!("p3:{table}:{pk_col}:{owner_col}")
             }
             Self::RoleOwnerUser {
-                table, owner_col, ..
+                table,
+                pk_col,
+                owner_col,
+                user_table,
+                user_pk_col,
             } => {
-                format!("role_owner_user:{table}:{owner_col}")
+                format!("role_owner_user:{table}:{pk_col}:{owner_col}:{user_table}:{user_pk_col}")
             }
             Self::RoleOwnerTeam {
-                table, owner_col, ..
+                table,
+                pk_col,
+                owner_col,
+                team_table,
+                team_pk_col,
             } => {
-                format!("role_owner_team:{table}:{owner_col}")
+                format!("role_owner_team:{table}:{pk_col}:{owner_col}:{team_table}:{team_pk_col}")
             }
             Self::ExplicitGrants {
                 table,
+                grant_join_col,
                 grant_table,
                 grant_role_col,
+                grant_grantee_col,
+                grant_resource_col,
                 role_cases,
                 ..
             } => {
-                let levels: Vec<String> =
-                    role_cases.iter().map(|(l, _, _)| l.to_string()).collect();
+                let role_keys: Vec<String> = role_cases
+                    .iter()
+                    .map(|(l, rel, name)| format!("{l}:{rel}:{name}"))
+                    .collect();
                 format!(
-                    "grants:{table}:{grant_table}:{grant_role_col}:{}",
-                    levels.join(",")
+                    "grants:{table}:{grant_table}:{grant_role_col}:{grant_join_col}:\
+                     {grant_grantee_col}:{grant_resource_col}:{}",
+                    role_keys.join(",")
                 )
             }
             Self::TeamMembership {
@@ -268,10 +287,11 @@ impl TupleSource {
                 join_table,
                 fk_col,
                 user_col,
+                parent_type,
                 extra_predicate_sql,
             } => {
                 let extra = extra_predicate_sql.as_deref().unwrap_or("");
-                format!("p4:{join_table}:{fk_col}:{user_col}:{extra}")
+                format!("p4:{join_table}:{fk_col}:{user_col}:{parent_type}:{extra}")
             }
             Self::ParentBridge {
                 table,
@@ -281,20 +301,22 @@ impl TupleSource {
                 format!("bridge:{table}:{fk_col}:{parent_type}")
             }
             Self::PublicFlag {
-                table, flag_col, ..
+                table,
+                pk_col,
+                flag_col,
             } => {
-                format!("p6:{table}:{flag_col}")
+                format!("p6:{table}:{pk_col}:{flag_col}")
             }
-            Self::ConstantTrue { table, .. } => {
-                format!("p10_true:{table}")
+            Self::ConstantTrue { table, pk_col } => {
+                format!("p10_true:{table}:{pk_col}")
             }
             Self::PolicyScope {
                 table,
+                pk_col,
                 scope_relation,
                 pg_role,
-                ..
             } => {
-                format!("scope:{table}:{scope_relation}:{pg_role}")
+                format!("scope:{table}:{pk_col}:{scope_relation}:{pg_role}")
             }
             Self::Todo {
                 level,
@@ -370,18 +392,21 @@ mod tests {
             join_table: "members".to_string(),
             fk_col: "project_id".to_string(),
             user_col: "user_id".to_string(),
+            parent_type: "projects".to_string(),
             extra_predicate_sql: None,
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
             fk_col: "project_id".to_string(),
             user_col: "member_id".to_string(),
+            parent_type: "projects".to_string(),
             extra_predicate_sql: None,
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
             fk_col: "project_id".to_string(),
             user_col: "user_id".to_string(),
+            parent_type: "projects".to_string(),
             extra_predicate_sql: Some("role = 'admin'".to_string()),
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());

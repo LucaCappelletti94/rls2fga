@@ -3,12 +3,12 @@ source: tests/generator_tests.rs
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
 -- User ownership (owner_id references users)
-SELECT 'projects:' || id AS object, 'owner' AS relation, 'user:' || owner_id AS subject
-FROM projects
-WHERE owner_id IS NOT NULL;
+SELECT 'projects:' || "id" AS object, 'owner' AS relation, 'user:' || "owner_id" AS subject
+FROM "projects"
+WHERE "owner_id" IS NOT NULL;
 
--- tasks to project bridge for tuple-to-userset
-SELECT 'tasks:' || id AS object, 'project' AS relation, 'project:' || project_id AS subject
-FROM tasks
-WHERE id IS NOT NULL
-AND project_id IS NOT NULL;
+-- tasks to projects bridge for tuple-to-userset
+SELECT 'tasks:' || "id" AS object, 'projects' AS relation, 'projects:' || "project_id" AS subject
+FROM "tasks"
+WHERE "id" IS NOT NULL
+AND "project_id" IS NOT NULL;

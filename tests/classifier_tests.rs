@@ -116,7 +116,9 @@ fn classify_simple_ownership_as_p3() {
 }
 
 #[test]
-fn classify_public_flag_as_p6() {
+fn classify_public_flag_as_p6_heuristic_gives_confidence_b() {
+    // Without explicit registration the heuristic match is capped at B so that
+    // wildcard public-access grants always surface for manual review.
     let db = support::parse_fixture_db("public_flag");
     let registry = FunctionRegistry::new();
 
@@ -130,7 +132,34 @@ fn classify_public_flag_as_p6() {
         "Expected P6, got {:?}",
         classification.pattern,
     );
-    assert_eq!(classification.confidence, ConfidenceLevel::A);
+    assert_eq!(
+        classification.confidence,
+        ConfidenceLevel::B,
+        "Unregistered public-flag column should produce confidence B, not A"
+    );
+}
+
+#[test]
+fn classify_public_flag_registered_column_gives_confidence_a() {
+    let db = support::parse_fixture_db("public_flag");
+    let mut registry = FunctionRegistry::new();
+    registry.register_public_flag_column("is_public");
+
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    assert_eq!(classified.len(), 1);
+
+    let cp = &classified[0];
+    let classification = cp.using_classification.as_ref().unwrap();
+    assert!(
+        matches!(classification.pattern, PatternClass::P6BooleanFlag { .. }),
+        "Expected P6, got {:?}",
+        classification.pattern,
+    );
+    assert_eq!(
+        classification.confidence,
+        ConfidenceLevel::A,
+        "Explicitly registered public-flag column should produce confidence A"
+    );
 }
 
 #[test]

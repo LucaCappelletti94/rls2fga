@@ -3,6 +3,17 @@ use std::fmt::Write;
 use crate::classifier::patterns::ClassifiedPolicy;
 use crate::generator::model_generator::GeneratedModel;
 
+/// Escape a user-controlled string for safe embedding in a Markdown table cell.
+///
+/// Replaces `|` with `\|`, strips control characters, and collapses newlines
+/// so they do not break the table row.
+fn md_escape(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == ' ')
+        .collect::<String>()
+        .replace('|', r"\|")
+}
+
 /// Build a markdown report with confidence table and TODOs.
 pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> String {
     let mut report = String::new();
@@ -21,10 +32,10 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
             writeln!(
                 report,
                 "| {} (USING) | {} | {} | {} |",
-                cp.name(),
-                format_pattern(&c.pattern),
+                md_escape(cp.name()),
+                md_escape(&format_pattern(&c.pattern)),
                 c.confidence,
-                format_notes(&c.pattern)
+                md_escape(&format_notes(&c.pattern))
             )
             .unwrap();
         }
@@ -32,15 +43,15 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
             writeln!(
                 report,
                 "| {} (WITH CHECK) | {} | {} | {} |",
-                cp.name(),
-                format_pattern(&c.pattern),
+                md_escape(cp.name()),
+                md_escape(&format_pattern(&c.pattern)),
                 c.confidence,
-                format_notes(&c.pattern)
+                md_escape(&format_notes(&c.pattern))
             )
             .unwrap();
         }
         if cp.using_classification.is_none() && cp.with_check_classification.is_none() {
-            writeln!(report, "| {} | N/A | N/A |  |", cp.name()).unwrap();
+            writeln!(report, "| {} | N/A | N/A |  |", md_escape(cp.name())).unwrap();
         }
     }
 
@@ -153,6 +164,8 @@ CREATE POLICY {name} ON docs USING (TRUE);
                 pattern,
                 confidence: ConfidenceLevel::C,
             }),
+            using_was_filtered: false,
+            with_check_was_filtered: false,
         }
     }
 

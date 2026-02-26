@@ -23,7 +23,7 @@ fn load_emi() -> (
 #[test]
 fn generate_emi_model() {
     let (classified, db, registry) = load_emi();
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.dsl.trim());
 }
 
@@ -31,14 +31,14 @@ fn generate_emi_model() {
 fn generate_emi_tuples() {
     let (classified, db, registry) = load_emi();
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
 }
 
 #[test]
 fn generate_emi_json_model() {
     let (classified, db, registry) = load_emi();
-    let model = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_json_snapshot!(model);
 }
 
@@ -55,7 +55,7 @@ fn generate_simple_ownership_model() {
     );
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.dsl.trim());
 }
 
@@ -65,7 +65,7 @@ fn generate_public_flag_model() {
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.dsl.trim());
 }
 
@@ -76,11 +76,11 @@ fn generate_role_in_list_model_and_tuples() {
     let (db, registry) = support::load_fixture_db_and_registry("role_in_list");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("generate_role_in_list_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(
         "generate_role_in_list_tuples",
         tuple_generator::format_tuples(&tuples)
@@ -96,11 +96,11 @@ fn generate_membership_check_model_and_tuples() {
 
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("generate_membership_check_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(
         "generate_membership_check_tuples",
         tuple_generator::format_tuples(&tuples)
@@ -138,11 +138,11 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("generate_parent_inheritance_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(
         "generate_parent_inheritance_tuples",
         tuple_generator::format_tuples(&tuples)
@@ -158,7 +158,7 @@ fn generate_public_flag_tuples() {
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
 }
 
@@ -169,11 +169,11 @@ fn generate_abac_status_model_and_tuples() {
     let (db, registry) = support::load_fixture_db_and_registry("abac_status");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::C);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::C);
     insta::assert_snapshot!("generate_abac_status_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::C);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::C);
     insta::assert_snapshot!(
         "generate_abac_status_tuples",
         tuple_generator::format_tuples(&tuples)
@@ -189,11 +189,11 @@ fn generate_compound_or_model_and_tuples() {
 
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("generate_compound_or_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(
         "generate_compound_or_tuples",
         tuple_generator::format_tuples(&tuples)
@@ -201,6 +201,44 @@ fn generate_compound_or_model_and_tuples() {
 }
 
 // ── P10: constant TRUE / FALSE ───────────────────────────────────────────────
+
+#[test]
+fn schema_collision_tables_get_disambiguated_type_names() {
+    // Two schema-qualified tables that canonicalize to the same base name must receive
+    // distinct OpenFGA type names.  The generator should append a stable hex suffix to
+    // the colliding entry and emit a TodoItem describing the collision.
+    let sql = r"
+CREATE TABLE app.users (id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE app.users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY app_users_select ON app.users FOR SELECT USING (owner_id = current_user);
+
+CREATE TABLE auth.users (id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE auth.users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY auth_users_select ON auth.users FOR SELECT USING (owner_id = current_user);
+";
+    let db = sql_parser::parse_schema(sql).expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+
+    // Both tables must have a type in the DSL — they should NOT be merged.
+    let type_count = model.dsl.matches("type users").count()
+        + model
+            .dsl
+            .split('\n')
+            .filter(|l| l.trim().starts_with("type "))
+            .count();
+    assert!(
+        type_count > 1,
+        "Two tables canonicalizing to 'users' must produce at least two resource types;\n\nDSL:\n{}",
+        model.dsl
+    );
+    // A TODO item should flag the collision.
+    assert!(
+        model.todos.iter().any(|t| t.message.contains("collision")),
+        "Expected a TODO item describing the type-name collision"
+    );
+}
 
 #[test]
 fn generate_constant_bool_model_and_tuples() {
@@ -214,11 +252,11 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!("generate_constant_bool_model", model.dsl.trim());
 
     let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(
         "generate_constant_bool_tuples",
         tuple_generator::format_tuples(&tuples)

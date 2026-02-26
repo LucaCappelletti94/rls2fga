@@ -302,9 +302,9 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
     let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, &ConfidenceLevel::B);
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),

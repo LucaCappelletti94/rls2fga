@@ -128,9 +128,9 @@ pub fn generate_json_model(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
-    min_confidence: &ConfidenceLevel,
+    min_confidence: ConfidenceLevel,
 ) -> AuthorizationModel {
-    let filtered = filter_policies_for_output(policies, *min_confidence);
+    let filtered = filter_policies_for_output(policies, min_confidence);
     let plan = build_schema_plan(&filtered, db, registry);
 
     let type_definitions = plan

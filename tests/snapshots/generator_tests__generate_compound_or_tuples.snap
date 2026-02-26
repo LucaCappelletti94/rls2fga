@@ -3,11 +3,12 @@ source: tests/generator_tests.rs
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
 -- User ownership (owner_id references users)
-SELECT 'documents:' || id AS object, 'owner' AS relation, 'user:' || owner_id AS subject
-FROM documents
-WHERE owner_id IS NOT NULL;
+SELECT 'documents:' || "id" AS object, 'owner' AS relation, 'user:' || "owner_id" AS subject
+FROM "documents"
+WHERE "owner_id" IS NOT NULL;
 
 -- Public access flag (is_public)
-SELECT 'documents:' || id AS object, 'public_viewer' AS relation, 'user:*' AS subject
-FROM documents
-WHERE is_public = TRUE;
+SELECT 'documents:' || "id" AS object, 'public_viewer' AS relation, 'user:*' AS subject
+FROM "documents"
+WHERE "id" IS NOT NULL
+AND "is_public" = TRUE;

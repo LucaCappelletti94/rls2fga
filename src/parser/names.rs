@@ -1,9 +1,16 @@
-/// Return the identifier without surrounding double quotes.
-pub fn unquote_identifier(ident: &str) -> &str {
-    ident
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(ident)
+/// Return the identifier without surrounding double quotes, decoding internal
+/// escaped double-quote sequences (`""` → `"`).
+///
+/// Malformed identifiers (e.g. unterminated `"foo`) are returned unchanged so
+/// the caller can still produce a reasonable output.
+pub fn unquote_identifier(ident: &str) -> std::borrow::Cow<'_, str> {
+    let Some(inner) = ident.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return std::borrow::Cow::Borrowed(ident);
+    };
+    if !inner.contains("\"\"") {
+        return std::borrow::Cow::Borrowed(inner);
+    }
+    std::borrow::Cow::Owned(inner.replace("\"\"", "\""))
 }
 
 /// Normalize an identifier for case-insensitive matching.
@@ -162,12 +169,22 @@ pub fn is_user_related_column_name(name: &str) -> bool {
 }
 
 /// True when the name looks like a direct ownership column.
+///
+/// Uses underscore-delimited word-boundary matching to avoid false positives
+/// on names like `ownership_status` (contains "owner") or `abuser_id`
+/// (contains `user_id` as substring).
 pub fn is_owner_like_column_name(name: &str) -> bool {
     let lower = normalize_identifier(name);
-    lower.contains("owner")
-        || lower.contains("created_by")
-        || lower.contains("user_id")
-        || lower == "author_id"
+    let tokens: Vec<&str> = lower.split('_').collect();
+    // "owner" must appear as a complete token
+    let has_owner = tokens.contains(&"owner");
+    // "user_id" must be the last two tokens ("user", "id")
+    let has_user_id = tokens.windows(2).any(|w| w == ["user", "id"]);
+    // "created_by" must appear as two consecutive tokens
+    let has_created_by = tokens.windows(2).any(|w| w == ["created", "by"]);
+    // "author_id" is an exact match of the two-token form
+    let has_author_id = tokens.windows(2).any(|w| w == ["author", "id"]);
+    has_owner || has_user_id || has_created_by || has_author_id
 }
 
 /// Build lookup candidates for schema-aware table resolution.
@@ -225,6 +242,21 @@ mod tests {
     }
 
     #[test]
+    fn unquote_identifier_decodes_escaped_quotes() {
+        // Simple quoted identifier with no inner quotes.
+        assert_eq!(unquote_identifier(r#""foo""#).as_ref(), "foo");
+
+        // Double-quote escape: `"A""B"` → `A"B`
+        assert_eq!(unquote_identifier(r#""A""B""#).as_ref(), r#"A"B"#);
+
+        // Malformed (no closing quote) → returned unchanged.
+        assert_eq!(unquote_identifier(r#""foo"#).as_ref(), r#""foo"#);
+
+        // Unquoted identifier → returned unchanged.
+        assert_eq!(unquote_identifier("foo").as_ref(), "foo");
+    }
+
+    #[test]
     fn split_qualified_identifier_parts_handles_quoted_dots() {
         assert_eq!(
             split_qualified_identifier_parts(r#""my.schema"."table.name""#),
@@ -270,6 +302,32 @@ mod tests {
         assert!(is_user_related_column_name("created_by"));
         assert!(is_public_flag_column_name("is_public"));
         assert!(!is_public_flag_column_name("tenant_id"));
+    }
+
+    #[test]
+    fn is_owner_like_column_name_uses_word_boundaries() {
+        // Positive: exact token matches.
+        assert!(is_owner_like_column_name("owner_id"));
+        assert!(is_owner_like_column_name("owner"));
+        assert!(is_owner_like_column_name("user_id"));
+        assert!(is_owner_like_column_name("created_by"));
+        assert!(is_owner_like_column_name("author_id"));
+        assert!(is_owner_like_column_name("Owner_ID")); // case-insensitive
+
+        // Negative: "owner" or "user_id" are substrings, not complete tokens.
+        assert!(
+            !is_owner_like_column_name("ownership_status"),
+            "ownership_status should not match: 'ownership' ≠ 'owner'"
+        );
+        assert!(
+            !is_owner_like_column_name("abuser_id"),
+            "abuser_id should not match: 'abuser' breaks the user_id window"
+        );
+        // team_owner_flag DOES match because "owner" appears as a complete token.
+        assert!(
+            is_owner_like_column_name("team_owner_flag"),
+            "team_owner_flag should match: 'owner' is a complete token"
+        );
     }
 
     #[test]

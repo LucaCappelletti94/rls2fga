@@ -89,7 +89,7 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
 
     // 3. Write authorization model
     let (classified, db, registry) = load_emi();
-    let model = json_model::generate_json_model(&classified, &db, &registry, &ConfidenceLevel::B);
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
 
     let res = client
         .post(format!("{base}/stores/{store_id}/authorization-models"))
