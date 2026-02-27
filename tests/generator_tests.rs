@@ -108,30 +108,7 @@ fn generate_membership_check_model_and_tuples() {
 
 #[test]
 fn generate_parent_inheritance_model_and_tuples() {
-    let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE projects (
-  id UUID PRIMARY KEY,
-  owner_id UUID REFERENCES users(id)
-);
-CREATE TABLE tasks (
-  id UUID PRIMARY KEY,
-  project_id UUID NOT NULL REFERENCES projects(id)
-);
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
-CREATE POLICY projects_owner ON projects FOR SELECT TO PUBLIC
-  USING (owner_id = current_user);
-CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
-  EXISTS (
-    SELECT 1
-    FROM projects p
-    WHERE p.id = tasks.project_id
-      AND p.owner_id = current_user
-  )
-);
-";
-    let db = sql_parser::parse_schema(sql).expect("schema should parse");
+    let db = support::parse_fixture_db("parent_inheritance");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -239,13 +216,7 @@ CREATE POLICY auth_users_select ON auth.users FOR SELECT USING (owner_id = curre
 
 #[test]
 fn generate_constant_bool_model_and_tuples() {
-    let sql = r"
-CREATE TABLE docs (id UUID PRIMARY KEY);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p_true ON docs AS PERMISSIVE FOR SELECT TO PUBLIC USING (TRUE);
-CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
-";
-    let db = sql_parser::parse_schema(sql).expect("schema should parse");
+    let db = support::parse_fixture_db("constant_bool");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
