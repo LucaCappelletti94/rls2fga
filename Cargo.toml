@@ -24,9 +24,9 @@ diesel = { version = "2", features = ["postgres"], optional = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
-testcontainers = "=0.27.1"
+testcontainers = "0.27"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.13", features = ["json"] }
+openfga-client = "0.5"
 
 [lints.rust]
 unsafe_code = "forbid"

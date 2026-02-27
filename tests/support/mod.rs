@@ -46,3 +46,23 @@ pub(crate) fn load_fixture_classified(
     let classified = policy_classifier::classify_policies(&db, &registry);
     (classified, db, registry)
 }
+
+pub(crate) fn try_load_fixture_registry(fixture: &str) -> FunctionRegistry {
+    let path = fixture_dir(fixture).join("function_registry.json");
+    let mut registry = FunctionRegistry::new();
+    if let Ok(json) = std::fs::read_to_string(path) {
+        registry
+            .load_from_json(&json)
+            .expect("fixture registry should parse");
+    }
+    registry
+}
+
+pub(crate) fn try_load_fixture_classified(
+    fixture: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let db = parse_fixture_db(fixture);
+    let registry = try_load_fixture_registry(fixture);
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}

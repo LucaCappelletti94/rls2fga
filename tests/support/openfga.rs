@@ -1,95 +1,101 @@
-use reqwest::Client;
-use serde::Serialize;
-use serde_json::{json, Value};
+use openfga_client::client::{
+    AuthorizationModel, CreateStoreRequest, OpenFgaClient, OpenFgaServiceClient,
+    ReadAuthorizationModelRequest, TupleKey, TupleKeyWithoutCondition,
+    WriteAuthorizationModelRequest,
+};
+use openfga_client::tonic::transport::Channel;
 
-async fn expect_success_json(response: reqwest::Response, action: &str) -> Value {
-    let status = response.status();
-    let body: Value = response
-        .json()
+pub(crate) type GrpcClient = OpenFgaServiceClient<Channel>;
+
+pub(crate) async fn connect(grpc_port: u16) -> GrpcClient {
+    OpenFgaServiceClient::connect(format!("http://localhost:{grpc_port}"))
         .await
-        .unwrap_or_else(|e| panic!("{action} response should decode: {e}"));
-    assert!(status.is_success(), "{action} failed ({status}): {body:#}");
-    body
+        .expect("gRPC connection to OpenFGA should succeed")
 }
 
-pub(crate) async fn create_store(client: &Client, base: &str, name: &str) -> String {
+pub(crate) async fn create_store(client: &mut GrpcClient, name: &str) -> String {
     let response = client
-        .post(format!("{base}/stores"))
-        .json(&json!({ "name": name }))
-        .send()
+        .create_store(CreateStoreRequest {
+            name: name.to_string(),
+        })
         .await
-        .expect("store creation request should succeed");
+        .expect("store creation should succeed");
 
-    let body = expect_success_json(response, "Store creation").await;
-
-    body["id"].as_str().expect("missing store id").to_string()
+    response.into_inner().id
 }
 
-pub(crate) async fn write_authorization_model<T: Serialize>(
-    client: &Client,
-    base: &str,
+pub(crate) async fn write_authorization_model(
+    client: &mut GrpcClient,
     store_id: &str,
-    model: &T,
+    model: &rls2fga::generator::json_model::AuthorizationModel,
 ) -> String {
+    let json = serde_json::to_string(model).expect("model should serialize");
+    let proto_model: AuthorizationModel =
+        serde_json::from_str(&json).expect("model should deserialize into openfga-client type");
+
     let response = client
-        .post(format!("{base}/stores/{store_id}/authorization-models"))
-        .json(model)
-        .send()
+        .write_authorization_model(WriteAuthorizationModelRequest {
+            store_id: store_id.to_string(),
+            type_definitions: proto_model.type_definitions,
+            schema_version: proto_model.schema_version,
+            conditions: proto_model.conditions,
+        })
         .await
-        .expect("authorization model write request should succeed");
+        .expect("authorization model write should succeed");
 
-    let body = expect_success_json(response, "Model write").await;
-
-    body["authorization_model_id"]
-        .as_str()
-        .expect("missing authorization_model_id")
-        .to_string()
+    response.into_inner().authorization_model_id
 }
 
-pub(crate) async fn write_tuple_keys(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model_id: &str,
-    tuple_keys: &[Value],
-) {
-    let response = client
-        .post(format!("{base}/stores/{store_id}/write"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "writes": { "tuple_keys": tuple_keys }
-        }))
-        .send()
+pub(crate) async fn write_tuples(client: &OpenFgaClient<Channel>, tuples: Vec<TupleKey>) {
+    if tuples.is_empty() {
+        return;
+    }
+    client
+        .write(tuples, None)
         .await
-        .expect("tuple write request should succeed");
-
-    expect_success_json(response, "Tuple write").await;
+        .expect("tuple write should succeed");
 }
 
 pub(crate) async fn check_allowed(
-    client: &Client,
-    base: &str,
-    store_id: &str,
-    model_id: &str,
+    client: &OpenFgaClient<Channel>,
     user: &str,
     relation: &str,
     object: &str,
 ) -> bool {
-    let response = client
-        .post(format!("{base}/stores/{store_id}/check"))
-        .json(&json!({
-            "authorization_model_id": model_id,
-            "tuple_key": {
-                "user": user,
-                "relation": relation,
-                "object": object
-            }
-        }))
-        .send()
+    client
+        .check_simple(TupleKeyWithoutCondition {
+            user: user.to_string(),
+            relation: relation.to_string(),
+            object: object.to_string(),
+        })
         .await
-        .expect("check request should succeed");
+        .expect("check request should succeed")
+}
 
-    let body = expect_success_json(response, "Check").await;
+pub(crate) fn make_tuple(object: &str, relation: &str, user: &str) -> TupleKey {
+    TupleKey {
+        user: user.to_string(),
+        relation: relation.to_string(),
+        object: object.to_string(),
+        condition: None,
+    }
+}
 
-    body["allowed"].as_bool().expect("missing check result")
+pub(crate) async fn read_authorization_model(
+    client: &mut GrpcClient,
+    store_id: &str,
+    model_id: &str,
+) -> AuthorizationModel {
+    let response = client
+        .read_authorization_model(ReadAuthorizationModelRequest {
+            store_id: store_id.to_string(),
+            id: model_id.to_string(),
+        })
+        .await
+        .expect("read authorization model should succeed");
+
+    response
+        .into_inner()
+        .authorization_model
+        .expect("authorization model should be present")
 }

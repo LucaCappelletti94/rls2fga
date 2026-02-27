@@ -8,8 +8,6 @@ use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::{Integer, Text};
-use reqwest::Client;
-use serde_json::json;
 use testcontainers::{
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
@@ -183,7 +181,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         "Expected generated tuple SQL to produce at least one tuple"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.5")
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
         .with_exposed_port(8080.tcp())
         .with_exposed_port(8081.tcp())
         .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
@@ -192,24 +190,20 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         .await
         .expect("Failed to start OpenFGA container");
 
-    let openfga_port = openfga.get_host_port_ipv4(8080).await.unwrap();
-    let base = format!("http://localhost:{openfga_port}");
-    let client = Client::new();
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
 
-    let store_id = support::openfga::create_store(&client, &base, "pg18-parity-test").await;
+    let store_id = support::openfga::create_store(&mut service_client, "pg18-parity-test").await;
     let model_id =
-        support::openfga::write_authorization_model(&client, &base, &store_id, &model).await;
-    let writes: Vec<_> = tuple_keys
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
         .iter()
-        .map(|tuple| {
-            json!({
-                "user": tuple.subject,
-                "relation": tuple.relation,
-                "object": tuple.object
-            })
-        })
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
         .collect();
-    support::openfga::write_tuple_keys(&client, &base, &store_id, &model_id, &writes).await;
+
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
 
     let users = [USER_ALICE, USER_BOB, USER_CAROL, USER_DAVE, USER_EVE];
     let docs = [DOC_1, DOC_2];
@@ -229,10 +223,8 @@ async fn translated_schema_parity_postgres18_and_openfga() {
 
             for (relation, threshold) in relations {
                 let expected = role >= threshold;
-                let actual = support::openfga::check_allowed(
-                    &client, &base, &store_id, &model_id, &user, relation, &object,
-                )
-                .await;
+                let actual =
+                    support::openfga::check_allowed(&client, &user, relation, &object).await;
                 if expected != actual {
                     failures.push(format!(
                         "{user} {relation} {object}: postgres={expected} (role={role}), openfga={actual}"
