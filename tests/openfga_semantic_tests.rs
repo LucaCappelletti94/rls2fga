@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "windows"))]
+
 use openfga_client::client::{OpenFgaClient, TupleKey};
 use openfga_client::tonic::transport::Channel;
 use testcontainers::{

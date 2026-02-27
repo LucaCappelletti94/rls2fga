@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) mod openfga;
 
 use std::path::PathBuf;

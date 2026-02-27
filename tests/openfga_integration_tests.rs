@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "windows"))]
+
 use testcontainers::{
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
