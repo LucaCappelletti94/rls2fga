@@ -58,6 +58,21 @@ pub(crate) fn try_load_fixture_registry(fixture: &str) -> FunctionRegistry {
     registry
 }
 
+pub(crate) fn classify_sql(
+    sql: &str,
+    registry_json: Option<&str>,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let db = sql_parser::parse_schema(sql).expect("schema should parse");
+    let mut registry = FunctionRegistry::new();
+    if let Some(json) = registry_json {
+        registry
+            .load_from_json(json)
+            .expect("registry json should parse");
+    }
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}
+
 pub(crate) fn try_load_fixture_classified(
     fixture: &str,
 ) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
