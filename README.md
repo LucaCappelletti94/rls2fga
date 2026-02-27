@@ -59,7 +59,7 @@ use rls2fga::generator::model_generator::generate_model;
 use rls2fga::generator::tuple_generator::{format_tuples, generate_tuple_queries};
 use rls2fga::parser::sql_parser::parse_schema;
 
-let sql = r#"
+let sql = "
     CREATE TABLE documents (
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
@@ -68,7 +68,7 @@ let sql = r#"
     CREATE POLICY documents_owner ON documents
         FOR SELECT TO PUBLIC
         USING (owner_id = current_user_id());
-"#;
+";
 
 // Stage 1: Parse the SQL schema
 let db = parse_schema(sql).expect("parse error");
