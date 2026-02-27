@@ -77,6 +77,70 @@ pub fn classify_policies_with_registry(
 /// stack overflows from adversarially-nested SQL.
 const MAX_CLASSIFY_DEPTH: u32 = 64;
 
+/// Rewrite `CASE WHEN c1 THEN TRUE WHEN c2 THEN TRUE ... ELSE FALSE END` into
+/// an OR-tree of the TRUE-branch conditions.  Returns `None` when the CASE has
+/// a non-boolean result or is not a simple searched CASE.
+fn normalize_boolean_case(
+    conditions: &[sqlparser::ast::CaseWhen],
+    else_result: Option<&Expr>,
+) -> Option<Expr> {
+    if conditions.is_empty() {
+        return None;
+    }
+
+    // ELSE must be FALSE or absent (absent ELSE in a boolean context is NULL,
+    // which we treat as false).
+    if let Some(else_expr) = else_result {
+        if recognizers::constant_bool_value(else_expr) != Some(false) {
+            return None;
+        }
+    }
+
+    // Collect conditions whose result is TRUE.
+    let mut true_conditions: Vec<Expr> = Vec::new();
+    for case_when in conditions {
+        match recognizers::constant_bool_value(&case_when.result) {
+            Some(true) => true_conditions.push(case_when.condition.clone()),
+            Some(false) => {}    // skip FALSE branches
+            None => return None, // non-boolean result → bail
+        }
+    }
+
+    if true_conditions.is_empty() {
+        return None;
+    }
+
+    Some(fold_or(true_conditions))
+}
+
+/// Fold a non-empty list of expressions into a left-associative OR tree.
+fn fold_or(mut exprs: Vec<Expr>) -> Expr {
+    assert!(!exprs.is_empty());
+    let mut result = exprs.remove(0);
+    for next in exprs {
+        result = Expr::BinaryOp {
+            left: Box::new(result),
+            op: BinaryOperator::Or,
+            right: Box::new(next),
+        };
+    }
+    result
+}
+
+/// Fold a non-empty list of expressions into a left-associative AND tree.
+fn fold_and(mut exprs: Vec<Expr>) -> Expr {
+    assert!(!exprs.is_empty());
+    let mut result = exprs.remove(0);
+    for next in exprs {
+        result = Expr::BinaryOp {
+            left: Box::new(result),
+            op: BinaryOperator::And,
+            right: Box::new(next),
+        };
+    }
+    result
+}
+
 fn unknown_d(expr: &Expr, reason: impl Into<String>) -> ClassifiedExpr {
     ClassifiedExpr {
         pattern: PatternClass::Unknown {
@@ -126,6 +190,31 @@ fn classify_expr_inner(
     command: &PolicyCommand,
     depth: u32,
 ) -> ClassifiedExpr {
+    // Gap 7: Row-value comparison decomposition.
+    // `(a, b) = (c, d)` → `a = c AND b = d`, then recurse.
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    {
+        if let (Expr::Tuple(lhs), Expr::Tuple(rhs)) = (left.as_ref(), right.as_ref()) {
+            if lhs.len() == rhs.len() && !lhs.is_empty() {
+                let equalities: Vec<Expr> = lhs
+                    .iter()
+                    .zip(rhs.iter())
+                    .map(|(l, r)| Expr::BinaryOp {
+                        left: Box::new(l.clone()),
+                        op: BinaryOperator::Eq,
+                        right: Box::new(r.clone()),
+                    })
+                    .collect();
+                let conjunction = fold_and(equalities);
+                return classify_expr_depth(&conjunction, db, registry, table, command, depth + 1);
+            }
+        }
+    }
+
     // Handle AND/OR composition first
     if let Expr::BinaryOp { left, op, right } = expr {
         match op {
@@ -205,6 +294,21 @@ fn classify_expr_inner(
     // Handle nested parens / grouped expressions
     if let Expr::Nested(inner) = expr {
         return classify_expr_depth(inner, db, registry, table, command, depth + 1);
+    }
+
+    // Gap 4: CASE WHEN cond1 THEN TRUE WHEN cond2 THEN TRUE ... ELSE FALSE END
+    // Normalise boolean CASE expressions into an OR-tree of the TRUE-branch
+    // conditions, then recurse.
+    if let Expr::Case {
+        operand: None,
+        conditions,
+        else_result,
+        ..
+    } = expr
+    {
+        if let Some(rewritten) = normalize_boolean_case(conditions, else_result.as_deref()) {
+            return classify_expr_depth(&rewritten, db, registry, table, command, depth + 1);
+        }
     }
 
     // Handle NOT unary operator.
@@ -1280,5 +1384,156 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 parts: Vec::new(),
             }
         ));
+    }
+
+    // ── Gap 8: IS DISTINCT FROM → P9 ──────────────────────────────────────
+
+    #[test]
+    fn is_distinct_from_classified_as_p9() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            "IS DISTINCT FROM should classify as P9, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn is_not_distinct_from_classified_as_p9() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            "IS NOT DISTINCT FROM should classify as P9, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    // ── Gap 5: BETWEEN → P9 ───────────────────────────────────────────────
+
+    #[test]
+    fn between_classified_as_p9_attribute_condition() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("priority BETWEEN 1 AND 10");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "priority"),
+            "BETWEEN should classify as P9, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    // ── Gap 6: temporal predicate → P9 ──────────────────────────────────────
+
+    #[test]
+    fn temporal_comparison_classified_as_p9() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("status > now()");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            "temporal comparison should classify as P9, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    // ── Gap 7: Row-value comparison decomposition ─────────────────────────
+
+    #[test]
+    fn row_value_comparison_decomposed_to_and() {
+        let db = parse_schema(
+            r"
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID,
+  tenant_id UUID,
+  is_public BOOLEAN,
+  status TEXT,
+  priority INTEGER,
+  archived BOOLEAN
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+",
+        )
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        // (owner_id, status) = (current_user, 'active') should decompose to
+        // owner_id = current_user AND status = 'active' → P7 (ABAC AND)
+        let expr = parse_expr("(owner_id, status) = (current_user, 'active')");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+            ),
+            "Row-value comparison should decompose and classify as P7, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn row_value_single_element() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("(owner_id) = (current_user)");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+            "Single-element row-value should decompose to P3, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    // ── Gap 4: CASE WHEN → OR-tree ──────────────────────────────────────────
+
+    #[test]
+    fn case_when_true_else_false_normalizes_to_or() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "CASE WHEN owner_id = current_user THEN TRUE \
+                  WHEN is_public = TRUE THEN TRUE \
+                  ELSE FALSE END",
+        );
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P8Composite { op: BoolOp::Or, parts } if parts.len() == 2),
+            "CASE with two TRUE branches should become P8 OR, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn case_when_single_branch_normalizes_to_inner() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("CASE WHEN owner_id = current_user THEN TRUE ELSE FALSE END");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+            "CASE with one TRUE branch should collapse to inner, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn case_when_non_boolean_result_stays_unknown() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("CASE WHEN owner_id = current_user THEN 'yes' ELSE 'no' END");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::Unknown { .. }),
+            "CASE with non-boolean results should stay Unknown, got: {:?}",
+            classified.pattern
+        );
     }
 }

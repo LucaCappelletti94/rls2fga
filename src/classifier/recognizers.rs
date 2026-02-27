@@ -4,6 +4,7 @@ use crate::classifier::ast_args::function_arg_expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
+use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::names::{
     is_owner_like_column_name, is_public_flag_column_name, is_user_related_column_name,
     lookup_table, normalize_relation_name, split_schema_and_relation,
@@ -270,21 +271,42 @@ pub fn recognize_p3(
     };
 
     // Try column = accessor_expr or accessor_expr = column.
-    let (col_name, accessor_name, accessor_via_subquery) = if let (Some(col), Some(accessor)) =
+    // Falls through to extract_column_name_through_coalesce when plain
+    // extract_column_name returns None (e.g. COALESCE(col, default)).
+    let (col_name, accessor_name, accessor_indirection) = if let (Some(col), Some(accessor)) =
         (extract_column_name(left), current_user_accessor_name(right))
     {
-        (col, accessor, is_subquery_wrapped(right))
+        let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
+        (col, accessor, indirection)
     } else if let (Some(accessor), Some(col)) =
         (current_user_accessor_name(left), extract_column_name(right))
     {
-        (col, accessor, is_subquery_wrapped(left))
+        let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
+        (col, accessor, indirection)
+    } else if let (Some(col), Some(accessor)) = (
+        extract_column_name_through_coalesce(left),
+        current_user_accessor_name(right),
+    ) {
+        let indirection = is_subquery_wrapped(right)
+            || is_json_accessor_wrapped(right)
+            || is_coalesce_wrapped(left);
+        (col, accessor, indirection)
+    } else if let (Some(accessor), Some(col)) = (
+        current_user_accessor_name(left),
+        extract_column_name_through_coalesce(right),
+    ) {
+        let indirection = is_subquery_wrapped(left)
+            || is_json_accessor_wrapped(left)
+            || is_coalesce_wrapped(right);
+        (col, accessor, indirection)
     } else {
         return None;
     };
 
-    // Subquery-wrapped accessor: cap confidence at B regardless of how the inner
-    // expression was resolved (the extra indirection prevents registry-A certainty).
-    if accessor_via_subquery {
+    // Subquery-wrapped or JSON-extracted accessor: cap confidence at B regardless
+    // of how the inner expression was resolved (the extra indirection prevents
+    // registry-A certainty).
+    if accessor_indirection {
         return Some(ClassifiedExpr {
             pattern: PatternClass::P3DirectOwnership { column: col_name },
             confidence: ConfidenceLevel::B,
@@ -870,7 +892,7 @@ fn extract_boolean_column_equality(expr: &Expr) -> Option<(String, bool)> {
     None
 }
 
-fn constant_bool_value(expr: &Expr) -> Option<bool> {
+pub(crate) fn constant_bool_value(expr: &Expr) -> Option<bool> {
     match expr {
         Expr::Value(v) => match &v.value {
             Value::Boolean(b) => Some(*b),
@@ -1313,6 +1335,17 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
             }
             None
         }
+        // Gap 2: unwrap JSON accessor operators (`->`, `->>`, `#>`, `#>>`).
+        // Example: `current_setting('request.jwt.claims')::json->>'sub'`
+        Expr::BinaryOp {
+            op:
+                BinaryOperator::Arrow
+                | BinaryOperator::LongArrow
+                | BinaryOperator::HashArrow
+                | BinaryOperator::HashLongArrow,
+            left,
+            ..
+        } => current_user_accessor_name(left),
         _ => None,
     }
 }
@@ -1323,6 +1356,24 @@ fn is_subquery_wrapped(expr: &Expr) -> bool {
     match expr {
         Expr::Subquery(_) => true,
         Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_subquery_wrapped(inner),
+        _ => false,
+    }
+}
+
+/// Returns `true` when `expr` (or its Cast/Nested wrapper) contains a JSON
+/// accessor operator (`->`, `->>`, `#>`, `#>>`).  Used in [`recognize_p3`] to
+/// cap confidence at B for JSON-extracted user identifiers.
+fn is_json_accessor_wrapped(expr: &Expr) -> bool {
+    match expr {
+        Expr::BinaryOp {
+            op:
+                BinaryOperator::Arrow
+                | BinaryOperator::LongArrow
+                | BinaryOperator::HashArrow
+                | BinaryOperator::HashLongArrow,
+            ..
+        } => true,
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_json_accessor_wrapped(inner),
         _ => false,
     }
 }
@@ -1606,12 +1657,12 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
                 | BinaryOperator::Lt
         ) {
             if let Some(col) = extract_column_name(left) {
-                if is_literal_value(right) && !is_user_related_column(&col) {
+                if is_literal_or_temporal(right) && !is_user_related_column(&col) {
                     return Some(col);
                 }
             }
             if let Some(col) = extract_column_name(right) {
-                if is_literal_value(left) && !is_user_related_column(&col) {
+                if is_literal_or_temporal(left) && !is_user_related_column(&col) {
                     return Some(col);
                 }
             }
@@ -1628,6 +1679,36 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
             if !is_user_related_column(&col)
                 && !list.is_empty()
                 && list.iter().all(is_literal_value)
+            {
+                return Some(col);
+            }
+        }
+    }
+    // `col IS NOT DISTINCT FROM value` / `col IS DISTINCT FROM value`
+    if let Expr::IsNotDistinctFrom(left, right) | Expr::IsDistinctFrom(left, right) = expr {
+        if let Some(col) = extract_column_name(left) {
+            if is_literal_or_temporal(right) && !is_user_related_column(&col) {
+                return Some(col);
+            }
+        }
+        if let Some(col) = extract_column_name(right) {
+            if is_literal_or_temporal(left) && !is_user_related_column(&col) {
+                return Some(col);
+            }
+        }
+    }
+    // `col BETWEEN low AND high` (non-negated, both bounds literal or temporal).
+    if let Expr::Between {
+        expr: col_expr,
+        low,
+        high,
+        negated: false,
+    } = expr
+    {
+        if let Some(col) = extract_column_name(col_expr) {
+            if !is_user_related_column(&col)
+                && is_literal_or_temporal(low)
+                && is_literal_or_temporal(high)
             {
                 return Some(col);
             }
@@ -1671,6 +1752,43 @@ fn is_literal_value(expr: &Expr) -> bool {
             op: UnaryOperator::Plus | UnaryOperator::Minus | UnaryOperator::Not,
             expr: inner,
         } => is_literal_value(inner),
+        _ => false,
+    }
+}
+
+/// Returns `true` when the expression is a literal value or a well-known
+/// temporal function call (e.g. `now()`, `current_timestamp`).  Used in
+/// `is_attribute_check` so that `valid_until > now()` is recognised as an
+/// attribute condition rather than falling through to Unknown.
+fn is_literal_or_temporal(expr: &Expr) -> bool {
+    if is_literal_value(expr) {
+        return true;
+    }
+    is_well_known_temporal_function(expr)
+}
+
+/// Recognise zero-arg temporal built-in functions that produce a deterministic
+/// (within a statement) date/time value.
+fn is_well_known_temporal_function(expr: &Expr) -> bool {
+    match expr {
+        Expr::Function(func) => {
+            let name = normalize_relation_name(&func.name.to_string()).to_lowercase();
+            matches!(
+                name.as_str(),
+                "now"
+                    | "current_timestamp"
+                    | "current_date"
+                    | "current_time"
+                    | "clock_timestamp"
+                    | "statement_timestamp"
+                    | "transaction_timestamp"
+                    | "localtime"
+                    | "localtimestamp"
+            )
+        }
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
+            is_well_known_temporal_function(inner)
+        }
         _ => false,
     }
 }
@@ -4027,6 +4145,144 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         assert!(
             diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
             "negated IN subquery should return None"
+        );
+    }
+
+    // ── Gap 6: temporal predicates ──────────────────────────────────────────
+
+    #[test]
+    fn is_attribute_check_handles_now_comparison() {
+        let expr = parse_expr("valid_until > now()");
+        assert_eq!(
+            is_attribute_check(&expr).as_deref(),
+            Some("valid_until"),
+            "now() should be accepted as a temporal literal"
+        );
+    }
+
+    #[test]
+    fn is_attribute_check_handles_current_timestamp() {
+        let expr = parse_expr("created_at <= current_timestamp");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("created_at"),);
+    }
+
+    // ── Gap 3: COALESCE/NULLIF → P3 ────────────────────────────────────────
+
+    #[test]
+    fn coalesce_wrapped_ownership_classified_as_p3_confidence_b() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+        let expr =
+            parse_expr("COALESCE(owner_id, '00000000-0000-0000-0000-000000000000') = current_user");
+        let classified = recognize_p3(&expr, &db, &registry);
+        assert!(
+            matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+            "COALESCE-wrapped column should classify as P3, got: {classified:?}"
+        );
+        assert_eq!(
+            classified.unwrap().confidence,
+            ConfidenceLevel::B,
+            "COALESCE wrapping should cap confidence at B"
+        );
+    }
+
+    #[test]
+    fn nullif_wrapped_ownership_classified_as_p3() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+        let expr = parse_expr("NULLIF(owner_id, '') = current_user");
+        let classified = recognize_p3(&expr, &db, &registry);
+        assert!(
+            matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+            "NULLIF-wrapped column should classify as P3, got: {classified:?}"
+        );
+    }
+
+    // ── Gap 2: JWT claim extraction ────────────────────────────────────────
+
+    #[test]
+    fn current_user_accessor_name_unwraps_json_long_arrow() {
+        // current_setting('request.jwt.claims')::json->>'sub'
+        let expr = parse_expr("current_setting('request.jwt.claims')::json->>'sub'");
+        assert_eq!(
+            current_user_accessor_name(&expr).as_deref(),
+            Some("current_setting"),
+        );
+    }
+
+    #[test]
+    fn current_user_accessor_name_unwraps_nested_json_arrows() {
+        // auth.jwt()->'user_metadata'->>'id' — schema prefix stripped by normalize_relation_name
+        let expr = parse_expr("auth.jwt()->'user_metadata'->>'id'");
+        assert_eq!(current_user_accessor_name(&expr).as_deref(), Some("jwt"),);
+    }
+
+    #[test]
+    fn jwt_claim_extraction_classified_as_p3() {
+        let db = db_with_docs_and_members();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"},
+  "current_setting": {"kind":"current_user_accessor","returns":"text"}
+}"#,
+            )
+            .unwrap();
+        let expr = parse_expr("owner_id = current_setting('request.jwt.claims')::json->>'sub'");
+        let classified = recognize_p3(&expr, &db, &registry);
+        assert!(
+            matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+            "JWT claim extraction should classify as P3, got: {classified:?}"
+        );
+        // JSON-wrapped → capped at B
+        assert_eq!(classified.unwrap().confidence, ConfidenceLevel::B);
+    }
+
+    // ── Gap 8: IS DISTINCT FROM ───────────────────────────────────────────
+
+    #[test]
+    fn is_attribute_check_handles_is_not_distinct_from() {
+        let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"),);
+    }
+
+    #[test]
+    fn is_attribute_check_handles_is_distinct_from() {
+        let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"),);
+    }
+
+    // ── Gap 5: BETWEEN ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_attribute_check_handles_between() {
+        let expr = parse_expr("priority BETWEEN 1 AND 10");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("priority"),);
+    }
+
+    #[test]
+    fn is_attribute_check_rejects_negated_between() {
+        let expr = parse_expr("priority NOT BETWEEN 1 AND 10");
+        assert!(
+            is_attribute_check(&expr).is_none(),
+            "negated BETWEEN should not match"
+        );
+    }
+
+    #[test]
+    fn is_attribute_check_between_with_temporal_bounds() {
+        let expr = parse_expr("created_at BETWEEN '2024-01-01' AND now()");
+        assert_eq!(is_attribute_check(&expr).as_deref(), Some("created_at"),);
+    }
+
+    #[test]
+    fn is_literal_or_temporal_rejects_arbitrary_functions() {
+        // random_func() should NOT be accepted as temporal
+        let expr = parse_expr("col > random_func()");
+        assert!(
+            is_attribute_check(&expr).is_none(),
+            "arbitrary functions should not match as temporal"
         );
     }
 }

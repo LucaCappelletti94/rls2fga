@@ -1,4 +1,4 @@
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 /// Extract a simple column name from an expression.
 ///
@@ -14,10 +14,66 @@ pub fn extract_column_name(expr: &Expr) -> Option<String> {
     }
 }
 
+/// Like [`extract_column_name`] but also unwraps `COALESCE(col, default)` and
+/// `NULLIF(col, sentinel)`, extracting the column name from the first argument.
+pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<String> {
+    if let Some(col) = extract_column_name(expr) {
+        return Some(col);
+    }
+    if let Expr::Function(func) = expr {
+        let name = func.name.to_string().to_lowercase();
+        if name == "coalesce" || name == "nullif" {
+            if let FunctionArguments::List(arg_list) = &func.args {
+                if let Some(first_arg) = arg_list.args.first() {
+                    if let Some(inner) = fn_arg_expr(first_arg) {
+                        return extract_column_name(inner);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract an expression from a function argument (local helper).
+fn fn_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+        | FunctionArg::Named {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        }
+        | FunctionArg::ExprNamed {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        } => Some(expr),
+        _ => None,
+    }
+}
+
+/// Returns `true` when the expression is wrapped through `COALESCE` or `NULLIF`.
+pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
+    if let Expr::Function(func) = expr {
+        let name = func.name.to_string().to_lowercase();
+        return name == "coalesce" || name == "nullif";
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_column_name;
+    use super::*;
     use sqlparser::ast::{Expr, Ident};
+    use sqlparser::dialect::PostgreSqlDialect;
+    use sqlparser::parser::Parser;
+
+    fn parse_expr(sql: &str) -> Expr {
+        Parser::new(&PostgreSqlDialect {})
+            .try_with_sql(sql)
+            .unwrap()
+            .parse_expr()
+            .unwrap()
+    }
 
     #[test]
     fn extract_column_name_handles_simple_and_qualified_identifiers() {
@@ -40,5 +96,32 @@ mod tests {
         assert_eq!(extract_column_name(&qualified).as_deref(), Some("owner_id"));
         assert_eq!(extract_column_name(&nested).as_deref(), Some("owner_id"));
         assert_eq!(extract_column_name(&casted).as_deref(), Some("owner_id"));
+    }
+
+    #[test]
+    fn extract_column_name_through_coalesce_unwraps_coalesce() {
+        let expr = parse_expr("COALESCE(owner_id, '00000000-0000-0000-0000-000000000000')");
+        assert_eq!(
+            extract_column_name_through_coalesce(&expr).as_deref(),
+            Some("owner_id"),
+        );
+    }
+
+    #[test]
+    fn extract_column_name_through_coalesce_unwraps_nullif() {
+        let expr = parse_expr("NULLIF(owner_id, '')");
+        assert_eq!(
+            extract_column_name_through_coalesce(&expr).as_deref(),
+            Some("owner_id"),
+        );
+    }
+
+    #[test]
+    fn extract_column_name_through_coalesce_passes_through_plain_col() {
+        let expr = Expr::Identifier(Ident::new("owner_id"));
+        assert_eq!(
+            extract_column_name_through_coalesce(&expr).as_deref(),
+            Some("owner_id"),
+        );
     }
 }
