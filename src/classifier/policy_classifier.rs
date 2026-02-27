@@ -1088,4 +1088,197 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             classified.pattern
         );
     }
+
+    #[test]
+    fn pattern_short_name_covers_all_variants() {
+        let cases: Vec<(PatternClass, &str)> = vec![
+            (
+                PatternClass::P1NumericThreshold {
+                    function_name: "f".into(),
+                    operator: ThresholdOperator::Gte,
+                    threshold: 1,
+                    command: PolicyCommand::Select,
+                },
+                "numeric role-threshold check",
+            ),
+            (
+                PatternClass::P2RoleNameInList {
+                    function_name: "f".into(),
+                    role_names: vec!["a".into()],
+                },
+                "role-name-in-list check",
+            ),
+            (
+                PatternClass::P3DirectOwnership { column: "c".into() },
+                "direct-ownership check",
+            ),
+            (
+                PatternClass::P4ExistsMembership {
+                    join_table: "t".into(),
+                    fk_column: "c".into(),
+                    user_column: "u".into(),
+                    extra_predicate_sql: None,
+                },
+                "EXISTS membership check",
+            ),
+            (
+                PatternClass::P5ParentInheritance {
+                    parent_table: "p".into(),
+                    fk_column: "c".into(),
+                    inner_pattern: Box::new(ClassifiedExpr {
+                        pattern: PatternClass::P3DirectOwnership { column: "c".into() },
+                        confidence: ConfidenceLevel::A,
+                    }),
+                },
+                "parent-inheritance check",
+            ),
+            (
+                PatternClass::P6BooleanFlag { column: "c".into() },
+                "boolean-flag check",
+            ),
+            (
+                PatternClass::P7AbacAnd {
+                    relationship_part: Box::new(ClassifiedExpr {
+                        pattern: PatternClass::P3DirectOwnership { column: "c".into() },
+                        confidence: ConfidenceLevel::A,
+                    }),
+                    attribute_part: "a".into(),
+                },
+                "ABAC-and-relationship check",
+            ),
+            (
+                PatternClass::P8Composite {
+                    op: BoolOp::Or,
+                    parts: Vec::new(),
+                },
+                "composite check",
+            ),
+            (
+                PatternClass::P9AttributeCondition {
+                    column: "c".into(),
+                    value_description: "v".into(),
+                },
+                "attribute-condition check",
+            ),
+            (
+                PatternClass::P10ConstantBool { value: true },
+                "constant-boolean check",
+            ),
+            (
+                PatternClass::Unknown {
+                    sql_text: "x".into(),
+                    reason: "r".into(),
+                },
+                "unrecognized expression",
+            ),
+        ];
+        for (pattern, expected) in cases {
+            assert_eq!(
+                pattern_short_name(&pattern),
+                expected,
+                "pattern_short_name mismatch for {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_relationship_pattern_for_p7_covers_recursive_arms() {
+        let p3 = PatternClass::P3DirectOwnership { column: "c".into() };
+        let p3_expr = ClassifiedExpr {
+            pattern: p3.clone(),
+            confidence: ConfidenceLevel::A,
+        };
+
+        // Direct relationship patterns
+        assert!(is_relationship_pattern_for_p7(
+            &PatternClass::P1NumericThreshold {
+                function_name: "f".into(),
+                operator: ThresholdOperator::Gte,
+                threshold: 1,
+                command: PolicyCommand::Select,
+            }
+        ));
+        assert!(is_relationship_pattern_for_p7(
+            &PatternClass::P2RoleNameInList {
+                function_name: "f".into(),
+                role_names: vec!["a".into()],
+            }
+        ));
+        assert!(is_relationship_pattern_for_p7(&p3));
+        assert!(is_relationship_pattern_for_p7(
+            &PatternClass::P4ExistsMembership {
+                join_table: "t".into(),
+                fk_column: "c".into(),
+                user_column: "u".into(),
+                extra_predicate_sql: None,
+            }
+        ));
+        assert!(is_relationship_pattern_for_p7(
+            &PatternClass::P5ParentInheritance {
+                parent_table: "p".into(),
+                fk_column: "c".into(),
+                inner_pattern: Box::new(p3_expr.clone()),
+            }
+        ));
+
+        // Non-relationship patterns
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P6BooleanFlag { column: "c".into() }
+        ));
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P9AttributeCondition {
+                column: "c".into(),
+                value_description: "v".into(),
+            }
+        ));
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P10ConstantBool { value: true }
+        ));
+        assert!(!is_relationship_pattern_for_p7(&PatternClass::Unknown {
+            sql_text: "x".into(),
+            reason: "r".into(),
+        }));
+
+        // Recursive P7: P7 with P3 inner → true
+        assert!(is_relationship_pattern_for_p7(&PatternClass::P7AbacAnd {
+            relationship_part: Box::new(p3_expr.clone()),
+            attribute_part: "a".into(),
+        }));
+
+        // Recursive P8: all relationship parts → true
+        assert!(is_relationship_pattern_for_p7(&PatternClass::P8Composite {
+            op: BoolOp::Or,
+            parts: vec![
+                p3_expr.clone(),
+                ClassifiedExpr {
+                    pattern: PatternClass::P4ExistsMembership {
+                        join_table: "t".into(),
+                        fk_column: "c".into(),
+                        user_column: "u".into(),
+                        extra_predicate_sql: None,
+                    },
+                    confidence: ConfidenceLevel::A,
+                },
+            ],
+        }));
+
+        // P8 with non-relationship part → false
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P8Composite {
+                op: BoolOp::Or,
+                parts: vec![ClassifiedExpr {
+                    pattern: PatternClass::P6BooleanFlag { column: "c".into() },
+                    confidence: ConfidenceLevel::A,
+                }],
+            }
+        ));
+
+        // P8 empty → false
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P8Composite {
+                op: BoolOp::Or,
+                parts: Vec::new(),
+            }
+        ));
+    }
 }

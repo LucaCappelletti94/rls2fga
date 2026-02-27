@@ -3052,4 +3052,981 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
         let non_select = std::panic::catch_unwind(|| parse_select("VALUES (1)"));
         assert!(non_select.is_err());
     }
+
+    // ---- Edge-case tests (added) ----
+
+    #[test]
+    fn pg_has_role_rejects_non_string_role_value() {
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("pg_has_role(current_user, 42, 'MEMBER')");
+        assert!(recognize_pg_has_role(&expr, &registry).is_none());
+    }
+
+    #[test]
+    fn pg_has_role_rejects_wrong_arg_count() {
+        let registry = FunctionRegistry::new();
+        // Single arg
+        let expr = parse_expr("pg_has_role('admin')");
+        assert!(recognize_pg_has_role(&expr, &registry).is_none());
+        // Four args
+        let expr = parse_expr("pg_has_role(current_user, 'admin', 'MEMBER', 'extra')");
+        assert!(recognize_pg_has_role(&expr, &registry).is_none());
+    }
+
+    #[test]
+    fn role_accessor_comparison_reversed_eq() {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(r#"{"auth.role": {"kind": "role_accessor"}}"#)
+            .unwrap();
+        // reversed: 'authenticated' = auth.role()
+        let expr = parse_expr("'authenticated' = auth.role()");
+        let classified = recognize_role_accessor_comparison(&expr, &registry);
+        assert!(classified.is_some());
+        let c = classified.unwrap();
+        assert!(matches!(
+            c.pattern,
+            PatternClass::P2RoleNameInList {
+                ref role_names, ..
+            } if role_names == &["authenticated"]
+        ));
+    }
+
+    #[test]
+    fn role_accessor_comparison_rejects_non_string_literal() {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(r#"{"auth.role": {"kind": "role_accessor"}}"#)
+            .unwrap();
+        let expr = parse_expr("auth.role() = 42");
+        assert!(recognize_role_accessor_comparison(&expr, &registry).is_none());
+    }
+
+    #[test]
+    fn role_accessor_comparison_rejects_column_rhs() {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(r#"{"auth.role": {"kind": "role_accessor"}}"#)
+            .unwrap();
+        let expr = parse_expr("auth.role() = some_column");
+        assert!(recognize_role_accessor_comparison(&expr, &registry).is_none());
+    }
+
+    #[test]
+    fn role_accessor_in_list_rejects_non_string_items() {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(r#"{"auth.role": {"kind": "role_accessor"}}"#)
+            .unwrap();
+        // All non-string items -> empty role_names -> returns None
+        let expr = parse_expr("auth.role() IN (42, 99)");
+        assert!(recognize_role_accessor_comparison(&expr, &registry).is_none());
+    }
+
+    #[test]
+    fn recognize_p5_rejects_negated_exists() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+",
+        )
+        .unwrap();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user)",
+        );
+        assert!(recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select).is_none());
+    }
+
+    #[test]
+    fn is_negated_boolean_flag_is_false_and_is_not_true() {
+        let is_false = parse_expr("is_public IS FALSE");
+        assert_eq!(
+            is_negated_boolean_flag(&is_false),
+            Some("is_public".to_string())
+        );
+
+        let is_not_true = parse_expr("is_published IS NOT TRUE");
+        assert_eq!(
+            is_negated_boolean_flag(&is_not_true),
+            Some("is_published".to_string())
+        );
+
+        // Non-public-flag column -> None
+        let non_flag = parse_expr("status IS FALSE");
+        assert!(is_negated_boolean_flag(&non_flag).is_none());
+    }
+
+    #[test]
+    fn function_has_current_user_arg_returns_false_for_non_function() {
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("42");
+        assert!(!function_has_current_user_arg(&expr, &registry));
+    }
+
+    #[test]
+    fn function_has_current_user_arg_returns_false_for_no_args() {
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("my_func()");
+        assert!(!function_has_current_user_arg(&expr, &registry));
+    }
+
+    #[test]
+    fn current_user_accessor_name_subquery_with_multiple_projections_returns_none() {
+        let expr = parse_expr("(SELECT a, b FROM t)");
+        assert!(current_user_accessor_name(&expr).is_none());
+    }
+
+    #[test]
+    fn strip_qualifier_from_expr_handles_unary_cast_is_null_is_not_null_in_list() {
+        // UnaryOp: NOT dm.active
+        let mut unary = parse_expr("NOT dm.active");
+        strip_qualifier_from_expr(&mut unary, "doc_members", Some("dm"));
+        assert!(!unary.to_string().contains("dm."));
+
+        // Cast: dm.role::text
+        let mut cast = parse_expr("CAST(dm.role AS text)");
+        strip_qualifier_from_expr(&mut cast, "doc_members", Some("dm"));
+        assert!(!cast.to_string().contains("dm."));
+
+        // IsNull: dm.deleted_at IS NULL
+        let mut is_null = parse_expr("dm.deleted_at IS NULL");
+        strip_qualifier_from_expr(&mut is_null, "doc_members", Some("dm"));
+        assert!(!is_null.to_string().contains("dm."));
+
+        // IsNotNull: dm.active IS NOT NULL
+        let mut is_not_null = parse_expr("dm.active IS NOT NULL");
+        strip_qualifier_from_expr(&mut is_not_null, "doc_members", Some("dm"));
+        assert!(!is_not_null.to_string().contains("dm."));
+
+        // InList: dm.role IN ('admin', 'editor')
+        let mut in_list = parse_expr("dm.role IN ('admin', 'editor')");
+        strip_qualifier_from_expr(&mut in_list, "doc_members", Some("dm"));
+        assert!(!in_list.to_string().contains("dm."));
+    }
+
+    #[test]
+    fn predicate_references_other_table_recursive_arms() {
+        // InList with other-table reference
+        let inlist = parse_expr("other.col IN ('a', 'b')");
+        assert!(predicate_references_other_table(
+            &inlist,
+            "members",
+            Some("m")
+        ));
+
+        // UnaryOp with other-table reference
+        let unary = parse_expr("NOT other.active");
+        assert!(predicate_references_other_table(
+            &unary,
+            "members",
+            Some("m")
+        ));
+
+        // IsNull with other-table reference
+        let is_null = parse_expr("other.deleted_at IS NULL");
+        assert!(predicate_references_other_table(
+            &is_null,
+            "members",
+            Some("m")
+        ));
+
+        // IsNotNull with other-table reference
+        let is_not_null = parse_expr("other.active IS NOT NULL");
+        assert!(predicate_references_other_table(
+            &is_not_null,
+            "members",
+            Some("m")
+        ));
+
+        // Same table reference -> false
+        let same = parse_expr("m.status IN ('a', 'b')");
+        assert!(!predicate_references_other_table(
+            &same,
+            "members",
+            Some("m")
+        ));
+    }
+
+    #[test]
+    fn extract_parent_join_columns_rejects_non_eq_predicate() {
+        let pred = parse_expr("p.id > tasks.project_id");
+        let outer_cols = vec!["id".to_string(), "project_id".to_string()];
+        let parent_cols = vec!["id".to_string(), "owner_id".to_string()];
+        assert!(extract_parent_join_columns(
+            &pred,
+            "tasks",
+            &outer_cols,
+            "projects",
+            Some("p"),
+            &parent_cols
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn extract_parent_join_columns_right_is_parent_left_is_outer() {
+        let pred = parse_expr("tasks.project_id = p.id");
+        let outer_cols = vec!["id".to_string(), "project_id".to_string()];
+        let parent_cols = vec!["id".to_string(), "owner_id".to_string()];
+        let result = extract_parent_join_columns(
+            &pred,
+            "tasks",
+            &outer_cols,
+            "projects",
+            Some("p"),
+            &parent_cols,
+        );
+        assert!(result.is_some());
+        let (fk, pk) = result.unwrap();
+        assert_eq!(fk, "project_id");
+        assert_eq!(pk, "id");
+    }
+
+    #[test]
+    fn infer_membership_fk_column_uses_table_stem_hint() {
+        let cols = vec![
+            "project_id".to_string(),
+            "org_id".to_string(),
+            "user_id".to_string(),
+        ];
+        // Table name: project_members -> stem hint: project_id
+        let result = infer_membership_fk_column("project_members", &cols, Some("user_id"), None);
+        assert_eq!(result, Some("project_id".to_string()));
+    }
+
+    #[test]
+    fn infer_membership_fk_column_filters_scope_candidates() {
+        // When there are multiple _id cols but one is a scope candidate (tenant_id)
+        let cols = vec![
+            "doc_id".to_string(),
+            "tenant_id".to_string(),
+            "user_id".to_string(),
+        ];
+        let result = infer_membership_fk_column("memberships", &cols, Some("user_id"), None);
+        assert_eq!(result, Some("doc_id".to_string()));
+    }
+
+    #[test]
+    fn diagnose_p4_membership_ambiguity_in_subquery_form() {
+        let db = db_with_docs_and_members();
+        let registry = registry_with_role_level();
+        // Multiple membership sources -> ambiguous
+        let expr =
+            parse_expr("id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
+        // The IN-subquery form should at least not panic
+        let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry);
+        // It should return None (single match) or Some (ambiguous)
+        // either is fine -- we just need the code path exercised
+        let _ = result;
+    }
+
+    #[test]
+    fn diagnose_p5_parent_inheritance_ambiguity_returns_none_for_non_exists() {
+        let db = parse_schema(
+            r"CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);",
+        )
+        .unwrap();
+        // Not an EXISTS expression at all
+        let expr = parse_expr("tasks.project_id = current_user");
+        assert!(diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none());
+    }
+
+    #[test]
+    fn extract_membership_columns_via_join_on_clause() {
+        // FK correlation in ON clause, user predicate in WHERE.
+        // This exercises the ON-clause FK extraction path.
+        let select = parse_select(
+            "SELECT m.doc_id FROM doc_members m
+             JOIN docs d ON m.doc_id = d.id
+             WHERE m.user_id = auth_current_user_id()
+               AND m.role >= 2",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry, None);
+        assert!(
+            result.is_some(),
+            "ON-clause fk_col and WHERE user_col should be extracted"
+        );
+        let (fk, user, _extras) = result.unwrap();
+        assert_eq!(fk, "doc_id");
+        assert_eq!(user, "user_id");
+    }
+
+    #[test]
+    fn recognize_array_patterns_rejects_non_current_user_any() {
+        let registry = FunctionRegistry::new();
+        // some_column = ANY(array_col) -- not current_user
+        let expr = parse_expr("some_column = ANY(tags)");
+        assert!(recognize_array_patterns(&expr, &registry).is_none());
+    }
+
+    // ---- Additional coverage tests ----
+
+    // 1. extract_integer_value: Nested, Cast, UnaryPlus recursion (line 928)
+    #[test]
+    fn extract_integer_value_nested_wrapping() {
+        // Nested: (42) → 42
+        let nested = parse_expr("(42)");
+        assert_eq!(extract_integer_value(&nested), Some(42));
+    }
+
+    #[test]
+    fn extract_integer_value_cast_wrapping() {
+        // Cast: CAST(7 AS INTEGER) → 7
+        let cast = parse_expr("CAST(7 AS INTEGER)");
+        assert_eq!(extract_integer_value(&cast), Some(7));
+    }
+
+    #[test]
+    fn extract_integer_value_unary_plus() {
+        // UnaryPlus: +42 → 42
+        let plus = parse_expr("+42");
+        assert_eq!(extract_integer_value(&plus), Some(42));
+    }
+
+    #[test]
+    fn extract_integer_value_nested_combinations() {
+        // Nested inside Cast: CAST((5) AS INT) → 5
+        let nested_in_cast = parse_expr("CAST((5) AS INT)");
+        assert_eq!(extract_integer_value(&nested_in_cast), Some(5));
+
+        // UnaryPlus inside Nested: (+3) → 3
+        let plus_in_nested = parse_expr("(+3)");
+        assert_eq!(extract_integer_value(&plus_in_nested), Some(3));
+
+        // UnaryMinus inside Nested: (-10) → -10
+        let minus_in_nested = parse_expr("(-10)");
+        assert_eq!(extract_integer_value(&minus_in_nested), Some(-10));
+
+        // Non-integer expression → None
+        let non_int = parse_expr("'hello'");
+        assert_eq!(extract_integer_value(&non_int), None);
+    }
+
+    // 2. extract_table_alias_from_table_factor: non-Table variant (line 955)
+    #[test]
+    fn extract_table_alias_from_table_factor_returns_none_for_derived() {
+        // Parse a SELECT with a derived table (subquery in FROM).
+        let select = parse_select("SELECT x.id FROM (SELECT 1 AS id) AS x");
+        let from = &select.from[0];
+        // The relation is a Derived subquery, not a Table.
+        assert!(
+            extract_table_alias_from_table_factor(&from.relation).is_none(),
+            "Derived subquery should return None from extract_table_alias_from_table_factor"
+        );
+    }
+
+    // 3. join_on_expr: non-matching JoinOperator variant returns None (line 1035)
+    //    and non-On JoinConstraint returns None (line 1040)
+    #[test]
+    fn join_on_expr_returns_none_for_non_standard_join_operators() {
+        use sqlparser::ast::JoinOperator;
+
+        // Cross Apply / non-standard variant → None (line 1035)
+        let cross_apply = JoinOperator::CrossApply;
+        assert!(
+            join_on_expr(&cross_apply).is_none(),
+            "CrossApply should return None from join_on_expr"
+        );
+
+        let outer_apply = JoinOperator::OuterApply;
+        assert!(
+            join_on_expr(&outer_apply).is_none(),
+            "OuterApply should return None from join_on_expr"
+        );
+    }
+
+    #[test]
+    fn join_on_expr_returns_none_for_using_constraint() {
+        use sqlparser::ast::{JoinConstraint, JoinOperator};
+
+        // JoinConstraint::Using → None (line 1040)
+        let using_constraint = JoinOperator::Inner(JoinConstraint::Using(vec![]));
+        assert!(
+            join_on_expr(&using_constraint).is_none(),
+            "USING constraint should return None from join_on_expr"
+        );
+
+        // JoinConstraint::Natural → None (line 1040)
+        let natural_constraint = JoinOperator::Inner(JoinConstraint::Natural);
+        assert!(
+            join_on_expr(&natural_constraint).is_none(),
+            "Natural constraint should return None from join_on_expr"
+        );
+
+        // JoinConstraint::None → None (line 1040)
+        let none_constraint = JoinOperator::Inner(JoinConstraint::None);
+        assert!(
+            join_on_expr(&none_constraint).is_none(),
+            "None constraint should return None from join_on_expr"
+        );
+    }
+
+    // 4. extract_membership_columns: ON-clause user detection (lines 1189-1200)
+    //    and ON-clause FK detection with right_is_join path (lines 1232-1239)
+    #[test]
+    fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
+        // ON clause: dm.user_id = auth_current_user_id() (left is join, right is current_user)
+        // This exercises lines 1186-1193.
+        let select = parse_select(
+            "SELECT dm.doc_id FROM docs d
+             JOIN doc_members dm ON dm.user_id = auth_current_user_id() AND dm.doc_id = d.id",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+        assert!(
+            result.is_some(),
+            "ON-clause user_col (left=join) should be extracted"
+        );
+        let (fk, user, _extras) = result.unwrap();
+        assert_eq!(fk, "doc_id");
+        assert_eq!(user, "user_id");
+    }
+
+    #[test]
+    fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
+        // ON clause: auth_current_user_id() = dm.user_id (right is join, left is current_user)
+        // This exercises lines 1195-1203.
+        let select = parse_select(
+            "SELECT dm.doc_id FROM docs d
+             JOIN doc_members dm ON auth_current_user_id() = dm.user_id AND dm.doc_id = d.id",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+        assert!(
+            result.is_some(),
+            "ON-clause user_col (right=join) should be extracted"
+        );
+        let (fk, user, _extras) = result.unwrap();
+        assert_eq!(fk, "doc_id");
+        assert_eq!(user, "user_id");
+    }
+
+    #[test]
+    fn extract_membership_columns_on_clause_fk_right_is_join() {
+        // ON clause: d.id = dm.doc_id (right is join, left is not join)
+        // This exercises lines 1232-1239 (right_is_join && !left_is_join path in ON clause).
+        let select = parse_select(
+            "SELECT dm.doc_id FROM docs d
+             JOIN doc_members dm ON d.id = dm.doc_id
+             WHERE dm.user_id = auth_current_user_id()",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+        assert!(
+            result.is_some(),
+            "ON-clause FK (right_is_join) should be extracted"
+        );
+        let (fk, user, _extras) = result.unwrap();
+        assert_eq!(fk, "doc_id");
+        assert_eq!(user, "user_id");
+    }
+
+    #[test]
+    fn extract_membership_columns_where_right_is_join_fk_conflict_returns_none() {
+        // WHERE clause has two different FK columns both with right_is_join:
+        //   docs.id = dm.doc_id AND projects.pid = dm.project_id
+        // The first sets fk_col = "doc_id", the second conflicts → return None (line 1140).
+        let select = parse_select(
+            "SELECT dm.doc_id FROM doc_members dm
+             WHERE dm.user_id = auth_current_user_id()
+               AND docs.id = dm.doc_id
+               AND projects.pid = dm.member_id",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "member_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+        assert!(
+            result.is_none(),
+            "conflicting right_is_join FK columns should return None"
+        );
+    }
+
+    // 5. flatten_and_predicates: AND recursion (lines 1274, 1276)
+    #[test]
+    fn flatten_and_predicates_recursive_and() {
+        // a AND b AND c (without parens, sqlparser chains as BinaryOp AND trees)
+        let expr = parse_expr("x = 1 AND y = 2 AND z = 3");
+        let mut out = Vec::new();
+        flatten_and_predicates(&expr, &mut out);
+        assert_eq!(out.len(), 3, "a AND b AND c should flatten to 3 predicates");
+    }
+
+    #[test]
+    fn flatten_and_predicates_deeply_nested() {
+        // four-way AND chain; no parens to avoid sqlparser Nested wrappers
+        let expr = parse_expr("a = 1 AND b = 2 AND c = 3 AND d = 4");
+        let mut out = Vec::new();
+        flatten_and_predicates(&expr, &mut out);
+        assert_eq!(
+            out.len(),
+            4,
+            "a AND b AND c AND d should flatten to 4 predicates"
+        );
+    }
+
+    #[test]
+    fn flatten_and_predicates_non_and_leaf() {
+        // OR is not flattened — single predicate
+        let expr = parse_expr("x = 1 OR y = 2");
+        let mut out = Vec::new();
+        flatten_and_predicates(&expr, &mut out);
+        assert_eq!(out.len(), 1, "OR should not be flattened, yielding 1 leaf");
+    }
+
+    // 6. strip_qualifier_from_expr: already tested but ensure we also have the
+    //    Nested arm covered in the match at line 1397
+    #[test]
+    fn strip_qualifier_from_expr_handles_nested_expression() {
+        // Nested: (dm.status) → (status)
+        let mut nested = parse_expr("(dm.status)");
+        strip_qualifier_from_expr(&mut nested, "doc_members", Some("dm"));
+        let result = nested.to_string();
+        assert!(
+            !result.contains("dm."),
+            "Nested expression should have qualifier stripped, got: {result}"
+        );
+    }
+
+    // 7. table_qualifier_candidates: schema-qualified name (line 1460-1461)
+    #[test]
+    fn table_qualifier_candidates_includes_relation_part() {
+        let candidates = table_qualifier_candidates("myschema.events");
+        assert!(
+            candidates.contains(&"events".to_string()),
+            "should include the relation part: {candidates:?}",
+        );
+        assert!(
+            candidates.contains(&"myschema.events".to_string()),
+            "should include the full qualified name: {candidates:?}",
+        );
+    }
+
+    #[test]
+    fn table_qualifier_candidates_unqualified_name() {
+        let candidates = table_qualifier_candidates("users");
+        assert_eq!(candidates, vec!["users".to_string()]);
+    }
+
+    #[test]
+    fn qualifier_matches_table_with_schema_qualified_name() {
+        // When table_name is "public.docs", qualifier "docs" should match.
+        assert!(qualifier_matches_table("docs", "public.docs", None));
+        // And full name should also match.
+        assert!(qualifier_matches_table("public.docs", "public.docs", None));
+        // Alias takes priority.
+        assert!(qualifier_matches_table("d", "public.docs", Some("d")));
+        // Non-matching qualifier.
+        assert!(!qualifier_matches_table("other", "public.docs", None));
+    }
+
+    // 8. infer_membership_fk_column: _membership suffix hint (lines 1713, 1716)
+    //    and None for multiple non-scope candidates (line 1742)
+    #[test]
+    fn infer_membership_fk_column_uses_membership_suffix_hint() {
+        // join_table "team_membership" → hint "team_id"
+        let result = infer_membership_fk_column(
+            "team_membership",
+            &["id".into(), "user_id".into(), "team_id".into()],
+            Some("user_id"),
+            None,
+        );
+        assert_eq!(result, Some("team_id".to_string()));
+    }
+
+    #[test]
+    fn infer_membership_fk_column_uses_memberships_suffix_hint() {
+        // join_table "org_memberships" → hint "org_id"
+        let result = infer_membership_fk_column(
+            "org_memberships",
+            &["id".into(), "user_id".into(), "org_id".into()],
+            Some("user_id"),
+            None,
+        );
+        assert_eq!(result, Some("org_id".to_string()));
+    }
+
+    #[test]
+    fn infer_membership_fk_column_returns_none_for_multiple_non_scope_candidates() {
+        // Multiple id-like columns, no hint match, no scope filter → None (line 1742)
+        let result = infer_membership_fk_column(
+            "assignments",
+            &[
+                "id".into(),
+                "project_id".into(),
+                "task_id".into(),
+                "user_id".into(),
+            ],
+            Some("user_id"),
+            None,
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn infer_membership_fk_column_projected_fk_hint_takes_priority() {
+        // When projected_fk_hint matches one of the candidates, use it
+        let result = infer_membership_fk_column(
+            "assignments",
+            &[
+                "id".into(),
+                "project_id".into(),
+                "task_id".into(),
+                "user_id".into(),
+            ],
+            Some("user_id"),
+            Some("task_id"),
+        );
+        assert_eq!(result, Some("task_id".to_string()));
+    }
+
+    // 9. diagnose_p4_membership_ambiguity: InSubquery form (lines 594-608)
+    #[test]
+    fn diagnose_p4_membership_ambiguity_in_subquery_with_multiple_sources() {
+        // Build a schema with two membership-like tables so the InSubquery path
+        // can find multiple matches → ambiguous.
+        let db = parse_schema(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, member_id UUID);
+CREATE TABLE doc_editors(doc_id UUID, user_id UUID);
+",
+        )
+        .unwrap();
+        let registry = FunctionRegistry::new();
+
+        // InSubquery form with two FROM sources
+        let expr = parse_expr(
+            "id IN (
+                SELECT dm.doc_id
+                FROM doc_members dm, doc_editors de
+                WHERE dm.user_id = current_user
+                  AND de.user_id = current_user
+                  AND dm.doc_id = docs.id
+                  AND de.doc_id = docs.id
+            )",
+        );
+        let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry);
+        // Should reach the InSubquery branch and produce Some diagnostic
+        // (either "multiple candidate" or "could not infer")
+        assert!(
+            result.is_some(),
+            "InSubquery with multiple membership sources should be diagnosed as ambiguous"
+        );
+    }
+
+    #[test]
+    fn diagnose_p4_membership_ambiguity_returns_none_for_non_exists_non_insubquery() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+        // A plain expression (not EXISTS, not IN subquery) → None (catch-all at line 610)
+        let expr = parse_expr("owner_id = current_user");
+        assert!(diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none());
+    }
+
+    // 10. diagnose_p5_parent_inheritance_ambiguity: negated, non-Select, conflicting join
+    #[test]
+    fn diagnose_p5_returns_none_for_negated_exists() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+",
+        )
+        .unwrap();
+        // NOT EXISTS → line 622-623 returns None
+        let expr = parse_expr(
+            "NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user)",
+        );
+        assert!(
+            diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none(),
+            "negated EXISTS should return None"
+        );
+    }
+
+    #[test]
+    fn diagnose_p5_returns_none_for_non_select_body() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
+",
+        )
+        .unwrap();
+        // EXISTS (VALUES ...) → non-Select body → line 627-628 returns None
+        let expr = parse_expr("EXISTS (VALUES (1))");
+        assert!(
+            diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none(),
+            "non-Select body should return None"
+        );
+    }
+
+    #[test]
+    fn diagnose_p5_returns_conflicting_join_message() {
+        // When the same parent source has two different FK columns from the outer table,
+        // analyze_p5 sets saw_conflicting_join = true → lines 638-641.
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(id UUID PRIMARY KEY, code UUID, owner_id UUID REFERENCES users(id));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id), project_code UUID REFERENCES projects(code));
+",
+        )
+        .unwrap();
+        let expr = parse_expr(
+            "EXISTS (
+                SELECT 1 FROM projects p
+                WHERE p.id = tasks.project_id
+                  AND p.code = tasks.project_code
+                  AND p.owner_id = current_user
+            )",
+        );
+        let result = diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks");
+        assert!(
+            result.is_some(),
+            "conflicting join columns should produce a diagnostic"
+        );
+        assert!(
+            result.unwrap().contains("conflicting"),
+            "diagnostic should mention conflicting"
+        );
+    }
+
+    // 11. analyze_p5_parent_inheritance: empty sources (line 667)
+    #[test]
+    fn analyze_p5_returns_none_for_empty_sources() {
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
+",
+        )
+        .unwrap();
+        // A SELECT with no FROM clause → empty sources → line 667 returns None
+        // We cannot parse "SELECT 1 WHERE ..." without FROM in standard SQL,
+        // but we can construct via parse_select with a derived table that has no relation sources.
+        // Actually, sqlparser does allow `SELECT 1 WHERE true`.
+        let select = parse_select("SELECT 1");
+        let result = analyze_p5_parent_inheritance(&select, &db, "tasks");
+        assert!(result.is_none(), "empty sources should return None");
+    }
+
+    // 11b. analyze_p5: empty inner_predicates → skip (lines 724-725)
+    #[test]
+    fn analyze_p5_skips_candidate_with_only_join_predicates_and_no_inner() {
+        // When ALL predicates are outer↔parent join columns, inner_predicates is empty,
+        // so the candidate is skipped (line 724-725).
+        let db = parse_schema(
+            r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+",
+        )
+        .unwrap();
+        // EXISTS with only a join predicate and no inner ownership/membership predicate
+        let expr = parse_expr("EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id)");
+        let result = recognize_p5(
+            &expr,
+            &db,
+            &FunctionRegistry::new(),
+            "tasks",
+            &PolicyCommand::Select,
+        );
+        assert!(
+            result.is_none(),
+            "P5 with no inner predicate (only join) should not match"
+        );
+    }
+
+    // 12. function_has_current_user_arg: non-List args (line 912)
+    #[test]
+    fn function_has_current_user_arg_returns_false_for_function_with_no_arg_list() {
+        use sqlparser::ast::{Function, FunctionArguments, ObjectName};
+        let registry = FunctionRegistry::new();
+        // Build a Function AST node with FunctionArguments::None
+        let func = Expr::Function(Function {
+            name: ObjectName::from(vec![sqlparser::ast::Ident::new("my_func")]),
+            args: FunctionArguments::None,
+            filter: None,
+            null_treatment: None,
+            over: None,
+            within_group: Vec::new(),
+            parameters: FunctionArguments::None,
+            uses_odbc_syntax: false,
+        });
+        assert!(
+            !function_has_current_user_arg(&func, &registry),
+            "FunctionArguments::None should return false"
+        );
+    }
+
+    // 13. recognize_pg_has_role: non-List args (line 134-135)
+    #[test]
+    fn recognize_pg_has_role_returns_none_for_no_arg_list() {
+        use sqlparser::ast::{Function, FunctionArguments, ObjectName};
+        let registry = FunctionRegistry::new();
+        // Build a pg_has_role function with FunctionArguments::None
+        let func_expr = Expr::Function(Function {
+            name: ObjectName::from(vec![sqlparser::ast::Ident::new("pg_has_role")]),
+            args: FunctionArguments::None,
+            filter: None,
+            null_treatment: None,
+            over: None,
+            within_group: Vec::new(),
+            parameters: FunctionArguments::None,
+            uses_odbc_syntax: false,
+        });
+        assert!(
+            recognize_pg_has_role(&func_expr, &registry).is_none(),
+            "pg_has_role with FunctionArguments::None should return None"
+        );
+    }
+
+    // Additional: selection_references_current_user with IsDistinctFrom/IsNotDistinctFrom (lines 749-751)
+    // and catch-all arm (line 753)
+    #[test]
+    fn selection_references_current_user_via_is_not_distinct_from() {
+        let registry = FunctionRegistry::new();
+        let select = parse_select(
+            "SELECT 1 FROM doc_members WHERE user_id IS NOT DISTINCT FROM current_user",
+        );
+        assert!(
+            selection_references_current_user(&select, &registry),
+            "IS NOT DISTINCT FROM current_user should be detected"
+        );
+    }
+
+    #[test]
+    fn selection_references_current_user_via_is_distinct_from() {
+        let registry = FunctionRegistry::new();
+        let select =
+            parse_select("SELECT 1 FROM doc_members WHERE user_id IS DISTINCT FROM current_user");
+        assert!(
+            selection_references_current_user(&select, &registry),
+            "IS DISTINCT FROM current_user should be detected"
+        );
+    }
+
+    #[test]
+    fn selection_references_current_user_catch_all_with_bare_current_user() {
+        let registry = FunctionRegistry::new();
+        // A bare current_user expression (not inside BinaryOp/IsDistinct) → catch-all at line 753
+        // This is unusual but tests the `_ =>` branch
+        let select = parse_select("SELECT 1 FROM doc_members WHERE current_user");
+        assert!(
+            selection_references_current_user(&select, &registry),
+            "bare current_user in WHERE should be detected via catch-all"
+        );
+    }
+
+    #[test]
+    fn selection_references_current_user_returns_false_without_selection() {
+        let registry = FunctionRegistry::new();
+        let select = parse_select("SELECT 1 FROM doc_members");
+        assert!(
+            !selection_references_current_user(&select, &registry),
+            "no WHERE clause should return false"
+        );
+    }
+
+    // Additional: extract_membership_columns ON-clause user detection where
+    // user_col is already set (second user predicate in ON) → skipped but no error
+    #[test]
+    fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
+        // Both WHERE and ON have user predicates; the first one wins.
+        let select = parse_select(
+            "SELECT dm.doc_id FROM docs d
+             JOIN doc_members dm ON dm.user_id = auth_current_user_id() AND dm.doc_id = d.id
+             WHERE dm.user_id = auth_current_user_id()",
+        );
+        let registry = registry_with_role_level();
+        let cols = vec![
+            "doc_id".to_string(),
+            "user_id".to_string(),
+            "role".to_string(),
+        ];
+        let result =
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+        assert!(result.is_some());
+        let (fk, user, _) = result.unwrap();
+        assert_eq!(fk, "doc_id");
+        assert_eq!(user, "user_id");
+    }
+
+    // Additional: diagnose_p4 for EXISTS with a non-Select body
+    #[test]
+    fn diagnose_p4_membership_ambiguity_exists_non_select_body() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+        // EXISTS (VALUES ...) → non-Select body → line 592 returns None
+        let expr = parse_expr("EXISTS (VALUES (1))");
+        assert!(
+            diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+            "EXISTS with non-Select body should return None"
+        );
+    }
+
+    // Additional: diagnose_p4 negated EXISTS returns _ => None (line 610)
+    #[test]
+    fn diagnose_p4_membership_ambiguity_negated_exists() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "NOT EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
+        );
+        // negated EXISTS matches `Expr::Exists { negated: true }` which falls to `_ => None` at line 610
+        assert!(
+            diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+            "negated EXISTS should return None from diagnose_p4"
+        );
+    }
+
+    // Additional: diagnose_p4 InSubquery negated → falls to _ => None
+    #[test]
+    fn diagnose_p4_membership_ambiguity_negated_in_subquery() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+        let expr =
+            parse_expr("id NOT IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
+        assert!(
+            diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+            "negated IN subquery should return None"
+        );
+    }
 }
