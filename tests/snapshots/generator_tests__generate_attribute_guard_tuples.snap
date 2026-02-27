@@ -1,0 +1,6 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- TODO [Level D]: skipped tuple generation for articles (unsupported pattern P9)
+-- Tuple query not emitted; attribute condition on 'status' requires runtime filtering; no static tuple mapping.

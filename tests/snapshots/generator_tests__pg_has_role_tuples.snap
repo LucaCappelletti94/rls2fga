@@ -1,0 +1,8 @@
+---
+source: tests/generator_tests.rs
+expression: "tuple_generator::format_tuples(&tuples)"
+---
+-- Policy scope: docs rows require PostgreSQL role 'editor' via scope_docs_select_14425117
+SELECT 'docs:' || "id" AS object, 'scope_docs_select_14425117' AS relation, 'pg_role:editor' AS subject
+FROM "docs"
+WHERE "id" IS NOT NULL;

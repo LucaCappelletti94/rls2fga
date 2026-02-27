@@ -230,3 +230,84 @@ fn generate_constant_bool_model_and_tuples() {
         tuple_generator::format_tuples(&tuples)
     );
 }
+
+// ── Gap 1: pg_has_role / RoleAccessor → scope relation (not deny) ───────────
+
+#[test]
+fn pg_has_role_generates_scope_relation_not_deny() {
+    let sql = r"
+CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+    USING (pg_has_role(current_user, 'editor', 'MEMBER'));
+";
+    let (classified, db, registry) = support::classify_sql(sql, None);
+
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    assert!(
+        !model.dsl.contains("no_access"),
+        "pg_has_role should NOT produce no_access; DSL:\n{}",
+        model.dsl
+    );
+    assert!(
+        model.dsl.contains("scope_"),
+        "pg_has_role should produce a scope relation; DSL:\n{}",
+        model.dsl
+    );
+    insta::assert_snapshot!("pg_has_role_model", model.dsl.trim());
+
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    insta::assert_snapshot!(
+        "pg_has_role_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}
+
+#[test]
+fn role_accessor_generates_scope_relation() {
+    let sql = r"
+CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+    USING (auth.role() = 'authenticated');
+";
+    let registry_json = r#"{
+  "auth.role": {"kind": "role_accessor"}
+}"#;
+    let (classified, db, registry) = support::classify_sql(sql, Some(registry_json));
+
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    assert!(
+        !model.dsl.contains("no_access"),
+        "role accessor should NOT produce no_access; DSL:\n{}",
+        model.dsl
+    );
+    insta::assert_snapshot!("role_accessor_model", model.dsl.trim());
+
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    insta::assert_snapshot!(
+        "role_accessor_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}
+
+// ── P9: standalone attribute condition ──────────────────────────────────────
+
+#[test]
+fn generate_attribute_guard_model_and_tuples() {
+    let db = support::parse_fixture_db("attribute_guard");
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::C);
+    insta::assert_snapshot!("generate_attribute_guard_model", model.dsl.trim());
+
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::C);
+    insta::assert_snapshot!(
+        "generate_attribute_guard_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}

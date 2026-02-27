@@ -1,0 +1,17 @@
+---
+source: tests/generator_tests.rs
+expression: model.dsl.trim()
+---
+model
+  schema 1.1
+
+type user
+
+type docs
+  relations
+    define scope_docs_select_14425117: [pg_role]
+    define can_select: scope_docs_select_14425117
+
+type pg_role
+  relations
+    define member: [user]

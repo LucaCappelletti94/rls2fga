@@ -521,6 +521,59 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
     }
 }
 
+/// Handle `P2RoleNameInList` when the function is *not* a `RoleThreshold` (e.g.
+/// `pg_has_role()` or Supabase `auth.role()`).  Creates scope-style direct
+/// relations per role name and emits `PolicyScope` tuple sources, mirroring the
+/// pattern used for policy-level `TO` role scoping.
+#[allow(clippy::too_many_arguments)]
+fn handle_p2_role_gate(
+    role_names: &[String],
+    policy_name: &str,
+    source_table: &str,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    db: &ParserDB,
+    todos: &mut Vec<TodoItem>,
+) -> UsersetExpr {
+    if role_names.is_empty() {
+        return deny_expr(table_plan);
+    }
+
+    ensure_pg_role_type(all_types);
+
+    let scope_relation = policy_scope_relation_name(policy_name);
+    table_plan.ensure_direct(
+        scope_relation.clone(),
+        vec![DirectSubject::Type("pg_role".to_string())],
+    );
+
+    todos.push(TodoItem {
+        level: ConfidenceLevel::C,
+        policy_name: policy_name.to_string(),
+        message: format!(
+            "Role gate ({}) mapped to relation '{scope_relation}'; \
+             ensure pg_role memberships are loaded",
+            role_names.join(", ")
+        ),
+    });
+
+    if let Some(pk_col) = resolve_pk_column(source_table, db) {
+        for role in role_names {
+            let pg_role = canonical_fga_type_name(role);
+            table_plan.add_source(TupleSource::PolicyScope {
+                table: source_table.to_string(),
+                pk_col: pk_col.clone(),
+                scope_relation: scope_relation.clone(),
+                pg_role,
+            });
+        }
+    } else {
+        add_missing_object_identifier_todo(table_plan, source_table, "role gate tuples");
+    }
+
+    UsersetExpr::Computed(scope_relation)
+}
+
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct("no_access", vec![DirectSubject::Type("user".to_string())]);
     UsersetExpr::Computed("no_access".to_string())
@@ -708,7 +761,17 @@ fn pattern_to_expr_for_target(
                 db,
                 todos,
             ) else {
-                return deny_expr(table_plan);
+                // Non-RoleThreshold function (e.g. pg_has_role, auth.role()) —
+                // fall back to scope-style direct relations per role name.
+                return handle_p2_role_gate(
+                    role_names,
+                    policy_name,
+                    source_table,
+                    table_plan,
+                    all_types,
+                    db,
+                    todos,
+                );
             };
 
             // Collect the exact set of role names that the policy grants access to.
@@ -2016,10 +2079,19 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         );
 
         assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
-        assert_eq!(p2_expr, UsersetExpr::Computed("no_access".to_string()));
-        assert_eq!(todos.len(), 2);
+        // P2 with missing metadata now falls through to handle_p2_role_gate,
+        // which creates a scope-style relation instead of deny_expr.
+        assert!(
+            matches!(&p2_expr, UsersetExpr::Computed(name) if name.starts_with("scope_")),
+            "P2 with non-RoleThreshold function should produce scope relation, got: {p2_expr:?}"
+        );
+        // P1 emits a TODO about missing semantic metadata; P2 emits a TODO
+        // about the role gate (and possibly missing object identifier).
         assert!(todos[0].message.contains("missing semantic metadata"));
-        assert!(todos[1].message.contains("missing semantic metadata"));
+        assert!(
+            todos.iter().any(|t| t.message.contains("Role gate")),
+            "expected role-gate TODO: {todos:?}"
+        );
     }
 
     #[test]
