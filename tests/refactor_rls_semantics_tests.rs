@@ -819,7 +819,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
     assert!(
         model
             .dsl
-            .contains("define can_select: projects->can_select"),
+            .contains("define can_select: can_select from projects"),
         "expected task select permission to inherit from projects can_select, got:\n{}",
         model.dsl
     );

@@ -10,7 +10,7 @@ type user
 type projects
   relations
     define teams: [teams]
-    define can_select: teams->member
+    define can_select: member from teams
 
 type teams
   relations

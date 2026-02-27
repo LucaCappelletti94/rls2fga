@@ -15,4 +15,4 @@ type projects
 type tasks
   relations
     define projects: [projects]
-    define can_select: projects->can_select
+    define can_select: can_select from projects

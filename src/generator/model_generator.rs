@@ -1869,7 +1869,7 @@ fn expr_to_dsl(expr: &UsersetExpr, parent_precedence: u8) -> String {
     match expr {
         UsersetExpr::Computed(name) => name.clone(),
         UsersetExpr::TupleToUserset { tupleset, computed } => {
-            format!("{tupleset}->{computed}")
+            format!("{computed} from {tupleset}")
         }
         UsersetExpr::Union(children) => {
             let rendered = children

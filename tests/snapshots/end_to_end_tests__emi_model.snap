@@ -18,9 +18,9 @@ type ownables
     define can_insert: role_editor
     define can_select: role_viewer
     define can_update: role_editor
-    define role_admin: owner_user or owner_team->member or grant_admin or grant_admin->member
-    define role_editor: role_admin or grant_editor or grant_editor->member
-    define role_viewer: role_editor or grant_viewer or grant_viewer->member
+    define role_admin: owner_user or member from owner_team or grant_admin or member from grant_admin
+    define role_editor: role_admin or grant_editor or member from grant_editor
+    define role_viewer: role_editor or grant_viewer or member from grant_viewer
 
 type team
   relations
