@@ -26,6 +26,10 @@ diesel = { version = "2", features = ["postgres"], optional = true }
 insta = { version = "1", features = ["json"] }
 testcontainers = "0.27"
 tokio = { version = "1", features = ["full"] }
+
+# openfga-client pulls in protobuf-src which fails to link on Windows MSVC
+# (abseil-cpp CRT mismatch). Only needed for Docker integration tests on Linux/macOS.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 openfga-client = "0.5"
 
 [lints.rust]
