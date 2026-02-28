@@ -119,9 +119,7 @@ CREATE POLICY p ON docs FOR UPDATE
     USING (owner_id = current_user)
     WITH CHECK (owner_id = current_user);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
 
     let count = classified[0].classifications().count();
@@ -138,9 +136,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
 
     let count = classified[0].classifications().count();
@@ -156,9 +152,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT TO PUBLIC USING (owner_id = current_user);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     assert!(
         classified[0].scoped_roles().is_empty(),
@@ -173,9 +167,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT TO app_user, admin_role USING (owner_id = current_user);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let roles = classified[0].scoped_roles();
     assert_eq!(roles.len(), 2);
@@ -193,9 +185,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (owner_id = current_user AND status = 'published');
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -213,9 +203,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (owner_id = current_user OR editor_id = current_user);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -232,9 +220,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, allowed_users TEXT[]);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (current_user = ANY(allowed_users));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -255,9 +241,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, tags TEXT[], user_tags TEXT[]);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (tags && user_tags);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -280,9 +264,7 @@ CREATE POLICY p ON tasks FOR SELECT
         WHERE p.id = tasks.project_id AND p.is_public = TRUE
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -304,9 +286,7 @@ CREATE POLICY p ON tasks FOR SELECT
         WHERE p.id = tasks.project_id AND p.val + mystery() > 0
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
 }
 
@@ -320,9 +300,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_own ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
 
     let filtered = filter_policies_for_output(&classified, ConfidenceLevel::A);
     let has_p3 = filtered.iter().any(|cp| {
@@ -402,9 +380,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (pg_has_role('admin', 'MEMBER'));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -424,9 +400,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (pg_has_role(current_user, 'editor', 'MEMBER'));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -507,9 +481,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (is_public = FALSE);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -526,9 +498,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (is_public IS FALSE);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -545,9 +515,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (TRUE);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -564,9 +532,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (FALSE);
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -587,9 +553,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (id IN (SELECT doc_id FROM shares WHERE shares.user_id = current_user));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -612,9 +576,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE m.member_id = current_user
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -637,9 +599,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE s.doc_id = docs.id
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let _ = &classified[0];
 }
@@ -657,9 +617,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE a.user_id = current_user
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -681,9 +639,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE a.doc_id = docs.id AND a.project_id = docs.project_id AND a.user_id = current_user
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
 }
 
@@ -700,9 +656,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE s.doc_id = docs.id
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let _ = &classified[0];
 }
@@ -718,9 +672,7 @@ CREATE POLICY p ON docs FOR SELECT
         SELECT 1 FROM log WHERE log.editor = current_user
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
 }
 
@@ -738,9 +690,7 @@ CREATE POLICY p ON docs FOR SELECT
         WHERE o.id = docs.org_id AND o.id = docs.alt_org_id AND o.owner_id = current_user
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
@@ -761,9 +711,7 @@ CREATE POLICY p ON docs FOR SELECT
         SELECT 1 FROM orgs o WHERE o.id = docs.org_id
     ));
 ";
-    let db = parse_schema(sql).unwrap();
-    let registry = FunctionRegistry::new();
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(

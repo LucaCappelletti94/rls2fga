@@ -38,9 +38,7 @@ fn classify_fixture_with_json_registry(
     sql_parser::ParserDB,
     FunctionRegistry,
 ) {
-    let (db, registry) = support::load_fixture_db_and_registry(fixture);
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry)
+    support::load_fixture_classified(fixture)
 }
 
 // ============================================================================

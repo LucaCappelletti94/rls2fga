@@ -74,6 +74,14 @@ pub(crate) fn classify_sql(
     (classified, db, registry)
 }
 
+/// Classify SQL with an empty function registry — convenience wrapper for
+/// the common case where no registry metadata is needed.
+pub(crate) fn classify_sql_no_registry(
+    sql: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    classify_sql(sql, None)
+}
+
 pub(crate) fn try_load_fixture_classified(
     fixture: &str,
 ) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
