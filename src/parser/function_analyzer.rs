@@ -105,10 +105,13 @@ fn is_direct_accessor_body(body_lower: &str) -> bool {
 impl FunctionSemantic {
     /// Attempt to classify a function body by simple heuristic analysis.
     /// Returns None if the function cannot be classified from its body alone.
-    pub fn analyze_body(body: &str, return_type: &str, language: &str) -> Option<FunctionSemantic> {
+    pub fn analyze_body(
+        body: &str,
+        return_type: &str,
+        _language: &str,
+    ) -> Option<FunctionSemantic> {
         let body_lower = body.to_lowercase();
         let return_type_lower = return_type.to_lowercase();
-        let language_lower = language.to_lowercase();
 
         // Detect current_user accessor patterns.
         // Require the body to be a *direct* accessor expression, not a complex function
@@ -121,15 +124,6 @@ impl FunctionSemantic {
             return Some(FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
             });
-        }
-
-        // Detect role-threshold pattern: returns integer, references grants
-        if (return_type_lower.contains("int") || return_type_lower.contains("integer"))
-            && language_lower == "sql"
-            && body_lower.contains("grant")
-        {
-            // This is a simplified heuristic - the function registry is preferred
-            return None;
         }
 
         None
