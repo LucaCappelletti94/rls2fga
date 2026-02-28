@@ -25,7 +25,9 @@ pub struct FunctionRegistry {
 
 impl FunctionRegistry {
     fn normalized_function_keys(name: &str) -> Vec<String> {
-        let mut keys = vec![normalize_identifier(&name.replace('"', ""))];
+        let mut keys = vec![normalize_identifier(
+            &crate::parser::names::unquote_identifier(name),
+        )];
 
         if let Some((schema, relation)) = split_schema_and_relation(name) {
             keys.push(format!(

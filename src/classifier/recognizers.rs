@@ -1,13 +1,13 @@
 use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
 
-use crate::classifier::ast_args::function_arg_expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
+use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::names::{
     is_owner_like_column_name, is_public_flag_column_name, is_user_related_column_name,
-    lookup_table, normalize_relation_name, split_schema_and_relation,
+    lookup_table, normalize_relation_name, normalized_function_name, split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 
@@ -129,7 +129,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     let Expr::Function(func) = expr else {
         return None;
     };
-    if normalize_relation_name(&func.name.to_string()) != "pg_has_role" {
+    if normalized_function_name(func) != "pg_has_role" {
         return None;
     }
     let FunctionArguments::List(arg_list) = &func.args else {
@@ -912,7 +912,7 @@ pub(crate) fn constant_bool_value(expr: &Expr) -> Option<bool> {
 /// Extract a function name from an expression.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Function(func) => Some(normalize_relation_name(&func.name.to_string())),
+        Expr::Function(func) => Some(normalized_function_name(func)),
         Expr::Cast { expr, .. } => extract_function_name(expr),
         Expr::Nested(inner) => extract_function_name(inner),
         _ => None,
@@ -1317,7 +1317,7 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
 
 fn current_user_accessor_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Function(func) => Some(normalize_relation_name(&func.name.to_string())),
+        Expr::Function(func) => Some(normalized_function_name(func)),
         Expr::Identifier(ident) => Some(normalize_relation_name(&ident.value)),
         Expr::Cast { expr, .. } => current_user_accessor_name(expr),
         Expr::Nested(inner) => current_user_accessor_name(inner),
@@ -1657,12 +1657,12 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
                 | BinaryOperator::Lt
         ) {
             if let Some(col) = extract_column_name(left) {
-                if is_literal_or_temporal(right) && !is_user_related_column(&col) {
+                if is_literal_or_temporal(right) && !is_user_related_column_name(&col) {
                     return Some(col);
                 }
             }
             if let Some(col) = extract_column_name(right) {
-                if is_literal_or_temporal(left) && !is_user_related_column(&col) {
+                if is_literal_or_temporal(left) && !is_user_related_column_name(&col) {
                     return Some(col);
                 }
             }
@@ -1676,7 +1676,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column(&col)
+            if !is_user_related_column_name(&col)
                 && !list.is_empty()
                 && list.iter().all(is_literal_value)
             {
@@ -1687,12 +1687,12 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     // `col IS NOT DISTINCT FROM value` / `col IS DISTINCT FROM value`
     if let Expr::IsNotDistinctFrom(left, right) | Expr::IsDistinctFrom(left, right) = expr {
         if let Some(col) = extract_column_name(left) {
-            if is_literal_or_temporal(right) && !is_user_related_column(&col) {
+            if is_literal_or_temporal(right) && !is_user_related_column_name(&col) {
                 return Some(col);
             }
         }
         if let Some(col) = extract_column_name(right) {
-            if is_literal_or_temporal(left) && !is_user_related_column(&col) {
+            if is_literal_or_temporal(left) && !is_user_related_column_name(&col) {
                 return Some(col);
             }
         }
@@ -1706,7 +1706,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column(&col)
+            if !is_user_related_column_name(&col)
                 && is_literal_or_temporal(low)
                 && is_literal_or_temporal(high)
             {
@@ -1717,7 +1717,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     // `col IS NULL` / `col IS NOT NULL`
     if let Expr::IsNull(col_expr) | Expr::IsNotNull(col_expr) = expr {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column(&col) {
+            if !is_user_related_column_name(&col) {
                 return Some(col);
             }
         }
@@ -1735,7 +1735,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column(&col) {
+            if !is_user_related_column_name(&col) {
                 return Some(col);
             }
         }
@@ -1772,7 +1772,7 @@ fn is_literal_or_temporal(expr: &Expr) -> bool {
 fn is_well_known_temporal_function(expr: &Expr) -> bool {
     match expr {
         Expr::Function(func) => {
-            let name = normalize_relation_name(&func.name.to_string()).to_lowercase();
+            let name = normalized_function_name(func);
             matches!(
                 name.as_str(),
                 "now"
@@ -1791,10 +1791,6 @@ fn is_well_known_temporal_function(expr: &Expr) -> bool {
         }
         _ => false,
     }
-}
-
-fn is_user_related_column(col: &str) -> bool {
-    is_user_related_column_name(col)
 }
 
 fn infer_membership_fk_column(

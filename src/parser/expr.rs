@@ -21,11 +21,11 @@ pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<String> {
         return Some(col);
     }
     if let Expr::Function(func) = expr {
-        let name = func.name.to_string().to_lowercase();
+        let name = crate::parser::names::normalized_function_name(func);
         if name == "coalesce" || name == "nullif" {
             if let FunctionArguments::List(arg_list) = &func.args {
                 if let Some(first_arg) = arg_list.args.first() {
-                    if let Some(inner) = fn_arg_expr(first_arg) {
+                    if let Some(inner) = function_arg_expr(first_arg) {
                         return extract_column_name(inner);
                     }
                 }
@@ -35,8 +35,8 @@ pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<String> {
     None
 }
 
-/// Extract an expression from a function argument (local helper).
-fn fn_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
+/// Extract the expression payload from a SQL function argument.
+pub fn function_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
     match arg {
         FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
         | FunctionArg::Named {
@@ -54,7 +54,7 @@ fn fn_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
 /// Returns `true` when the expression is wrapped through `COALESCE` or `NULLIF`.
 pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
     if let Expr::Function(func) = expr {
-        let name = func.name.to_string().to_lowercase();
+        let name = crate::parser::names::normalized_function_name(func);
         return name == "coalesce" || name == "nullif";
     }
     false

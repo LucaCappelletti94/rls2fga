@@ -1,5 +1,3 @@
-/// Shared SQL function-argument AST helpers.
-pub(crate) mod ast_args;
 /// Maps SQL function names to their known semantics (role-threshold, current-user accessor, etc.).
 pub mod function_registry;
 /// Pattern enums, confidence levels, and classified expression/policy types.

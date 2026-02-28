@@ -45,7 +45,7 @@ fn pk_column_resolution_has_single_source_of_truth() {
 #[test]
 fn function_arg_extraction_has_single_source_of_truth() {
     let files = [
-        "src/classifier/ast_args.rs",
+        "src/parser/expr.rs",
         "src/classifier/recognizers.rs",
         "src/generator/model_generator.rs",
     ];

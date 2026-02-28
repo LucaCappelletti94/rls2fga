@@ -71,6 +71,12 @@ pub fn normalize_relation_name(name: &str) -> String {
     normalize_identifier(name)
 }
 
+/// Normalize a function's potentially schema-qualified name to its terminal
+/// lowercase identifier.
+pub fn normalized_function_name(func: &sqlparser::ast::Function) -> String {
+    normalize_relation_name(&func.name.to_string())
+}
+
 /// Canonicalize a SQL object name into an `OpenFGA`-safe type identifier.
 ///
 /// Rules:
@@ -160,12 +166,17 @@ pub fn is_public_flag_column_name(name: &str) -> bool {
 }
 
 /// True when the name looks like a user/owner column.
+///
+/// Uses underscore-delimited word-boundary matching to avoid false positives
+/// on names like `abuser_id` (contains `user_id` as a substring).
 pub fn is_user_related_column_name(name: &str) -> bool {
     let lower = normalize_identifier(name);
-    lower.contains("user_id")
-        || lower.contains("owner_id")
-        || lower.contains("created_by")
-        || lower == "author_id"
+    let tokens: Vec<&str> = lower.split('_').collect();
+    let has_user_id = tokens.windows(2).any(|w| w == ["user", "id"]);
+    let has_owner_id = tokens.windows(2).any(|w| w == ["owner", "id"]);
+    let has_created_by = tokens.windows(2).any(|w| w == ["created", "by"]);
+    let has_author_id = tokens.windows(2).any(|w| w == ["author", "id"]);
+    has_user_id || has_owner_id || has_created_by || has_author_id
 }
 
 /// True when the name looks like a direct ownership column.
