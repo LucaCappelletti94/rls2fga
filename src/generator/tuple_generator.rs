@@ -1,5 +1,8 @@
 use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::*;
+use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+
+#[cfg(test)]
+use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
@@ -422,8 +425,12 @@ pub fn generate_tuple_queries(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
 ) -> Vec<TupleQuery> {
-    let filtered = filter_policies_for_output(policies, min_confidence);
-    let plan = crate::generator::model_generator::build_schema_plan(&filtered, db, registry);
+    let plan = crate::generator::model_generator::build_filtered_schema_plan(
+        policies,
+        db,
+        registry,
+        min_confidence,
+    );
     generate_tuple_queries_from_plan(&plan, db)
 }
 

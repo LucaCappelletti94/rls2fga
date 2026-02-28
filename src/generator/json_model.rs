@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::{filter_policies_for_output, ClassifiedPolicy, ConfidenceLevel};
-use crate::generator::model_generator::{build_schema_plan, DirectSubject, TypePlan, UsersetExpr};
+use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+use crate::generator::model_generator::{
+    build_filtered_schema_plan, DirectSubject, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
+};
 use crate::parser::sql_parser::ParserDB;
 
 /// Top-level `OpenFGA` authorization model, serializable to the JSON format accepted by the API.
@@ -130,8 +132,7 @@ pub fn generate_json_model(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
 ) -> AuthorizationModel {
-    let filtered = filter_policies_for_output(policies, min_confidence);
-    let plan = build_schema_plan(&filtered, db, registry);
+    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence);
 
     let type_definitions = plan
         .types
@@ -140,7 +141,7 @@ pub fn generate_json_model(
         .collect();
 
     AuthorizationModel {
-        schema_version: "1.1".to_string(),
+        schema_version: OPENFGA_SCHEMA_VERSION.to_string(),
         type_definitions,
     }
 }

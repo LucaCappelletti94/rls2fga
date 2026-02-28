@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
-use crate::classifier::ast_args::function_arg_expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::generator::db_lookup::{resolve_pk_column, table_has_column};
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::parser::expr::extract_column_name;
+use crate::parser::expr::function_arg_expr;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
@@ -15,6 +15,9 @@ use crate::parser::names::{
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments, Query, SelectItem, SetExpr};
+
+/// `OpenFGA` authorization model schema version.
+pub(crate) const OPENFGA_SCHEMA_VERSION: &str = "1.1";
 
 /// Generated ``OpenFGA`` model output.
 #[derive(Debug, Clone)]
@@ -57,12 +60,6 @@ pub(crate) struct TypePlan {
     pub type_name: String,
     pub direct_relations: BTreeMap<String, Vec<DirectSubject>>,
     pub computed_relations: BTreeMap<String, UsersetExpr>,
-    /// Tuple sources keyed by relation name.  A relation without an entry has
-    /// no static SQL tuples.  Populated during pattern translation; consumed by
-    /// [`crate::generator::tuple_generator`].
-    // Populated in Step 3 of the IR migration; read in Step 4.
-    #[allow(dead_code)]
-    pub tuple_sources: BTreeMap<String, Vec<TupleSource>>,
     /// Table-level tuple sources not tied to a specific relation (e.g. policy
     /// scope tuples).
     pub table_tuple_sources: Vec<TupleSource>,
@@ -74,7 +71,6 @@ impl TypePlan {
             type_name: type_name.into(),
             direct_relations: BTreeMap::new(),
             computed_relations: BTreeMap::new(),
-            tuple_sources: BTreeMap::new(),
             table_tuple_sources: Vec::new(),
         }
     }
@@ -152,17 +148,6 @@ pub(crate) struct RoleThresholdResourceHints {
     pub conflicts: BTreeSet<(String, String)>,
 }
 
-/// Resolved resource-join information for a single P1/P2 call site.
-// Constructed in Step 3 once TupleSource population begins.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RoleThresholdResourceJoin<'a> {
-    /// The unambiguous resource column, if one could be inferred.
-    pub column: Option<&'a str>,
-    /// `true` when multiple conflicting columns were observed for this key.
-    pub conflict: bool,
-}
-
 /// Generate an ``OpenFGA`` model from classified policies.
 pub fn generate_model(
     policies: &[ClassifiedPolicy],
@@ -170,8 +155,7 @@ pub fn generate_model(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
 ) -> GeneratedModel {
-    let filtered = filter_policies_for_output(policies, min_confidence);
-    let plan = build_schema_plan(&filtered, db, registry);
+    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence);
     let dsl = render_dsl(&plan.types);
 
     GeneratedModel {
@@ -179,6 +163,16 @@ pub fn generate_model(
         todos: plan.todos,
         confidence_summary: plan.confidence_summary,
     }
+}
+
+pub(crate) fn build_filtered_schema_plan(
+    policies: &[ClassifiedPolicy],
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    min_confidence: ConfidenceLevel,
+) -> SchemaPlan {
+    let filtered = filter_policies_for_output(policies, min_confidence);
+    build_schema_plan(&filtered, db, registry)
 }
 
 pub(crate) fn build_schema_plan(
@@ -587,24 +581,23 @@ fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     UsersetExpr::Computed("public_viewer".to_string())
 }
 
-fn combine_union(mut exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
-    if exprs.is_empty() {
-        return None;
+fn combine_exprs(
+    mut exprs: Vec<UsersetExpr>,
+    wrapper: fn(Vec<UsersetExpr>) -> UsersetExpr,
+) -> Option<UsersetExpr> {
+    match exprs.len() {
+        0 => None,
+        1 => exprs.pop(),
+        _ => Some(wrapper(exprs)),
     }
-    if exprs.len() == 1 {
-        return exprs.pop();
-    }
-    Some(UsersetExpr::Union(exprs))
 }
 
-fn combine_intersection(mut exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
-    if exprs.is_empty() {
-        return None;
-    }
-    if exprs.len() == 1 {
-        return exprs.pop();
-    }
-    Some(UsersetExpr::Intersection(exprs))
+fn combine_union(exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
+    combine_exprs(exprs, UsersetExpr::Union)
+}
+
+fn combine_intersection(exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
+    combine_exprs(exprs, UsersetExpr::Intersection)
 }
 
 fn rewrite_p5_update_phases(all_types: &mut BTreeMap<String, TypePlan>) {
@@ -1196,10 +1189,7 @@ fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &st
 }
 
 fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
-    let entry = all_types
-        .entry("pg_role".to_string())
-        .or_insert_with(|| TypePlan::new("pg_role"));
-    entry.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
+    ensure_member_type(all_types, "pg_role");
 }
 
 fn ensure_role_threshold_scaffold(
@@ -1482,7 +1472,7 @@ fn extract_resource_columns_for_function(
 fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec<&'a Function>) {
     match expr {
         Expr::Function(function)
-            if normalize_relation_name(&function.name.to_string())
+            if crate::parser::names::normalized_function_name(function)
                 == normalize_relation_name(function_name) =>
         {
             out.push(function);
@@ -1894,7 +1884,7 @@ fn populate_role_threshold_sources(
 fn render_dsl(types: &[TypePlan]) -> String {
     let mut dsl = String::new();
     writeln!(dsl, "model").unwrap();
-    writeln!(dsl, "  schema 1.1").unwrap();
+    writeln!(dsl, "  schema {OPENFGA_SCHEMA_VERSION}").unwrap();
 
     for t in types {
         writeln!(dsl).unwrap();
