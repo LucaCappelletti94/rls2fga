@@ -235,14 +235,9 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                     let team_tbl_sql = quote_sql_identifier(&tp.table);
                     let team_pk_sql = quote_sql_identifier(&tp.pk_col);
                     subject_joins.push(format!(
-                        "LEFT JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
+                        "JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
-                    format!(
-                        "CASE\n\
-                         \x20   WHEN t.{team_pk_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
-                         \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
-                         \x20 END"
-                    )
+                    format!("'team:' || og.{grant_grantee_col_sql}")
                 }
                 (None, None) => unreachable!("handled by early return above"),
             };
@@ -1098,6 +1093,39 @@ CREATE POLICY docs_select ON docs FOR SELECT
         assert!(
             !query.sql.contains("'user:'"),
             "should not emit user: prefix when principal is unresolvable, got: {}",
+            query.sql
+        );
+    }
+
+    #[test]
+    fn explicit_grants_team_only_does_not_fallback_to_user_prefix() {
+        use crate::generator::ir::{PrincipalInfo, TupleSource};
+
+        let source = TupleSource::ExplicitGrants {
+            table: "docs".to_string(),
+            pk_col: "id".to_string(),
+            grant_join_col: "id".to_string(),
+            grant_table: "doc_grants".to_string(),
+            grant_role_col: "role_level".to_string(),
+            grant_grantee_col: "grantee_id".to_string(),
+            grant_resource_col: "doc_id".to_string(),
+            role_cases: vec![(1, "grant_viewer".to_string(), "viewer".to_string())],
+            user_principal: None,
+            team_principal: Some(PrincipalInfo {
+                table: "teams".to_string(),
+                pk_col: "id".to_string(),
+            }),
+        };
+        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
+        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        assert!(
+            query.sql.contains("'team:'"),
+            "team-only explicit grants should emit team subjects, got: {}",
+            query.sql
+        );
+        assert!(
+            !query.sql.contains("ELSE 'user:'"),
+            "team-only explicit grants should fail closed for non-team rows, got: {}",
             query.sql
         );
     }
