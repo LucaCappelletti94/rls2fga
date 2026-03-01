@@ -96,10 +96,51 @@ fn is_direct_accessor_body(body_lower: &str) -> bool {
         "insert", "update", "delete", "from", "where", "join", "begin", "end;", "if ", "loop",
         "raise", "perform", "execute", "call", "create", "drop", "alter",
     ];
-    if COMPLEX_KEYWORDS.iter().any(|kw| body_lower.contains(kw)) {
+    let sanitized = strip_single_quoted_literals(body_lower);
+    if COMPLEX_KEYWORDS.iter().any(|kw| sanitized.contains(kw)) {
         return false;
     }
     true
+}
+
+fn strip_single_quoted_literals(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0usize;
+    let mut in_literal = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_literal {
+            if ch == '\'' {
+                // Escaped quote inside string literal: ''
+                if chars.get(i + 1).is_some_and(|next| *next == '\'') {
+                    i += 2;
+                    continue;
+                }
+                in_literal = false;
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            // Preserve token boundaries by replacing literal content with spaces.
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if ch == '\'' {
+            in_literal = true;
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        out.push(ch);
+        i += 1;
+    }
+
+    out
 }
 
 impl FunctionSemantic {
@@ -184,6 +225,38 @@ mod tests {
         assert!(
             semantic2.is_none(),
             "body with FROM clause should not be classified as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_accepts_accessor_when_literal_contains_keyword_substrings() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.from_user_id')::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            matches!(
+                semantic,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            ),
+            "keyword-like substrings inside literals should not trigger complex-body rejection"
+        );
+    }
+
+    #[test]
+    fn analyze_body_ignores_keyword_substrings_inside_literals() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('custom.update_marker')::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            matches!(
+                semantic,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            ),
+            "literal text containing update/from/etc must not be treated as SQL structure"
         );
     }
 
