@@ -1,7 +1,4 @@
-use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Select, SelectItem,
-    TableFactor, UnaryOperator, Value,
-};
+use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -1419,90 +1416,51 @@ fn is_join_column_ref(
 /// dollar-quoted strings, and other SQL literal forms that text-based rewriting
 /// would mangle.
 fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Option<&str>) {
-    // Check — without consuming — whether this CompoundIdentifier should be stripped.
-    let strip_to_bare = if let Expr::CompoundIdentifier(parts) = &*expr {
-        parts.len() >= 2
-            && qualifier_matches_table(&parts[parts.len() - 2].value, join_table, join_alias)
-    } else {
-        false
-    };
-    if strip_to_bare {
-        if let Expr::CompoundIdentifier(parts) = &*expr {
-            let column = parts.last().unwrap().clone();
-            *expr = Expr::Identifier(column);
-        }
-        return;
+    use sqlparser::ast::{Query, VisitMut, VisitorMut};
+    use std::ops::ControlFlow;
+
+    struct QualifierStripper<'a> {
+        join_table: &'a str,
+        join_alias: Option<&'a str>,
+        subquery_depth: usize,
     }
 
-    match expr {
-        Expr::BinaryOp { left, right, .. }
-        | Expr::IsDistinctFrom(left, right)
-        | Expr::IsNotDistinctFrom(left, right) => {
-            strip_qualifier_from_expr(left, join_table, join_alias);
-            strip_qualifier_from_expr(right, join_table, join_alias);
+    impl VisitorMut for QualifierStripper<'_> {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
+            self.subquery_depth += 1;
+            ControlFlow::Continue(())
         }
-        Expr::Function(function) => {
-            if let FunctionArguments::List(arg_list) = &mut function.args {
-                for arg in &mut arg_list.args {
-                    if let Some(arg_expr) = function_arg_expr_mut(arg) {
-                        strip_qualifier_from_expr(arg_expr, join_table, join_alias);
+        fn post_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
+            self.subquery_depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+            if self.subquery_depth == 0 {
+                if let Expr::CompoundIdentifier(parts) = &*expr {
+                    if parts.len() >= 2
+                        && qualifier_matches_table(
+                            &parts[parts.len() - 2].value,
+                            self.join_table,
+                            self.join_alias,
+                        )
+                    {
+                        let col = parts.last().unwrap().clone();
+                        *expr = Expr::Identifier(col);
                     }
                 }
             }
+            ControlFlow::Continue(())
         }
-        Expr::UnaryOp { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. }
-        | Expr::Nested(inner)
-        | Expr::IsTrue(inner)
-        | Expr::IsNotFalse(inner)
-        | Expr::IsFalse(inner)
-        | Expr::IsNotTrue(inner)
-        | Expr::IsNull(inner)
-        | Expr::IsNotNull(inner) => {
-            strip_qualifier_from_expr(inner, join_table, join_alias);
-        }
-        Expr::InList {
-            expr: inner, list, ..
-        } => {
-            strip_qualifier_from_expr(inner, join_table, join_alias);
-            for item in list.iter_mut() {
-                strip_qualifier_from_expr(item, join_table, join_alias);
-            }
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            if let Some(operand_expr) = operand.as_deref_mut() {
-                strip_qualifier_from_expr(operand_expr, join_table, join_alias);
-            }
-            for when in conditions.iter_mut() {
-                strip_qualifier_from_expr(&mut when.condition, join_table, join_alias);
-                strip_qualifier_from_expr(&mut when.result, join_table, join_alias);
-            }
-            if let Some(else_expr) = else_result.as_deref_mut() {
-                strip_qualifier_from_expr(else_expr, join_table, join_alias);
-            }
-        }
-        _ => {}
     }
-}
 
-fn function_arg_expr_mut(arg: &mut FunctionArg) -> Option<&mut Expr> {
-    match arg {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-        | FunctionArg::Named {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        }
-        | FunctionArg::ExprNamed {
-            arg: FunctionArgExpr::Expr(expr),
-            ..
-        } => Some(expr),
-        _ => None,
-    }
+    let mut v = QualifierStripper {
+        join_table,
+        join_alias,
+        subquery_depth: 0,
+    };
+    let _ = expr.visit(&mut v);
 }
 
 /// Returns `true` if `expr` contains any column reference whose qualifier is
@@ -1513,65 +1471,50 @@ fn predicate_references_other_table(
     join_table: &str,
     join_alias: Option<&str>,
 ) -> bool {
-    match expr {
-        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
-            // qualifier.column — check if qualifier matches the join table.
-            let qualifier = &parts[parts.len() - 2].value;
-            !qualifier_matches_table(qualifier, join_table, join_alias)
-        }
-        Expr::BinaryOp { left, right, .. }
-        | Expr::IsDistinctFrom(left, right)
-        | Expr::IsNotDistinctFrom(left, right) => {
-            predicate_references_other_table(left, join_table, join_alias)
-                || predicate_references_other_table(right, join_table, join_alias)
-        }
-        Expr::Function(function) => {
-            if let FunctionArguments::List(arg_list) = &function.args {
-                arg_list
-                    .args
-                    .iter()
-                    .filter_map(function_arg_expr)
-                    .any(|arg_expr| {
-                        predicate_references_other_table(arg_expr, join_table, join_alias)
-                    })
-            } else {
-                false
-            }
-        }
-        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } | Expr::Nested(expr) => {
-            predicate_references_other_table(expr, join_table, join_alias)
-        }
-        Expr::IsTrue(e)
-        | Expr::IsNotFalse(e)
-        | Expr::IsFalse(e)
-        | Expr::IsNotTrue(e)
-        | Expr::IsNull(e)
-        | Expr::IsNotNull(e) => predicate_references_other_table(e, join_table, join_alias),
-        Expr::InList { expr, list, .. } => {
-            predicate_references_other_table(expr, join_table, join_alias)
-                || list
-                    .iter()
-                    .any(|e| predicate_references_other_table(e, join_table, join_alias))
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            operand
-                .as_deref()
-                .is_some_and(|e| predicate_references_other_table(e, join_table, join_alias))
-                || conditions.iter().any(|when| {
-                    predicate_references_other_table(&when.condition, join_table, join_alias)
-                        || predicate_references_other_table(&when.result, join_table, join_alias)
-                })
-                || else_result
-                    .as_deref()
-                    .is_some_and(|e| predicate_references_other_table(e, join_table, join_alias))
-        }
-        _ => false, // bare identifiers, functions, literals, constants — safe
+    use sqlparser::ast::{Query, Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct OtherTableChecker<'a> {
+        join_table: &'a str,
+        join_alias: Option<&'a str>,
+        subquery_depth: usize,
     }
+
+    impl Visitor for OtherTableChecker<'_> {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            if self.subquery_depth == 0 {
+                if let Expr::CompoundIdentifier(parts) = expr {
+                    if parts.len() >= 2
+                        && !qualifier_matches_table(
+                            &parts[parts.len() - 2].value,
+                            self.join_table,
+                            self.join_alias,
+                        )
+                    {
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    let mut checker = OtherTableChecker {
+        join_table,
+        join_alias,
+        subquery_depth: 0,
+    };
+    expr.visit(&mut checker).is_break()
 }
 
 fn qualifier_matches_table(qualifier: &str, table_name: &str, alias: Option<&str>) -> bool {
