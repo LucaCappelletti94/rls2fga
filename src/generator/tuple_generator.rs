@@ -208,6 +208,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             }
 
             let mut subject_joins: Vec<String> = Vec::new();
+            let mut principal_filter: Option<String> = None;
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
                 (Some(up), Some(tp)) => {
                     let user_tbl_sql = quote_sql_identifier(&up.table);
@@ -220,11 +221,13 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                     subject_joins.push(format!(
                         "LEFT JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
+                    principal_filter = Some(format!(
+                        "(u.{user_pk_sql} IS NOT NULL OR t.{team_pk_sql} IS NOT NULL)"
+                    ));
                     format!(
                         "CASE\n\
                          \x20   WHEN u.{user_pk_sql} IS NOT NULL THEN 'user:' || og.{grant_grantee_col_sql}\n\
                          \x20   WHEN t.{team_pk_sql} IS NOT NULL THEN 'team:' || og.{grant_grantee_col_sql}\n\
-                         \x20   ELSE 'user:' || og.{grant_grantee_col_sql}\n\
                          \x20 END"
                     )
                 }
@@ -247,6 +250,13 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             } else {
                 format!("{}\n", subject_joins.join("\n                 "))
             };
+            let mut where_predicates = vec![format!(
+                "og.{grant_role_col_sql} IN ({})",
+                role_ids.join(", ")
+            )];
+            if let Some(filter) = principal_filter {
+                where_predicates.push(filter);
+            }
 
             Some(TupleQuery {
                 comment: format!(
@@ -261,8 +271,8 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                      FROM {grant_table_sql} og\n\
                      JOIN {table_sql} resource ON resource.{grant_join_col_sql} = og.{grant_resource_col_sql}\n\
                      {subject_join_sql}\
-                     WHERE og.{grant_role_col_sql} IN ({});",
-                    role_ids.join(", ")
+                     WHERE {};",
+                    where_predicates.join("\nAND ")
                 ),
             })
         }
@@ -1126,6 +1136,43 @@ CREATE POLICY docs_select ON docs FOR SELECT
         assert!(
             !query.sql.contains("ELSE 'user:'"),
             "team-only explicit grants should fail closed for non-team rows, got: {}",
+            query.sql
+        );
+    }
+
+    #[test]
+    fn explicit_grants_mixed_principals_do_not_fallback_to_user_prefix() {
+        use crate::generator::ir::{PrincipalInfo, TupleSource};
+
+        let source = TupleSource::ExplicitGrants {
+            table: "docs".to_string(),
+            pk_col: "id".to_string(),
+            grant_join_col: "id".to_string(),
+            grant_table: "doc_grants".to_string(),
+            grant_role_col: "role_level".to_string(),
+            grant_grantee_col: "grantee_id".to_string(),
+            grant_resource_col: "doc_id".to_string(),
+            role_cases: vec![(1, "grant_viewer".to_string(), "viewer".to_string())],
+            user_principal: Some(PrincipalInfo {
+                table: "users".to_string(),
+                pk_col: "id".to_string(),
+            }),
+            team_principal: Some(PrincipalInfo {
+                table: "teams".to_string(),
+                pk_col: "id".to_string(),
+            }),
+        };
+        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
+        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        assert!(
+            !query.sql.contains("ELSE 'user:'"),
+            "mixed-principal explicit grants should not fail open to user subjects, got: {}",
+            query.sql
+        );
+        assert!(
+            query.sql.contains("WHEN u.\"id\" IS NOT NULL")
+                && query.sql.contains("WHEN t.\"id\" IS NOT NULL"),
+            "mixed-principal grants should branch only on explicit principal joins, got: {}",
             query.sql
         );
     }
