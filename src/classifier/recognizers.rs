@@ -1475,7 +1475,9 @@ fn predicate_references_other_table(
             let qualifier = &parts[parts.len() - 2].value;
             !qualifier_matches_table(qualifier, join_table, join_alias)
         }
-        Expr::BinaryOp { left, right, .. } => {
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right) => {
             predicate_references_other_table(left, join_table, join_alias)
                 || predicate_references_other_table(right, join_table, join_alias)
         }
