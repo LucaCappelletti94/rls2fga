@@ -1441,6 +1441,10 @@ fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Opti
         Expr::UnaryOp { expr: inner, .. }
         | Expr::Cast { expr: inner, .. }
         | Expr::Nested(inner)
+        | Expr::IsTrue(inner)
+        | Expr::IsNotFalse(inner)
+        | Expr::IsFalse(inner)
+        | Expr::IsNotTrue(inner)
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner) => {
             strip_qualifier_from_expr(inner, join_table, join_alias);
@@ -1475,12 +1479,15 @@ fn predicate_references_other_table(
             predicate_references_other_table(left, join_table, join_alias)
                 || predicate_references_other_table(right, join_table, join_alias)
         }
-        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
+        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } | Expr::Nested(expr) => {
             predicate_references_other_table(expr, join_table, join_alias)
         }
-        Expr::IsNull(e) | Expr::IsNotNull(e) => {
-            predicate_references_other_table(e, join_table, join_alias)
-        }
+        Expr::IsTrue(e)
+        | Expr::IsNotFalse(e)
+        | Expr::IsFalse(e)
+        | Expr::IsNotTrue(e)
+        | Expr::IsNull(e)
+        | Expr::IsNotNull(e) => predicate_references_other_table(e, join_table, join_alias),
         Expr::InList { expr, list, .. } => {
             predicate_references_other_table(expr, join_table, join_alias)
                 || list
