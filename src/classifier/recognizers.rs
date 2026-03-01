@@ -379,10 +379,7 @@ pub fn recognize_p3(
         // `current_setting` is a PostgreSQL built-in that often carries the current user ID
         // (e.g. `current_setting('app.current_user_id')::uuid`).  We accept it as a
         // heuristic user-accessor at confidence B; register it explicitly for confidence A.
-        if !accessor_lower.contains("current_user")
-            && !accessor_lower.contains("auth")
-            && accessor_lower != "current_setting"
-        {
+        if !accessor_lower.contains("current_user") && accessor_lower != "current_setting" {
             return None;
         }
 
@@ -2411,6 +2408,18 @@ CREATE TABLE doc_members (
                 "unregistered function call `{sql}` must not be treated as SQL keyword accessor"
             );
         }
+    }
+
+    #[test]
+    fn recognize_p3_rejects_unregistered_oauth_like_function_name() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("owner_id = oauth_token()");
+        assert!(
+            recognize_p3(&expr, &db, &registry).is_none(),
+            "oauth-like function names must not match P3 without explicit registration"
+        );
     }
 
     #[test]
