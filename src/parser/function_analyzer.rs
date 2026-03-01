@@ -306,7 +306,7 @@ fn next_non_whitespace_char(sql: &str, start: usize) -> Option<char> {
 
 fn scan_identifier_tokens<F>(sql: &str, mut on_token: F) -> bool
 where
-    F: FnMut(&str, usize) -> bool,
+    F: FnMut(&str, usize, usize) -> bool,
 {
     let mut token_start: Option<usize> = None;
     for (idx, ch) in sql.char_indices() {
@@ -318,23 +318,28 @@ where
         }
 
         if let Some(start) = token_start.take() {
-            if on_token(&sql[start..idx], idx) {
+            if on_token(&sql[start..idx], start, idx) {
                 return true;
             }
         }
     }
 
-    token_start.is_some_and(|start| on_token(&sql[start..], sql.len()))
+    token_start.is_some_and(|start| on_token(&sql[start..], start, sql.len()))
 }
 
 fn contains_current_user_keyword_token(sql: &str) -> bool {
-    scan_identifier_tokens(sql, |token, _| {
-        is_current_user_keyword_for_body_scan(token) && is_current_user_keyword_name(token)
+    let mut prev_token_was_as = false;
+    scan_identifier_tokens(sql, |token, _start, _end| {
+        let is_accessor_keyword =
+            is_current_user_keyword_for_body_scan(token) && is_current_user_keyword_name(token);
+        let matched = is_accessor_keyword && !prev_token_was_as;
+        prev_token_was_as = token == "as";
+        matched
     })
 }
 
 fn contains_function_call_token(sql: &str, function_name: &str) -> bool {
-    scan_identifier_tokens(sql, |token, end| {
+    scan_identifier_tokens(sql, |token, _start, end| {
         token == function_name && next_non_whitespace_char(sql, end) == Some('(')
     })
 }
@@ -518,6 +523,29 @@ mod tests {
         assert!(
             semantic.is_none(),
             "identifier token `user` used as an alias must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_alias_named_current_user_or_current_role() {
+        let alias_current_user = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid AS current_user",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            alias_current_user.is_none(),
+            "alias named current_user must not classify as accessor"
+        );
+
+        let alias_current_role = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid AS current_role",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            alias_current_role.is_none(),
+            "alias named current_role must not classify as accessor"
         );
     }
 
