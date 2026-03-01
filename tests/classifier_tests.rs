@@ -2,6 +2,7 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
+use rls2fga::translator::TranslatorBuilder;
 
 mod support;
 
@@ -182,9 +183,10 @@ fn classify_abac_status_as_p7() {
 #[test]
 fn classify_tenant_isolation_without_registry_via_function_body_inference() {
     let db = support::parse_fixture_db("tenant_isolation");
-    let registry = FunctionRegistry::new();
-
-    let classified = policy_classifier::classify_policies(&db, &registry);
+    let classified = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.tenant_id"])
+        .build()
+        .classify(&db);
     assert_eq!(classified.len(), 1);
 
     let cp = &classified[0];

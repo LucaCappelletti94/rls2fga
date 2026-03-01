@@ -9,3 +9,5 @@ pub mod generator;
 pub mod output;
 /// SQL schema parsing and function body analysis.
 pub mod parser;
+/// High-level builder/facade for classification and `OpenFGA` translation.
+pub mod translator;
