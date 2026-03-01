@@ -156,7 +156,7 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut in_line_comment = false;
-    let mut in_block_comment = false;
+    let mut block_comment_depth = 0usize;
     let mut dollar_delimiter: Option<Vec<char>> = None;
 
     while i < chars.len() {
@@ -224,15 +224,24 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
             continue;
         }
 
-        if in_block_comment {
-            if ch == '*' && chars.get(i + 1).is_some_and(|next| *next == '/') {
-                in_block_comment = false;
+        if block_comment_depth > 0 {
+            if ch == '/' && chars.get(i + 1).is_some_and(|next| *next == '*') {
+                block_comment_depth += 1;
                 out.push(' ');
                 out.push(' ');
                 i += 2;
                 continue;
             }
-            out.push(' ');
+
+            if ch == '*' && chars.get(i + 1).is_some_and(|next| *next == '/') {
+                block_comment_depth -= 1;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+                continue;
+            }
+
+            out.push(if ch == '\n' { '\n' } else { ' ' });
             i += 1;
             continue;
         }
@@ -246,7 +255,7 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
         }
 
         if ch == '/' && chars.get(i + 1).is_some_and(|next| *next == '*') {
-            in_block_comment = true;
+            block_comment_depth = 1;
             out.push(' ');
             out.push(' ');
             i += 2;
@@ -287,7 +296,18 @@ fn is_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-fn contains_current_user_keyword_token(sql: &str) -> bool {
+fn is_current_user_keyword_for_body_scan(token: &str) -> bool {
+    matches!(token, "current_user" | "current_role")
+}
+
+fn next_non_whitespace_char(sql: &str, start: usize) -> Option<char> {
+    sql[start..].chars().find(|ch| !ch.is_whitespace())
+}
+
+fn scan_identifier_tokens<F>(sql: &str, mut on_token: F) -> bool
+where
+    F: FnMut(&str, usize) -> bool,
+{
     let mut token_start: Option<usize> = None;
     for (idx, ch) in sql.char_indices() {
         if is_identifier_char(ch) {
@@ -298,41 +318,25 @@ fn contains_current_user_keyword_token(sql: &str) -> bool {
         }
 
         if let Some(start) = token_start.take() {
-            if is_current_user_keyword_name(&sql[start..idx]) {
+            if on_token(&sql[start..idx], idx) {
                 return true;
             }
         }
     }
-    token_start.is_some_and(|start| is_current_user_keyword_name(&sql[start..]))
+
+    token_start.is_some_and(|start| on_token(&sql[start..], sql.len()))
+}
+
+fn contains_current_user_keyword_token(sql: &str) -> bool {
+    scan_identifier_tokens(sql, |token, _| {
+        is_current_user_keyword_for_body_scan(token) && is_current_user_keyword_name(token)
+    })
 }
 
 fn contains_function_call_token(sql: &str, function_name: &str) -> bool {
-    let mut token_start: Option<usize> = None;
-    for (idx, ch) in sql.char_indices() {
-        if is_identifier_char(ch) {
-            if token_start.is_none() {
-                token_start = Some(idx);
-            }
-            continue;
-        }
-
-        if let Some(start) = token_start.take() {
-            if &sql[start..idx] == function_name {
-                let mut rest_idx = idx;
-                while let Some(next) = sql[rest_idx..].chars().next() {
-                    if next.is_whitespace() {
-                        rest_idx += next.len_utf8();
-                        continue;
-                    }
-                    if next == '(' {
-                        return true;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-    false
+    scan_identifier_tokens(sql, |token, end| {
+        token == function_name && next_non_whitespace_char(sql, end) == Some('(')
+    })
 }
 
 fn contains_current_user_accessor_marker(body_lower: &str) -> bool {
@@ -381,6 +385,16 @@ mod tests {
             "UUID",
             "sql",
         );
+
+        assert!(matches!(
+            semantic,
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+        ));
+    }
+
+    #[test]
+    fn analyze_body_detects_direct_current_user_keyword_accessor() {
+        let semantic = FunctionSemantic::analyze_body("SELECT current_user::uuid", "UUID", "sql");
 
         assert!(matches!(
             semantic,
@@ -472,6 +486,19 @@ mod tests {
     }
 
     #[test]
+    fn analyze_body_rejects_nested_block_comment_current_user_marker() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid /* outer /* inner */ current_user */",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "nested block-comment marker must not classify as accessor"
+        );
+    }
+
+    #[test]
     fn analyze_body_rejects_literal_only_current_user_marker() {
         let semantic = FunctionSemantic::analyze_body(
             "SELECT '-- current_user marker in literal only'::uuid",
@@ -481,6 +508,16 @@ mod tests {
         assert!(
             semantic.is_none(),
             "current_user marker in string literals must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_alias_named_user() {
+        let semantic =
+            FunctionSemantic::analyze_body("SELECT gen_random_uuid()::uuid AS user", "UUID", "sql");
+        assert!(
+            semantic.is_none(),
+            "identifier token `user` used as an alias must not classify as accessor"
         );
     }
 
