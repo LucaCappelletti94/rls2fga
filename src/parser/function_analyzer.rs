@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::parser::names::is_current_user_keyword_name;
+
 /// Semantic classification of a SQL function body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -96,29 +98,34 @@ fn is_direct_accessor_body(body_lower: &str) -> bool {
         "insert", "update", "delete", "from", "where", "join", "begin", "end;", "if ", "loop",
         "raise", "perform", "execute", "call", "create", "drop", "alter",
     ];
-    let sanitized = strip_single_quoted_literals(body_lower);
+    let sanitized = sanitize_sql_for_keyword_scan(body_lower);
     if COMPLEX_KEYWORDS.iter().any(|kw| sanitized.contains(kw)) {
         return false;
     }
     true
 }
 
-fn strip_single_quoted_literals(sql: &str) -> String {
+fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let chars: Vec<char> = sql.chars().collect();
     let mut i = 0usize;
-    let mut in_literal = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
 
     while i < chars.len() {
         let ch = chars[i];
-        if in_literal {
+        if in_single_quote {
             if ch == '\'' {
                 // Escaped quote inside string literal: ''
                 if chars.get(i + 1).is_some_and(|next| *next == '\'') {
+                    out.push(' ');
+                    out.push(' ');
                     i += 2;
                     continue;
                 }
-                in_literal = false;
+                in_single_quote = false;
                 out.push(' ');
                 i += 1;
                 continue;
@@ -129,8 +136,74 @@ fn strip_single_quoted_literals(sql: &str) -> String {
             continue;
         }
 
+        if in_double_quote {
+            if ch == '"' {
+                // Escaped quote inside quoted identifier: ""
+                if chars.get(i + 1).is_some_and(|next| *next == '"') {
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    continue;
+                }
+                in_double_quote = false;
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                out.push('\n');
+            } else {
+                out.push(' ');
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if ch == '*' && chars.get(i + 1).is_some_and(|next| *next == '/') {
+                in_block_comment = false;
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+                continue;
+            }
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if ch == '-' && chars.get(i + 1).is_some_and(|next| *next == '-') {
+            in_line_comment = true;
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            continue;
+        }
+
+        if ch == '/' && chars.get(i + 1).is_some_and(|next| *next == '*') {
+            in_block_comment = true;
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            continue;
+        }
+
         if ch == '\'' {
-            in_literal = true;
+            in_single_quote = true;
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if ch == '"' {
+            in_double_quote = true;
             out.push(' ');
             i += 1;
             continue;
@@ -141,6 +214,64 @@ fn strip_single_quoted_literals(sql: &str) -> String {
     }
 
     out
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn contains_current_user_keyword_token(sql: &str) -> bool {
+    let mut token_start: Option<usize> = None;
+    for (idx, ch) in sql.char_indices() {
+        if is_identifier_char(ch) {
+            if token_start.is_none() {
+                token_start = Some(idx);
+            }
+            continue;
+        }
+
+        if let Some(start) = token_start.take() {
+            if is_current_user_keyword_name(&sql[start..idx]) {
+                return true;
+            }
+        }
+    }
+    token_start.is_some_and(|start| is_current_user_keyword_name(&sql[start..]))
+}
+
+fn contains_function_call_token(sql: &str, function_name: &str) -> bool {
+    let mut token_start: Option<usize> = None;
+    for (idx, ch) in sql.char_indices() {
+        if is_identifier_char(ch) {
+            if token_start.is_none() {
+                token_start = Some(idx);
+            }
+            continue;
+        }
+
+        if let Some(start) = token_start.take() {
+            if &sql[start..idx] == function_name {
+                let mut rest_idx = idx;
+                while let Some(next) = sql[rest_idx..].chars().next() {
+                    if next.is_whitespace() {
+                        rest_idx += next.len_utf8();
+                        continue;
+                    }
+                    if next == '(' {
+                        return true;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn contains_current_user_accessor_marker(body_lower: &str) -> bool {
+    let sanitized = sanitize_sql_for_keyword_scan(body_lower);
+    contains_function_call_token(&sanitized, "current_setting")
+        || contains_current_user_keyword_token(&sanitized)
 }
 
 impl FunctionSemantic {
@@ -159,7 +290,7 @@ impl FunctionSemantic {
         // that merely references current_user/current_setting incidentally (e.g. audit
         // triggers or functions that record the caller but return a different value).
         if return_type_lower.contains("uuid")
-            && (body_lower.contains("current_setting") || body_lower.contains("current_user"))
+            && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
@@ -257,6 +388,42 @@ mod tests {
                 Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
             ),
             "literal text containing update/from/etc must not be treated as SQL structure"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_comment_only_current_user_marker() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid -- current_user marker in comment",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "current_user marker in SQL comments must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_literal_only_current_user_marker() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT '-- current_user marker in literal only'::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "current_user marker in string literals must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_identifier_substring_current_user_marker() {
+        let semantic =
+            FunctionSemantic::analyze_body("SELECT my_current_user_token::uuid", "UUID", "sql");
+        assert!(
+            semantic.is_none(),
+            "identifier substrings like my_current_user_token are not accessor markers"
         );
     }
 
