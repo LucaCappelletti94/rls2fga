@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{Expr, FunctionArguments, SelectItem, SetExpr, Statement};
+use sqlparser::ast::{Expr, FunctionArguments, SelectItem, SetExpr, Statement, Value};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::parser::expr::function_arg_expr;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
 };
@@ -88,6 +89,54 @@ fn default_text() -> String {
 
 fn default_uuid() -> String {
     "uuid".to_string()
+}
+
+fn normalize_setting_key(key: &str) -> String {
+    key.trim().to_ascii_lowercase()
+}
+
+/// Settings controlling automatic current-user accessor inference from SQL bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessorInferenceSettings {
+    current_user_setting_keys: HashSet<String>,
+}
+
+impl AccessorInferenceSettings {
+    /// Build settings from an explicit list of allowed `current_setting` keys.
+    pub fn from_keys<I, S>(keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let current_user_setting_keys = keys
+            .into_iter()
+            .map(|key| normalize_setting_key(key.as_ref()))
+            .collect();
+        Self {
+            current_user_setting_keys,
+        }
+    }
+
+    /// Allowed `current_setting` keys that can be inferred as current-user accessors.
+    pub fn current_user_setting_keys(&self) -> &HashSet<String> {
+        &self.current_user_setting_keys
+    }
+
+    fn allows_current_setting_key(&self, key: &str) -> bool {
+        self.current_user_setting_keys
+            .contains(&normalize_setting_key(key))
+    }
+}
+
+impl Default for AccessorInferenceSettings {
+    fn default() -> Self {
+        Self::from_keys([
+            "app.current_user_id",
+            "app.user_id",
+            "request.jwt.claim.sub",
+            "request.jwt.claims",
+        ])
+    }
 }
 
 /// Returns `true` when the lowercase function body looks like a simple, direct
@@ -428,23 +477,50 @@ fn unwrap_accessor_expr(mut expr: &Expr) -> &Expr {
     }
 }
 
-fn is_direct_current_user_accessor_expr(expr: &Expr) -> bool {
+fn current_setting_literal_key(expr: &Expr) -> Option<String> {
+    let Expr::Function(func) = expr else {
+        return None;
+    };
+    if normalized_function_name(func) != "current_setting" {
+        return None;
+    }
+    let FunctionArguments::List(arg_list) = &func.args else {
+        return None;
+    };
+    let [arg] = arg_list.args.as_slice() else {
+        return None;
+    };
+    let arg_expr = function_arg_expr(arg)?;
+    let Expr::Value(value) = arg_expr else {
+        return None;
+    };
+    let Value::SingleQuotedString(key) = &value.value else {
+        return None;
+    };
+
+    Some(normalize_setting_key(key))
+}
+
+fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenceSettings) -> bool {
     match unwrap_accessor_expr(expr) {
         Expr::Identifier(ident) => {
             ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value)
         }
         Expr::Function(func) => {
-            let normalized = normalized_function_name(func);
-            (normalized == "current_setting" && matches!(func.args, FunctionArguments::List(_)))
-                || (is_current_user_keyword_name(&normalized)
-                    && split_schema_and_relation(&func.name.to_string()).is_none()
-                    && matches!(func.args, FunctionArguments::None))
+            current_setting_literal_key(unwrap_accessor_expr(expr))
+                .is_some_and(|key| settings.allows_current_setting_key(&key))
+                || {
+                    let normalized = normalized_function_name(func);
+                    is_current_user_keyword_name(&normalized)
+                        && split_schema_and_relation(&func.name.to_string()).is_none()
+                        && matches!(func.args, FunctionArguments::None)
+                }
         }
         _ => false,
     }
 }
 
-fn has_single_direct_accessor_expression(body: &str) -> bool {
+fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenceSettings) -> bool {
     let Ok(statements) = Parser::parse_sql(&PostgreSqlDialect {}, body) else {
         return false;
     };
@@ -467,16 +543,24 @@ fn has_single_direct_accessor_expression(body: &str) -> bool {
         return false;
     };
 
-    is_direct_current_user_accessor_expr(expr)
+    is_direct_current_user_accessor_expr(expr, settings)
 }
 
 impl FunctionSemantic {
+    /// Attempt to classify a function body by simple heuristic analysis with
+    /// default accessor inference settings.
+    pub fn analyze_body(body: &str, return_type: &str, language: &str) -> Option<FunctionSemantic> {
+        let settings = AccessorInferenceSettings::default();
+        Self::analyze_body_with_settings(body, return_type, language, &settings)
+    }
+
     /// Attempt to classify a function body by simple heuristic analysis.
-    /// Returns None if the function cannot be classified from its body alone.
-    pub fn analyze_body(
+    /// Returns `None` if the function cannot be classified from its body alone.
+    pub fn analyze_body_with_settings(
         body: &str,
         return_type: &str,
         _language: &str,
+        settings: &AccessorInferenceSettings,
     ) -> Option<FunctionSemantic> {
         let body_lower = body.to_lowercase();
         let return_type_lower = return_type.to_lowercase();
@@ -488,7 +572,7 @@ impl FunctionSemantic {
         if return_type_lower.contains("uuid")
             && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
-            && has_single_direct_accessor_expression(body)
+            && has_single_direct_accessor_expression(body, settings)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
@@ -501,7 +585,7 @@ impl FunctionSemantic {
 
 #[cfg(test)]
 mod tests {
-    use super::FunctionSemantic;
+    use super::{AccessorInferenceSettings, FunctionSemantic};
     use std::collections::HashMap;
 
     #[test]
@@ -575,10 +659,12 @@ mod tests {
 
     #[test]
     fn analyze_body_accepts_accessor_when_literal_contains_keyword_substrings() {
-        let semantic = FunctionSemantic::analyze_body(
+        let settings = AccessorInferenceSettings::from_keys(["app.from_user_id"]);
+        let semantic = FunctionSemantic::analyze_body_with_settings(
             "SELECT current_setting('app.from_user_id')::uuid",
             "UUID",
             "sql",
+            &settings,
         );
         assert!(
             matches!(
@@ -591,10 +677,12 @@ mod tests {
 
     #[test]
     fn analyze_body_ignores_keyword_substrings_inside_literals() {
-        let semantic = FunctionSemantic::analyze_body(
+        let settings = AccessorInferenceSettings::from_keys(["custom.update_marker"]);
+        let semantic = FunctionSemantic::analyze_body_with_settings(
             "SELECT current_setting('custom.update_marker')::uuid",
             "UUID",
             "sql",
+            &settings,
         );
         assert!(
             matches!(
@@ -769,6 +857,50 @@ mod tests {
         assert!(
             semantic.is_none(),
             "identifier substrings like my_current_user_token are not accessor markers"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_non_allowlisted_current_setting_key_by_default() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('timezone')::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "non-allowlisted current_setting keys must not be inferred as current-user accessors"
+        );
+    }
+
+    #[test]
+    fn analyze_body_with_settings_accepts_custom_allowlisted_current_setting_key() {
+        let settings = AccessorInferenceSettings::from_keys(["tenant.current_user_uuid"]);
+        let semantic = FunctionSemantic::analyze_body_with_settings(
+            "SELECT current_setting('tenant.current_user_uuid')::uuid",
+            "UUID",
+            "sql",
+            &settings,
+        );
+        assert!(
+            matches!(
+                semantic,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            ),
+            "custom allowlisted key should be inferred as current-user accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_non_literal_current_setting_argument() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting(app.current_user_id)::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "non-literal current_setting arguments must not be inferred as current-user accessors"
         );
     }
 

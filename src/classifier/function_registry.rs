@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::function_analyzer::FunctionSemantic;
+use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
 use crate::parser::names::{
     normalize_identifier, normalize_relation_name, split_schema_and_relation,
 };
@@ -119,6 +119,17 @@ impl FunctionRegistry {
     /// Infer function semantics from parsed in-schema function bodies.
     /// Explicitly provided registry entries take precedence.
     pub fn enrich_from_schema(&mut self, db: &ParserDB) {
+        let settings = AccessorInferenceSettings::default();
+        self.enrich_from_schema_with_settings(db, &settings);
+    }
+
+    /// Infer function semantics from parsed in-schema function bodies using
+    /// explicit accessor-inference settings.
+    pub fn enrich_from_schema_with_settings(
+        &mut self,
+        db: &ParserDB,
+        settings: &AccessorInferenceSettings,
+    ) {
         for function in db.functions() {
             let Some(body) = function.body() else {
                 continue;
@@ -128,7 +139,9 @@ impl FunctionRegistry {
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default();
-            if let Some(semantic) = FunctionSemantic::analyze_body(body, &return_type, "sql") {
+            if let Some(semantic) =
+                FunctionSemantic::analyze_body_with_settings(body, &return_type, "sql", settings)
+            {
                 self.register_if_absent(function.name(), &semantic);
             }
         }
@@ -218,5 +231,42 @@ CREATE FUNCTION current_tenant_id() RETURNS UUID
         assert!(registry.is_current_user_accessor("auth.uid"));
         assert!(registry.is_current_user_accessor(r#""auth"."uid""#));
         assert!(registry.is_current_user_accessor("UID"));
+    }
+
+    #[test]
+    fn enrich_from_schema_does_not_register_non_allowlisted_current_setting_keys_by_default() {
+        let sql = r"
+CREATE FUNCTION wrong_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''timezone'')::uuid';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(
+            registry.get("wrong_user_id").is_none(),
+            "non-allowlisted current_setting keys must not auto-register user accessors"
+        );
+    }
+
+    #[test]
+    fn enrich_from_schema_with_settings_registers_custom_allowlisted_current_setting_key() {
+        let sql = r"
+CREATE FUNCTION tenant_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''tenant.current_user_uuid'')::uuid';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+        let settings = AccessorInferenceSettings::from_keys(["tenant.current_user_uuid"]);
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema_with_settings(&db, &settings);
+
+        assert!(
+            registry.is_current_user_accessor("tenant_user_id"),
+            "custom allowlisted key should allow schema-based accessor inference"
+        );
     }
 }

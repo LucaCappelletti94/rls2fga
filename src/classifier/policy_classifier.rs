@@ -3,12 +3,13 @@ use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
-use crate::parser::function_analyzer::FunctionSemantic;
+use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
 use crate::parser::sql_parser::{DatabaseLike, ParserDB};
 
 /// Classify all policies in the database.
 pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<ClassifiedPolicy> {
-    classify_policies_with_effective_registry(db, registry).0
+    let settings = AccessorInferenceSettings::default();
+    classify_policies_with_effective_registry_and_settings(db, registry, &settings).0
 }
 
 /// Classify all policies and return the enriched function registry used by the classifier.
@@ -16,8 +17,18 @@ pub fn classify_policies_with_effective_registry(
     db: &ParserDB,
     registry: &FunctionRegistry,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
+    let settings = AccessorInferenceSettings::default();
+    classify_policies_with_effective_registry_and_settings(db, registry, &settings)
+}
+
+/// Classify all policies using explicit accessor-inference settings.
+pub fn classify_policies_with_effective_registry_and_settings(
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    settings: &AccessorInferenceSettings,
+) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
-    effective_registry.enrich_from_schema(db);
+    effective_registry.enrich_from_schema_with_settings(db, settings);
 
     let classified = classify_policies_with_registry(db, &effective_registry);
     (classified, effective_registry)
