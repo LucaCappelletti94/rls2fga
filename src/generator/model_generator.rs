@@ -14,7 +14,7 @@ use crate::parser::names::{
     parent_type_from_fk_column, policy_scope_relation_name, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
-use sqlparser::ast::{Expr, Function, FunctionArguments, Query, SelectItem, SetExpr};
+use sqlparser::ast::{Expr, Function, FunctionArguments};
 
 /// `OpenFGA` authorization model schema version.
 pub(crate) const OPENFGA_SCHEMA_VERSION: &str = "1.1";
@@ -1452,152 +1452,24 @@ fn extract_resource_columns_for_function(
     function_name: &str,
     resource_param_index: usize,
 ) -> BTreeSet<String> {
-    let mut functions = Vec::new();
-    collect_function_calls(expr, function_name, &mut functions);
+    use sqlparser::ast::visit_expressions;
+    use std::ops::ControlFlow;
 
+    let normalized = normalize_relation_name(function_name);
     let mut columns = BTreeSet::new();
-    for function in functions {
-        let Some(arg_expr) = positional_function_arg(function, resource_param_index) else {
-            continue;
-        };
-        let Some(column) = extract_column_name(arg_expr) else {
-            continue;
-        };
-        columns.insert(column);
-    }
-
+    let _ = visit_expressions(expr, |e| {
+        if let Expr::Function(f) = e {
+            if crate::parser::names::normalized_function_name(f) == normalized {
+                if let Some(arg) = positional_function_arg(f, resource_param_index) {
+                    if let Some(col) = extract_column_name(arg) {
+                        columns.insert(col);
+                    }
+                }
+            }
+        }
+        ControlFlow::<()>::Continue(())
+    });
     columns
-}
-
-fn collect_function_calls<'a>(expr: &'a Expr, function_name: &str, out: &mut Vec<&'a Function>) {
-    match expr {
-        Expr::Function(function)
-            if crate::parser::names::normalized_function_name(function)
-                == normalize_relation_name(function_name) =>
-        {
-            out.push(function);
-        }
-        Expr::Function(function) => {
-            if let FunctionArguments::List(arg_list) = &function.args {
-                for arg in &arg_list.args {
-                    if let Some(expr) = function_arg_expr(arg) {
-                        collect_function_calls(expr, function_name, out);
-                    }
-                }
-            }
-        }
-        Expr::BinaryOp { left, right, .. }
-        | Expr::IsDistinctFrom(left, right)
-        | Expr::IsNotDistinctFrom(left, right)
-        | Expr::AnyOp { left, right, .. }
-        | Expr::AllOp { left, right, .. } => {
-            collect_function_calls(left, function_name, out);
-            collect_function_calls(right, function_name, out);
-        }
-        Expr::UnaryOp { expr, .. }
-        | Expr::Cast { expr, .. }
-        | Expr::InSubquery { expr, .. }
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::IsTrue(expr)
-        | Expr::IsFalse(expr)
-        | Expr::IsNotTrue(expr)
-        | Expr::IsNotFalse(expr)
-        | Expr::IsUnknown(expr)
-        | Expr::IsNotUnknown(expr) => collect_function_calls(expr, function_name, out),
-        Expr::Nested(inner) => collect_function_calls(inner, function_name, out),
-        Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => {
-            collect_function_calls_in_query(subquery, function_name, out);
-        }
-        Expr::InList { expr, list, .. } => {
-            collect_function_calls(expr, function_name, out);
-            for item in list {
-                collect_function_calls(item, function_name, out);
-            }
-        }
-        Expr::InUnnest {
-            expr, array_expr, ..
-        } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(array_expr, function_name, out);
-        }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(low, function_name, out);
-            collect_function_calls(high, function_name, out);
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            if let Some(operand) = operand.as_deref() {
-                collect_function_calls(operand, function_name, out);
-            }
-            for when in conditions {
-                collect_function_calls(&when.condition, function_name, out);
-                collect_function_calls(&when.result, function_name, out);
-            }
-            if let Some(else_expr) = else_result.as_deref() {
-                collect_function_calls(else_expr, function_name, out);
-            }
-        }
-        Expr::Like { expr, pattern, .. }
-        | Expr::ILike { expr, pattern, .. }
-        | Expr::SimilarTo { expr, pattern, .. }
-        | Expr::RLike { expr, pattern, .. } => {
-            collect_function_calls(expr, function_name, out);
-            collect_function_calls(pattern, function_name, out);
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                collect_function_calls(item, function_name, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_function_calls_in_query<'a>(
-    query: &'a Query,
-    function_name: &str,
-    out: &mut Vec<&'a Function>,
-) {
-    collect_function_calls_in_set_expr(query.body.as_ref(), function_name, out);
-}
-
-fn collect_function_calls_in_set_expr<'a>(
-    set_expr: &'a SetExpr,
-    function_name: &str,
-    out: &mut Vec<&'a Function>,
-) {
-    match set_expr {
-        SetExpr::Select(select) => {
-            for item in &select.projection {
-                match item {
-                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                        collect_function_calls(expr, function_name, out);
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(selection) = &select.selection {
-                collect_function_calls(selection, function_name, out);
-            }
-            if let Some(having) = &select.having {
-                collect_function_calls(having, function_name, out);
-            }
-        }
-        SetExpr::SetOperation { left, right, .. } => {
-            collect_function_calls_in_set_expr(left, function_name, out);
-            collect_function_calls_in_set_expr(right, function_name, out);
-        }
-        SetExpr::Query(query) => collect_function_calls_in_query(query, function_name, out),
-        _ => {}
-    }
 }
 
 fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
@@ -2934,94 +2806,6 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
     }
 
     #[test]
-    fn collect_function_calls_traverses_nested_ast_constructs() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        // BinaryOp
-        let expr = parse_expr("my_func(x, y) + my_func(a, b)");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "BinaryOp should find both calls");
-
-        // UnaryOp
-        let expr = parse_expr("NOT my_func(x, y) IS NULL");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "UnaryOp wrapping should be traversed");
-
-        // InList
-        let expr = parse_expr("my_func(x, y) IN (1, my_func(a, b))");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "InList should traverse expr and list items");
-
-        // Between
-        let expr = parse_expr("col BETWEEN my_func(x, y) AND my_func(a, b)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "Between should traverse low and high");
-
-        // Case
-        let expr =
-            parse_expr("CASE WHEN my_func(x, y) > 0 THEN my_func(a, b) ELSE my_func(c, d) END");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            3,
-            "Case should traverse conditions, results, and else"
-        );
-
-        // Like
-        let expr = parse_expr("my_func(x, y) LIKE my_func(a, b)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "Like should traverse expr and pattern");
-
-        // Tuple
-        let expr = parse_expr("(my_func(x, y), my_func(a, b))");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "Tuple should traverse all items");
-
-        // Nested function call (different name wrapping target function)
-        let expr = parse_expr("other_func(my_func(x, y))");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "Should find my_func inside other_func args");
-
-        // Cast
-        let expr = parse_expr("CAST(my_func(x, y) AS int)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "Cast should be traversed");
-    }
-
-    #[test]
-    fn collect_function_calls_in_set_expr_traverses_union() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        let sql = "SELECT my_func(x, y) FROM t1 UNION SELECT my_func(a, b) FROM t2";
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let sqlparser::ast::Statement::Query(query) = &stmts[0] else {
-            panic!("expected query")
-        };
-        let mut calls = Vec::new();
-        collect_function_calls_in_set_expr(query.body.as_ref(), "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "UNION should traverse both sides");
-    }
-
-    #[test]
     fn resolve_owner_column_finds_fk_to_users_table() {
         let db = parse_schema(
             r"
@@ -3207,100 +2991,6 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     }
 
     #[test]
-    fn collect_function_calls_traverses_is_null_is_true_cast_insubquery_arms() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr_local(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        // IsNull / IsNotNull
-        let expr = parse_expr_local("my_func(x, y) IS NULL");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsNull should be traversed");
-
-        let expr = parse_expr_local("my_func(x, y) IS NOT NULL");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsNotNull should be traversed");
-
-        // IsTrue / IsFalse / IsNotTrue / IsNotFalse
-        let expr = parse_expr_local("my_func(x, y) IS TRUE");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsTrue should be traversed");
-
-        let expr = parse_expr_local("my_func(x, y) IS FALSE");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsFalse should be traversed");
-
-        let expr = parse_expr_local("my_func(x, y) IS NOT TRUE");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsNotTrue should be traversed");
-
-        let expr = parse_expr_local("my_func(x, y) IS NOT FALSE");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsNotFalse should be traversed");
-
-        // InSubquery
-        let expr = parse_expr_local("my_func(x, y) IN (SELECT 1 FROM t)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "InSubquery should traverse expr");
-
-        // Exists / Subquery  (function in a subquery)
-        let expr = parse_expr_local("EXISTS (SELECT my_func(x, y) FROM t)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "Exists subquery should be traversed");
-
-        // IsDistinctFrom
-        let expr = parse_expr_local("my_func(x, y) IS DISTINCT FROM my_func(a, b)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 2, "IsDistinctFrom should traverse both sides");
-
-        // IsNotDistinctFrom
-        let expr = parse_expr_local("my_func(x, y) IS NOT DISTINCT FROM 42");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            1,
-            "IsNotDistinctFrom should traverse both sides"
-        );
-    }
-
-    #[test]
-    fn collect_function_calls_in_set_expr_traverses_nested_query() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        // Nested subquery via (SELECT ... FROM (SELECT ...))
-        let sql = "SELECT my_func(x, y) FROM t WHERE my_func(a, b) > 0";
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let sqlparser::ast::Statement::Query(query) = &stmts[0] else {
-            panic!("expected query");
-        };
-        let mut calls = Vec::new();
-        collect_function_calls_in_set_expr(query.body.as_ref(), "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "Select projection + WHERE should both be traversed"
-        );
-    }
-
-    #[test]
     fn resolve_principal_info_auto_resolves_pk_for_configured_table() {
         // Configure table but no pk_col — should auto-resolve from PK
         let db = parse_schema(r"CREATE TABLE accounts(id UUID PRIMARY KEY, email TEXT);").unwrap();
@@ -3351,339 +3041,6 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     }
 
     // ---------------------------------------------------------------
-    // collect_function_calls — AnyOp / AllOp arm (lines 1437-1440)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_any_op() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr_local(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        // AnyOp: my_func(x) = ANY(ARRAY[1]) — parser produces Expr::AnyOp
-        let expr = parse_expr_local("my_func(x) = ANY(ARRAY[1])");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            1,
-            "AnyOp should traverse left side and find my_func"
-        );
-
-        // AllOp: my_func(x) > ALL(ARRAY[1]) — parser produces Expr::AllOp
-        let expr = parse_expr_local("my_func(x) > ALL(ARRAY[1])");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            1,
-            "AllOp should traverse left side and find my_func"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — InUnnest arm (lines 1465-1469)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_in_unnest() {
-        use sqlparser::ast::{
-            FunctionArgumentList, FunctionArguments, Ident, ObjectName, ObjectNamePart,
-        };
-
-        fn make_func(name: &str) -> Expr {
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
-                args: FunctionArguments::List(FunctionArgumentList {
-                    args: vec![],
-                    duplicate_treatment: None,
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-                parameters: FunctionArguments::None,
-                uses_odbc_syntax: false,
-            })
-        }
-
-        let expr = Expr::InUnnest {
-            expr: Box::new(make_func("my_func")),
-            array_expr: Box::new(make_func("my_func")),
-            negated: false,
-        };
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "InUnnest should traverse both expr and array_expr"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — IsUnknown / IsNotUnknown (lines 1453-1454)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_is_unknown_and_is_not_unknown() {
-        use sqlparser::ast::{
-            FunctionArgumentList, FunctionArguments, Ident, ObjectName, ObjectNamePart,
-        };
-
-        fn make_func(name: &str) -> Expr {
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
-                args: FunctionArguments::List(FunctionArgumentList {
-                    args: vec![],
-                    duplicate_treatment: None,
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-                parameters: FunctionArguments::None,
-                uses_odbc_syntax: false,
-            })
-        }
-
-        // IsUnknown
-        let expr = Expr::IsUnknown(Box::new(make_func("my_func")));
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsUnknown should be traversed");
-
-        // IsNotUnknown
-        let expr = Expr::IsNotUnknown(Box::new(make_func("my_func")));
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "IsNotUnknown should be traversed");
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — Case with operand (lines 1479-1485)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_case_with_operand() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr_local(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        // CASE my_func() WHEN 1 THEN my_func() END
-        // The operand form produces a Case with Some(operand).
-        let expr = parse_expr_local("CASE my_func() WHEN 1 THEN my_func() END");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "Case with operand should traverse operand and WHEN result"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — ILike/SimilarTo via SQL parse (lines 1496-1497)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_ilike_and_similar_to() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr_local(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        // ILike
-        let expr = parse_expr_local("my_func(x) ILIKE my_func(y)");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "ILike should traverse both expr and pattern"
-        );
-
-        // SimilarTo
-        let expr = parse_expr_local("my_func(x) SIMILAR TO my_func(y)");
-        calls.clear();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "SimilarTo should traverse both expr and pattern"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — RLike via AST (line 1498)
-    // PostgreSQL parser doesn't produce RLike, so we construct it directly.
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_rlike_via_ast() {
-        use sqlparser::ast::{
-            FunctionArgumentList, FunctionArguments, Ident, ObjectName, ObjectNamePart,
-        };
-
-        fn make_func(name: &str) -> Expr {
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
-                args: FunctionArguments::List(FunctionArgumentList {
-                    args: vec![],
-                    duplicate_treatment: None,
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-                parameters: FunctionArguments::None,
-                uses_odbc_syntax: false,
-            })
-        }
-
-        let expr = Expr::RLike {
-            negated: false,
-            expr: Box::new(make_func("my_func")),
-            pattern: Box::new(make_func("my_func")),
-            regexp: false,
-        };
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "RLike should traverse both expr and pattern"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — Tuple arm (line 1507)
-    // via AST construction
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_tuple_via_ast() {
-        use sqlparser::ast::{
-            FunctionArgumentList, FunctionArguments, Ident, ObjectName, ObjectNamePart,
-        };
-
-        fn make_func(name: &str) -> Expr {
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
-                args: FunctionArguments::List(FunctionArgumentList {
-                    args: vec![],
-                    duplicate_treatment: None,
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-                parameters: FunctionArguments::None,
-                uses_odbc_syntax: false,
-            })
-        }
-
-        let expr = Expr::Tuple(vec![
-            make_func("my_func"),
-            make_func("other"),
-            make_func("my_func"),
-        ]);
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "Tuple should traverse all items and find both my_func calls"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls_in_set_expr — wildcard SelectItem (line 1531)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_in_set_expr_skips_wildcard_select_item() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        // SELECT * FROM t WHERE my_func(x) = 1
-        // The wildcard `*` SelectItem should hit the `_ => {}` arm
-        let sql = "SELECT * FROM t WHERE my_func(x) = 1";
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let sqlparser::ast::Statement::Query(query) = &stmts[0] else {
-            panic!("expected query");
-        };
-        let mut calls = Vec::new();
-        collect_function_calls_in_set_expr(query.body.as_ref(), "my_func", &mut calls);
-        // Only the WHERE clause hit counts (the * projection is skipped)
-        assert_eq!(
-            calls.len(),
-            1,
-            "Wildcard SelectItem should be skipped; only WHERE clause function found"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls_in_set_expr — HAVING clause (line 1538)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_in_set_expr_traverses_having() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        let sql = "SELECT col FROM t GROUP BY col HAVING my_func(col) > 0";
-        let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let sqlparser::ast::Statement::Query(query) = &stmts[0] else {
-            panic!("expected query");
-        };
-        let mut calls = Vec::new();
-        collect_function_calls_in_set_expr(query.body.as_ref(), "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "HAVING clause should be traversed");
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls_in_set_expr — SetExpr::Query (lines 1545-1546)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_in_set_expr_traverses_set_expr_query() {
-        // Build a SetExpr::Query wrapping an inner query.
-        // Parse a simple query and wrap it in SetExpr::Query.
-        use sqlparser::ast::SetExpr as SE;
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser as SqlParser;
-
-        let stmts = SqlParser::parse_sql(&PostgreSqlDialect {}, "SELECT my_func()").unwrap();
-        let sqlparser::ast::Statement::Query(inner_query) = &stmts[0] else {
-            panic!("expected query");
-        };
-        let outer_set_expr = SE::Query(Box::new(inner_query.as_ref().clone()));
-
-        let mut calls = Vec::new();
-        collect_function_calls_in_set_expr(&outer_set_expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            1,
-            "SetExpr::Query should recurse into the nested query"
-        );
-    }
-
-    // ---------------------------------------------------------------
     // positional_function_arg — non-List FunctionArguments (line 1552)
     // ---------------------------------------------------------------
     #[test]
@@ -3704,6 +3061,57 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
             positional_function_arg(&func, 0).is_none(),
             "FunctionArguments::None should return None"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // extract_resource_columns_for_function — visitor-based integration
+    // ---------------------------------------------------------------
+    #[test]
+    fn extract_resource_columns_finds_function_in_nested_binary_op() {
+        use sqlparser::dialect::PostgreSqlDialect;
+        use sqlparser::parser::Parser;
+
+        let expr = Parser::new(&PostgreSqlDialect {})
+            .try_with_sql("my_func(x, col_a) AND my_func(x, col_b)")
+            .unwrap()
+            .parse_expr()
+            .unwrap();
+
+        let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
+        assert_eq!(cols.len(), 2);
+        assert!(cols.contains("col_a"));
+        assert!(cols.contains("col_b"));
+    }
+
+    #[test]
+    fn extract_resource_columns_finds_function_inside_subquery() {
+        use sqlparser::dialect::PostgreSqlDialect;
+        use sqlparser::parser::Parser;
+
+        let expr = Parser::new(&PostgreSqlDialect {})
+            .try_with_sql("EXISTS (SELECT my_func(x, col_a) FROM t)")
+            .unwrap()
+            .parse_expr()
+            .unwrap();
+
+        let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
+        assert_eq!(cols.len(), 1);
+        assert!(cols.contains("col_a"));
+    }
+
+    #[test]
+    fn extract_resource_columns_returns_empty_for_non_matching_function() {
+        use sqlparser::dialect::PostgreSqlDialect;
+        use sqlparser::parser::Parser;
+
+        let expr = Parser::new(&PostgreSqlDialect {})
+            .try_with_sql("other_func(x, col_a)")
+            .unwrap()
+            .parse_expr()
+            .unwrap();
+
+        let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
+        assert!(cols.is_empty());
     }
 
     // ---------------------------------------------------------------
@@ -4116,68 +3524,6 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
                 things.table_tuple_sources
             );
         }
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — Between via SQL parse (line 1472-1473)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_between_via_parse() {
-        use sqlparser::dialect::PostgreSqlDialect;
-        use sqlparser::parser::Parser;
-
-        fn parse_expr_local(sql: &str) -> Expr {
-            Parser::new(&PostgreSqlDialect {})
-                .try_with_sql(sql)
-                .unwrap()
-                .parse_expr()
-                .unwrap()
-        }
-
-        let expr = parse_expr_local("my_func() BETWEEN 1 AND my_func()");
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(
-            calls.len(),
-            2,
-            "Between should traverse expr, low, and high; found my_func in expr and high"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // collect_function_calls — UnaryOp via AST (line 1444)
-    // ---------------------------------------------------------------
-    #[test]
-    fn collect_function_calls_traverses_unary_op_via_ast() {
-        use sqlparser::ast::{
-            FunctionArgumentList, FunctionArguments, Ident, ObjectName, ObjectNamePart,
-            UnaryOperator,
-        };
-
-        fn make_func(name: &str) -> Expr {
-            Expr::Function(Function {
-                name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
-                args: FunctionArguments::List(FunctionArgumentList {
-                    args: vec![],
-                    duplicate_treatment: None,
-                    clauses: vec![],
-                }),
-                filter: None,
-                null_treatment: None,
-                over: None,
-                within_group: vec![],
-                parameters: FunctionArguments::None,
-                uses_odbc_syntax: false,
-            })
-        }
-
-        let expr = Expr::UnaryOp {
-            op: UnaryOperator::Not,
-            expr: Box::new(make_func("my_func")),
-        };
-        let mut calls = Vec::new();
-        collect_function_calls(&expr, "my_func", &mut calls);
-        assert_eq!(calls.len(), 1, "UnaryOp should traverse inner expr");
     }
 
     // ---------------------------------------------------------------
