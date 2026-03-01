@@ -2475,6 +2475,17 @@ dependencies = [
  "log",
  "recursive",
  "serde",
+ "sqlparser_derive",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.5.0"
+source = "git+https://github.com/apache/datafusion-sqlparser-rs?branch=main#bfd944c6ceb34e0a201e64e0d6ba6a8483f8d5f2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

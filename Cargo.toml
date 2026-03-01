@@ -11,7 +11,7 @@ agent = ["reqwest", "tokio"]
 db = ["diesel"]
 
 [dependencies]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main", features = ["serde"] }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main", features = ["serde", "visitor"] }
 sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "5330c8fb9c25a94d20a1df6172adc3a85bf02bd4" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
