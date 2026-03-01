@@ -2372,7 +2372,12 @@ CREATE TABLE doc_members (
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
 
-        let keyword_named_functions = ["owner_id = auth.user()", "owner_id = auth.current_role()"];
+        let keyword_named_functions = [
+            "owner_id = user",
+            "owner_id = auth.user()",
+            "owner_id = auth.current_role()",
+            "owner_id = user(42)",
+        ];
 
         for sql in keyword_named_functions {
             let expr = parse_expr(sql);
