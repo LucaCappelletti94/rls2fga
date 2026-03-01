@@ -260,35 +260,21 @@ pub(crate) fn build_schema_plan(
             } else {
                 has_role_scopes = true;
                 let relation = policy_scope_relation_name(cp.name());
-                table_plan.ensure_direct(
-                    relation.clone(),
-                    vec![DirectSubject::Type("pg_role".to_string())],
-                );
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: cp.name().to_string(),
-                    message: format!(
+                register_pg_role_scope(
+                    &mut table_plan,
+                    &mut all_types,
+                    &source_table_name,
+                    &relation,
+                    &scoped_roles,
+                    cp.name(),
+                    format!(
                         "Policy role scope TO ({}) mapped to relation '{relation}'; ensure pg_role memberships are loaded",
                         scoped_roles.join(", ")
                     ),
-                });
-                if let Some(pk_col) = resolve_pk_column(&source_table_name, db) {
-                    for role in &scoped_roles {
-                        let pg_role = canonical_fga_type_name(role);
-                        table_plan.add_source(TupleSource::PolicyScope {
-                            table: source_table_name.clone(),
-                            pk_col: pk_col.clone(),
-                            scope_relation: relation.clone(),
-                            pg_role,
-                        });
-                    }
-                } else {
-                    add_missing_object_identifier_todo(
-                        &mut table_plan,
-                        &source_table_name,
-                        "policy scope tuples",
-                    );
-                }
+                    db,
+                    &mut todos,
+                    "policy scope tuples",
+                );
                 Some(relation)
             };
 
@@ -501,6 +487,46 @@ fn push_action_expr(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn register_pg_role_scope(
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    source_table: &str,
+    scope_relation: &str,
+    role_names: &[String],
+    policy_name: &str,
+    todo_message: String,
+    db: &ParserDB,
+    todos: &mut Vec<TodoItem>,
+    missing_object_what: &str,
+) {
+    ensure_pg_role_type(all_types);
+
+    table_plan.ensure_direct(
+        scope_relation.to_string(),
+        vec![DirectSubject::Type("pg_role".to_string())],
+    );
+    todos.push(TodoItem {
+        level: ConfidenceLevel::C,
+        policy_name: policy_name.to_string(),
+        message: todo_message,
+    });
+
+    if let Some(pk_col) = resolve_pk_column(source_table, db) {
+        for role in role_names {
+            let pg_role = canonical_fga_type_name(role);
+            table_plan.add_source(TupleSource::PolicyScope {
+                table: source_table.to_string(),
+                pk_col: pk_col.clone(),
+                scope_relation: scope_relation.to_string(),
+                pg_role,
+            });
+        }
+    } else {
+        add_missing_object_identifier_todo(table_plan, source_table, missing_object_what);
+    }
+}
+
 fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Option<UsersetExpr> {
     let bucket = bucket?;
 
@@ -533,37 +559,23 @@ fn handle_p2_role_gate(
         return deny_expr(table_plan);
     }
 
-    ensure_pg_role_type(all_types);
-
     let scope_relation = policy_scope_relation_name(policy_name);
-    table_plan.ensure_direct(
-        scope_relation.clone(),
-        vec![DirectSubject::Type("pg_role".to_string())],
-    );
-
-    todos.push(TodoItem {
-        level: ConfidenceLevel::C,
-        policy_name: policy_name.to_string(),
-        message: format!(
+    register_pg_role_scope(
+        table_plan,
+        all_types,
+        source_table,
+        &scope_relation,
+        role_names,
+        policy_name,
+        format!(
             "Role gate ({}) mapped to relation '{scope_relation}'; \
              ensure pg_role memberships are loaded",
             role_names.join(", ")
         ),
-    });
-
-    if let Some(pk_col) = resolve_pk_column(source_table, db) {
-        for role in role_names {
-            let pg_role = canonical_fga_type_name(role);
-            table_plan.add_source(TupleSource::PolicyScope {
-                table: source_table.to_string(),
-                pk_col: pk_col.clone(),
-                scope_relation: scope_relation.clone(),
-                pg_role,
-            });
-        }
-    } else {
-        add_missing_object_identifier_todo(table_plan, source_table, "role gate tuples");
-    }
+        db,
+        todos,
+        "role gate tuples",
+    );
 
     UsersetExpr::Computed(scope_relation)
 }
