@@ -45,6 +45,7 @@ const WINDOWS_RESERVED: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
+const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 fn validate_output_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
@@ -62,10 +63,18 @@ fn validate_output_name(name: &str) -> Result<(), String> {
             "Invalid output name '{name}': '.' and '..' are not allowed"
         ));
     }
-    // Reject colons (Windows drive separator; also problematic on macOS).
-    if name.contains(':') {
+    // Reject invalid filename characters on Windows.
+    if name
+        .chars()
+        .any(|ch| WINDOWS_INVALID_FILENAME_CHARS.contains(&ch))
+    {
         return Err(format!(
-            "Invalid output name '{name}': colons are not allowed"
+            "Invalid output name '{name}': contains characters invalid in Windows filenames"
+        ));
+    }
+    if name.ends_with(' ') || name.ends_with('.') {
+        return Err(format!(
+            "Invalid output name '{name}': trailing spaces or dots are not allowed"
         ));
     }
     // Reject Windows reserved device names (case-insensitive), including
@@ -94,11 +103,6 @@ fn validate_output_name(name: &str) -> Result<(), String> {
     }) {
         return Err(format!(
             "Invalid output name '{name}': traversal segments are not allowed"
-        ));
-    }
-    if name.contains('/') || name.contains('\\') {
-        return Err(format!(
-            "Invalid output name '{name}': path separators are not allowed"
         ));
     }
     Ok(())
@@ -256,6 +260,33 @@ mod tests {
             assert!(
                 validate_output_name(reserved).is_err(),
                 "Windows reserved variant '{reserved}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_output_name_rejects_windows_invalid_characters() {
+        for invalid in &[
+            "bad*name",
+            "bad?name",
+            "bad|name",
+            "bad<name",
+            "bad>name",
+            "bad\"name",
+        ] {
+            assert!(
+                validate_output_name(invalid).is_err(),
+                "Windows-invalid filename '{invalid}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_output_name_rejects_trailing_dot_or_space() {
+        for invalid in &["name.", "name ", "report..", "report  "] {
+            assert!(
+                validate_output_name(invalid).is_err(),
+                "name with trailing dot/space '{invalid}' should be rejected"
             );
         }
     }
