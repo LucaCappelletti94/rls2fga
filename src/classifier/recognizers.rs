@@ -551,6 +551,45 @@ fn classify_membership_select(
     registry: &FunctionRegistry,
     projected_fk: Option<String>,
 ) -> Option<ClassifiedExpr> {
+    match analyze_membership_select(select, db, registry, projected_fk.as_deref()) {
+        MembershipSelectAnalysis::Unique {
+            join_table,
+            inferred_fk_column,
+            user_column,
+            extra_predicate_sql,
+        } => Some(ClassifiedExpr {
+            pattern: PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column: projected_fk.unwrap_or(inferred_fk_column),
+                user_column,
+                extra_predicate_sql,
+            },
+            confidence: ConfidenceLevel::A,
+        }),
+        MembershipSelectAnalysis::AmbiguousMultiple
+        | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
+        | MembershipSelectAnalysis::NoMatch => None,
+    }
+}
+
+enum MembershipSelectAnalysis {
+    Unique {
+        join_table: String,
+        inferred_fk_column: String,
+        user_column: String,
+        extra_predicate_sql: Option<String>,
+    },
+    AmbiguousMultiple,
+    AmbiguousNoUniqueJoin,
+    NoMatch,
+}
+
+fn analyze_membership_select(
+    select: &Select,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    projected_fk_hint: Option<&str>,
+) -> MembershipSelectAnalysis {
     // Fail closed when the same table appears more than once (self-join).
     // Self-joins add constraints we cannot express as static membership tuples;
     // accepting them would produce tuples more permissive than the original policy.
@@ -561,26 +600,27 @@ fn classify_membership_select(
         .collect::<std::collections::HashSet<_>>()
         .len();
     if unique_table_count != all_sources.len() {
-        return None;
+        return MembershipSelectAnalysis::AmbiguousMultiple;
     }
 
-    let matches = membership_matches(select, db, registry, projected_fk.as_deref());
-    if matches.len() != 1 {
-        return None;
+    let matches = membership_matches(select, db, registry, projected_fk_hint);
+    match matches.len() {
+        1 => {
+            let (join_table, inferred_fk_column, user_column, extra_predicate_sql) =
+                matches.into_iter().next().expect("len checked to be 1");
+            MembershipSelectAnalysis::Unique {
+                join_table,
+                inferred_fk_column,
+                user_column,
+                extra_predicate_sql,
+            }
+        }
+        n if n > 1 => MembershipSelectAnalysis::AmbiguousMultiple,
+        _ if selection_references_current_user(select, registry) => {
+            MembershipSelectAnalysis::AmbiguousNoUniqueJoin
+        }
+        _ => MembershipSelectAnalysis::NoMatch,
     }
-
-    let (join_table, inferred_fk_column, user_column, extra_predicate_sql) =
-        matches.into_iter().next()?;
-
-    Some(ClassifiedExpr {
-        pattern: PatternClass::P4ExistsMembership {
-            join_table,
-            fk_column: projected_fk.unwrap_or(inferred_fk_column),
-            user_column,
-            extra_predicate_sql,
-        },
-        confidence: ConfidenceLevel::A,
-    })
 }
 
 pub(crate) fn diagnose_p4_membership_ambiguity(
@@ -594,20 +634,17 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
         registry: &FunctionRegistry,
         projected_fk: Option<&str>,
     ) -> Option<String> {
-        let matches = membership_matches(select, db, registry, projected_fk);
-        if matches.len() > 1 {
-            return Some(
+        match analyze_membership_select(select, db, registry, projected_fk) {
+            MembershipSelectAnalysis::AmbiguousMultiple => Some(
                 "Ambiguous membership pattern: multiple candidate membership sources matched"
                     .to_string(),
-            );
-        }
-        if matches.is_empty() && selection_references_current_user(select, registry) {
-            return Some(
+            ),
+            MembershipSelectAnalysis::AmbiguousNoUniqueJoin => Some(
                 "Ambiguous membership pattern: could not infer a unique membership join"
                     .to_string(),
-            );
+            ),
+            MembershipSelectAnalysis::Unique { .. } | MembershipSelectAnalysis::NoMatch => None,
         }
-        None
     }
 
     match expr {
