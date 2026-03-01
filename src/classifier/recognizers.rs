@@ -1,4 +1,7 @@
-use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
+use sqlparser::ast::{
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Select, SelectItem,
+    TableFactor, UnaryOperator, Value,
+};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -1438,6 +1441,15 @@ fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Opti
             strip_qualifier_from_expr(left, join_table, join_alias);
             strip_qualifier_from_expr(right, join_table, join_alias);
         }
+        Expr::Function(function) => {
+            if let FunctionArguments::List(arg_list) = &mut function.args {
+                for arg in &mut arg_list.args {
+                    if let Some(arg_expr) = function_arg_expr_mut(arg) {
+                        strip_qualifier_from_expr(arg_expr, join_table, join_alias);
+                    }
+                }
+            }
+        }
         Expr::UnaryOp { expr: inner, .. }
         | Expr::Cast { expr: inner, .. }
         | Expr::Nested(inner)
@@ -1457,7 +1469,39 @@ fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Opti
                 strip_qualifier_from_expr(item, join_table, join_alias);
             }
         }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(operand_expr) = operand.as_deref_mut() {
+                strip_qualifier_from_expr(operand_expr, join_table, join_alias);
+            }
+            for when in conditions.iter_mut() {
+                strip_qualifier_from_expr(&mut when.condition, join_table, join_alias);
+                strip_qualifier_from_expr(&mut when.result, join_table, join_alias);
+            }
+            if let Some(else_expr) = else_result.as_deref_mut() {
+                strip_qualifier_from_expr(else_expr, join_table, join_alias);
+            }
+        }
         _ => {}
+    }
+}
+
+fn function_arg_expr_mut(arg: &mut FunctionArg) -> Option<&mut Expr> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
+        | FunctionArg::Named {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        }
+        | FunctionArg::ExprNamed {
+            arg: FunctionArgExpr::Expr(expr),
+            ..
+        } => Some(expr),
+        _ => None,
     }
 }
 
@@ -1481,6 +1525,19 @@ fn predicate_references_other_table(
             predicate_references_other_table(left, join_table, join_alias)
                 || predicate_references_other_table(right, join_table, join_alias)
         }
+        Expr::Function(function) => {
+            if let FunctionArguments::List(arg_list) = &function.args {
+                arg_list
+                    .args
+                    .iter()
+                    .filter_map(function_arg_expr)
+                    .any(|arg_expr| {
+                        predicate_references_other_table(arg_expr, join_table, join_alias)
+                    })
+            } else {
+                false
+            }
+        }
         Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } | Expr::Nested(expr) => {
             predicate_references_other_table(expr, join_table, join_alias)
         }
@@ -1495,6 +1552,23 @@ fn predicate_references_other_table(
                 || list
                     .iter()
                     .any(|e| predicate_references_other_table(e, join_table, join_alias))
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            operand
+                .as_deref()
+                .is_some_and(|e| predicate_references_other_table(e, join_table, join_alias))
+                || conditions.iter().any(|when| {
+                    predicate_references_other_table(&when.condition, join_table, join_alias)
+                        || predicate_references_other_table(&when.result, join_table, join_alias)
+                })
+                || else_result
+                    .as_deref()
+                    .is_some_and(|e| predicate_references_other_table(e, join_table, join_alias))
         }
         _ => false, // bare identifiers, functions, literals, constants — safe
     }
