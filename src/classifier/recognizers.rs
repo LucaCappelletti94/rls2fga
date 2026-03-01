@@ -2414,6 +2414,34 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_fails_closed_for_outer_table_distinct_predicates() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let clauses = [
+            "docs.id IS DISTINCT FROM dm.member_id",
+            "docs.id IS NOT DISTINCT FROM dm.member_id",
+        ];
+
+        for clause in clauses {
+            let exists_expr = parse_expr(&format!(
+                "EXISTS (
+                   SELECT 1
+                   FROM doc_members dm
+                   WHERE dm.doc_id = docs.id
+                     AND dm.user_id = current_user
+                     AND {clause}
+                 )"
+            ));
+
+            assert!(
+                recognize_p4(&exists_expr, &db, &registry).is_none(),
+                "outer-table DISTINCT predicate `{clause}` should fail closed for P4"
+            );
+        }
+    }
+
+    #[test]
     fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -2471,6 +2499,34 @@ CREATE TABLE doc_members (
                 ..
             } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
         ));
+    }
+
+    #[test]
+    fn recognize_p4_in_subquery_fails_closed_for_non_membership_distinct_predicates() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let clauses = [
+            "d.id IS DISTINCT FROM dm.member_id",
+            "d.id IS NOT DISTINCT FROM dm.member_id",
+        ];
+
+        for clause in clauses {
+            let in_subquery = parse_expr(&format!(
+                "doc_id IN (
+                   SELECT dm.doc_id
+                   FROM docs d
+                   JOIN doc_members dm ON dm.doc_id = d.id
+                   WHERE dm.user_id = current_user
+                     AND {clause}
+                 )"
+            ));
+
+            assert!(
+                recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+                "non-membership DISTINCT predicate `{clause}` should fail closed for P4 IN-subquery"
+            );
+        }
     }
 
     #[test]
@@ -3422,6 +3478,22 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         let is_not_null = parse_expr("other.active IS NOT NULL");
         assert!(predicate_references_other_table(
             &is_not_null,
+            "members",
+            Some("m")
+        ));
+
+        // IsDistinctFrom with other-table reference
+        let is_distinct = parse_expr("other.col IS DISTINCT FROM m.col");
+        assert!(predicate_references_other_table(
+            &is_distinct,
+            "members",
+            Some("m")
+        ));
+
+        // IsNotDistinctFrom with other-table reference
+        let is_not_distinct = parse_expr("other.col IS NOT DISTINCT FROM m.col");
+        assert!(predicate_references_other_table(
+            &is_not_distinct,
             "members",
             Some("m")
         ));
