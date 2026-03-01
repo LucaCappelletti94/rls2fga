@@ -2357,6 +2357,56 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_fails_closed_for_outer_table_is_false_extra_predicate() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND docs.published IS FALSE
+             )",
+        );
+
+        assert!(
+            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            "outer-table IS FALSE predicate should fail closed for P4"
+        );
+    }
+
+    #[test]
+    fn recognize_p4_fails_closed_for_outer_table_boolean_is_wrappers() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let clauses = [
+            "docs.published IS TRUE",
+            "docs.published IS NOT TRUE",
+            "docs.published IS NOT FALSE",
+        ];
+
+        for clause in clauses {
+            let exists_expr = parse_expr(&format!(
+                "EXISTS (
+                   SELECT 1
+                   FROM doc_members dm
+                   WHERE dm.doc_id = docs.id
+                     AND dm.user_id = current_user
+                     AND {clause}
+                 )"
+            ));
+
+            assert!(
+                recognize_p4(&exists_expr, &db, &registry).is_none(),
+                "outer-table predicate `{clause}` should fail closed for P4"
+            );
+        }
+    }
+
+    #[test]
     fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -3314,6 +3364,25 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         let mut in_list = parse_expr("dm.role IN ('admin', 'editor')");
         strip_qualifier_from_expr(&mut in_list, "doc_members", Some("dm"));
         assert!(!in_list.to_string().contains("dm."));
+    }
+
+    #[test]
+    fn strip_qualifier_from_expr_handles_boolean_is_variants() {
+        let mut is_true = parse_expr("dm.active IS TRUE");
+        strip_qualifier_from_expr(&mut is_true, "doc_members", Some("dm"));
+        assert!(!is_true.to_string().contains("dm."));
+
+        let mut is_not_false = parse_expr("dm.active IS NOT FALSE");
+        strip_qualifier_from_expr(&mut is_not_false, "doc_members", Some("dm"));
+        assert!(!is_not_false.to_string().contains("dm."));
+
+        let mut is_false = parse_expr("dm.active IS FALSE");
+        strip_qualifier_from_expr(&mut is_false, "doc_members", Some("dm"));
+        assert!(!is_false.to_string().contains("dm."));
+
+        let mut is_not_true = parse_expr("dm.active IS NOT TRUE");
+        strip_qualifier_from_expr(&mut is_not_true, "doc_members", Some("dm"));
+        assert!(!is_not_true.to_string().contains("dm."));
     }
 
     #[test]
