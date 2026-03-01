@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
+use sqlparser::ast::{Expr, FunctionArguments, SelectItem, SetExpr, Statement};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 use std::collections::HashMap;
 
-use crate::parser::names::is_current_user_keyword_name;
+use crate::parser::names::{
+    is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
+};
 
 /// Semantic classification of a SQL function body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,6 +417,59 @@ fn contains_current_user_accessor_marker(body_lower: &str) -> bool {
         || contains_current_user_keyword_token(&sanitized)
 }
 
+fn unwrap_accessor_expr(mut expr: &Expr) -> &Expr {
+    loop {
+        match expr {
+            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
+                expr = inner.as_ref();
+            }
+            _ => return expr,
+        }
+    }
+}
+
+fn is_direct_current_user_accessor_expr(expr: &Expr) -> bool {
+    match unwrap_accessor_expr(expr) {
+        Expr::Identifier(ident) => {
+            ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value)
+        }
+        Expr::Function(func) => {
+            let normalized = normalized_function_name(func);
+            (normalized == "current_setting" && matches!(func.args, FunctionArguments::List(_)))
+                || (is_current_user_keyword_name(&normalized)
+                    && split_schema_and_relation(&func.name.to_string()).is_none()
+                    && matches!(func.args, FunctionArguments::None))
+        }
+        _ => false,
+    }
+}
+
+fn has_single_direct_accessor_expression(body: &str) -> bool {
+    let Ok(statements) = Parser::parse_sql(&PostgreSqlDialect {}, body) else {
+        return false;
+    };
+    let [statement] = statements.as_slice() else {
+        return false;
+    };
+    let Statement::Query(query) = statement else {
+        return false;
+    };
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return false;
+    };
+    if select.projection.len() != 1 {
+        return false;
+    }
+
+    let (SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }) =
+        &select.projection[0]
+    else {
+        return false;
+    };
+
+    is_direct_current_user_accessor_expr(expr)
+}
+
 impl FunctionSemantic {
     /// Attempt to classify a function body by simple heuristic analysis.
     /// Returns None if the function cannot be classified from its body alone.
@@ -430,6 +488,7 @@ impl FunctionSemantic {
         if return_type_lower.contains("uuid")
             && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
+            && has_single_direct_accessor_expression(body)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
@@ -647,6 +706,39 @@ mod tests {
         assert!(
             semantic.is_none(),
             "`user` keyword is too ambiguous to auto-classify as current-user accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_non_direct_current_user_expressions() {
+        let case_expr = FunctionSemantic::analyze_body(
+            "SELECT CASE WHEN TRUE THEN current_user::uuid ELSE gen_random_uuid() END",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            case_expr.is_none(),
+            "CASE expression containing current_user must not classify as direct accessor"
+        );
+
+        let coalesce_expr = FunctionSemantic::analyze_body(
+            "SELECT COALESCE(current_user::uuid, gen_random_uuid())",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            coalesce_expr.is_none(),
+            "COALESCE expression containing current_user must not classify as direct accessor"
+        );
+
+        let concat_expr = FunctionSemantic::analyze_body(
+            "SELECT (current_user::uuid || '')::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            concat_expr.is_none(),
+            "composed expressions around current_user must not classify as direct accessor"
         );
     }
 
