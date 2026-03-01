@@ -1018,6 +1018,25 @@ CREATE POLICY docs_update ON docs FOR UPDATE
     }
 
     #[test]
+    fn classify_p3_does_not_match_owner_like_column_to_column_equality() {
+        let db =
+            parse_schema("CREATE TABLE docs(id uuid primary key, owner_id uuid, author_id uuid);")
+                .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+
+        // `owner_id = author_id`: both sides are table columns.
+        // `author_id` must not be treated as a user accessor just because it contains "auth".
+        let expr = parse_expr("owner_id = author_id");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(
+            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            "owner_id = author_id must not classify as P3DirectOwnership, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
     fn classify_p4_exists_any_row_without_user_predicate_is_unknown() {
         let db = parse_schema(
             r"

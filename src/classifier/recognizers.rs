@@ -266,35 +266,40 @@ pub fn recognize_p3(
     // Try column = accessor_expr or accessor_expr = column.
     // Falls through to extract_column_name_through_coalesce when plain
     // extract_column_name returns None (e.g. COALESCE(col, default)).
-    let (col_name, accessor_name, accessor_indirection) = if let (Some(col), Some(accessor)) =
-        (extract_column_name(left), current_user_accessor_name(right))
-    {
-        let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
-        (col, accessor, indirection)
-    } else if let (Some(accessor), Some(col)) =
-        (current_user_accessor_name(left), extract_column_name(right))
-    {
-        let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
-        (col, accessor, indirection)
-    } else if let (Some(col), Some(accessor)) = (
-        extract_column_name_through_coalesce(left),
-        current_user_accessor_name(right),
-    ) {
-        let indirection = is_subquery_wrapped(right)
-            || is_json_accessor_wrapped(right)
-            || is_coalesce_wrapped(left);
-        (col, accessor, indirection)
-    } else if let (Some(accessor), Some(col)) = (
-        current_user_accessor_name(left),
-        extract_column_name_through_coalesce(right),
-    ) {
-        let indirection = is_subquery_wrapped(left)
-            || is_json_accessor_wrapped(left)
-            || is_coalesce_wrapped(right);
-        (col, accessor, indirection)
-    } else {
-        return None;
-    };
+    let (col_name, accessor_name, accessor_indirection, accessor_is_bare_identifier) =
+        if let (Some(col), Some(accessor)) =
+            (extract_column_name(left), current_user_accessor_name(right))
+        {
+            let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
+            let is_bare_identifier = is_bare_identifier_expr(right);
+            (col, accessor, indirection, is_bare_identifier)
+        } else if let (Some(accessor), Some(col)) =
+            (current_user_accessor_name(left), extract_column_name(right))
+        {
+            let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
+            let is_bare_identifier = is_bare_identifier_expr(left);
+            (col, accessor, indirection, is_bare_identifier)
+        } else if let (Some(col), Some(accessor)) = (
+            extract_column_name_through_coalesce(left),
+            current_user_accessor_name(right),
+        ) {
+            let indirection = is_subquery_wrapped(right)
+                || is_json_accessor_wrapped(right)
+                || is_coalesce_wrapped(left);
+            let is_bare_identifier = is_bare_identifier_expr(right);
+            (col, accessor, indirection, is_bare_identifier)
+        } else if let (Some(accessor), Some(col)) = (
+            current_user_accessor_name(left),
+            extract_column_name_through_coalesce(right),
+        ) {
+            let indirection = is_subquery_wrapped(left)
+                || is_json_accessor_wrapped(left)
+                || is_coalesce_wrapped(right);
+            let is_bare_identifier = is_bare_identifier_expr(left);
+            (col, accessor, indirection, is_bare_identifier)
+        } else {
+            return None;
+        };
 
     // Subquery-wrapped or JSON-extracted accessor: cap confidence at B regardless
     // of how the inner expression was resolved (the extra indirection prevents
@@ -310,6 +315,13 @@ pub fn recognize_p3(
     let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
     let accessor_lower = accessor_name.to_lowercase();
     let is_sql_keyword = is_current_user_keyword(&accessor_lower);
+
+    // Guard against false positives like `owner_id = author_id`:
+    // bare identifiers that are not SQL current-user keywords are columns/aliases,
+    // not accessor expressions.
+    if accessor_is_bare_identifier && !is_sql_keyword && !is_registry_confirmed {
+        return None;
+    }
 
     if !is_registry_confirmed && !is_sql_keyword {
         // Heuristic accessor name check.
@@ -1056,6 +1068,80 @@ fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
     }
 }
 
+enum MembershipEqAnalysis {
+    NotRelevant,
+    UserColumn(String),
+    FkCandidate(String),
+    OuterCorrelation,
+}
+
+fn analyze_membership_eq_predicate(
+    predicate: &Expr,
+    join_table: &str,
+    join_alias: Option<&str>,
+    join_cols: &[String],
+    registry: &FunctionRegistry,
+) -> MembershipEqAnalysis {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = predicate
+    else {
+        return MembershipEqAnalysis::NotRelevant;
+    };
+
+    let left_col = extract_qualified_column(left);
+    let right_col = extract_qualified_column(right);
+
+    if let Some((qual, col)) = left_col.clone() {
+        if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+            && is_current_user_expr(right, registry)
+        {
+            return MembershipEqAnalysis::UserColumn(col);
+        }
+    }
+    if let Some((qual, col)) = right_col.clone() {
+        if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
+            && is_current_user_expr(left, registry)
+        {
+            return MembershipEqAnalysis::UserColumn(col);
+        }
+    }
+
+    let (Some((left_qual, left_name)), Some((right_qual, right_name))) = (left_col, right_col)
+    else {
+        return MembershipEqAnalysis::NotRelevant;
+    };
+
+    let left_is_join = is_join_column_ref(
+        left_qual.as_deref(),
+        &left_name,
+        join_table,
+        join_alias,
+        join_cols,
+    );
+    let right_is_join = is_join_column_ref(
+        right_qual.as_deref(),
+        &right_name,
+        join_table,
+        join_alias,
+        join_cols,
+    );
+
+    if left_is_join && !right_is_join {
+        return MembershipEqAnalysis::FkCandidate(left_name);
+    }
+    if right_is_join && !left_is_join {
+        return MembershipEqAnalysis::FkCandidate(right_name);
+    }
+    if !left_is_join && !right_is_join {
+        return MembershipEqAnalysis::OuterCorrelation;
+    }
+
+    MembershipEqAnalysis::NotRelevant
+}
+
 fn extract_membership_columns(
     select: &Select,
     join_table: &str,
@@ -1086,82 +1172,29 @@ fn extract_membership_columns(
         flatten_and_predicates(selection, &mut predicates);
 
         for pred in predicates {
-            if let Expr::BinaryOp {
-                left,
-                op: BinaryOperator::Eq,
-                right,
-            } = pred
+            match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry)
             {
-                let left_col = extract_qualified_column(left);
-                let right_col = extract_qualified_column(right);
-
-                // user_id = auth_current_user()
-                if let Some((qual, col)) = left_col.clone() {
-                    if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-                        && is_current_user_expr(right, registry)
+                MembershipEqAnalysis::UserColumn(col) => {
+                    user_col = Some(col);
+                    continue;
+                }
+                MembershipEqAnalysis::FkCandidate(candidate) => {
+                    if fk_col
+                        .as_ref()
+                        .is_none_or(|existing| existing == &candidate)
                     {
-                        user_col = Some(col);
+                        fk_col = Some(candidate);
+                        fk_col_is_explicit = true;
                         continue;
                     }
+                    return None;
                 }
-                if let Some((qual, col)) = right_col.clone() {
-                    if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-                        && is_current_user_expr(left, registry)
-                    {
-                        user_col = Some(col);
-                        continue;
-                    }
+                MembershipEqAnalysis::OuterCorrelation => {
+                    // Outer correlation predicates are implicit in tuple queries and
+                    // must not be copied to extra_predicate_sql.
+                    continue;
                 }
-
-                // join_table_fk = outer_table_col
-                if let (Some((left_qual, left_name)), Some((right_qual, right_name))) =
-                    (left_col, right_col)
-                {
-                    let left_is_join = is_join_column_ref(
-                        left_qual.as_deref(),
-                        &left_name,
-                        join_table,
-                        join_alias,
-                        join_cols,
-                    );
-                    let right_is_join = is_join_column_ref(
-                        right_qual.as_deref(),
-                        &right_name,
-                        join_table,
-                        join_alias,
-                        join_cols,
-                    );
-
-                    if left_is_join && !right_is_join {
-                        if fk_col
-                            .as_ref()
-                            .is_none_or(|existing| existing == &left_name)
-                        {
-                            fk_col = Some(left_name);
-                            fk_col_is_explicit = true;
-                            continue;
-                        }
-                        return None;
-                    }
-                    if right_is_join && !left_is_join {
-                        if fk_col
-                            .as_ref()
-                            .is_none_or(|existing| existing == &right_name)
-                        {
-                            fk_col = Some(right_name);
-                            fk_col_is_explicit = true;
-                            continue;
-                        }
-                        return None;
-                    }
-                    // Neither side references the join table — this is an outer-row
-                    // correlation predicate (e.g. `d.id = docs.id` linking the inner
-                    // alias to the outer table).  These are implicit in the generated
-                    // tuple query and must not be added to extra_predicate_sql.
-                    if !left_is_join && !right_is_join {
-                        continue;
-                    }
-                }
+                MembershipEqAnalysis::NotRelevant => {}
             }
 
             // Scope validation: reject predicates that reference columns from
@@ -1187,73 +1220,22 @@ fn extract_membership_columns(
         if fk_col_is_explicit {
             break; // FK already found; no need to scan further.
         }
-        if let Expr::BinaryOp {
-            left,
-            op: BinaryOperator::Eq,
-            right,
-        } = pred
-        {
-            let left_col = extract_qualified_column(left);
-            let right_col = extract_qualified_column(right);
-
-            // user_id = auth_current_user() — handle in ON clause too
-            if let Some((qual, col)) = left_col.clone() {
-                if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-                    && is_current_user_expr(right, registry)
-                {
-                    if user_col.is_none() {
-                        user_col = Some(col);
-                    }
-                    continue;
+        match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry) {
+            MembershipEqAnalysis::UserColumn(col) => {
+                if user_col.is_none() {
+                    user_col = Some(col);
                 }
             }
-            if let Some((qual, col)) = right_col.clone() {
-                if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-                    && is_current_user_expr(left, registry)
+            MembershipEqAnalysis::FkCandidate(candidate) => {
+                if fk_col
+                    .as_ref()
+                    .is_none_or(|existing| existing == &candidate)
                 {
-                    if user_col.is_none() {
-                        user_col = Some(col);
-                    }
-                    continue;
-                }
-            }
-
-            if let (Some((left_qual, left_name)), Some((right_qual, right_name))) =
-                (left_col, right_col)
-            {
-                let left_is_join = is_join_column_ref(
-                    left_qual.as_deref(),
-                    &left_name,
-                    join_table,
-                    join_alias,
-                    join_cols,
-                );
-                let right_is_join = is_join_column_ref(
-                    right_qual.as_deref(),
-                    &right_name,
-                    join_table,
-                    join_alias,
-                    join_cols,
-                );
-
-                if left_is_join
-                    && !right_is_join
-                    && fk_col
-                        .as_ref()
-                        .is_none_or(|existing| existing == &left_name)
-                {
-                    fk_col = Some(left_name);
-                    fk_col_is_explicit = true;
-                } else if right_is_join
-                    && !left_is_join
-                    && fk_col
-                        .as_ref()
-                        .is_none_or(|existing| existing == &right_name)
-                {
-                    fk_col = Some(right_name);
+                    fk_col = Some(candidate);
                     fk_col_is_explicit = true;
                 }
             }
+            MembershipEqAnalysis::OuterCorrelation | MembershipEqAnalysis::NotRelevant => {}
         }
     }
 
@@ -1367,6 +1349,14 @@ fn is_json_accessor_wrapped(expr: &Expr) -> bool {
             ..
         } => true,
         Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_json_accessor_wrapped(inner),
+        _ => false,
+    }
+}
+
+fn is_bare_identifier_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_bare_identifier_expr(inner),
         _ => false,
     }
 }
