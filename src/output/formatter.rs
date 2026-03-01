@@ -68,8 +68,13 @@ fn validate_output_name(name: &str) -> Result<(), String> {
             "Invalid output name '{name}': colons are not allowed"
         ));
     }
-    // Reject Windows reserved device names (case-insensitive).
-    let upper = name.to_uppercase();
+    // Reject Windows reserved device names (case-insensitive), including
+    // names with extensions (`CON.txt`) and trailing dot/space variants.
+    let windows_component = name.trim_end_matches([' ', '.']);
+    let windows_stem = windows_component
+        .split_once('.')
+        .map_or(windows_component, |(stem, _)| stem);
+    let upper = windows_stem.to_ascii_uppercase();
     if WINDOWS_RESERVED.contains(&upper.as_str()) {
         return Err(format!(
             "Invalid output name '{name}': Windows reserved device name"
@@ -239,6 +244,18 @@ mod tests {
             assert!(
                 validate_output_name(reserved).is_err(),
                 "Windows reserved name '{reserved}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_output_name_rejects_windows_reserved_names_with_suffixes_or_trailing_chars() {
+        for reserved in &[
+            "CON.txt", "nul.md", "COM1.sql", "LPT9.log", "AUX.", "PRN ", "NUL..",
+        ] {
+            assert!(
+                validate_output_name(reserved).is_err(),
+                "Windows reserved variant '{reserved}' should be rejected"
             );
         }
     }
