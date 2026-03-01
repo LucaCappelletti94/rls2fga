@@ -328,12 +328,74 @@ where
 }
 
 fn contains_current_user_keyword_token(sql: &str) -> bool {
-    let mut prev_token_was_as = false;
-    scan_identifier_tokens(sql, |token, _start, _end| {
+    fn token_can_precede_expression_operand(token: &str) -> bool {
+        matches!(
+            token,
+            "select"
+                | "where"
+                | "and"
+                | "or"
+                | "not"
+                | "when"
+                | "then"
+                | "else"
+                | "case"
+                | "on"
+                | "from"
+                | "join"
+                | "left"
+                | "right"
+                | "inner"
+                | "outer"
+                | "cross"
+                | "full"
+                | "having"
+                | "group"
+                | "order"
+                | "by"
+                | "limit"
+                | "offset"
+                | "return"
+                | "returning"
+                | "into"
+                | "values"
+                | "set"
+                | "is"
+                | "in"
+                | "exists"
+                | "distinct"
+                | "all"
+                | "any"
+                | "some"
+                | "union"
+                | "intersect"
+                | "except"
+                | "null"
+                | "true"
+                | "false"
+        )
+    }
+
+    fn only_whitespace_or_closing_parens(sql: &str, start: usize, end: usize) -> bool {
+        sql[start..end]
+            .chars()
+            .all(|ch| ch.is_whitespace() || ch == ')')
+    }
+
+    let mut prev_token: Option<String> = None;
+    let mut prev_end = 0usize;
+    scan_identifier_tokens(sql, |token, start, end| {
         let is_accessor_keyword =
             is_current_user_keyword_for_body_scan(token) && is_current_user_keyword_name(token);
-        let matched = is_accessor_keyword && !prev_token_was_as;
-        prev_token_was_as = token == "as";
+        let is_explicit_alias = prev_token.as_deref().is_some_and(|prev| prev == "as");
+        let is_implicit_alias = is_accessor_keyword
+            && prev_token
+                .as_deref()
+                .is_some_and(|prev| !token_can_precede_expression_operand(prev) && prev != "as")
+            && only_whitespace_or_closing_parens(sql, prev_end, start);
+        let matched = is_accessor_keyword && !is_explicit_alias && !is_implicit_alias;
+        prev_token = Some(token.to_string());
+        prev_end = end;
         matched
     })
 }
@@ -403,6 +465,13 @@ mod tests {
 
         assert!(matches!(
             semantic,
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+        ));
+
+        let semantic_role =
+            FunctionSemantic::analyze_body("SELECT current_role::uuid", "UUID", "sql");
+        assert!(matches!(
+            semantic_role,
             Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
         ));
     }
@@ -546,6 +615,38 @@ mod tests {
         assert!(
             alias_current_role.is_none(),
             "alias named current_role must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_alias_without_as_named_current_user_or_current_role() {
+        let alias_current_user = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid current_user",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            alias_current_user.is_none(),
+            "implicit alias named current_user must not classify as accessor"
+        );
+
+        let alias_current_role = FunctionSemantic::analyze_body(
+            "SELECT gen_random_uuid()::uuid current_role",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            alias_current_role.is_none(),
+            "implicit alias named current_role must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_does_not_treat_user_keyword_as_accessor_marker() {
+        let semantic = FunctionSemantic::analyze_body("SELECT user::uuid", "UUID", "sql");
+        assert!(
+            semantic.is_none(),
+            "`user` keyword is too ambiguous to auto-classify as current-user accessor"
         );
     }
 

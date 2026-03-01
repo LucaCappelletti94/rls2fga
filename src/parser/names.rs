@@ -24,10 +24,12 @@ pub fn normalize_identifier(ident: &str) -> String {
 /// True when `name` is a SQL keyword that resolves to the current session role.
 ///
 /// `session_user` is intentionally excluded: it does not follow `SET ROLE`.
+/// `user` is intentionally excluded because it is parser-ambiguous with
+/// user-defined function names and can produce false positives.
 pub fn is_current_user_keyword_name(name: &str) -> bool {
     matches!(
         normalize_relation_name(name).as_str(),
-        "current_user" | "user" | "current_role"
+        "current_user" | "current_role"
     )
 }
 
@@ -353,7 +355,7 @@ mod tests {
     fn is_current_user_keyword_name_matches_supported_keywords_only() {
         assert!(is_current_user_keyword_name("current_user"));
         assert!(is_current_user_keyword_name("CURRENT_ROLE"));
-        assert!(is_current_user_keyword_name("user"));
+        assert!(!is_current_user_keyword_name("user"));
         assert!(!is_current_user_keyword_name("session_user"));
         assert!(!is_current_user_keyword_name("my_current_user"));
     }
