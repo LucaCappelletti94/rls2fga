@@ -1,4 +1,6 @@
-use sqlparser::ast::{BinaryOperator, Expr, Select, SelectItem, TableFactor, UnaryOperator, Value};
+use sqlparser::ast::{
+    BinaryOperator, Expr, FunctionArguments, Select, SelectItem, TableFactor, UnaryOperator, Value,
+};
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -267,40 +269,73 @@ pub fn recognize_p3(
     // Try column = accessor_expr or accessor_expr = column.
     // Falls through to extract_column_name_through_coalesce when plain
     // extract_column_name returns None (e.g. COALESCE(col, default)).
-    let (col_name, accessor_name, accessor_indirection, accessor_is_bare_identifier) =
-        if let (Some(col), Some(accessor)) =
-            (extract_column_name(left), current_user_accessor_name(right))
-        {
-            let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
-            let is_bare_identifier = is_bare_identifier_expr(right);
-            (col, accessor, indirection, is_bare_identifier)
-        } else if let (Some(accessor), Some(col)) =
-            (current_user_accessor_name(left), extract_column_name(right))
-        {
-            let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
-            let is_bare_identifier = is_bare_identifier_expr(left);
-            (col, accessor, indirection, is_bare_identifier)
-        } else if let (Some(col), Some(accessor)) = (
-            extract_column_name_through_coalesce(left),
-            current_user_accessor_name(right),
-        ) {
-            let indirection = is_subquery_wrapped(right)
-                || is_json_accessor_wrapped(right)
-                || is_coalesce_wrapped(left);
-            let is_bare_identifier = is_bare_identifier_expr(right);
-            (col, accessor, indirection, is_bare_identifier)
-        } else if let (Some(accessor), Some(col)) = (
-            current_user_accessor_name(left),
-            extract_column_name_through_coalesce(right),
-        ) {
-            let indirection = is_subquery_wrapped(left)
-                || is_json_accessor_wrapped(left)
-                || is_coalesce_wrapped(right);
-            let is_bare_identifier = is_bare_identifier_expr(left);
-            (col, accessor, indirection, is_bare_identifier)
-        } else {
-            return None;
-        };
+    let (
+        col_name,
+        accessor_name,
+        accessor_indirection,
+        accessor_is_bare_identifier,
+        accessor_is_sql_keyword_expr,
+    ) = if let (Some(col), Some(accessor)) =
+        (extract_column_name(left), current_user_accessor_name(right))
+    {
+        let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
+        let is_bare_identifier = is_bare_identifier_expr(right);
+        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
+        (
+            col,
+            accessor,
+            indirection,
+            is_bare_identifier,
+            is_sql_keyword_expr,
+        )
+    } else if let (Some(accessor), Some(col)) =
+        (current_user_accessor_name(left), extract_column_name(right))
+    {
+        let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
+        let is_bare_identifier = is_bare_identifier_expr(left);
+        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
+        (
+            col,
+            accessor,
+            indirection,
+            is_bare_identifier,
+            is_sql_keyword_expr,
+        )
+    } else if let (Some(col), Some(accessor)) = (
+        extract_column_name_through_coalesce(left),
+        current_user_accessor_name(right),
+    ) {
+        let indirection = is_subquery_wrapped(right)
+            || is_json_accessor_wrapped(right)
+            || is_coalesce_wrapped(left);
+        let is_bare_identifier = is_bare_identifier_expr(right);
+        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
+        (
+            col,
+            accessor,
+            indirection,
+            is_bare_identifier,
+            is_sql_keyword_expr,
+        )
+    } else if let (Some(accessor), Some(col)) = (
+        current_user_accessor_name(left),
+        extract_column_name_through_coalesce(right),
+    ) {
+        let indirection = is_subquery_wrapped(left)
+            || is_json_accessor_wrapped(left)
+            || is_coalesce_wrapped(right);
+        let is_bare_identifier = is_bare_identifier_expr(left);
+        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
+        (
+            col,
+            accessor,
+            indirection,
+            is_bare_identifier,
+            is_sql_keyword_expr,
+        )
+    } else {
+        return None;
+    };
 
     // Subquery-wrapped or JSON-extracted accessor: cap confidence at B regardless
     // of how the inner expression was resolved (the extra indirection prevents
@@ -314,8 +349,8 @@ pub fn recognize_p3(
 
     // Determine how we matched the accessor and assign confidence accordingly.
     let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
-    let accessor_lower = accessor_name.to_lowercase();
-    let is_sql_keyword = is_current_user_keyword(&accessor_lower);
+    let accessor_lower = accessor_name.to_ascii_lowercase();
+    let is_sql_keyword = accessor_is_sql_keyword_expr;
 
     // Guard against false positives like `owner_id = author_id`:
     // bare identifiers that are not SQL current-user keywords are columns/aliases,
@@ -1408,15 +1443,28 @@ fn is_current_user_keyword(name: &str) -> bool {
     is_current_user_keyword_name(name)
 }
 
-fn is_known_current_user_name(name: &str, registry: &FunctionRegistry) -> bool {
-    let normalized = normalize_relation_name(name);
-    registry.is_current_user_accessor(&normalized) || is_current_user_keyword(&normalized)
+fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
+    match unwrap_cast_or_nested(expr) {
+        Expr::Identifier(ident) => {
+            ident.quote_style.is_none()
+                && is_current_user_keyword(&normalize_relation_name(&ident.value))
+        }
+        Expr::Function(func) => {
+            split_schema_and_relation(&func.name.to_string()).is_none()
+                && matches!(func.args, FunctionArguments::None)
+                && is_current_user_keyword(&normalized_function_name(func))
+        }
+        _ => false,
+    }
 }
 
 fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
-    current_user_accessor_name(expr)
-        .as_deref()
-        .is_some_and(|name| is_known_current_user_name(name, registry))
+    let Some(name) = current_user_accessor_name(expr) else {
+        return false;
+    };
+    let normalized = normalize_relation_name(&name);
+    registry.is_current_user_accessor(&normalized)
+        || (is_current_user_keyword(&normalized) && is_sql_current_user_keyword_expr(expr))
 }
 
 fn is_join_column_ref(
@@ -1820,27 +1868,22 @@ fn is_literal_or_temporal(expr: &Expr) -> bool {
 /// Recognise zero-arg temporal built-in functions that produce a deterministic
 /// (within a statement) date/time value.
 fn is_well_known_temporal_function(expr: &Expr) -> bool {
-    match expr {
-        Expr::Function(func) => {
-            let name = normalized_function_name(func);
-            matches!(
-                name.as_str(),
-                "now"
-                    | "current_timestamp"
-                    | "current_date"
-                    | "current_time"
-                    | "clock_timestamp"
-                    | "statement_timestamp"
-                    | "transaction_timestamp"
-                    | "localtime"
-                    | "localtimestamp"
-            )
-        }
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
-            is_well_known_temporal_function(inner)
-        }
-        _ => false,
-    }
+    let Expr::Function(func) = unwrap_cast_or_nested(expr) else {
+        return false;
+    };
+    let name = normalized_function_name(func);
+    matches!(
+        name.as_str(),
+        "now"
+            | "current_timestamp"
+            | "current_date"
+            | "current_time"
+            | "clock_timestamp"
+            | "statement_timestamp"
+            | "transaction_timestamp"
+            | "localtime"
+            | "localtimestamp"
+    )
 }
 
 fn infer_membership_fk_column(
@@ -2322,6 +2365,22 @@ CREATE TABLE doc_members (
             recognize_p3(&expr, &db, &registry).is_none(),
             "quoted identifiers must not be treated as SQL current-user keywords"
         );
+    }
+
+    #[test]
+    fn recognize_p3_rejects_unregistered_function_names_that_match_sql_keywords() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let keyword_named_functions = ["owner_id = auth.user()", "owner_id = auth.current_role()"];
+
+        for sql in keyword_named_functions {
+            let expr = parse_expr(sql);
+            assert!(
+                recognize_p3(&expr, &db, &registry).is_none(),
+                "unregistered function call `{sql}` must not be treated as SQL keyword accessor"
+            );
+        }
     }
 
     #[test]
@@ -2886,6 +2945,7 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
         let casted = parse_expr("CAST(auth_current_user_id() AS UUID)");
         let keyword = parse_expr("current_user");
         let quoted_keyword = parse_expr("\"user\"");
+        let schema_qualified_keyword_fn = parse_expr("auth.user()");
         let other = parse_expr("owner_id");
 
         assert!(is_current_user_expr(&nested, &registry));
@@ -2894,6 +2954,10 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
         assert!(
             !is_current_user_expr(&quoted_keyword, &registry),
             "quoted keyword identifier must not be treated as current-user accessor"
+        );
+        assert!(
+            !is_current_user_expr(&schema_qualified_keyword_fn, &registry),
+            "schema-qualified function names that normalize to SQL keywords are not accessors"
         );
         assert!(!is_current_user_expr(&other, &registry));
     }
