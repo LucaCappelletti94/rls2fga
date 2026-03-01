@@ -31,10 +31,7 @@ pub fn classify_policies_with_registry(
     db.policies()
         .map(|policy| {
             let table_name = policy.table_name.to_string();
-            let command: PolicyCommand = policy
-                .command
-                .as_ref()
-                .map_or(PolicyCommand::All, |c| PolicyCommand::from(*c));
+            let command = derive_policy_command(policy.command.as_ref());
 
             let using_classification = policy
                 .using

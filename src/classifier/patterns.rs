@@ -220,6 +220,11 @@ impl From<CreatePolicyCommand> for PolicyCommand {
     }
 }
 
+/// Derive a policy command from an optional parsed command (`ALL` when absent).
+pub fn derive_policy_command(command: Option<&CreatePolicyCommand>) -> PolicyCommand {
+    command.map_or(PolicyCommand::All, |cmd| PolicyCommand::from(*cmd))
+}
+
 /// A classified policy with classifications for USING and WITH CHECK.
 #[derive(Debug, Clone)]
 pub struct ClassifiedPolicy {
@@ -252,10 +257,7 @@ impl ClassifiedPolicy {
 
     /// DML command this policy restricts (ALL if unspecified).
     pub fn command(&self) -> PolicyCommand {
-        self.policy
-            .command
-            .as_ref()
-            .map_or(PolicyCommand::All, |c| PolicyCommand::from(*c))
+        derive_policy_command(self.policy.command.as_ref())
     }
 
     /// Policy mode (`PERMISSIVE` by default when omitted).
@@ -397,6 +399,19 @@ mod tests {
         assert_eq!(format!("{}", PolicyCommand::Update), "UPDATE");
         assert_eq!(format!("{}", PolicyCommand::Delete), "DELETE");
         assert_eq!(format!("{}", PolicyCommand::All), "ALL");
+    }
+
+    #[test]
+    fn derive_policy_command_defaults_and_maps_explicit_values() {
+        assert_eq!(derive_policy_command(None), PolicyCommand::All);
+        assert_eq!(
+            derive_policy_command(Some(&CreatePolicyCommand::Select)),
+            PolicyCommand::Select
+        );
+        assert_eq!(
+            derive_policy_command(Some(&CreatePolicyCommand::Update)),
+            PolicyCommand::Update
+        );
     }
 
     #[test]
