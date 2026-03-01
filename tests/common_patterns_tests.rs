@@ -208,6 +208,81 @@ fn in_subquery_membership() {
     }
 }
 
+#[test]
+fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
+    let (classified, db, registry) =
+        classify_fixture("membership_wrapped_function_safe", |_reg| {});
+
+    assert_eq!(
+        classified.len(),
+        1,
+        "Should find one wrapped-membership policy"
+    );
+    let cp = &classified[0];
+    let classification = cp
+        .using_classification
+        .as_ref()
+        .expect("Should have USING classification");
+    assert!(
+        matches!(
+            &classification.pattern,
+            PatternClass::P4ExistsMembership {
+                join_table,
+                fk_column,
+                user_column,
+                ..
+            } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+        ),
+        "wrapped membership policy should classify as P4, got: {:?}",
+        classification.pattern
+    );
+
+    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+    ));
+    let tuples_lower = tuples.to_ascii_lowercase();
+    assert!(
+        tuples_lower.contains("lower(role) = 'admin'"),
+        "tuple SQL should preserve wrapped extra predicate, got:\n{tuples}"
+    );
+    assert!(
+        !tuples_lower.contains("dm."),
+        "tuple SQL should not leak membership alias, got:\n{tuples}"
+    );
+}
+
+#[test]
+fn fixture_wrapped_outer_table_membership_predicate_fails_closed_with_unknown_reason() {
+    let (classified, _db, _registry) =
+        classify_fixture("membership_wrapped_function_unsafe", |_reg| {});
+
+    assert_eq!(
+        classified.len(),
+        1,
+        "Should find one wrapped-membership policy"
+    );
+    let cp = &classified[0];
+    let classification = cp
+        .using_classification
+        .as_ref()
+        .expect("Should have USING classification");
+
+    match &classification.pattern {
+        PatternClass::Unknown { reason, .. } => {
+            assert!(
+                reason.contains("Ambiguous membership pattern"),
+                "unsafe wrapped predicate should fail closed with unknown reason, got: {reason}"
+            );
+        }
+        other => {
+            panic!("Expected fail-closed Unknown for unsafe wrapped predicate, got: {other:?}")
+        }
+    }
+}
+
 // ============================================================================
 // 5. PostgreSQL current_user keyword — manager = current_user
 //    Uses the SQL standard keyword, not a function call.

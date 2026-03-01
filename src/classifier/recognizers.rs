@@ -2444,6 +2444,57 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_supports_function_wrapped_membership_predicates_without_alias_leak() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND lower(dm.role) = 'admin'
+             )",
+        );
+
+        let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
+                if extra_predicate_sql
+                    .as_deref()
+                    .is_some_and(|s| {
+                        let lower = s.to_ascii_lowercase();
+                        lower.contains("lower(role) = 'admin'")
+                            && !lower.contains("dm.")
+                            && !lower.contains("docs.")
+                    })
+        ));
+    }
+
+    #[test]
+    fn recognize_p4_fails_closed_for_function_wrapped_outer_table_predicate() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND lower(docs.owner_id::text) = lower(dm.member_id::text)
+             )",
+        );
+
+        assert!(
+            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            "function-wrapped outer-table predicate should fail closed for P4"
+        );
+    }
+
+    #[test]
     fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -2529,6 +2580,27 @@ CREATE TABLE doc_members (
                 "non-membership DISTINCT predicate `{clause}` should fail closed for P4 IN-subquery"
             );
         }
+    }
+
+    #[test]
+    fn recognize_p4_in_subquery_fails_closed_for_function_wrapped_non_membership_ref() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let in_subquery = parse_expr(
+            "doc_id IN (
+               SELECT dm.doc_id
+               FROM docs d
+               JOIN doc_members dm ON dm.doc_id = d.id
+               WHERE dm.user_id = current_user
+                 AND lower(d.id::text) = lower(dm.member_id::text)
+             )",
+        );
+
+        assert!(
+            recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+            "function-wrapped non-membership reference should fail closed for P4 IN-subquery"
+        );
     }
 
     #[test]
@@ -3451,6 +3523,21 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
     }
 
     #[test]
+    fn strip_qualifier_from_expr_handles_function_wrapped_identifiers() {
+        let mut expr = parse_expr("lower(dm.role) = 'admin'");
+        strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
+        let rendered = expr.to_string().to_ascii_lowercase();
+        assert!(
+            rendered.contains("lower(role) = 'admin'"),
+            "expected stripped function-wrapped predicate, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("dm."),
+            "function-wrapped identifier should have qualifier stripped, got: {rendered}"
+        );
+    }
+
+    #[test]
     fn predicate_references_other_table_recursive_arms() {
         // InList with other-table reference
         let inlist = parse_expr("other.col IN ('a', 'b')");
@@ -3496,6 +3583,14 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         let is_not_distinct = parse_expr("other.col IS NOT DISTINCT FROM m.col");
         assert!(predicate_references_other_table(
             &is_not_distinct,
+            "members",
+            Some("m")
+        ));
+
+        // Function wrapper with other-table reference
+        let function_wrapped = parse_expr("lower(other.col) = lower(m.col)");
+        assert!(predicate_references_other_table(
+            &function_wrapped,
             "members",
             Some("m")
         ));
