@@ -80,19 +80,7 @@ pub fn recognize_p2(
                     return None;
                 }
 
-                let role_names: Vec<String> = list
-                    .iter()
-                    .filter_map(|e| {
-                        if let Expr::Value(v) = e {
-                            match &v.value {
-                                Value::SingleQuotedString(s) => return Some(s.clone()),
-                                Value::Number(n, _) => return Some(n.clone()),
-                                _ => {}
-                            }
-                        }
-                        None
-                    })
-                    .collect();
+                let role_names = extract_role_names_from_in_list(list, true);
 
                 if !role_names.is_empty() {
                     return Some(ClassifiedExpr {
@@ -226,17 +214,7 @@ fn recognize_role_accessor_comparison(
     } = expr
     {
         let func_name = extract_role_func_name(inner)?;
-        let role_names: Vec<String> = list
-            .iter()
-            .filter_map(|e| {
-                if let Expr::Value(v) = e {
-                    if let Value::SingleQuotedString(s) = &v.value {
-                        return Some(s.clone());
-                    }
-                }
-                None
-            })
-            .collect();
+        let role_names = extract_role_names_from_in_list(list, false);
 
         if role_names.is_empty() {
             return None;
@@ -252,6 +230,21 @@ fn recognize_role_accessor_comparison(
     }
 
     None
+}
+
+fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Vec<String> {
+    list.iter()
+        .filter_map(|e| {
+            if let Expr::Value(v) = e {
+                return match &v.value {
+                    Value::SingleQuotedString(s) => Some(s.clone()),
+                    Value::Number(n, _) if allow_numeric => Some(n.clone()),
+                    _ => None,
+                };
+            }
+            None
+        })
+        .collect()
 }
 
 /// Try to recognize P3: direct ownership `owner_id = auth.user_id()`.
@@ -1439,7 +1432,9 @@ fn strip_qualifier_from_expr(expr: &mut Expr, join_table: &str, join_alias: Opti
     }
 
     match expr {
-        Expr::BinaryOp { left, right, .. } => {
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right) => {
             strip_qualifier_from_expr(left, join_table, join_alias);
             strip_qualifier_from_expr(right, join_table, join_alias);
         }
@@ -3733,6 +3728,28 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);",
         assert!(
             !result.contains("dm."),
             "Nested expression should have qualifier stripped, got: {result}"
+        );
+    }
+
+    #[test]
+    fn strip_qualifier_from_expr_handles_is_distinct_from() {
+        let mut expr = parse_expr("dm.status IS DISTINCT FROM 'archived'");
+        strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
+        let result = expr.to_string();
+        assert!(
+            !result.contains("dm."),
+            "IS DISTINCT FROM should have qualifier stripped, got: {result}"
+        );
+    }
+
+    #[test]
+    fn strip_qualifier_from_expr_handles_is_not_distinct_from() {
+        let mut expr = parse_expr("dm.status IS NOT DISTINCT FROM 'archived'");
+        strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
+        let result = expr.to_string();
+        assert!(
+            !result.contains("dm."),
+            "IS NOT DISTINCT FROM should have qualifier stripped, got: {result}"
         );
     }
 

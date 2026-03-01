@@ -94,3 +94,25 @@ fn bool_equality_extraction_has_single_source_of_truth() {
         "expected a single boolean equality extractor helper, found {definitions}"
     );
 }
+
+#[test]
+fn role_in_list_extraction_has_single_source_of_truth() {
+    let source = read("src/classifier/recognizers.rs");
+    let definitions = source
+        .matches("fn extract_role_names_from_in_list(")
+        .count();
+    assert_eq!(
+        definitions, 1,
+        "expected one shared IN-list role extraction helper, found {definitions}"
+    );
+}
+
+#[test]
+fn token_pair_matching_has_single_source_of_truth() {
+    let source = read("src/parser/names.rs");
+    let definitions = source.matches("fn has_token_pair(").count();
+    assert_eq!(
+        definitions, 1,
+        "expected one shared token-pair helper in names.rs, found {definitions}"
+    );
+}

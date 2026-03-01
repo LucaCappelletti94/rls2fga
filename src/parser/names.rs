@@ -172,10 +172,10 @@ pub fn is_public_flag_column_name(name: &str) -> bool {
 pub fn is_user_related_column_name(name: &str) -> bool {
     let lower = normalize_identifier(name);
     let tokens: Vec<&str> = lower.split('_').collect();
-    let has_user_id = tokens.windows(2).any(|w| w == ["user", "id"]);
-    let has_owner_id = tokens.windows(2).any(|w| w == ["owner", "id"]);
-    let has_created_by = tokens.windows(2).any(|w| w == ["created", "by"]);
-    let has_author_id = tokens.windows(2).any(|w| w == ["author", "id"]);
+    let has_user_id = has_token_pair(&tokens, "user", "id");
+    let has_owner_id = has_token_pair(&tokens, "owner", "id");
+    let has_created_by = has_token_pair(&tokens, "created", "by");
+    let has_author_id = has_token_pair(&tokens, "author", "id");
     has_user_id || has_owner_id || has_created_by || has_author_id
 }
 
@@ -190,12 +190,16 @@ pub fn is_owner_like_column_name(name: &str) -> bool {
     // "owner" must appear as a complete token
     let has_owner = tokens.contains(&"owner");
     // "user_id" must be the last two tokens ("user", "id")
-    let has_user_id = tokens.windows(2).any(|w| w == ["user", "id"]);
+    let has_user_id = has_token_pair(&tokens, "user", "id");
     // "created_by" must appear as two consecutive tokens
-    let has_created_by = tokens.windows(2).any(|w| w == ["created", "by"]);
+    let has_created_by = has_token_pair(&tokens, "created", "by");
     // "author_id" is an exact match of the two-token form
-    let has_author_id = tokens.windows(2).any(|w| w == ["author", "id"]);
+    let has_author_id = has_token_pair(&tokens, "author", "id");
     has_owner || has_user_id || has_created_by || has_author_id
+}
+
+fn has_token_pair(tokens: &[&str], first: &str, second: &str) -> bool {
+    tokens.windows(2).any(|w| w == [first, second])
 }
 
 /// Build lookup candidates for schema-aware table resolution.
