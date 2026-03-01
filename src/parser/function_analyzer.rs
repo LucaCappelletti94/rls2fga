@@ -147,16 +147,8 @@ impl Default for AccessorInferenceSettings {
 /// complex function that merely *references* `current_user` incidentally (e.g.
 /// an audit trigger that writes `current_user` to a log table).
 fn is_direct_accessor_body(body_lower: &str) -> bool {
-    // Reject bodies that contain DML or complex PL/pgSQL constructs.
-    const COMPLEX_KEYWORDS: &[&str] = &[
-        "insert", "update", "delete", "from", "where", "join", "begin", "end;", "if ", "loop",
-        "raise", "perform", "execute", "call", "create", "drop", "alter",
-    ];
     let sanitized = sanitize_sql_for_keyword_scan(body_lower);
-    if COMPLEX_KEYWORDS.iter().any(|kw| sanitized.contains(kw)) {
-        return false;
-    }
-    true
+    !contains_disallowed_complex_token(&sanitized)
 }
 
 fn is_dollar_tag_start_char(ch: char) -> bool {
@@ -381,6 +373,29 @@ where
     token_start.is_some_and(|start| on_token(&sql[start..], start, sql.len()))
 }
 
+fn contains_identifier_token(sql: &str, target: &str) -> bool {
+    scan_identifier_tokens(sql, |token, _start, _end| token == target)
+}
+
+fn contains_disallowed_complex_token(sql: &str) -> bool {
+    const COMPLEX_TOKENS: &[&str] = &[
+        "insert", "update", "delete", "from", "where", "join", "begin", "end", "if", "loop",
+        "raise", "perform", "execute", "call", "create", "drop", "alter",
+    ];
+    scan_identifier_tokens(sql, |token, _start, _end| COMPLEX_TOKENS.contains(&token))
+}
+
+fn is_scalar_uuid_return_type(return_type_lower: &str) -> bool {
+    if !contains_identifier_token(return_type_lower, "uuid") {
+        return false;
+    }
+
+    // Reject collection/set-returning declarations.
+    !return_type_lower.contains("[]")
+        && !contains_identifier_token(return_type_lower, "array")
+        && !contains_identifier_token(return_type_lower, "setof")
+}
+
 fn contains_current_user_keyword_token(sql: &str) -> bool {
     fn token_can_precede_expression_operand(token: &str) -> bool {
         matches!(
@@ -569,7 +584,7 @@ impl FunctionSemantic {
         // Require the body to be a *direct* accessor expression, not a complex function
         // that merely references current_user/current_setting incidentally (e.g. audit
         // triggers or functions that record the caller but return a different value).
-        if return_type_lower.contains("uuid")
+        if is_scalar_uuid_return_type(&return_type_lower)
             && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
             && has_single_direct_accessor_expression(body, settings)
@@ -901,6 +916,48 @@ mod tests {
         assert!(
             semantic.is_none(),
             "non-literal current_setting arguments must not be inferred as current-user accessors"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_uuid_array_return_type_for_accessor() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.current_user_id')::uuid[]",
+            "UUID[]",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "array return types must not be inferred as scalar current-user accessors"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_setof_uuid_return_type_for_accessor() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.current_user_id')::uuid",
+            "SETOF UUID",
+            "sql",
+        );
+        assert!(
+            semantic.is_none(),
+            "set-returning declarations must not be inferred as scalar current-user accessors"
+        );
+    }
+
+    #[test]
+    fn analyze_body_accepts_direct_accessor_with_keyword_substring_alias() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.current_user_id')::uuid AS from_id",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            matches!(
+                semantic,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            ),
+            "token-aware complexity scan should not reject direct accessors aliased as from_id"
         );
     }
 
