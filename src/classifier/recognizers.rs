@@ -1369,36 +1369,38 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.
 /// Used in [`recognize_p3`] to cap confidence at B for subquery-wrapped accessors.
 fn is_subquery_wrapped(expr: &Expr) -> bool {
-    match expr {
-        Expr::Subquery(_) => true,
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_subquery_wrapped(inner),
-        _ => false,
-    }
+    matches!(unwrap_cast_or_nested(expr), Expr::Subquery(_))
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) contains a JSON
 /// accessor operator (`->`, `->>`, `#>`, `#>>`).  Used in [`recognize_p3`] to
 /// cap confidence at B for JSON-extracted user identifiers.
 fn is_json_accessor_wrapped(expr: &Expr) -> bool {
-    match expr {
+    matches!(
+        unwrap_cast_or_nested(expr),
         Expr::BinaryOp {
-            op:
-                BinaryOperator::Arrow
+            op: BinaryOperator::Arrow
                 | BinaryOperator::LongArrow
                 | BinaryOperator::HashArrow
                 | BinaryOperator::HashLongArrow,
             ..
-        } => true,
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_json_accessor_wrapped(inner),
-        _ => false,
-    }
+        }
+    )
 }
 
 fn is_bare_identifier_expr(expr: &Expr) -> bool {
-    match expr {
-        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => is_bare_identifier_expr(inner),
-        _ => false,
+    matches!(
+        unwrap_cast_or_nested(expr),
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_)
+    )
+}
+
+fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
+    loop {
+        match expr {
+            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => expr = inner.as_ref(),
+            _ => return expr,
+        }
     }
 }
 
