@@ -105,6 +105,50 @@ fn is_direct_accessor_body(body_lower: &str) -> bool {
     true
 }
 
+fn is_dollar_tag_start_char(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_dollar_tag_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn parse_dollar_quote_delimiter(chars: &[char], start: usize) -> Option<Vec<char>> {
+    if chars.get(start) != Some(&'$') {
+        return None;
+    }
+
+    // Untagged form: $$...$$
+    if chars.get(start + 1) == Some(&'$') {
+        return Some(vec!['$', '$']);
+    }
+
+    // Tagged form: $tag$...$tag$
+    let first_tag_char = *chars.get(start + 1)?;
+    if !is_dollar_tag_start_char(first_tag_char) {
+        return None;
+    }
+
+    let mut idx = start + 2;
+    while let Some(ch) = chars.get(idx) {
+        if *ch == '$' {
+            return Some(chars[start..=idx].to_vec());
+        }
+        if !is_dollar_tag_char(*ch) {
+            return None;
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn matches_at(chars: &[char], idx: usize, needle: &[char]) -> bool {
+    chars
+        .get(idx..idx.saturating_add(needle.len()))
+        .is_some_and(|slice| slice == needle)
+}
+
 fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let chars: Vec<char> = sql.chars().collect();
@@ -113,9 +157,23 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
     let mut in_double_quote = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    let mut dollar_delimiter: Option<Vec<char>> = None;
 
     while i < chars.len() {
         let ch = chars[i];
+        if let Some(delim) = dollar_delimiter.as_ref() {
+            if matches_at(&chars, i, delim) {
+                out.extend(std::iter::repeat_n(' ', delim.len()));
+                i += delim.len();
+                dollar_delimiter = None;
+                continue;
+            }
+
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+            i += 1;
+            continue;
+        }
+
         if in_single_quote {
             if ch == '\'' {
                 // Escaped quote inside string literal: ''
@@ -207,6 +265,15 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
             out.push(' ');
             i += 1;
             continue;
+        }
+
+        if ch == '$' {
+            if let Some(delim) = parse_dollar_quote_delimiter(&chars, i) {
+                out.extend(std::iter::repeat_n(' ', delim.len()));
+                i += delim.len();
+                dollar_delimiter = Some(delim);
+                continue;
+            }
         }
 
         out.push(ch);
@@ -414,6 +481,26 @@ mod tests {
         assert!(
             semantic.is_none(),
             "current_user marker in string literals must not classify as accessor"
+        );
+    }
+
+    #[test]
+    fn analyze_body_rejects_dollar_quoted_literal_only_current_user_marker() {
+        let untagged =
+            FunctionSemantic::analyze_body("SELECT $$ current_user $$::uuid", "UUID", "sql");
+        assert!(
+            untagged.is_none(),
+            "current_user marker in untagged dollar-quoted literals must not classify as accessor"
+        );
+
+        let tagged = FunctionSemantic::analyze_body(
+            "SELECT $tag$current_setting('app.current_user_id')$tag$::uuid",
+            "UUID",
+            "sql",
+        );
+        assert!(
+            tagged.is_none(),
+            "current_setting marker in tagged dollar-quoted literals must not classify as accessor"
         );
     }
 
