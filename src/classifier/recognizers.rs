@@ -275,18 +275,21 @@ pub fn recognize_p3(
         accessor_indirection,
         accessor_is_bare_identifier,
         accessor_is_sql_keyword_expr,
+        accessor_is_keyword_named_function_call,
     ) = if let (Some(col), Some(accessor)) =
         (extract_column_name(left), current_user_accessor_name(right))
     {
         let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
         let is_bare_identifier = is_bare_identifier_expr(right);
         let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
+        let is_keyword_named_function_call = is_keyword_named_function_call_expr(right);
         (
             col,
             accessor,
             indirection,
             is_bare_identifier,
             is_sql_keyword_expr,
+            is_keyword_named_function_call,
         )
     } else if let (Some(accessor), Some(col)) =
         (current_user_accessor_name(left), extract_column_name(right))
@@ -294,12 +297,14 @@ pub fn recognize_p3(
         let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
         let is_bare_identifier = is_bare_identifier_expr(left);
         let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
+        let is_keyword_named_function_call = is_keyword_named_function_call_expr(left);
         (
             col,
             accessor,
             indirection,
             is_bare_identifier,
             is_sql_keyword_expr,
+            is_keyword_named_function_call,
         )
     } else if let (Some(col), Some(accessor)) = (
         extract_column_name_through_coalesce(left),
@@ -310,12 +315,14 @@ pub fn recognize_p3(
             || is_coalesce_wrapped(left);
         let is_bare_identifier = is_bare_identifier_expr(right);
         let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
+        let is_keyword_named_function_call = is_keyword_named_function_call_expr(right);
         (
             col,
             accessor,
             indirection,
             is_bare_identifier,
             is_sql_keyword_expr,
+            is_keyword_named_function_call,
         )
     } else if let (Some(accessor), Some(col)) = (
         current_user_accessor_name(left),
@@ -326,12 +333,14 @@ pub fn recognize_p3(
             || is_coalesce_wrapped(right);
         let is_bare_identifier = is_bare_identifier_expr(left);
         let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
+        let is_keyword_named_function_call = is_keyword_named_function_call_expr(left);
         (
             col,
             accessor,
             indirection,
             is_bare_identifier,
             is_sql_keyword_expr,
+            is_keyword_named_function_call,
         )
     } else {
         return None;
@@ -356,6 +365,12 @@ pub fn recognize_p3(
     // bare identifiers that are not SQL current-user keywords are columns/aliases,
     // not accessor expressions.
     if accessor_is_bare_identifier && !is_sql_keyword && !is_registry_confirmed {
+        return None;
+    }
+
+    // Prevent false positives from user-defined function calls that only *look*
+    // like SQL current-user keywords (e.g. `"current_user"()`, `x.current_user()`).
+    if accessor_is_keyword_named_function_call && !is_sql_keyword && !is_registry_confirmed {
         return None;
     }
 
@@ -1458,6 +1473,13 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
     }
 }
 
+fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
+    match unwrap_cast_or_nested(expr) {
+        Expr::Function(func) => is_current_user_keyword(&normalized_function_name(func)),
+        _ => false,
+    }
+}
+
 fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
     let Some(name) = current_user_accessor_name(expr) else {
         return false;
@@ -2377,6 +2399,9 @@ CREATE TABLE doc_members (
             "owner_id = auth.user()",
             "owner_id = auth.current_role()",
             "owner_id = user(42)",
+            "owner_id = \"current_user\"()",
+            "owner_id = x.current_user()",
+            "owner_id = \"x\".\"current_user\"()",
         ];
 
         for sql in keyword_named_functions {
