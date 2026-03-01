@@ -269,4 +269,22 @@ CREATE FUNCTION tenant_user_id() RETURNS UUID
             "custom allowlisted key should allow schema-based accessor inference"
         );
     }
+
+    #[test]
+    fn enrich_from_schema_rejects_uuid_array_accessor_return_type() {
+        let sql = r"
+CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid[]';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(
+            !registry.is_current_user_accessor("listed_ids_accessor"),
+            "UUID[] accessors must not be inferred as scalar current-user accessors"
+        );
+    }
 }

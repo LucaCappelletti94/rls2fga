@@ -60,6 +60,56 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
 }
 
 #[test]
+fn translator_builder_default_settings_rejects_uuid_array_accessor_inference() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid[]';
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = listed_ids_accessor());
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new().build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        !matches!(&using.pattern, PatternClass::P3DirectOwnership { .. }),
+        "UUID[] accessors must not infer direct ownership, got: {:?}",
+        using.pattern
+    );
+}
+
+#[test]
+fn translator_builder_accepts_direct_accessor_with_keyword_substring_alias() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION current_user_id() RETURNS UUID
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid AS from_id';
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user_id());
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new().build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "direct accessor with alias substring should still infer P3 ownership, got: {:?}",
+        using.pattern
+    );
+}
+
+#[test]
 fn translator_builder_registry_json_and_settings_work_together() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
