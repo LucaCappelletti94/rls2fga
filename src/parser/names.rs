@@ -21,6 +21,16 @@ pub fn normalize_identifier(ident: &str) -> String {
     unquote_identifier(ident.trim()).to_ascii_lowercase()
 }
 
+/// True when `name` is a SQL keyword that resolves to the current session role.
+///
+/// `session_user` is intentionally excluded: it does not follow `SET ROLE`.
+pub fn is_current_user_keyword_name(name: &str) -> bool {
+    matches!(
+        normalize_relation_name(name).as_str(),
+        "current_user" | "user" | "current_role"
+    )
+}
+
 /// Split a potentially schema-qualified name into `(schema, relation)`.
 ///
 /// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
@@ -28,10 +38,18 @@ pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
     let mut in_quotes = false;
     let mut start = 0usize;
     let mut parts: Vec<String> = Vec::new();
+    let mut chars = name.char_indices().peekable();
 
-    for (idx, ch) in name.char_indices() {
+    while let Some((idx, ch)) = chars.next() {
         match ch {
-            '"' => in_quotes = !in_quotes,
+            '"' => {
+                if in_quotes && chars.peek().is_some_and(|(_, next)| *next == '"') {
+                    // Escaped quote inside a quoted identifier: "".
+                    chars.next();
+                    continue;
+                }
+                in_quotes = !in_quotes;
+            }
             '.' if !in_quotes => {
                 parts.push(name[start..idx].trim().to_string());
                 start = idx + 1;
@@ -280,6 +298,26 @@ mod tests {
     }
 
     #[test]
+    fn split_qualified_identifier_parts_handles_escaped_quotes() {
+        assert_eq!(
+            split_qualified_identifier_parts(r#""a""b"."c.d""#),
+            vec![r#""a""b""#.to_string(), r#""c.d""#.to_string()]
+        );
+        assert_eq!(
+            split_qualified_identifier_parts(r#""a""b".c"#),
+            vec![r#""a""b""#.to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_schema_and_relation_handles_escaped_quotes() {
+        assert_eq!(
+            split_schema_and_relation(r#""a""b"."c.d""#),
+            Some((r#"a"b"#.to_string(), "c.d".to_string()))
+        );
+    }
+
+    #[test]
     fn table_lookup_candidates_prioritize_schema_then_fallbacks() {
         let candidates = table_lookup_candidates("app.docs");
         assert_eq!(
@@ -309,6 +347,15 @@ mod tests {
         assert_eq!(normalize_relation_name("auth.uid"), "uid");
         assert_eq!(normalize_relation_name(r#""auth"."uid""#), "uid");
         assert_eq!(normalize_relation_name(r#""UID""#), "uid");
+    }
+
+    #[test]
+    fn is_current_user_keyword_name_matches_supported_keywords_only() {
+        assert!(is_current_user_keyword_name("current_user"));
+        assert!(is_current_user_keyword_name("CURRENT_ROLE"));
+        assert!(is_current_user_keyword_name("user"));
+        assert!(!is_current_user_keyword_name("session_user"));
+        assert!(!is_current_user_keyword_name("my_current_user"));
     }
 
     #[test]

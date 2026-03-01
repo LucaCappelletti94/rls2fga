@@ -6,8 +6,9 @@ pub use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::names::{
-    is_owner_like_column_name, is_public_flag_column_name, is_user_related_column_name,
-    lookup_table, normalize_relation_name, normalized_function_name, split_schema_and_relation,
+    is_current_user_keyword_name, is_owner_like_column_name, is_public_flag_column_name,
+    is_user_related_column_name, lookup_table, normalize_relation_name, normalized_function_name,
+    split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 
@@ -1362,11 +1363,7 @@ fn is_bare_identifier_expr(expr: &Expr) -> bool {
 }
 
 fn is_current_user_keyword(name: &str) -> bool {
-    // `session_user` is intentionally excluded: it refers to the original connection user and
-    // does NOT change when `SET ROLE` is used, unlike `current_user` / `current_role`.
-    // Policies that reference `session_user` must be classified as Unknown (D) so the operator
-    // manually verifies the intended semantics before translation.
-    name == "current_user" || name == "user" || name == "current_role"
+    is_current_user_keyword_name(name)
 }
 
 fn is_known_current_user_name(name: &str, registry: &FunctionRegistry) -> bool {
