@@ -1294,7 +1294,10 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
 fn current_user_accessor_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Function(func) => Some(normalized_function_name(func)),
-        Expr::Identifier(ident) => Some(normalize_relation_name(&ident.value)),
+        Expr::Identifier(ident) => ident
+            .quote_style
+            .is_none()
+            .then(|| normalize_relation_name(&ident.value)),
         Expr::Cast { expr, .. } => current_user_accessor_name(expr),
         Expr::Nested(inner) => current_user_accessor_name(inner),
         // Phase 6b: unwrap a scalar subquery — `(SELECT auth.uid())`.
@@ -2271,6 +2274,18 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p3_rejects_quoted_user_keyword_identifier() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let expr = parse_expr("owner_id = \"user\"");
+        assert!(
+            recognize_p3(&expr, &db, &registry).is_none(),
+            "quoted identifiers must not be treated as SQL current-user keywords"
+        );
+    }
+
+    #[test]
     fn recognize_p4_exists_supports_extra_predicates_and_negation() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -2831,11 +2846,16 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
         let nested = parse_expr("(auth_current_user_id())");
         let casted = parse_expr("CAST(auth_current_user_id() AS UUID)");
         let keyword = parse_expr("current_user");
+        let quoted_keyword = parse_expr("\"user\"");
         let other = parse_expr("owner_id");
 
         assert!(is_current_user_expr(&nested, &registry));
         assert!(is_current_user_expr(&casted, &registry));
         assert!(is_current_user_expr(&keyword, &registry));
+        assert!(
+            !is_current_user_expr(&quoted_keyword, &registry),
+            "quoted keyword identifier must not be treated as current-user accessor"
+        );
         assert!(!is_current_user_expr(&other, &registry));
     }
 
