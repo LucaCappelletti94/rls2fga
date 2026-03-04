@@ -737,6 +737,54 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     }
 
     #[test]
+    fn classify_joined_membership_with_unqualified_extra_is_ambiguous() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               JOIN docs d ON dm.doc_id = d.id
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND is_public = TRUE
+             )",
+        );
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_derived_joined_membership_with_unqualified_extra_is_ambiguous() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               JOIN (SELECT id, is_public FROM docs) d ON dm.doc_id = d.id
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND is_public = TRUE
+             )",
+        );
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
+        ));
+        assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
     fn classify_parent_inheritance_ambiguity_has_specific_reason() {
         let db = parse_schema(
             r"

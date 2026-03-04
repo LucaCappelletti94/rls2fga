@@ -191,6 +191,94 @@ CREATE POLICY p ON tasks FOR SELECT
     assert!(!formatted.is_empty(), "Should produce some tuple queries");
 }
 
+#[test]
+fn p4_joined_unqualified_extra_fails_closed_without_invalid_membership_sql() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1
+        FROM doc_members dm
+        JOIN docs d ON dm.doc_id = d.id
+        WHERE dm.doc_id = docs.id
+          AND dm.user_id = current_user
+          AND is_public = TRUE
+    ));
+";
+    let db = parse_schema(sql).unwrap();
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    assert_eq!(classified.len(), 1);
+
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")),
+        "joined unqualified extra should fail closed to Unknown ambiguity, got: {:?}",
+        using.pattern
+    );
+
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let has_invalid_membership_filter = tuples.iter().any(|query| {
+        let lower = query.sql.to_ascii_lowercase();
+        lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
+    });
+    assert!(
+        !has_invalid_membership_filter,
+        "invalid membership filter leaked into tuple SQL: {:?}",
+        tuples.iter().map(|q| q.sql.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn p4_derived_joined_unqualified_extra_fails_closed_without_invalid_membership_sql() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1
+        FROM doc_members dm
+        JOIN (SELECT id, is_public FROM docs) d ON dm.doc_id = d.id
+        WHERE dm.doc_id = docs.id
+          AND dm.user_id = current_user
+          AND is_public = TRUE
+    ));
+";
+    let db = parse_schema(sql).unwrap();
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    assert_eq!(classified.len(), 1);
+
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")),
+        "derived joined unqualified extra should fail closed to Unknown ambiguity, got: {:?}",
+        using.pattern
+    );
+
+    let tuples =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let has_invalid_membership_filter = tuples.iter().any(|query| {
+        let lower = query.sql.to_ascii_lowercase();
+        lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
+    });
+    assert!(
+        !has_invalid_membership_filter,
+        "invalid membership filter leaked into tuple SQL: {:?}",
+        tuples.iter().map(|q| q.sql.clone()).collect::<Vec<_>>()
+    );
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 #[test]

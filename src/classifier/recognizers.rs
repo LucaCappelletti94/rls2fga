@@ -616,6 +616,12 @@ fn analyze_membership_select(
     registry: &FunctionRegistry,
     projected_fk_hint: Option<&str>,
 ) -> MembershipSelectAnalysis {
+    if membership_sources_include_ambiguous_unresolvable_shape(select, db)
+        && selection_references_current_user(select, registry)
+    {
+        return MembershipSelectAnalysis::AmbiguousNoUniqueJoin;
+    }
+
     // Fail closed when the same table appears more than once (self-join).
     // Self-joins add constraints we cannot express as static membership tuples;
     // accepting them would produce tuples more permissive than the original policy.
@@ -1076,6 +1082,37 @@ fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource>
     })
 }
 
+fn membership_sources_include_ambiguous_unresolvable_shape(select: &Select, db: &ParserDB) -> bool {
+    let mut relation_factor_count = 0usize;
+    let mut has_non_plain_source = false;
+    let mut has_unresolvable_source = false;
+
+    for from in &select.from {
+        relation_factor_count += 1;
+        match &from.relation {
+            TableFactor::Table { name, .. } => {
+                if lookup_table(db, &name.to_string()).is_none() {
+                    has_unresolvable_source = true;
+                }
+            }
+            _ => has_non_plain_source = true,
+        }
+        for join in &from.joins {
+            relation_factor_count += 1;
+            match &join.relation {
+                TableFactor::Table { name, .. } => {
+                    if lookup_table(db, &name.to_string()).is_none() {
+                        has_unresolvable_source = true;
+                    }
+                }
+                _ => has_non_plain_source = true,
+            }
+        }
+    }
+
+    relation_factor_count > 1 && (has_non_plain_source || has_unresolvable_source)
+}
+
 fn membership_matches(
     select: &Select,
     db: &ParserDB,
@@ -1092,11 +1129,12 @@ fn membership_matches(
             .map(|c| c.column_name().to_string())
             .collect();
 
-        if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns(
+        if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns_with_db(
             select,
             &source.table_name,
             source.alias.as_deref(),
             &col_names,
+            Some(db),
             registry,
             projected_fk_hint,
         ) {
@@ -1206,6 +1244,7 @@ fn analyze_membership_eq_predicate(
     MembershipEqAnalysis::NotRelevant
 }
 
+#[cfg(test)]
 fn extract_membership_columns(
     select: &Select,
     join_table: &str,
@@ -1214,10 +1253,33 @@ fn extract_membership_columns(
     registry: &FunctionRegistry,
     projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
+    extract_membership_columns_with_db(
+        select,
+        join_table,
+        join_alias,
+        join_cols,
+        None,
+        registry,
+        projected_fk_hint,
+    )
+}
+
+fn extract_membership_columns_with_db(
+    select: &Select,
+    join_table: &str,
+    join_alias: Option<&str>,
+    join_cols: &[String],
+    db: Option<&ParserDB>,
+    registry: &FunctionRegistry,
+    projected_fk_hint: Option<&str>,
+) -> Option<(String, String, Option<String>)> {
     let mut fk_col: Option<String> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<String> = None;
     let mut extras: Vec<String> = Vec::new();
+    let unqualified_scope = db
+        .map(|db| build_unqualified_membership_scope(select, db, join_table, join_cols))
+        .unwrap_or_default();
 
     // Collect JOIN ON predicates separately (they provide explicit FK correlation but should
     // not be included in the extra_predicate_sql used in generated tuple queries).
@@ -1266,6 +1328,9 @@ fn extract_membership_columns(
             // that the generated single-table tuple query cannot provide, so
             // they would produce semantically invalid SQL.
             if predicate_references_other_table(pred, join_table, join_alias) {
+                return None;
+            }
+            if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
                 return None;
             }
             // Keep additional predicates for tuple filtering.
@@ -1629,6 +1694,107 @@ fn predicate_references_other_table(
     let mut checker = OtherTableChecker {
         join_table,
         join_alias,
+        subquery_depth: 0,
+    };
+    expr.visit(&mut checker).is_break()
+}
+
+#[derive(Debug, Default)]
+struct UnqualifiedMembershipScope {
+    enforce: bool,
+    unknown_other_source: bool,
+    join_columns: std::collections::HashSet<String>,
+    other_columns: std::collections::HashSet<String>,
+}
+
+fn build_unqualified_membership_scope(
+    select: &Select,
+    db: &ParserDB,
+    join_table: &str,
+    join_cols: &[String],
+) -> UnqualifiedMembershipScope {
+    let sources = relation_sources(select);
+    if sources.len() <= 1 {
+        return UnqualifiedMembershipScope::default();
+    }
+
+    let join_table_norm = normalize_relation_name(join_table);
+    let join_columns = join_cols
+        .iter()
+        .map(|name| normalize_relation_name(name))
+        .collect();
+
+    let mut scope = UnqualifiedMembershipScope {
+        enforce: true,
+        unknown_other_source: false,
+        join_columns,
+        other_columns: std::collections::HashSet::new(),
+    };
+
+    for source in sources {
+        if normalize_relation_name(&source.table_name) == join_table_norm {
+            continue;
+        }
+
+        let Some(table) = lookup_table(db, &source.table_name) else {
+            scope.unknown_other_source = true;
+            continue;
+        };
+
+        for col in table.columns(db) {
+            scope
+                .other_columns
+                .insert(normalize_relation_name(col.column_name()));
+        }
+    }
+
+    scope
+}
+
+fn predicate_has_ambiguous_unqualified_column(
+    expr: &Expr,
+    scope: &UnqualifiedMembershipScope,
+) -> bool {
+    use sqlparser::ast::{Query, Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct UnqualifiedChecker<'a> {
+        scope: &'a UnqualifiedMembershipScope,
+        subquery_depth: usize,
+    }
+
+    impl Visitor for UnqualifiedChecker<'_> {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            if self.subquery_depth == 0 {
+                if let Expr::Identifier(ident) = expr {
+                    let col = normalize_relation_name(&ident.value);
+                    let in_join = self.scope.join_columns.contains(&col);
+                    let in_other = self.scope.other_columns.contains(&col);
+                    if !in_join || in_other || self.scope.unknown_other_source {
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    if !scope.enforce {
+        return false;
+    }
+
+    let mut checker = UnqualifiedChecker {
+        scope,
         subquery_depth: 0,
     };
     expr.visit(&mut checker).is_break()
@@ -2698,6 +2864,75 @@ CREATE TABLE doc_members (
     }
 
     #[test]
+    fn recognize_p4_fails_closed_for_joined_source_unqualified_extra_predicate() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               JOIN docs d ON dm.doc_id = d.id
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND is_public = TRUE
+             )",
+        );
+
+        assert!(
+            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            "joined-source unqualified extra predicate should fail closed for P4"
+        );
+    }
+
+    #[test]
+    fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members dm
+               JOIN (SELECT id, is_public FROM docs) d ON dm.doc_id = d.id
+               WHERE dm.doc_id = docs.id
+                 AND dm.user_id = current_user
+                 AND is_public = TRUE
+             )",
+        );
+
+        assert!(
+            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            "derived joined-source unqualified extra predicate should fail closed for P4"
+        );
+    }
+
+    #[test]
+    fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let exists_expr = parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = current_user
+                 AND role = 'admin'
+             )",
+        );
+
+        let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+        assert!(matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
+                if extra_predicate_sql
+                    .as_deref()
+                    .is_some_and(|s| s.to_ascii_lowercase().contains("role = 'admin'"))
+        ));
+    }
+
+    #[test]
     fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
         let db = db_with_docs_and_members();
         let registry = registry_with_role_level();
@@ -2994,7 +3229,7 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
         ];
 
         assert!(
-            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
                 .is_none(),
             "membership without user predicate must fail closed"
         );
@@ -3378,7 +3613,7 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
         ];
 
         assert!(
-            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
                 .is_none(),
             "membership without any WHERE must fail closed"
         );
@@ -3402,7 +3637,7 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
         ];
 
         assert!(
-            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+            extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
                 .is_none(),
             "membership with only a role predicate must fail closed"
         );
