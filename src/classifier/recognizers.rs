@@ -8,9 +8,8 @@ pub use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::names::{
-    is_current_user_keyword_name, is_owner_like_column_name, is_public_flag_column_name,
-    is_user_related_column_name, lookup_table, normalize_relation_name, normalized_function_name,
-    split_schema_and_relation,
+    is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
+    lookup_table, normalize_relation_name, normalized_function_name, split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 
@@ -346,19 +345,8 @@ pub fn recognize_p3(
         return None;
     };
 
-    // Subquery-wrapped or JSON-extracted accessor: cap confidence at B regardless
-    // of how the inner expression was resolved (the extra indirection prevents
-    // registry-A certainty).
-    if accessor_indirection {
-        return Some(ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership { column: col_name },
-            confidence: ConfidenceLevel::B,
-        });
-    }
-
     // Determine how we matched the accessor and assign confidence accordingly.
     let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
-    let accessor_lower = accessor_name.to_ascii_lowercase();
     let is_sql_keyword = accessor_is_sql_keyword_expr;
 
     // Guard against false positives like `owner_id = author_id`:
@@ -374,32 +362,23 @@ pub fn recognize_p3(
         return None;
     }
 
+    // Strict policy: only SQL current-user keywords and registry-confirmed
+    // accessors are eligible for P3.
     if !is_registry_confirmed && !is_sql_keyword {
-        // Heuristic accessor name check.
-        // `current_setting` is a PostgreSQL built-in that often carries the current user ID
-        // (e.g. `current_setting('app.current_user_id')::uuid`).  We accept it as a
-        // heuristic user-accessor at confidence B; register it explicitly for confidence A.
-        if !accessor_lower.contains("current_user") && accessor_lower != "current_setting" {
-            return None;
-        }
+        return None;
+    }
 
-        // Heuristic match: cap at confidence B regardless of column name.
-        // Reserve A for registry-confirmed functions and SQL keywords.
-        if is_owner_like_column_name(&col_name) {
-            return Some(ClassifiedExpr {
-                pattern: PatternClass::P3DirectOwnership { column: col_name },
-                confidence: ConfidenceLevel::B,
-            });
-        }
-
-        // Heuristic function + non-standard column → confidence B
+    // Subquery/JSON/COALESCE-wrapped accessors are accepted but capped at B
+    // due to added indirection. This cap only applies after strict accessor
+    // validation above.
+    if accessor_indirection {
         return Some(ClassifiedExpr {
             pattern: PatternClass::P3DirectOwnership { column: col_name },
             confidence: ConfidenceLevel::B,
         });
     }
 
-    // Registry-confirmed or SQL keyword: accept any column at confidence A
+    // Registry-confirmed or SQL keyword without indirection: confidence A.
     Some(ClassifiedExpr {
         pattern: PatternClass::P3DirectOwnership { column: col_name },
         confidence: ConfidenceLevel::A,
@@ -1466,6 +1445,27 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
                 && matches!(func.args, FunctionArguments::None)
                 && is_current_user_keyword(&normalized_function_name(func))
         }
+        Expr::Subquery(query) => {
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                if select.projection.len() == 1 {
+                    if let SelectItem::UnnamedExpr(inner)
+                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    {
+                        return is_sql_current_user_keyword_expr(inner);
+                    }
+                }
+            }
+            false
+        }
+        Expr::BinaryOp {
+            op:
+                BinaryOperator::Arrow
+                | BinaryOperator::LongArrow
+                | BinaryOperator::HashArrow
+                | BinaryOperator::HashLongArrow,
+            left,
+            ..
+        } => is_sql_current_user_keyword_expr(left),
         _ => false,
     }
 }
@@ -1473,6 +1473,27 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
 fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
     match unwrap_cast_or_nested(expr) {
         Expr::Function(func) => is_current_user_keyword(&normalized_function_name(func)),
+        Expr::Subquery(query) => {
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                if select.projection.len() == 1 {
+                    if let SelectItem::UnnamedExpr(inner)
+                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    {
+                        return is_keyword_named_function_call_expr(inner);
+                    }
+                }
+            }
+            false
+        }
+        Expr::BinaryOp {
+            op:
+                BinaryOperator::Arrow
+                | BinaryOperator::LongArrow
+                | BinaryOperator::HashArrow
+                | BinaryOperator::HashLongArrow,
+            left,
+            ..
+        } => is_keyword_named_function_call_expr(left),
         _ => false,
     }
 }
@@ -2257,19 +2278,16 @@ CREATE TABLE doc_members (
     }
 
     #[test]
-    fn recognize_p3_heuristics_cover_confidence_variants() {
+    fn recognize_p3_requires_registration_for_unregistered_current_user_like_names() {
         let db = db_with_docs_and_members();
         let registry = FunctionRegistry::new();
 
-        // Heuristic accessor with owner-like column → confidence B (not A).
-        // A is reserved for registry-confirmed functions and SQL keywords.
+        // Unregistered function names that merely contain `current_user` must not match.
         let a = parse_expr("owner_id = auth_current_user_id()");
-        let classified_a = recognize_p3(&a, &db, &registry).expect("expected heuristic match");
-        assert_eq!(classified_a.confidence, ConfidenceLevel::B);
+        assert!(recognize_p3(&a, &db, &registry).is_none());
 
         let b = parse_expr("tenant_uuid = auth_current_user_id()");
-        let classified_b = recognize_p3(&b, &db, &registry).expect("expected heuristic match");
-        assert_eq!(classified_b.confidence, ConfidenceLevel::B);
+        assert!(recognize_p3(&b, &db, &registry).is_none());
 
         let none = parse_expr("tenant_uuid = actor_id()");
         assert!(
@@ -2279,21 +2297,34 @@ CREATE TABLE doc_members (
 
         let not_eq = parse_expr("owner_id <> auth_current_user_id()");
         assert!(recognize_p3(&not_eq, &db, &registry).is_none());
+
+        // Control: once registered, the same accessor is accepted at confidence A.
+        let mut registered = FunctionRegistry::new();
+        registered.register_if_absent(
+            "auth_current_user_id",
+            &crate::parser::function_analyzer::FunctionSemantic::CurrentUserAccessor {
+                returns: "uuid".to_string(),
+            },
+        );
+        let registered_expr = parse_expr("owner_id = auth_current_user_id()");
+        let registered_classified = recognize_p3(&registered_expr, &db, &registered)
+            .expect("expected registered accessor to match");
+        assert_eq!(registered_classified.confidence, ConfidenceLevel::A);
     }
 
     #[test]
     fn recognize_p3_supports_is_not_distinct_from() {
         let db = db_with_docs_and_members();
-        let registry = FunctionRegistry::new();
+        let registry = registry_with_role_level();
 
-        // Heuristic accessor with owner-like column → confidence B (see 3c).
+        // Registered accessor with owner-like column is accepted.
         let expr = parse_expr("owner_id IS NOT DISTINCT FROM auth_current_user_id()");
         let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
         assert!(matches!(
             classified.pattern,
             PatternClass::P3DirectOwnership { ref column } if column == "owner_id"
         ));
-        assert_eq!(classified.confidence, ConfidenceLevel::B);
+        assert_eq!(classified.confidence, ConfidenceLevel::A);
     }
 
     #[test]
@@ -2339,22 +2370,15 @@ CREATE TABLE doc_members (
     }
 
     #[test]
-    fn recognize_p3_current_setting_is_heuristic_b_and_registry_a() {
+    fn recognize_p3_current_setting_requires_registration() {
         let db = db_with_docs_and_members();
 
-        // Without explicit registration: current_setting → confidence B.
+        // Without explicit registration: no match.
         let empty_registry = FunctionRegistry::new();
         let expr = parse_expr("owner_id = current_setting('app.current_user_id')::uuid");
-        let classified = recognize_p3(&expr, &db, &empty_registry)
-            .expect("expected P3 match for current_setting");
         assert!(
-            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
-            "current_setting should produce P3"
-        );
-        assert_eq!(
-            classified.confidence,
-            ConfidenceLevel::B,
-            "unregistered current_setting should be confidence B"
+            recognize_p3(&expr, &db, &empty_registry).is_none(),
+            "unregistered current_setting must not match P3"
         );
 
         // After explicit registration: current_setting → confidence A.
@@ -2372,6 +2396,29 @@ CREATE TABLE doc_members (
             ConfidenceLevel::A,
             "registered current_setting should be confidence A"
         );
+    }
+
+    #[test]
+    fn recognize_p3_rejects_unregistered_current_user_like_function_names() {
+        let db = db_with_docs_and_members();
+        let registry = FunctionRegistry::new();
+
+        let near_miss_functions = [
+            "owner_id = is_current_user_admin()",
+            "owner_id = current_user_is_admin()",
+            "owner_id = get_current_user_role()",
+            "owner_id = foo_current_user_bar()",
+            "owner_id = (SELECT is_current_user_admin())",
+            "owner_id = current_setting('request.jwt.claims')::json->>'sub'",
+        ];
+
+        for sql in near_miss_functions {
+            let expr = parse_expr(sql);
+            assert!(
+                recognize_p3(&expr, &db, &registry).is_none(),
+                "unregistered current_user-like function `{sql}` must not match P3"
+            );
+        }
     }
 
     #[test]
@@ -3135,7 +3182,7 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     #[test]
     fn recognize_p3_accepts_function_on_left_side() {
         let db = db_with_docs_and_members();
-        let registry = FunctionRegistry::new();
+        let registry = registry_with_role_level();
 
         let expr = parse_expr("auth_current_user_id() = owner_id");
         let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
