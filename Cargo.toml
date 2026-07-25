@@ -11,8 +11,8 @@ agent = ["reqwest", "tokio"]
 db = ["diesel"]
 
 [dependencies]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main", features = ["serde", "visitor"] }
-sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "5330c8fb9c25a94d20a1df6172adc3a85bf02bd4" }
+sqlparser = { version = "0.62", features = ["serde", "visitor"] }
+sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "7f3598add255a4559d7a5b9b6c4552d01cddd980" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -29,7 +29,7 @@ tokio = { version = "1", features = ["full"] }
 # openfga-client pulls in protobuf-src which fails to link on Windows MSVC
 # (abseil-cpp CRT mismatch). Only needed for Docker integration tests on Linux/macOS.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-openfga-client = "0.5"
+openfga-client = "0.6"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -75,3 +75,11 @@ missing_panics_doc = "allow"
 struct_excessive_bools = "allow"
 too_many_lines = "allow"
 wildcard_imports = "allow"
+
+# sql-traits and sql_docs depend on sqlparser from crates.io, but the published
+# sqlparser_derive emits `::std::ops::ControlFlow` while apache/datafusion-sqlparser-rs
+# main emits `::core::ops::ControlFlow`, which the visitor feature needs. Pin every
+# dependent onto a single git revision so dialect types stay compatible across crate
+# boundaries (mirrors the patch sql-traits applies within its own workspace).
+[patch.crates-io]
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }
