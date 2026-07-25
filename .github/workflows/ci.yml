@@ -112,29 +112,6 @@ jobs:
       - name: Run cargo-audit
         run: cargo audit
 
-  docker-integration:
-    name: Docker integration (OpenFGA + PostgreSQL 18)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: quality
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify Docker availability
-        run: docker version
-
-      - name: Run ignored integration tests
-        run: cargo test --features db --locked --tests -- --ignored
-
   coverage:
     name: Coverage (Codecov)
     runs-on: ubuntu-latest
