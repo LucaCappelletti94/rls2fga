@@ -10,33 +10,9 @@ Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/curren
 
 `PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples — fine-grained, per-resource permissions evaluated at the application layer.
 
-`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of ten canonical patterns (P1–P10) and generates:
-
-- an **`OpenFGA` DSL model** with the corresponding types and relations
-- **SQL queries** that populate the relationship tuples from your live database
+`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of ten canonical patterns (P1 through P10) and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
 
 Policies that cannot be fully translated are flagged with a confidence level and emit `-- TODO` items for manual review.
-
-## Installation
-
-`rls2fga` is not published to crates.io — it depends on a git-sourced `sqlparser`, which crates.io forbids. Use a git dependency:
-
-```toml
-[dependencies]
-rls2fga = { git = "https://github.com/LucaCappelletti94/rls2fga", branch = "main" }
-```
-
-Or with `cargo add`:
-
-```bash
-cargo add rls2fga --git https://github.com/LucaCappelletti94/rls2fga --branch main
-```
-
-To enable optional integrations, add the relevant feature flag:
-
-```toml
-rls2fga = { git = "https://github.com/LucaCappelletti94/rls2fga", branch = "main", features = ["db"] }
-```
 
 ## Cargo Features
 
@@ -159,17 +135,11 @@ cargo doc --all-features --no-deps --open
 
 ## Limitations
 
-- **Not on crates.io**: the `sqlparser` dependency is tracked from a git branch; crates.io forbids git dependencies in published crates.
-- **Library only**: there is no CLI binary. The library must be called from Rust code.
-- **Partial ABAC (P7)**: policies with an attribute guard (`AND col = value`) are only partially translated; the attribute condition becomes a `-- TODO [Level C]` comment.
+The crate is not published on crates.io because the `sqlparser` dependency is tracked from a git branch, and crates.io forbids git dependencies in published crates. It is library only, with no CLI binary, so it must be called from Rust code. ABAC support is partial for pattern P7: policies with an attribute guard (`AND col = value`) are only partially translated, and the attribute condition becomes a `-- TODO [Level C]` comment.
 
 ## Policy Role Scope (`TO <role>`)
 
-When a `PostgreSQL` policy targets a specific role — for example `CREATE POLICY ... TO analyst USING (...)` — `rls2fga` preserves that scope:
-
-- adds role-scope relations in the generated model
-- adds a `pg_role` type with a `member` relation
-- emits tuples that tie protected rows to `pg_role:<role>`
+When a `PostgreSQL` policy targets a specific role, for example `CREATE POLICY ... TO analyst USING (...)`, `rls2fga` preserves that scope. It adds role-scope relations in the generated model, adds a `pg_role` type with a `member` relation, and emits tuples that tie protected rows to `pg_role:<role>`.
 
 **Required runtime data:** you must load `pg_role#member` tuples that map users to `PostgreSQL` roles in your `OpenFGA` store. Without them, role-scoped policies will not match any user.
 
