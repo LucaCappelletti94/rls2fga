@@ -11,6 +11,8 @@
 //! only `pattern_to_expr_for_target`, not two independent match trees.
 
 use crate::classifier::patterns::ConfidenceLevel;
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 
 /// Information about a principal table (users or teams) referenced by a
 /// role-threshold function.

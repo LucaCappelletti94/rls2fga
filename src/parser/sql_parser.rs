@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 pub use sql_traits::prelude::*;
 
 /// Convenience: parse SQL DDL into a `ParserDB`.

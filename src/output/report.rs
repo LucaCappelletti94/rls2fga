@@ -1,4 +1,6 @@
-use std::fmt::Write;
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use core::fmt::Write;
 
 use crate::classifier::patterns::{ClassifiedExpr, ClassifiedPolicy};
 use crate::generator::model_generator::GeneratedModel;

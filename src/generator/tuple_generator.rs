@@ -1,5 +1,7 @@
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 
 #[cfg(test)]
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
@@ -11,7 +13,7 @@ use crate::parser::names::{
     split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
 
 /// A generated tuple query with its descriptive comment.
 #[derive(Debug, Clone)]
@@ -47,7 +49,7 @@ pub(crate) fn generate_tuple_queries_from_plan(
     db: &ParserDB,
 ) -> Vec<TupleQuery> {
     let mut queries = Vec::new();
-    let mut generated: HashSet<String> = HashSet::new();
+    let mut generated: BTreeSet<String> = BTreeSet::new();
 
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {

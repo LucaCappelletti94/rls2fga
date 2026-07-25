@@ -1,16 +1,18 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
 ///
 /// Malformed identifiers (e.g. unterminated `"foo`) are returned unchanged so
 /// the caller can still produce a reasonable output.
-pub fn unquote_identifier(ident: &str) -> std::borrow::Cow<'_, str> {
+pub fn unquote_identifier(ident: &str) -> alloc::borrow::Cow<'_, str> {
     let Some(inner) = ident.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        return std::borrow::Cow::Borrowed(ident);
+        return alloc::borrow::Cow::Borrowed(ident);
     };
     if !inner.contains("\"\"") {
-        return std::borrow::Cow::Borrowed(inner);
+        return alloc::borrow::Cow::Borrowed(inner);
     }
-    std::borrow::Cow::Owned(inner.replace("\"\"", "\""))
+    alloc::borrow::Cow::Owned(inner.replace("\"\"", "\""))
 }
 
 /// Normalize an identifier for case-insensitive matching.

@@ -43,7 +43,7 @@ fn collect_policy_resource_column(
     policy_expr: Option<&Expr>,
     classified: Option<&ClassifiedExpr>,
     registry: &FunctionRegistry,
-    out: &mut HashMap<(String, String), String>,
+    out: &mut BTreeMap<(String, String), String>,
     conflicts: &mut BTreeSet<(String, String)>,
 ) {
     let Some(expr) = policy_expr else {
@@ -142,8 +142,8 @@ pub(super) fn extract_resource_columns_for_function(
     function_name: &str,
     resource_param_index: usize,
 ) -> BTreeSet<String> {
+    use core::ops::ControlFlow;
     use sqlparser::ast::visit_expressions;
-    use std::ops::ControlFlow;
 
     let normalized = normalize_relation_name(function_name);
     let mut columns = BTreeSet::new();
@@ -337,7 +337,7 @@ pub(super) fn populate_role_threshold_sources(
     // Deduplicate by integer level: two role names at the same level produce
     // duplicate WHEN arms in the generated CASE expression (second is unreachable).
     // Keep only the first occurrence of each level (sorted by (level, name)).
-    let mut seen_levels = std::collections::HashSet::new();
+    let mut seen_levels = BTreeSet::new();
     let role_cases: Vec<(i32, String, String)> = sorted_roles
         .iter()
         .filter(|role| seen_levels.insert(role.level))

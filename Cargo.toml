@@ -6,15 +6,20 @@ description = "Translate PostgreSQL RLS policies into OpenFGA authorization mode
 readme = "README.md"
 
 [features]
-default = []
-agent = ["reqwest", "tokio"]
-db = ["diesel"]
+default = ["std"]
+# Re-enables the standard library: the file-writing `output::formatter`
+# module and `Translator::write_output`. Also forwards `std`/stack-overflow
+# protection to the parser dependencies. Disable for a `no_std` + `alloc`
+# build of the parse/classify/generate pipeline.
+std = ["sqlparser/std", "sqlparser/recursive-protection", "sql-traits/std", "serde/std", "serde_json/std"]
+agent = ["std", "reqwest", "tokio"]
+db = ["std", "diesel"]
 
 [dependencies]
-sqlparser = { version = "0.62", features = ["serde", "visitor"] }
-sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "7f3598add255a4559d7a5b9b6c4552d01cddd980" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
+sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "7f3598add255a4559d7a5b9b6c4552d01cddd980", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 # Optional
 reqwest = { version = "0.13", features = ["json"], optional = true }

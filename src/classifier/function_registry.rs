@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
 use crate::parser::names::{
@@ -10,7 +12,7 @@ use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
     /// Function name → semantic classification lookup table.
-    pub(crate) functions: HashMap<String, FunctionSemantic>,
+    pub(crate) functions: BTreeMap<String, FunctionSemantic>,
     /// Explicitly registered public-flag column names (normalized to lowercase).
     ///
     /// When non-empty, only these columns will produce a high-confidence (A) `P6BooleanFlag`
@@ -20,7 +22,7 @@ pub struct FunctionRegistry {
     ///
     /// When empty (the default), all heuristic matches receive `ConfidenceLevel::B` —
     /// ensuring that implicit public-access grants always surface for review.
-    pub(crate) public_flag_columns: HashSet<String>,
+    pub(crate) public_flag_columns: BTreeSet<String>,
 }
 
 impl FunctionRegistry {
@@ -48,8 +50,8 @@ impl FunctionRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
-            functions: HashMap::new(),
-            public_flag_columns: HashSet::new(),
+            functions: BTreeMap::new(),
+            public_flag_columns: BTreeSet::new(),
         }
     }
 
@@ -71,7 +73,7 @@ impl FunctionRegistry {
 
     /// Load function semantics from a JSON string.
     pub fn load_from_json(&mut self, json: &str) -> Result<(), String> {
-        let parsed: HashMap<String, FunctionSemantic> = serde_json::from_str(json)
+        let parsed: BTreeMap<String, FunctionSemantic> = serde_json::from_str(json)
             .map_err(|e| format!("Invalid function registry JSON: {e}"))?;
         // Registry takes precedence over analyzed functions
         for (name, semantic) in parsed {

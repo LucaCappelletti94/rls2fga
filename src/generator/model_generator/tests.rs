@@ -432,7 +432,7 @@ fn exact_roles_expr_does_not_conflate_roles_at_same_level() {
     // `'viewer'` by name must NOT include `grant_guest`.
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let role_levels = HashMap::from([
+    let role_levels = BTreeMap::from([
         ("viewer".to_string(), 1),
         ("guest".to_string(), 1),
         ("editor".to_string(), 2),
@@ -473,7 +473,7 @@ fn exact_roles_expr_does_not_conflate_roles_at_same_level() {
 fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclusion() {
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let role_levels = HashMap::from([
+    let role_levels = BTreeMap::from([
         ("viewer".to_string(), 1),
         ("editor".to_string(), 2),
         ("admin".to_string(), 3),
@@ -501,7 +501,8 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
 fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let role_levels = HashMap::from([("read-write".to_string(), 1), ("Team Admin".to_string(), 2)]);
+    let role_levels =
+        BTreeMap::from([("read-write".to_string(), 1), ("Team Admin".to_string(), 2)]);
 
     ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
 
@@ -525,7 +526,7 @@ fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
 fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let role_levels = HashMap::from([("role-a".to_string(), 1), ("role a".to_string(), 2)]);
+    let role_levels = BTreeMap::from([("role-a".to_string(), 1), ("role a".to_string(), 2)]);
 
     ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
 
@@ -698,7 +699,7 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
 fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let role_levels = HashMap::from([
+    let role_levels = BTreeMap::from([
         ("beta".to_string(), 1),
         ("alpha".to_string(), 1),
         ("admin".to_string(), 2),

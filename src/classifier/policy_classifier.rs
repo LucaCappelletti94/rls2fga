@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
@@ -232,7 +234,7 @@ fn classify_expr_inner(
                     classify_expr_depth(right, db, registry, table, command, depth + 1);
 
                 // Confidence: B if all sub-patterns are A; escalates to highest otherwise
-                let min_conf = std::cmp::min(left_class.confidence, right_class.confidence);
+                let min_conf = core::cmp::min(left_class.confidence, right_class.confidence);
                 let confidence = if min_conf == ConfidenceLevel::A {
                     ConfidenceLevel::B
                 } else {
@@ -280,7 +282,7 @@ fn classify_expr_inner(
                 }
 
                 // Both relationship-based → intersection (Level B)
-                let min_conf = std::cmp::min(left_class.confidence, right_class.confidence);
+                let min_conf = core::cmp::min(left_class.confidence, right_class.confidence);
                 let confidence = if min_conf >= ConfidenceLevel::B {
                     ConfidenceLevel::B
                 } else {

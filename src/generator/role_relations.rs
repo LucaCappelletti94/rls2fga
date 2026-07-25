@@ -1,4 +1,6 @@
-use std::collections::{BTreeSet, HashMap};
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::parser::names::{canonical_fga_type_name, stable_hex_suffix};
 
@@ -22,7 +24,7 @@ impl RoleRelationName {
 
 /// Build role relation names sorted by `(level, name)` and disambiguated for collisions.
 pub(crate) fn sorted_role_relation_names(
-    role_levels: &HashMap<String, i32>,
+    role_levels: &BTreeMap<String, i32>,
 ) -> Vec<RoleRelationName> {
     let mut pairs: Vec<(String, i32)> = role_levels
         .iter()
@@ -32,7 +34,7 @@ pub(crate) fn sorted_role_relation_names(
         a_level.cmp(b_level).then_with(|| a_name.cmp(b_name))
     });
 
-    let mut base_counts: HashMap<String, usize> = HashMap::new();
+    let mut base_counts: BTreeMap<String, usize> = BTreeMap::new();
     for (name, _) in &pairs {
         let base = canonical_fga_type_name(name);
         *base_counts.entry(base).or_insert(0) += 1;
@@ -74,7 +76,7 @@ mod tests {
 
     #[test]
     fn sorted_role_relation_names_canonicalizes_and_disambiguates_tokens() {
-        let role_levels = HashMap::from([
+        let role_levels = BTreeMap::from([
             ("read-write".to_string(), 1),
             ("read write".to_string(), 2),
             ("Team Admin".to_string(), 3),

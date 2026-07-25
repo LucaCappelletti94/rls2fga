@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use alloc::collections::BTreeMap;
 
 use serde::Serialize;
 

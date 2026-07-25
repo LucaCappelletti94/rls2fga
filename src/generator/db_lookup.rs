@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 use crate::parser::names::lookup_table;
 use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
 

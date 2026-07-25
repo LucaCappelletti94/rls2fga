@@ -73,6 +73,25 @@ jobs:
           cargo test --features agent --locked --no-run --lib --tests
           cargo test --doc --all-features --locked
 
+  no-std:
+    name: no_std build (thumbv7em-none-eabi)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build lib without std for a bare-metal target
+        run: cargo build --lib --no-default-features --locked --target thumbv7em-none-eabi
+
   docs:
     name: Rustdoc (warnings denied)
     runs-on: ubuntu-latest

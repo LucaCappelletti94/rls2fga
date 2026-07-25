@@ -1,5 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt::Write;
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use alloc::collections::{BTreeMap, BTreeSet};
+use core::fmt::Write;
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
@@ -129,7 +131,7 @@ pub(crate) struct SchemaPlan {
     pub confidence_summary: Vec<(String, ConfidenceLevel)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ActionTarget {
     Select,
     Insert,
@@ -150,7 +152,7 @@ struct ModeBuckets {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RoleThresholdResourceHints {
     /// `(table, function_name)` → resource column name (unambiguous cases).
-    pub columns: HashMap<(String, String), String>,
+    pub columns: BTreeMap<(String, String), String>,
     /// `(table, function_name)` pairs where multiple distinct resource columns
     /// were observed; these cannot be resolved to a single tuple join column.
     pub conflicts: BTreeSet<(String, String)>,
@@ -252,7 +254,7 @@ pub(crate) fn build_schema_plan(
             .remove(&canonical_table_name)
             .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
 
-        let mut action_buckets: HashMap<ActionTarget, ModeBuckets> = HashMap::new();
+        let mut action_buckets: BTreeMap<ActionTarget, ModeBuckets> = BTreeMap::new();
 
         for cp in table_policies {
             if let Some(ref c) = cp.using_classification {
@@ -483,7 +485,7 @@ fn action_relation_for_target(target: ActionTarget) -> &'static str {
 }
 
 fn push_action_expr(
-    action_buckets: &mut HashMap<ActionTarget, ModeBuckets>,
+    action_buckets: &mut BTreeMap<ActionTarget, ModeBuckets>,
     target: ActionTarget,
     mode: PolicyMode,
     expr: UsersetExpr,
@@ -621,7 +623,7 @@ fn combine_intersection(exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
 }
 
 fn rewrite_p5_update_phases(all_types: &mut BTreeMap<String, TypePlan>) {
-    let relation_index: HashMap<String, BTreeSet<String>> = all_types
+    let relation_index: BTreeMap<String, BTreeSet<String>> = all_types
         .iter()
         .map(|(type_name, plan)| {
             let mut rels: BTreeSet<String> = plan.computed_relations.keys().cloned().collect();
@@ -649,7 +651,7 @@ fn rewrite_update_phase_expr(
     expr: &mut UsersetExpr,
     target_relation: &str,
     direct_relations: &BTreeMap<String, Vec<DirectSubject>>,
-    relation_index: &HashMap<String, BTreeSet<String>>,
+    relation_index: &BTreeMap<String, BTreeSet<String>>,
 ) {
     match expr {
         UsersetExpr::TupleToUserset { tupleset, computed } => {
@@ -932,7 +934,7 @@ fn pattern_to_expr_for_target(
             // Temporarily take the parent plan out to call pattern_to_expr_for_target.
             // We'll re-insert it afterwards.
             let mut parent_plan_owned =
-                std::mem::replace(parent_plan, TypePlan::new(&parent_relation));
+                core::mem::replace(parent_plan, TypePlan::new(&parent_relation));
             let inner_expr = pattern_to_expr_for_target(
                 &inner_pattern.pattern,
                 policy_name,
@@ -1215,7 +1217,7 @@ fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
 fn ensure_role_threshold_scaffold(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
-    role_levels: &HashMap<String, i32>,
+    role_levels: &BTreeMap<String, i32>,
     has_team_support: bool,
 ) -> Vec<RoleRelationName> {
     let sorted_roles = sorted_role_relation_names(role_levels);

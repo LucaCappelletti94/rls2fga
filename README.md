@@ -16,12 +16,17 @@ Policies that cannot be fully translated are flagged with a confidence level and
 
 ## Cargo Features
 
-No features are enabled by default.
+The `std` feature is enabled by default.
 
 | Feature | Enables | Purpose |
 |---------|---------|---------|
-| `agent` | `reqwest`, `tokio` | Push generated models and tuples to a live `OpenFGA` instance via its HTTP API |
-| `db` | `diesel` (`PostgreSQL`) | Connect to a live `PostgreSQL` database to read schema metadata and execute tuple queries |
+| `std` | standard library | File output (`Translator::write_output`, `output::formatter`) and stack-overflow protection in the SQL parser. On by default. Disable with `--no-default-features` for a `no_std` + `alloc` build of the parse, classify, and generate pipeline. |
+| `agent` | `reqwest`, `tokio` | Push generated models and tuples to a live `OpenFGA` instance via its HTTP API (implies `std`) |
+| `db` | `diesel` (`PostgreSQL`) | Connect to a live `PostgreSQL` database to read schema metadata and execute tuple queries (implies `std`) |
+
+### `no_std`
+
+With `default-features = false` the crate builds on `no_std` + `alloc` targets (verified against `thumbv7em-none-eabi`). The full pipeline stays available: `parse_schema`, classification, DSL/JSON model generation, and tuple-query generation. Only the filesystem output surface (`Translator::write_output` and the `output::formatter` module) is gated behind `std`, since it writes files. Model, tuple, and report strings are still produced in memory via `output::report::build_report` and the generator APIs.
 
 ## Usage
 

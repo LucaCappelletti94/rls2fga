@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
 use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 /// Extract a simple column name from an expression.

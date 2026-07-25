@@ -1,6 +1,8 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
-use std::fmt;
 
 use crate::parser::names::normalize_identifier;
 
@@ -186,7 +188,7 @@ impl fmt::Display for ConfidenceLevel {
     }
 }
 
-impl std::str::FromStr for ConfidenceLevel {
+impl core::str::FromStr for ConfidenceLevel {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
@@ -351,8 +353,8 @@ pub fn filter_policies_for_output(
 mod tests {
     use super::*;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+    use core::str::FromStr;
     use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
-    use std::str::FromStr;
 
     fn first_policy(sql: &str) -> sqlparser::ast::CreatePolicy {
         let db = parse_schema(sql).expect("schema should parse");

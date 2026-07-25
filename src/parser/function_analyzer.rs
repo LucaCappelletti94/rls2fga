@@ -1,8 +1,10 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{Expr, FunctionArguments, SelectItem, SetExpr, Statement, Value};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use std::collections::{HashMap, HashSet};
 
 use crate::parser::expr::function_arg_expr;
 use crate::parser::names::{
@@ -23,7 +25,7 @@ pub enum FunctionSemantic {
         /// Positional index of the resource parameter in the function signature.
         resource_param_index: usize,
         /// Maps role name (e.g. `"viewer"`) to its integer level.
-        role_levels: HashMap<String, i32>,
+        role_levels: BTreeMap<String, i32>,
         /// Table that stores explicit role grants.
         grant_table: String,
         /// Column in `grant_table` identifying the grantee (user or team).
@@ -98,7 +100,7 @@ fn normalize_setting_key(key: &str) -> String {
 /// Settings controlling automatic current-user accessor inference from SQL bodies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessorInferenceSettings {
-    current_user_setting_keys: HashSet<String>,
+    current_user_setting_keys: BTreeSet<String>,
 }
 
 impl AccessorInferenceSettings {
@@ -118,7 +120,7 @@ impl AccessorInferenceSettings {
     }
 
     /// Allowed `current_setting` keys that can be inferred as current-user accessors.
-    pub fn current_user_setting_keys(&self) -> &HashSet<String> {
+    pub fn current_user_setting_keys(&self) -> &BTreeSet<String> {
         &self.current_user_setting_keys
     }
 
@@ -209,7 +211,7 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
         let ch = chars[i];
         if let Some(delim) = dollar_delimiter.as_ref() {
             if matches_at(&chars, i, delim) {
-                out.extend(std::iter::repeat_n(' ', delim.len()));
+                out.extend(core::iter::repeat_n(' ', delim.len()));
                 i += delim.len();
                 dollar_delimiter = None;
                 continue;
@@ -324,7 +326,7 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
 
         if ch == '$' {
             if let Some(delim) = parse_dollar_quote_delimiter(&chars, i) {
-                out.extend(std::iter::repeat_n(' ', delim.len()));
+                out.extend(core::iter::repeat_n(' ', delim.len()));
                 i += delim.len();
                 dollar_delimiter = Some(delim);
                 continue;
@@ -601,7 +603,7 @@ impl FunctionSemantic {
 #[cfg(test)]
 mod tests {
     use super::{AccessorInferenceSettings, FunctionSemantic};
-    use std::collections::HashMap;
+    use alloc::collections::BTreeMap;
 
     #[test]
     fn analyze_body_detects_current_user_accessor() {
@@ -981,7 +983,7 @@ mod tests {
         let semantic = FunctionSemantic::RoleThreshold {
             user_param_index: 0,
             resource_param_index: 1,
-            role_levels: HashMap::from([("viewer".to_string(), 1), ("editor".to_string(), 2)]),
+            role_levels: BTreeMap::from([("viewer".to_string(), 1), ("editor".to_string(), 2)]),
             grant_table: "object_grants".to_string(),
             grant_grantee_col: "grantee_id".to_string(),
             grant_resource_col: "resource_id".to_string(),

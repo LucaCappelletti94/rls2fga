@@ -1,3 +1,6 @@
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use crate::classifier::function_registry::FunctionRegistry;
@@ -6,6 +9,7 @@ use crate::classifier::policy_classifier::classify_policies_with_effective_regis
 use crate::generator::json_model::{generate_json_model, AuthorizationModel};
 use crate::generator::model_generator::{generate_model, GeneratedModel};
 use crate::generator::tuple_generator::{generate_tuple_queries, TupleQuery};
+#[cfg(feature = "std")]
 use crate::output::formatter::write_output;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
 use crate::parser::sql_parser::ParserDB;
@@ -116,6 +120,7 @@ impl Translator {
         generate_tuple_queries(&classified, db, &effective_registry, self.min_confidence)
     }
 
+    #[cfg(feature = "std")]
     /// Run classification + generation and write artifacts to disk.
     pub fn write_output(&self, db: &ParserDB, output_dir: &Path, name: &str) -> Result<(), String> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);

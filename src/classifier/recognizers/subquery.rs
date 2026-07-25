@@ -1,4 +1,5 @@
 use super::*;
+use alloc::collections::BTreeSet;
 
 /// Try to recognize P4: EXISTS membership check.
 pub fn recognize_p4(
@@ -177,7 +178,7 @@ fn analyze_membership_select(
     let unique_table_count = all_sources
         .iter()
         .map(|s| normalize_relation_name(&s.table_name))
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<BTreeSet<_>>()
         .len();
     if unique_table_count != all_sources.len() {
         return MembershipSelectAnalysis::AmbiguousMultiple;
@@ -788,8 +789,8 @@ pub(super) fn strip_qualifier_from_expr(
     join_table: &str,
     join_alias: Option<&str>,
 ) {
+    use core::ops::ControlFlow;
     use sqlparser::ast::{Query, VisitMut, VisitorMut};
-    use std::ops::ControlFlow;
 
     struct QualifierStripper<'a> {
         join_table: &'a str,
@@ -843,8 +844,8 @@ pub(super) fn predicate_references_other_table(
     join_table: &str,
     join_alias: Option<&str>,
 ) -> bool {
+    use core::ops::ControlFlow;
     use sqlparser::ast::{Query, Visit, Visitor};
-    use std::ops::ControlFlow;
 
     struct OtherTableChecker<'a> {
         join_table: &'a str,
@@ -893,8 +894,8 @@ pub(super) fn predicate_references_other_table(
 struct UnqualifiedMembershipScope {
     enforce: bool,
     unknown_other_source: bool,
-    join_columns: std::collections::HashSet<String>,
-    other_columns: std::collections::HashSet<String>,
+    join_columns: BTreeSet<String>,
+    other_columns: BTreeSet<String>,
 }
 
 fn build_unqualified_membership_scope(
@@ -918,7 +919,7 @@ fn build_unqualified_membership_scope(
         enforce: true,
         unknown_other_source: false,
         join_columns,
-        other_columns: std::collections::HashSet::new(),
+        other_columns: BTreeSet::new(),
     };
 
     for source in sources {
@@ -945,8 +946,8 @@ fn predicate_has_ambiguous_unqualified_column(
     expr: &Expr,
     scope: &UnqualifiedMembershipScope,
 ) -> bool {
+    use core::ops::ControlFlow;
     use sqlparser::ast::{Query, Visit, Visitor};
-    use std::ops::ControlFlow;
 
     struct UnqualifiedChecker<'a> {
         scope: &'a UnqualifiedMembershipScope,
