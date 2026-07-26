@@ -68,10 +68,9 @@ fn collect_policy_resource_column(
             conflicts.insert(key);
             continue;
         }
-        let resource_col = resource_cols
-            .into_iter()
-            .next()
-            .expect("non-empty resource column set should contain one value");
+        let Some(resource_col) = resource_cols.into_iter().next() else {
+            continue;
+        };
 
         if let Some(existing) = out.get(&key) {
             if existing != &resource_col {

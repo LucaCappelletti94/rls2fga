@@ -2,23 +2,23 @@ use super::*;
 
 pub(super) fn render_dsl(types: &[TypePlan]) -> String {
     let mut dsl = String::new();
-    writeln!(dsl, "model").unwrap();
-    writeln!(dsl, "  schema {OPENFGA_SCHEMA_VERSION}").unwrap();
+    let _ = writeln!(dsl, "model");
+    let _ = writeln!(dsl, "  schema {OPENFGA_SCHEMA_VERSION}");
 
     for t in types {
-        writeln!(dsl).unwrap();
-        writeln!(dsl, "type {}", t.type_name).unwrap();
+        let _ = writeln!(dsl);
+        let _ = writeln!(dsl, "type {}", t.type_name);
 
         if t.direct_relations.is_empty() && t.computed_relations.is_empty() {
             continue;
         }
 
-        writeln!(dsl, "  relations").unwrap();
+        let _ = writeln!(dsl, "  relations");
         for (relation, subjects) in &t.direct_relations {
-            writeln!(dsl, "    define {relation}: {}", format_subjects(subjects)).unwrap();
+            let _ = writeln!(dsl, "    define {relation}: {}", format_subjects(subjects));
         }
         for (relation, expr) in &t.computed_relations {
-            writeln!(dsl, "    define {relation}: {}", expr_to_dsl(expr, 0)).unwrap();
+            let _ = writeln!(dsl, "    define {relation}: {}", expr_to_dsl(expr, 0));
         }
     }
 

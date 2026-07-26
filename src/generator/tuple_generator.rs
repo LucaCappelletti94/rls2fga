@@ -197,18 +197,6 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                 case_arms.join("\n")
             );
 
-            // Fail closed when neither user nor team principal can be resolved.
-            if user_principal.is_none() && team_principal.is_none() {
-                return Some(TupleQuery {
-                    comment: format!(
-                        "-- TODO [Level C]: ExplicitGrants on '{grant_table}' could not resolve \
-                         principal type (no user or team table identified). \
-                         Review the grant table schema and register the principal tables."
-                    ),
-                    sql: format!("-- Unresolved: SELECT ... FROM {grant_table_sql} og ...;"),
-                });
-            }
-
             let mut subject_joins: Vec<String> = Vec::new();
             let mut principal_filter: Option<String> = None;
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
@@ -244,7 +232,17 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
                     ));
                     format!("'team:' || og.{grant_grantee_col_sql}")
                 }
-                (None, None) => unreachable!("handled by early return above"),
+                (None, None) => {
+                    // Fail closed: neither user nor team principal could be resolved.
+                    return Some(TupleQuery {
+                        comment: format!(
+                            "-- TODO [Level C]: ExplicitGrants on '{grant_table}' could not resolve \
+                             principal type (no user or team table identified). \
+                             Review the grant table schema and register the principal tables."
+                        ),
+                        sql: format!("-- Unresolved: SELECT ... FROM {grant_table_sql} og ...;"),
+                    });
+                }
             };
 
             let subject_join_sql = if subject_joins.is_empty() {

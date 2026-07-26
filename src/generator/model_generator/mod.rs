@@ -382,20 +382,14 @@ pub(crate) fn build_schema_plan(
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
-    let pos = type_names
-        .iter()
-        .position(|n| n == "user")
-        .expect("user type should always be present");
-    let user = type_names.remove(pos);
-    type_names.insert(0, user);
+    if let Some(pos) = type_names.iter().position(|n| n == "user") {
+        let user = type_names.remove(pos);
+        type_names.insert(0, user);
+    }
 
     let types = type_names
         .into_iter()
-        .map(|name| {
-            all_types
-                .remove(&name)
-                .expect("type name should exist in plan map")
-        })
+        .filter_map(|name| all_types.remove(&name))
         .collect();
 
     SchemaPlan {
@@ -880,10 +874,9 @@ fn pattern_to_expr_for_target(
                 extra_predicate_sql: extra_predicate_sql.clone(),
             };
             table_plan.add_source(membership_source.clone());
-            all_types
-                .get_mut(&parent_type)
-                .expect("ensure_member_type should have created the parent type entry")
-                .add_source(membership_source);
+            if let Some(parent_plan) = all_types.get_mut(&parent_type) {
+                parent_plan.add_source(membership_source);
+            }
 
             // Bridge rows link each source-table row to its parent.
             // The pk_col is resolved at render time via resolve_bridge_columns;
@@ -1256,8 +1249,8 @@ fn ensure_role_threshold_scaffold(
                     computed: "member".to_string(),
                 });
             }
-        } else {
-            children.push(UsersetExpr::Computed(descending[idx - 1].role_relation()));
+        } else if let Some(prev) = descending.get(idx - 1) {
+            children.push(UsersetExpr::Computed(prev.role_relation()));
         }
 
         let grant_name = role.grant_relation();
@@ -1269,10 +1262,9 @@ fn ensure_role_threshold_scaffold(
             });
         }
 
-        table_plan.ensure_computed(
-            role.role_relation(),
-            combine_union(children).expect("role relation should always have at least one source"),
-        );
+        if let Some(expr) = combine_union(children) {
+            table_plan.ensure_computed(role.role_relation(), expr);
+        }
     }
 
     sorted_roles

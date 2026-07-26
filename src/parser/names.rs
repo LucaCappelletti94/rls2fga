@@ -71,12 +71,11 @@ pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
 /// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
 pub fn split_schema_and_relation(name: &str) -> Option<(String, String)> {
     let parts = split_qualified_identifier_parts(name);
-    if parts.len() < 2 {
+    let [.., schema_part, relation_part] = parts.as_slice() else {
         return None;
-    }
-
-    let schema = unquote_identifier(&parts[parts.len() - 2]).to_string();
-    let relation = unquote_identifier(&parts[parts.len() - 1]).to_string();
+    };
+    let schema = unquote_identifier(schema_part).to_string();
+    let relation = unquote_identifier(relation_part).to_string();
     Some((schema, relation))
 }
 

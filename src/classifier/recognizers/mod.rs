@@ -665,10 +665,10 @@ fn flatten_and_predicates<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     match expr {
         Expr::Identifier(id) => Some((None, id.value.clone())),
-        Expr::CompoundIdentifier(parts) if parts.len() >= 2 => Some((
-            Some(parts[parts.len() - 2].value.clone()),
-            parts.last()?.value.clone(),
-        )),
+        Expr::CompoundIdentifier(parts) => match parts.as_slice() {
+            [.., qualifier, last] => Some((Some(qualifier.value.clone()), last.value.clone())),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -687,8 +687,10 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
         Expr::Subquery(query) => {
             if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
                 if select.projection.len() == 1 {
-                    if let SelectItem::UnnamedExpr(inner)
-                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    if let Some(
+                        SelectItem::UnnamedExpr(inner)
+                        | SelectItem::ExprWithAlias { expr: inner, .. },
+                    ) = select.projection.first()
                     {
                         return current_user_accessor_name(inner);
                     }
@@ -767,8 +769,10 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
         Expr::Subquery(query) => {
             if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
                 if select.projection.len() == 1 {
-                    if let SelectItem::UnnamedExpr(inner)
-                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    if let Some(
+                        SelectItem::UnnamedExpr(inner)
+                        | SelectItem::ExprWithAlias { expr: inner, .. },
+                    ) = select.projection.first()
                     {
                         return is_sql_current_user_keyword_expr(inner);
                     }
@@ -795,8 +799,10 @@ fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
         Expr::Subquery(query) => {
             if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
                 if select.projection.len() == 1 {
-                    if let SelectItem::UnnamedExpr(inner)
-                    | SelectItem::ExprWithAlias { expr: inner, .. } = &select.projection[0]
+                    if let Some(
+                        SelectItem::UnnamedExpr(inner)
+                        | SelectItem::ExprWithAlias { expr: inner, .. },
+                    ) = select.projection.first()
                     {
                         return is_keyword_named_function_call_expr(inner);
                     }

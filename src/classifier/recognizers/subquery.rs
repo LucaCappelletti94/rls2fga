@@ -184,11 +184,12 @@ fn analyze_membership_select(
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
 
-    let matches = membership_matches(select, db, registry, projected_fk_hint);
-    match matches.len() {
-        1 => {
-            let (join_table, inferred_fk_column, user_column, extra_predicate_sql) =
-                matches.into_iter().next().expect("len checked to be 1");
+    let mut matches = membership_matches(select, db, registry, projected_fk_hint);
+    if matches.len() > 1 {
+        return MembershipSelectAnalysis::AmbiguousMultiple;
+    }
+    match matches.pop() {
+        Some((join_table, inferred_fk_column, user_column, extra_predicate_sql)) => {
             MembershipSelectAnalysis::Unique {
                 join_table,
                 inferred_fk_column,
@@ -196,11 +197,10 @@ fn analyze_membership_select(
                 extra_predicate_sql,
             }
         }
-        n if n > 1 => MembershipSelectAnalysis::AmbiguousMultiple,
-        _ if selection_references_current_user(select, registry) => {
+        None if selection_references_current_user(select, registry) => {
             MembershipSelectAnalysis::AmbiguousNoUniqueJoin
         }
-        _ => MembershipSelectAnalysis::NoMatch,
+        None => MembershipSelectAnalysis::NoMatch,
     }
 }
 
@@ -812,15 +812,14 @@ pub(super) fn strip_qualifier_from_expr(
         fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
             if self.subquery_depth == 0 {
                 if let Expr::CompoundIdentifier(parts) = &*expr {
-                    if parts.len() >= 2
-                        && qualifier_matches_table(
-                            &parts[parts.len() - 2].value,
+                    if let [.., qualifier, last] = parts.as_slice() {
+                        if qualifier_matches_table(
+                            &qualifier.value,
                             self.join_table,
                             self.join_alias,
-                        )
-                    {
-                        let col = parts.last().unwrap().clone();
-                        *expr = Expr::Identifier(col);
+                        ) {
+                            *expr = Expr::Identifier(last.clone());
+                        }
                     }
                 }
             }
@@ -867,14 +866,14 @@ pub(super) fn predicate_references_other_table(
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
             if self.subquery_depth == 0 {
                 if let Expr::CompoundIdentifier(parts) = expr {
-                    if parts.len() >= 2
-                        && !qualifier_matches_table(
-                            &parts[parts.len() - 2].value,
+                    if let [.., qualifier, _] = parts.as_slice() {
+                        if !qualifier_matches_table(
+                            &qualifier.value,
                             self.join_table,
                             self.join_alias,
-                        )
-                    {
-                        return ControlFlow::Break(());
+                        ) {
+                            return ControlFlow::Break(());
+                        }
                     }
                 }
             }

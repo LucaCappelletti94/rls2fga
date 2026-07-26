@@ -20,14 +20,14 @@ fn md_escape(s: &str) -> String {
 pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> String {
     let mut report = String::new();
 
-    writeln!(report, "# rls2fga Translation Report").unwrap();
-    writeln!(report).unwrap();
+    let _ = writeln!(report, "# rls2fga Translation Report");
+    let _ = writeln!(report);
 
     // Confidence table
-    writeln!(report, "## Confidence Summary").unwrap();
-    writeln!(report).unwrap();
-    writeln!(report, "| Policy | Pattern | Confidence | Notes |").unwrap();
-    writeln!(report, "|--------|---------|------------|-------|").unwrap();
+    let _ = writeln!(report, "## Confidence Summary");
+    let _ = writeln!(report);
+    let _ = writeln!(report, "| Policy | Pattern | Confidence | Notes |");
+    let _ = writeln!(report, "|--------|---------|------------|-------|");
 
     for cp in policies {
         let mut wrote_row = false;
@@ -44,23 +44,22 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
             cp.with_check_classification.as_ref(),
         );
         if !wrote_row {
-            writeln!(report, "| {} | N/A | N/A |  |", md_escape(cp.name())).unwrap();
+            let _ = writeln!(report, "| {} | N/A | N/A |  |", md_escape(cp.name()));
         }
     }
 
     // TODOs
     if !model.todos.is_empty() {
-        writeln!(report).unwrap();
-        writeln!(report, "## TODOs").unwrap();
-        writeln!(report).unwrap();
+        let _ = writeln!(report);
+        let _ = writeln!(report, "## TODOs");
+        let _ = writeln!(report);
 
         for todo in &model.todos {
-            writeln!(
+            let _ = writeln!(
                 report,
                 "- **[Level {}]** {}: {}",
                 todo.level, todo.policy_name, todo.message
-            )
-            .unwrap();
+            );
         }
     }
 
@@ -76,7 +75,7 @@ fn write_classification_row(
     let Some(classification) = classification else {
         return false;
     };
-    writeln!(
+    let _ = writeln!(
         report,
         "| {} ({}) | {} | {} | {} |",
         md_escape(policy_name),
@@ -84,8 +83,7 @@ fn write_classification_row(
         md_escape(&format_pattern(&classification.pattern)),
         classification.confidence,
         md_escape(&format_notes(&classification.pattern))
-    )
-    .unwrap();
+    );
     true
 }
 

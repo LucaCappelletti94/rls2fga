@@ -180,7 +180,7 @@ fn parse_dollar_quote_delimiter(chars: &[char], start: usize) -> Option<Vec<char
     let mut idx = start + 2;
     while let Some(ch) = chars.get(idx) {
         if *ch == '$' {
-            return Some(chars[start..=idx].to_vec());
+            return chars.get(start..=idx).map(<[char]>::to_vec);
         }
         if !is_dollar_tag_char(*ch) {
             return None;
@@ -208,7 +208,9 @@ fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
     let mut dollar_delimiter: Option<Vec<char>> = None;
 
     while i < chars.len() {
-        let ch = chars[i];
+        let Some(&ch) = chars.get(i) else {
+            break;
+        };
         if let Some(delim) = dollar_delimiter.as_ref() {
             if matches_at(&chars, i, delim) {
                 out.extend(core::iter::repeat_n(' ', delim.len()));
@@ -554,8 +556,8 @@ fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenc
         return false;
     }
 
-    let (SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }) =
-        &select.projection[0]
+    let Some(SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }) =
+        select.projection.first()
     else {
         return false;
     };

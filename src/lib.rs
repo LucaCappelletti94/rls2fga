@@ -1,6 +1,22 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
+// Panic-free policy for library code: the crate ingests untrusted SQL, so a
+// panic is a robustness bug. Scoped to the non-test build of this crate;
+// unit tests (`cfg(test)`) and the separate integration-test crates keep the
+// ergonomic `unwrap`/`expect`.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::indexing_slicing,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 extern crate alloc;
 
