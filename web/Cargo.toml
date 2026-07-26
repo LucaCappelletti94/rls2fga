@@ -19,12 +19,10 @@ rls2fga = { path = "..", default-features = false }
 dioxus = { version = "0.7", features = ["web"] }
 
 # Pure-Rust syntax-highlighted code editor (no JavaScript, no npm). The
-# highlighter grammars are gated per language; the app only ships SQL, JSON,
-# and Markdown.
+# highlighter grammars are gated per language; the app only ships SQL and JSON.
 dioxus-code = { version = "0.1", default-features = false, features = [
     "lang-sql",
     "lang-json",
-    "lang-markdown",
 ] }
 dioxus-code-editor = "0.1"
 

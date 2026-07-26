@@ -1,6 +1,6 @@
 //! rls2fga web app. Translates PostgreSQL DDL and Row Level Security policies
-//! into an OpenFGA authorization model, tuple SQL, a JSON model, and a Markdown
-//! report, entirely client-side in WebAssembly.
+//! into an OpenFGA authorization model, tuple SQL, and a JSON model, entirely
+//! client-side in WebAssembly.
 
 mod examples;
 
@@ -11,15 +11,14 @@ use dioxus_code::{CodeTheme, Theme};
 use dioxus_code_editor::{CodeEditor, Language};
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaCheck, FaCodeBranch, FaCopy, FaFileCode, FaFileLines, FaFolderOpen, FaGlobe, FaGripVertical,
-    FaHeart, FaListCheck, FaShareNodes, FaSitemap, FaTableList, FaTag, FaTriangleExclamation,
-    FaUpload, FaUser, FaUserShield, FaUsers, FaXmark,
+    FaCheck, FaCodeBranch, FaCopy, FaFileCode, FaFolderOpen, FaGlobe, FaGripVertical, FaHeart,
+    FaListCheck, FaShareNodes, FaSitemap, FaTableList, FaTag, FaTriangleExclamation, FaUpload,
+    FaUser, FaUserShield, FaUsers, FaXmark,
 };
 use dioxus_free_icons::Icon;
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
-use rls2fga::output::report::build_report;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
@@ -57,18 +56,16 @@ enum Tab {
     Dsl,
     TupleSql,
     Json,
-    Report,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Dsl, Tab::TupleSql, Tab::Json, Tab::Report];
+    const ALL: [Tab; 3] = [Tab::Dsl, Tab::TupleSql, Tab::Json];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Dsl => "DSL",
             Tab::TupleSql => "Tuple SQL",
             Tab::Json => "JSON model",
-            Tab::Report => "Report",
         }
     }
 
@@ -78,7 +75,6 @@ impl Tab {
             Tab::Dsl => "the OpenFGA DSL authorization model",
             Tab::TupleSql => "the SQL that populates OpenFGA tuples from your tables",
             Tab::Json => "the OpenFGA JSON authorization model",
-            Tab::Report => "the Markdown translation report",
         }
     }
 }
@@ -99,7 +95,6 @@ struct Translation {
     dsl: String,
     tuple_sql: String,
     json: String,
-    report: String,
     todos: Vec<TodoView>,
     confidence_summary: Vec<(String, ConfidenceLevel)>,
 }
@@ -114,12 +109,10 @@ fn translate(sql: &str, level: ConfidenceLevel) -> Result<Translation> {
     let tuple_sql = format_tuples(&translator.generate_tuple_queries(&db));
     let json = serde_json::to_string_pretty(&translator.generate_json_model(&db))
         .context("serializing the JSON authorization model")?;
-    let report = build_report(&model, &translator.classify(&db));
     Ok(Translation {
         dsl: model.dsl,
         tuple_sql,
         json,
-        report,
         todos: model
             .todos
             .into_iter()
@@ -233,7 +226,6 @@ fn tab_icon(tab: Tab) -> Element {
         Tab::Dsl => rsx! { Icon { width: 13, height: 13, icon: FaShareNodes } },
         Tab::TupleSql => rsx! { Icon { width: 13, height: 13, icon: FaTableList } },
         Tab::Json => rsx! { Icon { width: 13, height: 13, icon: FaFileCode } },
-        Tab::Report => rsx! { Icon { width: 13, height: 13, icon: FaFileLines } },
     }
 }
 
@@ -530,7 +522,6 @@ fn OutputPane(
         Tab::Dsl => translation.dsl.clone(),
         Tab::TupleSql => translation.tuple_sql.clone(),
         Tab::Json => translation.json.clone(),
-        Tab::Report => translation.report.clone(),
     };
     let copied = *copied_tab.read() == Some(tab);
     let copy_text = content.clone();
@@ -596,20 +587,6 @@ fn OutputPane(
                             read_only: true,
                             class: "editor".to_string(),
                             aria_label: "JSON authorization model".to_string(),
-                            oninput: move |_| {},
-                        }
-                    }
-                },
-                Tab::Report => rsx! {
-                    div { class: "output-body",
-                        CodeEditor {
-                            value: content.clone(),
-                            language: Language::Markdown,
-                            theme: code_theme(),
-                            line_numbers: false,
-                            read_only: true,
-                            class: "editor".to_string(),
-                            aria_label: "Markdown report".to_string(),
                             oninput: move |_| {},
                         }
                     }
