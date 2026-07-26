@@ -39,7 +39,9 @@ jobs:
       - name: Install dioxus-cli
         uses: taiki-e/install-action@v2
         with:
-          tool: dioxus-cli
+          # Pinned to match the dioxus library version in web/Cargo.lock; a
+          # floating dx can diverge from the library and break the build.
+          tool: dioxus-cli@0.7.9
 
       - name: Build web app
         working-directory: web
