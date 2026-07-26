@@ -80,10 +80,10 @@ The `min_confidence` parameter controls which policies appear in the output:
 
 | Level | Meaning |
 | ------- | --------- |
-| `A` | Fully translated; no manual review needed |
+| `A` | Fully translated, no manual review needed |
 | `B` | Composite patterns where all sub-expressions are A-level |
-| `C` | Partial translation; ABAC crossovers or attribute guards present |
-| `D` | Unrecognised expression; always emits a TODO item |
+| `C` | Partial translation, ABAC crossovers or attribute guards present |
+| `D` | Unrecognised expression, always emits a TODO item |
 
 ### Generated model (example)
 
