@@ -1,0 +1,23 @@
+[application]
+name = "rls2fga"
+default_platform = "web"
+
+[web.app]
+title = "rls2fga: RLS to OpenFGA"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "public"]
+
+# Link the stylesheet at build time so the browser fetches CSS in parallel
+# with the WASM bundle and the first paint is styled (no FOUC).
+[web.resource]
+style = ["/app.css"]
+
+[web.resource.dev]
+
+# binaryen cannot parse the DWARF version current rustc emits; strip debug info
+# before optimisation so the wasm-opt size pass runs.
+[web.wasm_opt]
+debug = false
+level = "4"

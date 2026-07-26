@@ -1,0 +1,70 @@
+[package]
+name = "rls2fga-web"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Browser app that translates PostgreSQL RLS policies into OpenFGA models, entirely client-side."
+
+# Kept out of the library's build on purpose: Dioxus drags in hundreds of
+# transitive crates that would slow the library's precommit, audit, and test
+# runs. A dedicated workspace here keeps the parent crate's graph clean while
+# the path dependency below still tracks the library source in lockstep.
+[workspace]
+
+[dependencies]
+# The translation library, no_std + alloc build (no file I/O, no reqwest,
+# no diesel), which is what compiles to wasm32.
+rls2fga = { path = "..", default-features = false }
+
+dioxus = { version = "0.7", features = ["web"] }
+
+# Pure-Rust syntax-highlighted code editor (no JavaScript, no npm). The
+# highlighter grammars are gated per language; the app only ships SQL, JSON,
+# and Markdown.
+dioxus-code = { version = "0.1", default-features = false, features = [
+    "lang-sql",
+    "lang-json",
+    "lang-markdown",
+] }
+dioxus-code-editor = "0.1"
+
+# Font Awesome icons as inline SVG components.
+dioxus-free-icons = { version = "0.10", features = [
+    "font-awesome-solid",
+    "font-awesome-brands",
+] }
+
+# JSON string escaping for the clipboard eval one-liner.
+serde_json = "1"
+
+# Layered error context for the in-browser translation pipeline.
+anyhow = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+# dx 0.7 embeds DWARF in the wasm by default, which makes binaryen abort during
+# wasm-opt ("compile unit size was incorrect"). Stripping in the linker keeps
+# wasm-opt happy without losing release optimisation.
+strip = "debuginfo"
+debug = false
+
+# The dioxus-code highlighter's grammars link a wasm C sysroot: `arborium-sysroot`
+# compiles C that defines libc globals (`stderr` and friends) and
+# `arborium-tree-sitter`'s C references them. At opt-level 0 (the default dev and
+# dx `wasm-dev` profile) rust-lld drops the defining object and the wasm link
+# fails with `undefined symbol: stderr`. Building just those two crates at
+# opt-level 1 makes the symbol resolve while the rest of the dev graph stays
+# unoptimized and fast. Release already links because its opt-level is non-zero.
+[profile.dev.package.arborium-sysroot]
+opt-level = 1
+
+[profile.dev.package.arborium-tree-sitter]
+opt-level = 1
+
+# The library pins sqlparser to datafusion-sqlparser-rs main for its no_std
+# hygiene. The wasm build is no_std (default-features = false), so this patch
+# is load-bearing here and must match the parent crate's pin exactly.
+[patch.crates-io]
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }

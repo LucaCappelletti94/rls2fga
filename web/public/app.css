@@ -1,0 +1,635 @@
+:root {
+    --r2f-bg: #ffffff;
+    --r2f-ink: #0a0a0a;
+    --r2f-muted: rgba(10, 10, 10, 0.55);
+    --r2f-line: rgba(10, 10, 10, 0.16);
+    --r2f-panel: rgba(255, 255, 255, 0.92);
+    --r2f-glass: rgba(255, 255, 255, 0.55);
+    --r2f-hover: rgba(10, 10, 10, 0.06);
+    --r2f-accent: #2563eb;
+    --r2f-ok: #15803d;
+    --r2f-warn: #b45309;
+    --r2f-err: #b91c1c;
+    --r2f-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --r2f-bg: #0a0a0a;
+        --r2f-ink: #f4f4f4;
+        --r2f-muted: rgba(244, 244, 244, 0.6);
+        --r2f-line: rgba(244, 244, 244, 0.2);
+        --r2f-panel: rgba(18, 18, 18, 0.92);
+        --r2f-glass: rgba(22, 22, 22, 0.5);
+        --r2f-hover: rgba(244, 244, 244, 0.08);
+        --r2f-accent: #60a5fa;
+        --r2f-ok: #4ade80;
+        --r2f-warn: #fbbf24;
+        --r2f-err: #f87171;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    background: var(--r2f-bg);
+    color: var(--r2f-ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+main {
+    max-width: 1500px;
+    margin: 0 auto;
+    padding: 28px 20px 48px;
+}
+
+/* Header: title, tagline, and resource links. */
+header h1 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 4px;
+    font-size: 1.7rem;
+    letter-spacing: -0.01em;
+}
+
+.title-icon {
+    color: var(--r2f-accent);
+}
+
+/* The logo is black line art on a transparent background; invert it in dark
+   mode so it reads against the dark canvas. */
+.logo {
+    height: 38px;
+    width: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+    .logo {
+        filter: invert(1);
+    }
+}
+
+.subtitle-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+
+header .tagline {
+    margin: 0;
+    color: var(--r2f-muted);
+    font-size: 0.98rem;
+}
+
+header .tagline a {
+    color: var(--r2f-accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+}
+
+header .tagline a:hover,
+header .tagline a:focus {
+    border-bottom-color: currentColor;
+}
+
+/* Top-right action cluster: icon-only links (repo, sponsor heart). */
+.topbar-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.icon-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: 0;
+    background: transparent;
+    color: var(--r2f-ink);
+    text-decoration: none;
+    cursor: pointer;
+    opacity: 0.75;
+    transition:
+        opacity 0.15s ease,
+        color 0.15s ease,
+        transform 0.15s ease;
+}
+
+.icon-link:hover {
+    opacity: 1;
+}
+
+/* Sponsor heart: reddens on hover, and gives a few gentle pulses when a
+   translation completes, to draw the eye without nagging. */
+.heartbtn:hover {
+    color: #e2264d;
+    opacity: 1;
+}
+
+.heart-attention {
+    animation: r2f-heart-pulse 1s ease-in-out 0.6s 3;
+    transform-origin: center;
+}
+
+@keyframes r2f-heart-pulse {
+    0%,
+    100% {
+        color: var(--r2f-ink);
+        transform: scale(1);
+    }
+    50% {
+        color: #e5102d;
+        transform: scale(1.28);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .heart-attention {
+        animation: none;
+    }
+}
+
+/* Two-pane layout: input left, output right. Collapses below 960px. */
+.layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-top: 22px;
+    align-items: start;
+}
+
+@media (max-width: 960px) {
+    .layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Frosted-glass floating panels. */
+.panel {
+    background: var(--r2f-panel);
+    border: 1px solid var(--r2f-line);
+    border-radius: 12px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.panel-header h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 1.05rem;
+}
+
+/* Type descriptor next to a panel title (expected input/output). */
+.panel-sub {
+    font-weight: 400;
+    font-size: 0.85rem;
+    color: var(--r2f-muted);
+}
+
+/* The output tab bar is a direct panel child; keep it snug instead of
+   stretching to the full panel width. */
+.panel > .segmented {
+    align-self: flex-start;
+    max-width: 100%;
+}
+
+.section-icon {
+    color: var(--r2f-muted);
+}
+
+.field-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--r2f-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.field-help {
+    margin: 8px 0 0;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: var(--r2f-muted);
+    text-align: justify;
+}
+
+/* Example pills. */
+.pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--r2f-line);
+    border-radius: 999px;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.9rem;
+    background: transparent;
+    color: var(--r2f-ink);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.pill:hover {
+    background: var(--r2f-hover);
+}
+
+/* Segmented toggle (confidence selector, output tabs). */
+.segmented {
+    display: inline-flex;
+    border: 1px solid var(--r2f-line);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+/* In the input panel's vertical control-group the segmented control would
+   otherwise stretch to the full box width, leaving an empty box to the right.
+   Shrink it to its buttons. */
+.control-group .segmented {
+    align-self: flex-start;
+}
+
+.seg-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.4rem 0.9rem;
+    border: 0;
+    border-left: 1px solid var(--r2f-line);
+    background: transparent;
+    color: var(--r2f-ink);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.88rem;
+}
+
+.seg-option:first-child {
+    border-left: 0;
+}
+
+.seg-option:hover {
+    background: var(--r2f-hover);
+}
+
+.seg-option.active {
+    background: var(--r2f-ink);
+    color: var(--r2f-bg);
+}
+
+/* Rows of controls. */
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--r2f-line);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--r2f-ink);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.9rem;
+}
+
+.btn:hover {
+    background: var(--r2f-hover);
+}
+
+.btn-primary {
+    background: var(--r2f-ink);
+    color: var(--r2f-bg);
+    border-color: var(--r2f-ink);
+    font-weight: 600;
+}
+
+.btn-primary:hover {
+    filter: brightness(1.15);
+    background: var(--r2f-ink);
+}
+
+.btn:disabled,
+.btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    filter: none;
+}
+
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: 0;
+    background: transparent;
+    color: var(--r2f-ink);
+    cursor: pointer;
+    opacity: 0.75;
+    transition:
+        opacity 0.15s ease,
+        color 0.15s ease;
+}
+
+.icon-btn:hover {
+    opacity: 1;
+}
+
+.icon-btn.copied {
+    color: var(--r2f-ok);
+    opacity: 1;
+}
+
+/* Hidden native file inputs, triggered by their sibling buttons. */
+.file-input {
+    display: none;
+}
+
+/* Ordered upload list with drag-to-reorder. */
+.file-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.file-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--r2f-line);
+    border-radius: 6px;
+    background: var(--r2f-glass);
+    font-family: var(--r2f-mono);
+    font-size: 0.82rem;
+    cursor: grab;
+}
+
+.file-list li.dragging {
+    opacity: 0.5;
+}
+
+.file-list .drag-handle {
+    color: var(--r2f-muted);
+}
+
+.file-list .file-order {
+    color: var(--r2f-muted);
+    min-width: 1.4em;
+    text-align: right;
+}
+
+.file-list .file-remove {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    color: var(--r2f-muted);
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.file-list .file-remove:hover {
+    color: var(--r2f-err);
+}
+
+/* Parse error banner, shown in the input pane. Never blanks the output. */
+.parse-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--r2f-err);
+    border-radius: 8px;
+    color: var(--r2f-err);
+    background: color-mix(in srgb, var(--r2f-err) 10%, transparent);
+    font-family: var(--r2f-mono);
+    font-size: 0.83rem;
+    white-space: pre-wrap;
+}
+
+.meta {
+    color: var(--r2f-muted);
+    font-size: 0.85rem;
+    margin: 0;
+}
+
+/* Read-only DSL output (no tree-sitter grammar for the OpenFGA DSL). */
+.output-pre {
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--r2f-line);
+    border-radius: 8px;
+    background: var(--r2f-glass);
+    font-family: var(--r2f-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow: auto;
+    max-height: 60vh;
+    white-space: pre;
+}
+
+.output-body {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid var(--r2f-line);
+    border-radius: 8px;
+}
+
+.output-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--r2f-muted);
+}
+
+/* TODO panel: per-policy review items surfaced from model.todos. */
+.todo-panel {
+    border-top: 1px solid var(--r2f-line);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.todo-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--lvl, var(--r2f-line));
+    border-radius: 8px;
+    background: var(--r2f-glass);
+}
+
+.level-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: #fff;
+    background: var(--lvl);
+}
+
+/* The level-* classes only carry a color (via --lvl). They add no fill on
+   their own, so a minimum-confidence button wearing one stays white until it is
+   selected. The badge, active button, and chip/todo borders read --lvl. */
+.level-a {
+    --lvl: var(--r2f-ok);
+}
+
+.level-b {
+    --lvl: var(--r2f-accent);
+}
+
+.level-c {
+    --lvl: var(--r2f-warn);
+}
+
+.level-d {
+    --lvl: var(--r2f-err);
+}
+
+/* Minimum-confidence buttons: white by default, their level color when selected.
+   Scoped to the control group so the output tabs keep the default ink active. */
+.control-group .seg-option.active {
+    background: var(--lvl);
+    color: #fff;
+    border-color: var(--lvl);
+}
+
+.todo-body {
+    min-width: 0;
+}
+
+.todo-policy {
+    font-weight: 600;
+    font-family: var(--r2f-mono);
+    font-size: 0.85rem;
+}
+
+.todo-message {
+    color: var(--r2f-muted);
+    font-size: 0.85rem;
+}
+
+.confidence-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.confidence-summary .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--lvl, var(--r2f-line));
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-family: var(--r2f-mono);
+}
+
+/* dioxus-code editor integration: blend into the panel, keep the caret
+   visible (the library sets caret-color: transparent on its input layer),
+   and drop the theme's own background in both light and dark. */
+.dxc-editor-input {
+    caret-color: var(--r2f-ink) !important;
+}
+
+.dxc-editor.editor {
+    border: 1px solid var(--r2f-line);
+    border-radius: 8px;
+    --dxc-light-background: var(--r2f-panel);
+    --dxc-dark-background: var(--r2f-panel);
+    --dxc-editor-focus-ring: none;
+    --dxc-editor-font-size: 13px;
+    --dxc-editor-line-height: 20px;
+    max-height: 60vh;
+    overflow: auto;
+}
+
+/* Fade panels in on mount. */
+@keyframes fade-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.layout > .panel {
+    animation: fade-in-up 0.4s ease-out backwards;
+}
+
+.layout > .panel:nth-child(2) {
+    animation-delay: 80ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .layout > .panel {
+        animation: none;
+    }
+}
