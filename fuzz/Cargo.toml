@@ -1,0 +1,30 @@
+[package]
+name = "rls2fga-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Default features (std) are kept on so sqlparser's recursive-protection guards
+# deeply nested input: the parser returns an error instead of overflowing the
+# stack, which would otherwise be reported as a spurious fuzz crash.
+[dependencies.rls2fga]
+path = ".."
+
+[[bin]]
+name = "translate"
+path = "fuzz_targets/translate.rs"
+test = false
+doc = false
+bench = false
+
+# The fuzz crate is its own workspace root, so the parent's sqlparser pin does
+# not carry over. Mirror it here so sql-traits and sqlparser stay on the single
+# compatible revision (see the parent Cargo.toml for the rationale).
+[patch.crates-io]
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }
