@@ -102,6 +102,8 @@ jobs:
 
       - name: Install nightly Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -116,13 +118,13 @@ jobs:
           tool: cargo-fuzz
 
       - name: Build fuzz target
-        run: cargo +nightly fuzz build translate
+        run: cargo +nightly fuzz build translate --target x86_64-unknown-linux-gnu
 
       - name: Regression run over committed seeds
         run: |
           mkdir -p fuzz/corpus/translate
           cp fuzz/seeds/translate/* fuzz/corpus/translate/
-          cargo +nightly fuzz run translate -- -runs=0
+          cargo +nightly fuzz run translate --target x86_64-unknown-linux-gnu -- -runs=0
 
   docs:
     name: Rustdoc (warnings denied)
