@@ -111,7 +111,9 @@ jobs:
             fuzz
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
 
       - name: Build fuzz target
         run: cargo +nightly fuzz build translate
