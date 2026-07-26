@@ -255,8 +255,8 @@ header .tagline a:focus {
     gap: 6px;
     border: 1px solid var(--r2f-line);
     border-radius: 999px;
-    padding: 0.45rem 0.7rem;
-    font-size: 0.9rem;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.85rem;
     background: transparent;
     color: var(--r2f-ink);
     cursor: pointer;
@@ -265,6 +265,13 @@ header .tagline a:focus {
 
 .pill:hover {
     background: var(--r2f-hover);
+}
+
+/* The currently loaded example inverts, like a selected segmented option. */
+.pill.active {
+    background: var(--r2f-ink);
+    color: var(--r2f-bg);
+    border-color: var(--r2f-ink);
 }
 
 /* Segmented toggle (confidence selector, output tabs). */
@@ -582,11 +589,22 @@ header .tagline a:focus {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 0.25rem 0.6rem;
+    padding: 0.25rem 0.7rem;
     border: 1px solid var(--lvl, var(--r2f-line));
     border-radius: 999px;
     font-size: 0.8rem;
     font-family: var(--r2f-mono);
+    background: var(--lvl, var(--r2f-line));
+    color: #fff;
+}
+
+/* On the filled confidence chip the badge box is redundant: show just the
+   level letter inline, in white, no colored square. */
+.confidence-summary .level-badge {
+    background: transparent;
+    width: auto;
+    height: auto;
+    font-size: 0.8rem;
 }
 
 /* dioxus-code editor integration: blend into the panel, keep the caret

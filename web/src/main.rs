@@ -250,7 +250,7 @@ fn copy_to_clipboard(text: String) {
 
 #[component]
 fn App() -> Element {
-    let mut sql = use_signal(String::new);
+    let mut sql = use_signal(|| EXAMPLES[0].sql.to_string());
     let mut min_confidence = use_signal(|| ConfidenceLevel::B);
     let active_tab = use_signal(|| Tab::Dsl);
     let result = use_signal::<Option<Translation>>(|| None);
@@ -260,9 +260,14 @@ fn App() -> Element {
     let mut files = use_signal::<Vec<(String, String)>>(Vec::new);
     let mut drag_from = use_signal::<Option<usize>>(|| None);
     let copied_tab = use_signal::<Option<Tab>>(|| None);
+    // Which example pill is currently loaded, cleared once the user edits or
+    // uploads so a hand-modified schema no longer shows a pill as selected.
+    let mut active_example = use_signal::<Option<usize>>(|| Some(0));
 
-    // No example is loaded by default: the empty editor invites the user to
-    // paste, upload, or pick an example. Translation runs only on their action.
+    // Preload the first example and translate it once on mount so a first
+    // visitor sees real output immediately. `peek` inside keeps it from
+    // re-subscribing, so it runs a single time.
+    use_effect(move || run_translation(sql, min_confidence, result, parse_error));
 
     rsx! {
         document::Link { rel: "icon", href: "/favicon.ico", sizes: "any" }
@@ -312,9 +317,11 @@ fn App() -> Element {
                     min_confidence,
                     parse_error: parse_error.read().clone(),
                     files: files.read().clone(),
+                    active_example: active_example(),
                     on_pick_example: move |i: usize| {
                         sql.set(EXAMPLES[i].sql.to_string());
                         files.set(Vec::new());
+                        active_example.set(Some(i));
                         run_translation(sql, min_confidence, result, parse_error);
                     },
                     on_set_confidence: move |level: ConfidenceLevel| {
@@ -322,12 +329,15 @@ fn App() -> Element {
                         run_translation(sql, min_confidence, result, parse_error);
                     },
                     on_upload: move |fs: Vec<FileData>| {
+                        active_example.set(None);
                         load_files(fs, false, sql, files, min_confidence, result, parse_error);
                     },
                     on_upload_folder: move |fs: Vec<FileData>| {
+                        active_example.set(None);
                         load_files(fs, true, sql, files, min_confidence, result, parse_error);
                     },
                     on_edit: move |v: String| {
+                        active_example.set(None);
                         sql.set(v);
                         run_translation(sql, min_confidence, result, parse_error);
                     },
@@ -366,6 +376,7 @@ fn InputPane(
     min_confidence: Signal<ConfidenceLevel>,
     parse_error: Option<String>,
     files: Vec<(String, String)>,
+    active_example: Option<usize>,
     on_pick_example: EventHandler<usize>,
     on_set_confidence: EventHandler<ConfidenceLevel>,
     on_upload: EventHandler<Vec<FileData>>,
@@ -411,9 +422,10 @@ fn InputPane(
             div { class: "pills",
                 for (i, ex) in EXAMPLES.iter().enumerate() {
                     button {
-                        class: "pill",
+                        class: if active_example == Some(i) { "pill active" } else { "pill" },
                         title: "{ex.description}",
                         aria_label: "Load the {ex.label} example schema",
+                        "aria-pressed": (active_example == Some(i)).to_string(),
                         onclick: move |_| on_pick_example.call(i),
                         {example_icon(ex.icon)}
                         "{ex.label}"
