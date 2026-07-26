@@ -6,20 +6,24 @@
 
 Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) (RLS) policies into [OpenFGA](https://openfga.dev/docs) authorization model definitions and relationship tuples.
 
-## What it does
+`PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples, fine-grained, per-resource permissions evaluated at the application layer.
 
-`PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples — fine-grained, per-resource permissions evaluated at the application layer.
-
-`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of ten canonical patterns (P1 through P10) and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
+`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of ten canonical patterns and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
 
 Policies that cannot be fully translated are flagged with a confidence level and emit `-- TODO` items for manual review.
+
+> [!WARNING]
+> The crate is not published yet on crates.io because we are waiting for the latest `sqlparser` version to be released.
+
+> [!WARNING]
+> ABAC support is partial and policies with an attribute guard (`AND col = value`) are only partially translated.
 
 ## Cargo Features
 
 The `std` feature is enabled by default.
 
 | Feature | Enables | Purpose |
-|---------|---------|---------|
+| --------- | --------- | --------- |
 | `std` | standard library | File output (`Translator::write_output`, `output::formatter`) and stack-overflow protection in the SQL parser. On by default. Disable with `--no-default-features` for a `no_std` + `alloc` build of the parse, classify, and generate pipeline. |
 | `agent` | `reqwest`, `tokio` | Push generated models and tuples to a live `OpenFGA` instance via its HTTP API (implies `std`) |
 | `db` | `diesel` (`PostgreSQL`) | Connect to a live `PostgreSQL` database to read schema metadata and execute tuple queries (implies `std`) |
@@ -75,7 +79,7 @@ for todo in &model.todos {
 The `min_confidence` parameter controls which policies appear in the output:
 
 | Level | Meaning |
-|-------|---------|
+| ------- | --------- |
 | `A` | Fully translated; no manual review needed |
 | `B` | Composite patterns where all sub-expressions are A-level |
 | `C` | Partial translation; ABAC crossovers or attribute guards present |
@@ -116,16 +120,10 @@ WHERE owner_id IS NOT NULL;
 
 Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`.
 
-Build API documentation locally:
-
-```bash
-cargo doc --all-features --no-deps --open
-```
-
 ## Supported RLS Patterns
 
 | Pattern | Name | RLS expression shape | `OpenFGA` mapping |
-|---------|------|----------------------|-----------------|
+| --------- | ------ | ---------------------- | ----------------- |
 | P1 | `NumericThreshold` | `role_fn(user, resource) >= N` | Hierarchical relations derived from a numeric level |
 | P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One direct relation per allowed role name |
 | P3 | `DirectOwnership` | `owner_id = current_user_id()` | `define owner: [user]` direct relation |
@@ -138,15 +136,11 @@ cargo doc --all-features --no-deps --open
 | P10 | `ConstantBool` | `TRUE` / `FALSE` | Open (`[user:*]`) or closed (no access) |
 | — | `Unknown` | Unrecognised expression | Always emitted as `-- TODO [Level D]` |
 
-## Limitations
-
-The crate is not published on crates.io because the `sqlparser` dependency is tracked from a git branch, and crates.io forbids git dependencies in published crates. It is library only, with no CLI binary, so it must be called from Rust code. ABAC support is partial for pattern P7: policies with an attribute guard (`AND col = value`) are only partially translated, and the attribute condition becomes a `-- TODO [Level C]` comment.
-
 ## Policy Role Scope (`TO <role>`)
 
 When a `PostgreSQL` policy targets a specific role, for example `CREATE POLICY ... TO analyst USING (...)`, `rls2fga` preserves that scope. It adds role-scope relations in the generated model, adds a `pg_role` type with a `member` relation, and emits tuples that tie protected rows to `pg_role:<role>`.
 
-**Required runtime data:** you must load `pg_role#member` tuples that map users to `PostgreSQL` roles in your `OpenFGA` store. Without them, role-scoped policies will not match any user.
+Required runtime data: you must load `pg_role#member` tuples that map users to `PostgreSQL` roles in your `OpenFGA` store. Without them, role-scoped policies will not match any user.
 
 ## License
 
