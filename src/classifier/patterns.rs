@@ -313,6 +313,10 @@ impl ClassifiedPolicy {
 }
 
 /// Keep only policy classifications at or above the requested confidence level.
+///
+/// A RESTRICTIVE policy is kept even when all its classifications drop: RLS is
+/// `(permissive OR ...) AND restrictive AND ...`, so removing one grants access
+/// it forbids. The `*_was_filtered` flags tell the generator to fall closed.
 pub fn filter_policies_for_output(
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
@@ -340,6 +344,7 @@ pub fn filter_policies_for_output(
 
             if filtered.using_classification.is_some()
                 || filtered.with_check_classification.is_some()
+                || filtered.mode() == PolicyMode::Restrictive
             {
                 Some(filtered)
             } else {

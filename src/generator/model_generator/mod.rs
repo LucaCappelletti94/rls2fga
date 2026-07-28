@@ -5,17 +5,20 @@ use core::fmt::Write;
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
-use crate::generator::db_lookup::{resolve_pk_column, table_has_column};
+use crate::generator::db_lookup::{
+    composite_primary_key_columns, resolve_pk_column, table_has_column,
+};
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name, stable_hex_suffix,
+    canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_identifier,
+    normalize_relation_name, parent_type_from_fk_column, policy_scope_relation_name,
+    stable_hex_suffix,
 };
-use crate::parser::sql_parser::{ColumnLike, ForeignKeyLike, ParserDB, TableLike};
+use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
 
 /// `OpenFGA` DSL text rendering from the schema plan.
@@ -115,10 +118,6 @@ impl TypePlan {
         self.computed_relations.insert(relation, expr);
     }
 
-    fn has_relations(&self) -> bool {
-        !self.direct_relations.is_empty() || !self.computed_relations.is_empty()
-    }
-
     fn add_source(&mut self, source: TupleSource) {
         self.table_tuple_sources.push(source);
     }
@@ -200,55 +199,34 @@ pub(crate) fn build_schema_plan(
     let mut confidence_summary = Vec::new();
     let mut has_role_scopes = false;
 
-    // Track which source table first claimed each canonical OpenFGA type name so we can
-    // detect and disambiguate collisions (e.g. `app.users` and `auth.users` both → `users`).
-    let mut canonical_name_owners: BTreeMap<String, String> = BTreeMap::new();
-
     // Group policies by source table
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
         by_table.entry(cp.table_name()).or_default().push(cp);
     }
 
-    for (source_table_name, table_policies) in by_table {
-        let base_canonical = canonical_fga_type_name(&source_table_name);
-
-        // Detect canonical-name collision: two distinct source tables mapping to the same
-        // OpenFGA type identifier.  Disambiguate by appending a stable hex suffix of the
-        // original qualified name so each table gets its own type.
-        let canonical_table_name =
-            if let Some(prior_owner) = canonical_name_owners.get(&base_canonical) {
-                if prior_owner == &source_table_name {
-                    base_canonical
-                } else {
-                    // Disambiguate: append a short stable hash of the qualified name.
-                    let suffix = stable_hex_suffix(&source_table_name);
-                    let disambiguated = format!("{base_canonical}_{suffix}");
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: source_table_name.clone(),
-                        message: format!(
-                            "Type name collision: '{source_table_name}' and '{prior_owner}' both \
-                             canonicalize to '{base_canonical}'. Renamed to '{disambiguated}'. \
-                             Update your OpenFGA model references accordingly."
-                        ),
-                    });
-                    canonical_name_owners.insert(disambiguated.clone(), source_table_name.clone());
-                    disambiguated
-                }
-            } else {
-                canonical_name_owners.insert(base_canonical.clone(), source_table_name.clone());
-                base_canonical
-            };
-
-        // Only generate resource types for RLS-enabled tables.
-        let table_lookup = lookup_table(db, &source_table_name);
-        let Some(table) = table_lookup else {
-            continue;
-        };
-        if !table.has_row_level_security(db) {
+    // An RLS-enabled table with no policy denies every row, so seed it and let
+    // the deny fill below cover its commands.
+    let covered: BTreeSet<(Option<String>, String)> = by_table
+        .keys()
+        .filter_map(|name| lookup_table(db, name))
+        .map(table_identity)
+        .collect();
+    for table in db.tables() {
+        if !table.has_row_level_security(db) || covered.contains(&table_identity(table)) {
             continue;
         }
+        by_table.entry(qualified_table_name(table)).or_default();
+    }
+
+    let table_types = TableTypes::assign(&by_table, db, &mut todos);
+
+    for (source_table_name, table_policies) in by_table {
+        // Only RLS-enabled tables that resolve against the schema get a type.
+        let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
+            continue;
+        };
+        let canonical_table_name = canonical_table_name.to_string();
 
         let mut table_plan = all_types
             .remove(&canonical_table_name)
@@ -289,16 +267,16 @@ pub(crate) fn build_schema_plan(
             };
 
             for_each_policy_target_expr(cp, |target, classified| {
-                let expr = pattern_to_expr_for_target(
+                let expr = translate_pattern(
                     &classified.pattern,
                     cp.name(),
-                    target,
                     &mut table_plan,
                     &mut all_types,
                     registry,
                     &mut todos,
                     &role_threshold_resource_hints,
                     db,
+                    &table_types,
                     &source_table_name,
                 );
                 let expr = if let Some(scope_relation) = scope_relation.as_deref() {
@@ -357,20 +335,24 @@ pub(crate) fn build_schema_plan(
             }
         }
 
-        if !table_plan.has_relations() {
+        // An undefined action relation reads as "the consumer decides", which is
+        // how RLS coverage gaps become open access.
+        let uncovered = fill_uncovered_actions_with_deny(&mut table_plan);
+        if !uncovered.is_empty() {
             todos.push(TodoItem {
-                level: ConfidenceLevel::D,
+                level: ConfidenceLevel::C,
                 policy_name: source_table_name.clone(),
                 message: format!(
-                    "No translatable relations generated for table '{source_table_name}'"
+                    "No permissive policy on '{source_table_name}' covers {}; RLS denies \
+                     {those} outright and the model mirrors that with no_access",
+                    uncovered.join(", "),
+                    those = if uncovered.len() == 1 { "it" } else { "them" }
                 ),
             });
         }
 
         all_types.insert(canonical_table_name, table_plan);
     }
-
-    rewrite_p5_update_phases(&mut all_types);
 
     if has_role_scopes {
         ensure_pg_role_type(&mut all_types);
@@ -439,11 +421,32 @@ fn policy_uses_using_for_missing_with_check(command: &PolicyCommand) -> bool {
     )
 }
 
+/// Stand-in expression for a RESTRICTIVE clause dropped by confidence filtering:
+/// `PostgreSQL` ANDs it onto the permissive union, so it must deny.
+fn dropped_restrictive_expr(cp: &ClassifiedPolicy, clause_sql: Option<String>) -> ClassifiedExpr {
+    ClassifiedExpr {
+        pattern: PatternClass::Unknown {
+            sql_text: clause_sql.unwrap_or_default(),
+            reason: format!(
+                "RESTRICTIVE policy '{}' could not be translated at the requested confidence \
+                 level; PostgreSQL ANDs it onto every other policy, so the command is denied \
+                 rather than left unconstrained",
+                cp.name()
+            ),
+        },
+        confidence: ConfidenceLevel::D,
+    }
+}
+
 fn for_each_policy_target_expr<F>(cp: &ClassifiedPolicy, mut f: F)
 where
     F: FnMut(ActionTarget, &ClassifiedExpr),
 {
-    if let Some(using) = cp.using_classification.as_ref() {
+    let restrictive = cp.mode() == PolicyMode::Restrictive;
+
+    let dropped_using = (restrictive && cp.using_was_filtered)
+        .then(|| dropped_restrictive_expr(cp, cp.policy.using.as_ref().map(ToString::to_string)));
+    if let Some(using) = cp.using_classification.as_ref().or(dropped_using.as_ref()) {
         for target in using_targets(&cp.command()) {
             f(target, using);
         }
@@ -454,13 +457,22 @@ where
     // If `with_check_was_filtered` is true, the expression existed but was dropped
     // due to low confidence; fall closed rather than promoting a low-confidence
     // USING expression as a WITH CHECK substitute.
-    let with_check_pattern = cp.with_check_classification.as_ref().or_else(|| {
-        if !cp.with_check_was_filtered && policy_uses_using_for_missing_with_check(&cp.command()) {
-            cp.using_classification.as_ref()
-        } else {
-            None
-        }
+    let dropped_with_check = (restrictive && cp.with_check_was_filtered).then(|| {
+        dropped_restrictive_expr(cp, cp.policy.with_check.as_ref().map(ToString::to_string))
     });
+    let with_check_pattern = cp
+        .with_check_classification
+        .as_ref()
+        .or(dropped_with_check.as_ref())
+        .or_else(|| {
+            if !cp.with_check_was_filtered
+                && policy_uses_using_for_missing_with_check(&cp.command())
+            {
+                cp.using_classification.as_ref()
+            } else {
+                None
+            }
+        });
 
     if let Some(with_check) = with_check_pattern {
         for target in with_check_targets(&cp.command()) {
@@ -519,6 +531,19 @@ fn register_pg_role_scope(
     if let Some(pk_col) = resolve_pk_column(source_table, db) {
         for role in role_names {
             let pg_role = canonical_fga_type_name(role);
+            // A quoted role can rewrite onto a different existing role, which
+            // changes who the policy admits.
+            if normalize_identifier(role) != pg_role {
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: policy_name.to_string(),
+                    message: format!(
+                        "PostgreSQL role '{role}' is not a valid OpenFGA identifier and was \
+                         rewritten to 'pg_role:{pg_role}'; confirm no other role maps to the \
+                         same identifier"
+                    ),
+                });
+            }
             table_plan.add_source(TupleSource::PolicyScope {
                 table: source_table.to_string(),
                 pk_col: pk_col.clone(),
@@ -527,7 +552,7 @@ fn register_pg_role_scope(
             });
         }
     } else {
-        add_missing_object_identifier_todo(table_plan, source_table, missing_object_what);
+        add_missing_object_identifier_todo(table_plan, source_table, missing_object_what, db);
     }
 }
 
@@ -543,6 +568,160 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
         (None, Some(_)) => Some(deny_expr(table_plan)),
         (None, None) => None,
     }
+}
+
+/// Quote `part` when leaving it bare would change how the name parses.
+fn quote_name_part(part: &str) -> String {
+    if part.contains('.') || part.contains('"') {
+        format!("\"{}\"", part.replace('"', "\"\""))
+    } else {
+        part.to_string()
+    }
+}
+
+/// Schema-qualified name, matching the spelling used in `CREATE POLICY`.
+fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
+    let relation = quote_name_part(table.table_name());
+    match table.table_schema() {
+        Some(schema) => format!("{}.{relation}", quote_name_part(schema)),
+        None => relation,
+    }
+}
+
+/// Identity that matches two table references however the policy spelled them.
+fn table_identity(table: &<ParserDB as DatabaseLike>::Table) -> (Option<String>, String) {
+    (
+        table.table_schema().map(ToString::to_string),
+        table.table_name().to_string(),
+    )
+}
+
+/// Final `OpenFGA` type name of every table that gets a type.
+///
+/// Names are assigned in one pass before translation so that a table referenced
+/// as a parent resolves to the same type as when its own policies are processed.
+/// Deriving the name on demand would point a child at whichever same-named table
+/// happened to claim the canonical name first.
+struct TypeOwner {
+    identity: (Option<String>, String),
+    /// Spelling used in the schema, for the collision message.
+    spelling: String,
+}
+
+#[derive(Default)]
+struct TableTypes {
+    by_identity: BTreeMap<(Option<String>, String), String>,
+    owners: BTreeMap<String, TypeOwner>,
+}
+
+impl TableTypes {
+    /// Assign one type name per RLS-enabled table, suffixing collisions with a
+    /// stable hash of the qualified name (`app.users` and `auth.users` both
+    /// canonicalize to `users`).
+    ///
+    /// Tables with policies claim their canonical name first: a table present only
+    /// as a deny-all must not rename a type whose tuples are already loaded.
+    fn assign(
+        by_table: &BTreeMap<String, Vec<&ClassifiedPolicy>>,
+        db: &ParserDB,
+        todos: &mut Vec<TodoItem>,
+    ) -> Self {
+        let mut types = Self::default();
+        let with_policies = by_table.iter().filter(|(_, ps)| !ps.is_empty());
+        let deny_only = by_table.iter().filter(|(_, ps)| ps.is_empty());
+
+        for (name, _) in with_policies.chain(deny_only) {
+            let Some(table) = lookup_table(db, name) else {
+                continue;
+            };
+            if !table.has_row_level_security(db) {
+                continue;
+            }
+            let identity = table_identity(table);
+            if types.by_identity.contains_key(&identity) {
+                continue;
+            }
+
+            let base = canonical_fga_type_name(name);
+            let assigned = match types.owners.get(&base) {
+                Some(prior) => {
+                    let disambiguated = format!("{base}_{}", stable_hex_suffix(name));
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: name.clone(),
+                        message: format!(
+                            "Type name collision: '{name}' and '{}' both canonicalize to \
+                             '{base}'. Renamed to '{disambiguated}'. Update your OpenFGA model \
+                             references accordingly.",
+                            prior.spelling
+                        ),
+                    });
+                    disambiguated
+                }
+                None => base,
+            };
+            types.owners.insert(
+                assigned.clone(),
+                TypeOwner {
+                    identity: identity.clone(),
+                    spelling: name.clone(),
+                },
+            );
+            types.by_identity.insert(identity, assigned);
+        }
+
+        types
+    }
+
+    /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
+    fn get(&self, db: &ParserDB, table: &str) -> Option<&str> {
+        let identity = table_identity(lookup_table(db, table)?);
+        self.by_identity.get(&identity).map(String::as_str)
+    }
+
+    /// Type of `table`, deriving one when it has none: a parent without RLS still
+    /// needs a type for the child to point at. The derived name steps aside when
+    /// another table already owns it, so the child cannot inherit that table's
+    /// permissions.
+    fn resolve(&self, db: &ParserDB, table: &str) -> String {
+        let identity = lookup_table(db, table).map(table_identity);
+        if let Some(assigned) = identity.as_ref().and_then(|id| self.by_identity.get(id)) {
+            return assigned.clone();
+        }
+        let base = canonical_fga_type_name(table);
+        match self.owners.get(&base) {
+            Some(owner) if Some(&owner.identity) != identity.as_ref() => {
+                format!("{base}_{}", stable_hex_suffix(table))
+            }
+            _ => base,
+        }
+    }
+}
+
+const ACTION_RELATIONS: [&str; 4] = ["can_select", "can_insert", "can_update", "can_delete"];
+
+/// Deny every action relation no policy produced, returning the denied commands.
+fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec<&'static str> {
+    let missing: Vec<&'static str> = ACTION_RELATIONS
+        .into_iter()
+        .filter(|relation| !table_plan.computed_relations.contains_key(*relation))
+        .collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    let deny = deny_expr(table_plan);
+    for relation in &missing {
+        table_plan.set_computed(*relation, deny.clone());
+    }
+    missing
+        .into_iter()
+        .map(|relation| match relation {
+            "can_select" => "SELECT",
+            "can_insert" => "INSERT",
+            "can_update" => "UPDATE",
+            _ => "DELETE",
+        })
+        .collect()
 }
 
 /// Handle `P2RoleNameInList` when the function is *not* a `RoleThreshold` (e.g.
@@ -616,74 +795,7 @@ fn combine_intersection(exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
     combine_exprs(exprs, UsersetExpr::Intersection)
 }
 
-fn rewrite_p5_update_phases(all_types: &mut BTreeMap<String, TypePlan>) {
-    let relation_index: BTreeMap<String, BTreeSet<String>> = all_types
-        .iter()
-        .map(|(type_name, plan)| {
-            let mut rels: BTreeSet<String> = plan.computed_relations.keys().cloned().collect();
-            rels.extend(plan.direct_relations.keys().cloned());
-            (type_name.clone(), rels)
-        })
-        .collect();
-
-    for plan in all_types.values_mut() {
-        for target_relation in ["can_update_using", "can_update_check"] {
-            let Some(expr) = plan.computed_relations.get_mut(target_relation) else {
-                continue;
-            };
-            rewrite_update_phase_expr(
-                expr,
-                target_relation,
-                &plan.direct_relations,
-                &relation_index,
-            );
-        }
-    }
-}
-
-fn rewrite_update_phase_expr(
-    expr: &mut UsersetExpr,
-    target_relation: &str,
-    direct_relations: &BTreeMap<String, Vec<DirectSubject>>,
-    relation_index: &BTreeMap<String, BTreeSet<String>>,
-) {
-    match expr {
-        UsersetExpr::TupleToUserset { tupleset, computed } => {
-            if computed != "can_update" {
-                return;
-            }
-
-            let Some(subjects) = direct_relations.get(tupleset) else {
-                return;
-            };
-            let parent_types: Vec<&str> = subjects
-                .iter()
-                .filter_map(|s| match s {
-                    DirectSubject::Type(t) => Some(t.as_str()),
-                    DirectSubject::Wildcard(_) => None,
-                })
-                .collect();
-            if parent_types.is_empty() {
-                return;
-            }
-
-            if parent_types.iter().all(|parent_type| {
-                relation_index
-                    .get(*parent_type)
-                    .is_some_and(|rels| rels.contains(target_relation))
-            }) {
-                *computed = target_relation.to_string();
-            }
-        }
-        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => {
-            for child in children {
-                rewrite_update_phase_expr(child, target_relation, direct_relations, relation_index);
-            }
-        }
-        UsersetExpr::Computed(_) => {}
-    }
-}
-
+/// Translate a pattern with schema-independent defaults.
 #[cfg(test)]
 fn pattern_to_expr(
     pattern: &PatternClass,
@@ -694,31 +806,36 @@ fn pattern_to_expr(
     todos: &mut Vec<TodoItem>,
 ) -> UsersetExpr {
     let db = crate::parser::sql_parser::parse_schema("").expect("empty schema should parse");
-    pattern_to_expr_for_target(
+    translate_pattern(
         pattern,
         policy_name,
-        ActionTarget::Select,
         table_plan,
         all_types,
         registry,
         todos,
         &RoleThresholdResourceHints::default(),
         &db,
+        &TableTypes::default(),
         "test_table",
     )
 }
 
+/// Build the userset expression for one classified pattern.
+///
+/// The result does not depend on which command the policy covers: inheritance
+/// always reads the parent's SELECT relation, and the caller files the expression
+/// under the right action.
 #[allow(clippy::too_many_arguments)]
-fn pattern_to_expr_for_target(
+fn translate_pattern(
     pattern: &PatternClass,
     policy_name: &str,
-    target: ActionTarget,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
     todos: &mut Vec<TodoItem>,
     hints: &RoleThresholdResourceHints,
     db: &ParserDB,
+    table_types: &TableTypes,
     source_table: &str,
 ) -> UsersetExpr {
     match pattern {
@@ -829,7 +946,12 @@ fn pattern_to_expr_for_target(
                     owner_col: column.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(table_plan, source_table, "ownership tuples");
+                add_missing_object_identifier_todo(
+                    table_plan,
+                    source_table,
+                    "ownership tuples",
+                    db,
+                );
             }
             UsersetExpr::Computed("owner".to_string())
         }
@@ -845,7 +967,7 @@ fn pattern_to_expr_for_target(
             // (e.g. "doc_id" → "doc" for an undeclared reference).
             let parent_type = referenced_table_for_fk_col(db, join_table, fk_column).map_or_else(
                 || parent_type_from_fk_column(fk_column),
-                canonical_fga_type_name,
+                |referenced| table_types.resolve(db, referenced),
             );
 
             table_plan.ensure_direct(
@@ -888,7 +1010,7 @@ fn pattern_to_expr_for_target(
                     parent_type: parent_type.clone(),
                 });
             } else {
-                add_missing_bridge_todo(table_plan, source_table, &parent_type);
+                add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
             }
 
             UsersetExpr::TupleToUserset {
@@ -912,15 +1034,15 @@ fn pattern_to_expr_for_target(
                 return deny_expr(table_plan);
             }
 
-            let parent_relation = canonical_fga_type_name(parent_table);
+            let parent_relation = table_types.resolve(db, parent_table);
 
             table_plan.ensure_direct(
                 parent_relation.clone(),
                 vec![DirectSubject::Type(parent_relation.clone())],
             );
             // Pre-populate the parent TypePlan with the relations derived from the
-            // inner pattern.  This ensures the parent has the correct action relation
-            // even if its own policies haven't been processed yet.
+            // inner pattern, so the parent exposes them even if its own policies
+            // have not been processed yet.
             let parent_plan = all_types
                 .entry(parent_relation.clone())
                 .or_insert_with(|| TypePlan::new(&parent_relation));
@@ -928,16 +1050,16 @@ fn pattern_to_expr_for_target(
             // We'll re-insert it afterwards.
             let mut parent_plan_owned =
                 core::mem::replace(parent_plan, TypePlan::new(&parent_relation));
-            let inner_expr = pattern_to_expr_for_target(
+            let inner_expr = translate_pattern(
                 &inner_pattern.pattern,
                 policy_name,
-                target,
                 &mut parent_plan_owned,
                 all_types,
                 registry,
                 todos,
                 hints,
                 db,
+                table_types,
                 parent_table,
             );
             // Re-insert the (now populated) parent plan.
@@ -953,7 +1075,7 @@ fn pattern_to_expr_for_target(
                         "Parent inheritance from '{parent_table}' inner pattern could not be \
                          safely translated; '{parent_table}' may not expose '{}' \
                          (check parent table's RLS policies)",
-                        action_relation_for_target(target)
+                        action_relation_for_target(ActionTarget::Select)
                     ),
                 });
             }
@@ -965,12 +1087,14 @@ fn pattern_to_expr_for_target(
                     parent_type: parent_relation.clone(),
                 });
             } else {
-                add_missing_bridge_todo(table_plan, source_table, &parent_relation);
+                add_missing_bridge_todo(table_plan, source_table, &parent_relation, db);
             }
 
+            // The policy only reads the parent, so PostgreSQL applies the parent's
+            // SELECT policy whatever command the child covers.
             UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
-                computed: action_relation_for_target(target).to_string(),
+                computed: action_relation_for_target(ActionTarget::Select).to_string(),
             }
         }
         PatternClass::P6BooleanFlag { column } => {
@@ -981,7 +1105,12 @@ fn pattern_to_expr_for_target(
                     flag_col: column.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(table_plan, source_table, "public-flag tuples");
+                add_missing_object_identifier_todo(
+                    table_plan,
+                    source_table,
+                    "public-flag tuples",
+                    db,
+                );
             }
             public_expr(table_plan)
         }
@@ -998,16 +1127,16 @@ fn pattern_to_expr_for_target(
             });
             // Recurse first so relationship sources appear before the attribute Todo
             // in table_tuple_sources (matching old generate_tuple_queries ordering).
-            let result = pattern_to_expr_for_target(
+            let result = translate_pattern(
                 &relationship_part.pattern,
                 policy_name,
-                target,
                 table_plan,
                 all_types,
                 registry,
                 todos,
                 hints,
                 db,
+                table_types,
                 source_table,
             );
             table_plan.add_source(TupleSource::Todo {
@@ -1024,16 +1153,16 @@ fn pattern_to_expr_for_target(
         PatternClass::P8Composite { op, parts } => {
             let mut child_exprs = Vec::new();
             for part in parts {
-                child_exprs.push(pattern_to_expr_for_target(
+                child_exprs.push(translate_pattern(
                     &part.pattern,
                     policy_name,
-                    target,
                     table_plan,
                     all_types,
                     registry,
                     todos,
                     hints,
                     db,
+                    table_types,
                     source_table,
                 ));
             }
@@ -1075,6 +1204,7 @@ fn pattern_to_expr_for_target(
                         table_plan,
                         source_table,
                         "constant-TRUE tuples",
+                        db,
                     );
                 }
                 public_expr(table_plan)
@@ -1158,24 +1288,45 @@ fn prepare_role_threshold_translation(
     })
 }
 
-const MISSING_OBJECT_IDENTIFIER_SQL: &str =
-    "-- Tuple query not emitted; table needs a primary key or `id` column for stable object IDs.";
+/// Explain why `source_table` has no usable `OpenFGA` object identifier.
+fn missing_object_identifier_reason(source_table: &str, db: &ParserDB) -> String {
+    match composite_primary_key_columns(source_table, db) {
+        Some(columns) => format!(
+            "composite primary key ({}) leaves no single-column object identifier",
+            columns.join(", ")
+        ),
+        None => "missing object identifier column".to_string(),
+    }
+}
 
-fn add_missing_object_identifier_todo(table_plan: &mut TypePlan, source_table: &str, what: &str) {
+const MISSING_OBJECT_IDENTIFIER_SQL: &str =
+    "-- Tuple query not emitted; table needs a single-column primary key or `id` column for stable object IDs.";
+
+fn add_missing_object_identifier_todo(
+    table_plan: &mut TypePlan,
+    source_table: &str,
+    what: &str,
+    db: &ParserDB,
+) {
+    let reason = missing_object_identifier_reason(source_table, db);
     table_plan.add_source(TupleSource::Todo {
         level: ConfidenceLevel::D,
-        comment: format!(
-            "-- TODO [Level D]: skipped {what} for {source_table} (missing object identifier column)"
-        ),
+        comment: format!("-- TODO [Level D]: skipped {what} for {source_table} ({reason})"),
         sql: MISSING_OBJECT_IDENTIFIER_SQL.to_string(),
     });
 }
 
-fn add_missing_bridge_todo(table_plan: &mut TypePlan, source_table: &str, parent_type: &str) {
+fn add_missing_bridge_todo(
+    table_plan: &mut TypePlan,
+    source_table: &str,
+    parent_type: &str,
+    db: &ParserDB,
+) {
+    let reason = missing_object_identifier_reason(source_table, db);
     table_plan.add_source(TupleSource::Todo {
         level: ConfidenceLevel::D,
         comment: format!(
-            "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge (missing object identifier column)"
+            "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge ({reason})"
         ),
         sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
     });

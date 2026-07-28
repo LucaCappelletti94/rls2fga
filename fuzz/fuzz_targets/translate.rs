@@ -36,7 +36,7 @@ fn translate(sql: &str) {
         black_box(&model.dsl);
         black_box(&json);
         black_box(format_tuples(&tuples));
-        black_box(build_report(&model, &classified));
+        black_box(build_report(&model, &classified, level));
     }
 }
 

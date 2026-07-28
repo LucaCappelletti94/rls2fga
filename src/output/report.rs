@@ -2,7 +2,7 @@
 use crate::no_std_prelude::*;
 use core::fmt::Write;
 
-use crate::classifier::patterns::{ClassifiedExpr, ClassifiedPolicy};
+use crate::classifier::patterns::{ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel};
 use crate::generator::model_generator::GeneratedModel;
 
 /// Escape a user-controlled string for safe embedding in a Markdown table cell.
@@ -17,7 +17,15 @@ fn md_escape(s: &str) -> String {
 }
 
 /// Build a markdown report with confidence table and TODOs.
-pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> String {
+///
+/// `policies` is the unfiltered classification output. Clauses below
+/// `min_confidence` are absent from the model and tuples, so the report is the
+/// only place their loss is visible.
+pub fn build_report(
+    model: &GeneratedModel,
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) -> String {
     let mut report = String::new();
 
     let _ = writeln!(report, "# rls2fga Translation Report");
@@ -48,6 +56,8 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
         }
     }
 
+    write_dropped_section(&mut report, policies, min_confidence);
+
     // TODOs
     if !model.todos.is_empty() {
         let _ = writeln!(report);
@@ -64,6 +74,56 @@ pub fn build_report(model: &GeneratedModel, policies: &[ClassifiedPolicy]) -> St
     }
 
     report
+}
+
+/// Enumerate the policy clauses excluded from the model and tuple output.
+fn write_dropped_section(
+    report: &mut String,
+    policies: &[ClassifiedPolicy],
+    min_confidence: ConfidenceLevel,
+) {
+    let dropped: Vec<(&ClassifiedPolicy, &str, &ClassifiedExpr)> = policies
+        .iter()
+        .flat_map(|cp| {
+            [
+                ("USING", cp.using_classification.as_ref()),
+                ("WITH CHECK", cp.with_check_classification.as_ref()),
+            ]
+            .into_iter()
+            .filter_map(move |(label, classification)| {
+                classification
+                    .filter(|c| c.confidence < min_confidence)
+                    .map(|c| (cp, label, c))
+            })
+        })
+        .collect();
+
+    if dropped.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(report);
+    let _ = writeln!(report, "## Dropped Below Confidence {min_confidence}");
+    let _ = writeln!(report);
+    let _ = writeln!(
+        report,
+        "Excluded from the model and tuple output. A PERMISSIVE clause grants \
+         nothing, so the model is narrower than the policy. A RESTRICTIVE clause \
+         becomes `no_access`, since PostgreSQL ANDs it onto every other policy."
+    );
+    let _ = writeln!(report);
+
+    for (cp, label, classification) in dropped {
+        let _ = writeln!(
+            report,
+            "- `{}` ({label}, {} {}, confidence {}): {}",
+            md_escape(cp.name()),
+            cp.mode(),
+            cp.command(),
+            classification.confidence,
+            md_escape(&format_pattern(&classification.pattern))
+        );
+    }
 }
 
 fn write_classification_row(
@@ -338,7 +398,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
             classified_policy("docs_noop", None, None),
         ];
 
-        let report = build_report(&model, &policies);
+        let report = build_report(&model, &policies, ConfidenceLevel::D);
         assert!(report.contains("docs_select (USING)"));
         assert!(report.contains("docs_select (WITH CHECK)"));
         assert!(report.contains("| docs_noop | N/A | N/A |  |"));

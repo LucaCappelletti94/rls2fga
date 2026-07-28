@@ -91,35 +91,48 @@ pub fn recognize_p5(
     None
 }
 
+/// Destructure `col IN (SELECT ...)` and its equivalent `col = ANY/SOME (SELECT ...)`.
+///
+/// Rejects the negated spellings and every operator but `=`: `col > ANY (...)`
+/// and `col = ALL (...)` are not membership tests.
+fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::Query)> {
+    match expr {
+        Expr::InSubquery {
+            expr: lhs,
+            subquery,
+            negated: false,
+        } => Some((lhs.as_ref(), subquery.as_ref())),
+        Expr::AnyOp {
+            left,
+            compare_op: BinaryOperator::Eq,
+            right,
+            ..
+        } => match right.as_ref() {
+            Expr::Subquery(subquery) => Some((left.as_ref(), subquery.as_ref())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Try to recognize P4 via IN-subquery: `col IN (SELECT col FROM membership_table ...)`.
 pub fn recognize_p4_in_subquery(
     expr: &Expr,
     db: &ParserDB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::InSubquery {
-        expr: lhs,
-        subquery,
-        negated,
-    } = expr
-    {
-        if *negated {
-            return None;
-        }
+    let (lhs, query) = membership_subquery_operands(expr)?;
 
-        // LHS should be a column reference (e.g. team_id)
-        let lhs_col = extract_column_name(lhs)?;
+    // LHS should be a column reference (e.g. team_id)
+    let lhs_col = extract_column_name(lhs)?;
 
-        let query = subquery.as_ref();
-        let body = query.body.as_ref();
-
-        if let sqlparser::ast::SetExpr::Select(select) = body {
-            let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-            return classify_membership_select(select.as_ref(), db, registry, Some(projected_col));
-        }
+    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+        let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
+        return classify_membership_select(select.as_ref(), db, registry, Some(projected_col));
     }
     None
 }
+
 fn classify_membership_select(
     select: &Select,
     db: &ParserDB,
@@ -237,15 +250,10 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
             }
             None
         }
-        Expr::InSubquery {
-            expr: lhs,
-            subquery,
-            negated,
-        } if !negated => {
+        _ => {
+            let (lhs, query) = membership_subquery_operands(expr)?;
             let lhs_col = extract_column_name(lhs)?;
-            let query = subquery.as_ref();
-            let body = query.body.as_ref();
-            if let sqlparser::ast::SetExpr::Select(select) = body {
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
                 let projected_fk = extract_projection_column(select.as_ref())
                     .unwrap_or(lhs_col)
                     .clone();
@@ -253,7 +261,6 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
             }
             None
         }
-        _ => None,
     }
 }
 

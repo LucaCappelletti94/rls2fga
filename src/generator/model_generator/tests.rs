@@ -624,7 +624,7 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
 }
 
 #[test]
-fn build_schema_plan_adds_no_translatable_relations_todo() {
+fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = current_user);",
     );
@@ -633,10 +633,21 @@ fn build_schema_plan_adds_no_translatable_relations_todo() {
     let registry = FunctionRegistry::new();
 
     let plan = build_schema_plan(&[classified], &db, &registry);
-    assert!(plan
-        .todos
+    let docs = plan
+        .types
         .iter()
-        .any(|t| t.message.contains("No translatable relations generated")));
+        .find(|t| t.type_name == "docs")
+        .expect("RLS-enabled table should still be emitted");
+    for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
+        assert_eq!(
+            docs.computed_relations.get(relation),
+            Some(&UsersetExpr::Computed("no_access".to_string())),
+            "{relation} should deny when nothing translated"
+        );
+    }
+    assert!(plan.todos.iter().any(|t| t
+        .message
+        .contains("No permissive policy on 'docs' covers SELECT, INSERT, UPDATE, DELETE")));
 }
 
 #[test]
@@ -782,100 +793,6 @@ fn action_target_helpers_cover_empty_arms() {
     assert!(using_targets(&PolicyCommand::Insert).is_empty());
     assert!(with_check_targets(&PolicyCommand::Select).is_empty());
     assert!(with_check_targets(&PolicyCommand::Delete).is_empty());
-}
-
-#[test]
-fn rewrite_p5_update_phases_promotes_phase_specific_parent_relations() {
-    let mut all_types = BTreeMap::new();
-
-    let mut parent = TypePlan::new("project");
-    parent.set_computed(
-        "can_update_using",
-        UsersetExpr::Computed("owner".to_string()),
-    );
-    parent.set_computed(
-        "can_update_check",
-        UsersetExpr::Computed("editor".to_string()),
-    );
-    parent.set_computed(
-        "can_update",
-        UsersetExpr::Intersection(vec![
-            UsersetExpr::Computed("can_update_using".to_string()),
-            UsersetExpr::Computed("can_update_check".to_string()),
-        ]),
-    );
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
-    child.set_computed(
-        "can_update_using",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    child.set_computed(
-        "can_update_check",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    assert!(matches!(
-        task.computed_relations.get("can_update_using"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update_using"
-    ));
-    assert!(matches!(
-        task.computed_relations.get("can_update_check"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update_check"
-    ));
-}
-
-#[test]
-fn rewrite_p5_update_phases_keeps_can_update_when_parent_types_are_mixed() {
-    let mut all_types = BTreeMap::new();
-
-    let mut project = TypePlan::new("project");
-    project.set_computed(
-        "can_update_using",
-        UsersetExpr::Computed("owner".to_string()),
-    );
-    all_types.insert("project".to_string(), project);
-
-    let mut org = TypePlan::new("org");
-    org.set_computed("can_update", UsersetExpr::Computed("admin".to_string()));
-    all_types.insert("org".to_string(), org);
-
-    let mut task = TypePlan::new("task");
-    task.ensure_direct(
-        "parent",
-        vec![
-            DirectSubject::Type("project".to_string()),
-            DirectSubject::Type("org".to_string()),
-        ],
-    );
-    task.set_computed(
-        "can_update_using",
-        UsersetExpr::TupleToUserset {
-            tupleset: "parent".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    all_types.insert("task".to_string(), task);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    assert!(matches!(
-        task.computed_relations.get("can_update_using"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
-    ));
 }
 
 #[test]
@@ -1097,34 +1014,6 @@ fn type_plan_panics_on_computed_direct_conflict() {
     plan.ensure_direct("owner", vec![DirectSubject::Type("user".to_string())]);
     // Now try to add "owner" as a computed relation -- should panic
     plan.set_computed("owner", UsersetExpr::Computed("member".to_string()));
-}
-
-#[test]
-fn rewrite_update_phase_expr_skips_non_can_update_computed() {
-    let mut all_types = BTreeMap::new();
-    let mut parent = TypePlan::new("project");
-    parent.set_computed("can_select", UsersetExpr::Computed("viewer".to_string()));
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
-    child.set_computed(
-        "can_select",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_select".to_string(), // NOT can_update
-        },
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").unwrap();
-    // Should NOT be rewritten since it's can_select, not can_update
-    assert!(matches!(
-        task.computed_relations.get("can_select"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_select"
-    ));
 }
 
 #[test]
@@ -1378,205 +1267,6 @@ fn set_computed_panics_when_relation_already_direct() {
     let mut plan = TypePlan::new("test");
     plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
     plan.set_computed("rel", UsersetExpr::Computed("x".into()));
-}
-
-// ---------------------------------------------------------------
-// rewrite_update_phase_expr — Union/Intersection recursion (lines 616-618)
-// ---------------------------------------------------------------
-#[test]
-fn rewrite_update_phase_expr_recurses_into_union() {
-    let mut all_types = BTreeMap::new();
-
-    // Parent has can_update_using
-    let mut parent = TypePlan::new("project");
-    parent.set_computed(
-        "can_update_using",
-        UsersetExpr::Computed("owner".to_string()),
-    );
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
-    // Union of two TupleToUserset nodes referencing can_update
-    child.set_computed(
-        "can_update_using",
-        UsersetExpr::Union(vec![
-            UsersetExpr::TupleToUserset {
-                tupleset: "project".to_string(),
-                computed: "can_update".to_string(),
-            },
-            UsersetExpr::Computed("viewer".to_string()),
-        ]),
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    // The TupleToUserset inside the Union should be rewritten to can_update_using
-    match task.computed_relations.get("can_update_using") {
-        Some(UsersetExpr::Union(children)) => {
-            assert!(
-                children.iter().any(|c| matches!(
-                    c,
-                    UsersetExpr::TupleToUserset { computed, .. } if computed == "can_update_using"
-                )),
-                "TupleToUserset inside Union should be rewritten; got: {children:?}"
-            );
-            assert!(
-                children
-                    .iter()
-                    .any(|c| matches!(c, UsersetExpr::Computed(n) if n == "viewer")),
-                "Non-TupleToUserset Computed should be preserved"
-            );
-        }
-        other => panic!("expected Union, got: {other:?}"),
-    }
-}
-
-#[test]
-fn rewrite_update_phase_expr_recurses_into_intersection() {
-    let mut all_types = BTreeMap::new();
-
-    let mut parent = TypePlan::new("project");
-    parent.set_computed(
-        "can_update_check",
-        UsersetExpr::Computed("editor".to_string()),
-    );
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
-    child.set_computed(
-        "can_update_check",
-        UsersetExpr::Intersection(vec![
-            UsersetExpr::TupleToUserset {
-                tupleset: "project".to_string(),
-                computed: "can_update".to_string(),
-            },
-            UsersetExpr::Computed("member".to_string()),
-        ]),
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    match task.computed_relations.get("can_update_check") {
-        Some(UsersetExpr::Intersection(children)) => {
-            assert!(
-                children.iter().any(|c| matches!(
-                    c,
-                    UsersetExpr::TupleToUserset { computed, .. } if computed == "can_update_check"
-                )),
-                "TupleToUserset inside Intersection should be rewritten; got: {children:?}"
-            );
-        }
-        other => panic!("expected Intersection, got: {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------
-// rewrite_update_phase_expr — TupleToUserset with non-matching parent (line 601)
-// Parent tupleset subjects are only Wildcard → parent_types is empty → skip
-// ---------------------------------------------------------------
-#[test]
-fn rewrite_update_phase_expr_skips_when_only_wildcard_subjects() {
-    let mut all_types = BTreeMap::new();
-
-    let parent = TypePlan::new("project");
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    // Direct relation has only Wildcard subjects
-    child.ensure_direct(
-        "project",
-        vec![DirectSubject::Wildcard("project".to_string())],
-    );
-    child.set_computed(
-        "can_update_using",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    // Should NOT be rewritten (parent_types is empty)
-    assert!(matches!(
-        task.computed_relations.get("can_update_using"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
-    ));
-}
-
-// ---------------------------------------------------------------
-// rewrite_update_phase_expr — TupleToUserset with tupleset not in direct_relations (line 594)
-// ---------------------------------------------------------------
-#[test]
-fn rewrite_update_phase_expr_skips_when_tupleset_not_in_direct_relations() {
-    let mut all_types = BTreeMap::new();
-
-    let mut parent = TypePlan::new("project");
-    parent.set_computed(
-        "can_update_using",
-        UsersetExpr::Computed("owner".to_string()),
-    );
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    // No direct relation for "project" at all
-    child.set_computed(
-        "can_update_using",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    // Should NOT be rewritten (tupleset not in direct_relations)
-    assert!(matches!(
-        task.computed_relations.get("can_update_using"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
-    ));
-}
-
-// ---------------------------------------------------------------
-// rewrite_update_phase_expr — parent type missing target relation (line 608-614)
-// ---------------------------------------------------------------
-#[test]
-fn rewrite_update_phase_expr_skips_when_parent_lacks_target_relation() {
-    let mut all_types = BTreeMap::new();
-
-    // Parent does NOT have can_update_using
-    let parent = TypePlan::new("project");
-    all_types.insert("project".to_string(), parent);
-
-    let mut child = TypePlan::new("task");
-    child.ensure_direct("project", vec![DirectSubject::Type("project".to_string())]);
-    child.set_computed(
-        "can_update_using",
-        UsersetExpr::TupleToUserset {
-            tupleset: "project".to_string(),
-            computed: "can_update".to_string(),
-        },
-    );
-    all_types.insert("task".to_string(), child);
-
-    rewrite_p5_update_phases(&mut all_types);
-
-    let task = all_types.get("task").expect("task type should exist");
-    // Should NOT be rewritten (parent has no can_update_using relation)
-    assert!(matches!(
-        task.computed_relations.get("can_update_using"),
-        Some(UsersetExpr::TupleToUserset { computed, .. }) if computed == "can_update"
-    ));
 }
 
 // ---------------------------------------------------------------

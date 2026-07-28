@@ -9,6 +9,9 @@ type user
 
 type resources
   relations
+    define no_access: [user]
     define owner: [user]
     define can_delete: owner
+    define can_insert: no_access
     define can_select: owner
+    define can_update: no_access

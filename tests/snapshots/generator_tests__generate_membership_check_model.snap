@@ -9,8 +9,12 @@ type user
 
 type projects
   relations
+    define no_access: [user]
     define teams: [teams]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: member from teams
+    define can_update: no_access
 
 type teams
   relations

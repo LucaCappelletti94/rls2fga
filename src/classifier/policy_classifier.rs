@@ -366,6 +366,23 @@ fn classify_expr_inner(
              tuples; negation requires runtime filtering",
         );
     }
+    // `col <> ALL (subquery)` is the quantified spelling of `NOT IN (subquery)`.
+    if matches!(
+        expr,
+        Expr::AllOp {
+            compare_op: BinaryOperator::NotEq,
+            ..
+        } | Expr::AnyOp {
+            compare_op: BinaryOperator::NotEq,
+            ..
+        }
+    ) {
+        return unknown_d(
+            expr,
+            "Negated quantified comparison cannot be represented as static OpenFGA \
+             membership tuples; negation requires runtime filtering",
+        );
+    }
 
     // Try P1: numeric threshold
     if let Some(classified) = recognizers::recognize_p1(expr, db, registry, command) {

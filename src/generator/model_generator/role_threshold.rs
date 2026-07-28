@@ -324,7 +324,7 @@ pub(super) fn populate_role_threshold_sources(
     };
 
     let Some(object_pk) = pk_col else {
-        add_missing_object_identifier_todo(table_plan, source_table, "explicit grant tuples");
+        add_missing_object_identifier_todo(table_plan, source_table, "explicit grant tuples", db);
         return;
     };
 

@@ -278,7 +278,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
-    let report_md = report::build_report(&model, &classified);
+    let report_md = report::build_report(&model, &classified, ConfidenceLevel::D);
 
     assert!(
         report_md.contains("p_upd (WITH CHECK)"),

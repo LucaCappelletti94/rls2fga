@@ -47,8 +47,10 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     );
 }
 
+/// A dropped policy is missing from the model and tuples, so only the report can
+/// tell the operator it was lost.
 #[test]
-fn formatter_report_respects_min_confidence_filter() {
+fn formatter_report_discloses_policies_below_min_confidence() {
     let db = parse_schema(
         r"
 CREATE TABLE docs(id uuid primary key, owner_id uuid);
@@ -84,7 +86,11 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
         "high-confidence policy should remain in report"
     );
     assert!(
-        !report.contains("p_unknown (USING)"),
-        "below-threshold policy should not appear in report"
+        report.contains("Dropped Below Confidence B"),
+        "the report must carry a dropped-clause section:\n{report}"
+    );
+    assert!(
+        report.contains("`p_unknown` (USING"),
+        "a below-threshold policy must be named as dropped:\n{report}"
     );
 }

@@ -10,4 +10,7 @@ type user
 type articles
   relations
     define no_access: [user]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: no_access
+    define can_update: no_access

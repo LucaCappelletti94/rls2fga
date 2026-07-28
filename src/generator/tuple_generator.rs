@@ -9,8 +9,7 @@ use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
 use crate::parser::names::{
-    canonical_fga_type_name, lookup_table, split_qualified_identifier_parts,
-    split_schema_and_relation,
+    lookup_table, split_qualified_identifier_parts, split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
 use alloc::collections::BTreeSet;
@@ -53,11 +52,15 @@ pub(crate) fn generate_tuple_queries_from_plan(
 
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
-            let key = source.dedup_key();
+            let key = if source.emits_owner_type_objects() {
+                format!("{}|{}", type_plan.type_name, source.dedup_key())
+            } else {
+                source.dedup_key()
+            };
             if !generated.insert(key) {
                 continue;
             }
-            if let Some(query) = render_tuple_source(source, db) {
+            if let Some(query) = render_tuple_source(source, &type_plan.type_name, db) {
                 queries.push(query);
             }
         }
@@ -66,16 +69,29 @@ pub(crate) fn generate_tuple_queries_from_plan(
     queries
 }
 
+/// What identifies the objects a tuple query produces.
+#[derive(Clone, Copy)]
+struct ObjectSource<'a> {
+    table: &'a str,
+    /// `OpenFGA` type the objects belong to.
+    type_name: &'a str,
+    /// Column supplying the object identifier.
+    pk_col: &'a str,
+}
+
 fn render_ownership_tuple_source(
-    table: &str,
-    pk_col: &str,
+    object: ObjectSource<'_>,
     owner_col: &str,
     relation: &str,
     subject_prefix: &str,
     comment: String,
     owner_filter: Option<(&str, &str)>,
 ) -> TupleQuery {
-    let table_type = canonical_fga_type_name(table);
+    let ObjectSource {
+        table,
+        type_name: table_type,
+        pk_col,
+    } = object;
     let table_sql = quote_sql_identifier(table);
     let pk_col_sql = quote_sql_identifier(pk_col);
     let owner_col_sql = quote_sql_identifier(owner_col);
@@ -102,19 +118,79 @@ fn render_ownership_tuple_source(
     }
 }
 
+/// Reduce `text` to a single `--` comment line.
+///
+/// `PostgreSQL` identifiers may contain newlines and comments interpolate table,
+/// column, and role names, so without this the tail of an identifier executes as
+/// SQL. A missing `--` marker would do the same, so it is restored.
+fn single_comment_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 3);
+    let mut previous_was_space = false;
+    for ch in text.chars() {
+        let ch = if ch.is_control() { ' ' } else { ch };
+        if ch == ' ' {
+            if previous_was_space {
+                continue;
+            }
+            previous_was_space = true;
+        } else {
+            previous_was_space = false;
+        }
+        out.push(ch);
+    }
+
+    let squeezed = out.trim();
+    if squeezed.starts_with("--") {
+        squeezed.to_string()
+    } else {
+        format!("-- {squeezed}")
+    }
+}
+
+/// Enforce the "comments stay comments" invariant. Every [`TupleQuery`] in the
+/// crate passes through here, so new [`TupleSource`] variants inherit it.
+fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
+    query.comment = single_comment_line(&query.comment);
+    // A `Todo` source renders its body as a comment too; a real query never
+    // starts with `--`, so this leaves generated SQL untouched.
+    if query.sql.trim_start().starts_with("--") {
+        query.sql = single_comment_line(&query.sql);
+    }
+    query
+}
+
 /// Render a single [`TupleSource`] to a [`TupleQuery`].
+///
+/// `owner_type` is the type of the plan the source is attached to. Variants that
+/// emit objects of their own table MUST use it: re-deriving a name from `table`
+/// would file one table's tuples under a colliding table's type.
 ///
 /// Returns `None` only when the source has no renderable output (currently
 /// unused; all variants produce at least a comment).
-fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery> {
+fn render_tuple_source(
+    source: &TupleSource,
+    owner_type: &str,
+    db: &ParserDB,
+) -> Option<TupleQuery> {
+    render_tuple_source_inner(source, owner_type, db).map(sanitize_tuple_query)
+}
+
+fn render_tuple_source_inner(
+    source: &TupleSource,
+    owner_type: &str,
+    db: &ParserDB,
+) -> Option<TupleQuery> {
     match source {
         TupleSource::DirectOwnership {
             table,
             pk_col,
             owner_col,
         } => Some(render_ownership_tuple_source(
-            table,
-            pk_col,
+            ObjectSource {
+                table,
+                type_name: owner_type,
+                pk_col,
+            },
             owner_col,
             "owner",
             "user",
@@ -129,8 +205,11 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             user_table,
             user_pk_col,
         } => Some(render_ownership_tuple_source(
-            table,
-            pk_col,
+            ObjectSource {
+                table,
+                type_name: owner_type,
+                pk_col,
+            },
             owner_col,
             "owner_user",
             "user",
@@ -145,8 +224,11 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             team_table,
             team_pk_col,
         } => Some(render_ownership_tuple_source(
-            table,
-            pk_col,
+            ObjectSource {
+                table,
+                type_name: owner_type,
+                pk_col,
+            },
             owner_col,
             "owner_team",
             "team",
@@ -169,7 +251,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             if role_cases.is_empty() {
                 return None;
             }
-            let table_type = canonical_fga_type_name(table);
+            let table_type = owner_type;
             let table_sql = quote_sql_identifier(table);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let grant_join_col_sql = quote_sql_identifier(grant_join_col);
@@ -329,7 +411,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             fk_col,
             parent_type,
         } => {
-            let table_type = canonical_fga_type_name(table);
+            let table_type = owner_type;
             let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
             else {
                 return Some(TupleQuery {
@@ -361,7 +443,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             pk_col,
             flag_col,
         } => {
-            let table_type = canonical_fga_type_name(table);
+            let table_type = owner_type;
             let table_sql = quote_sql_identifier(table);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let flag_col_sql = quote_sql_identifier(flag_col);
@@ -378,7 +460,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
         }
 
         TupleSource::ConstantTrue { table, pk_col } => {
-            let table_type = canonical_fga_type_name(table);
+            let table_type = owner_type;
             let table_sql = quote_sql_identifier(table);
             let pk_col_sql = quote_sql_identifier(pk_col);
             Some(TupleQuery {
@@ -398,7 +480,7 @@ fn render_tuple_source(source: &TupleSource, db: &ParserDB) -> Option<TupleQuery
             scope_relation,
             pg_role,
         } => {
-            let table_type = canonical_fga_type_name(table);
+            let table_type = owner_type;
             let table_sql = quote_sql_identifier(table);
             let pk_col_sql = quote_sql_identifier(pk_col);
             Some(TupleQuery {
@@ -1089,7 +1171,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             team_principal: None,
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
         assert!(
             query.comment.contains("TODO [Level C]"),
             "expected a TODO comment, got: {}",
@@ -1127,7 +1209,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
         assert!(
             query.sql.contains("'team:'"),
             "team-only explicit grants should emit team subjects, got: {}",
@@ -1163,7 +1245,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, &db).expect("should produce a query");
+        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
         assert!(
             !query.sql.contains("ELSE 'user:'"),
             "mixed-principal explicit grants should not fail open to user subjects, got: {}",

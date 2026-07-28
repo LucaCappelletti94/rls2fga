@@ -244,14 +244,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
     let (classified, db, registry) = support::classify_sql(sql, None);
 
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    // Other commands lack a policy and are legitimately denied; only can_select
+    // must not degrade to a deny.
     assert!(
-        !model.dsl.contains("no_access"),
-        "pg_has_role should NOT produce no_access; DSL:\n{}",
-        model.dsl
-    );
-    assert!(
-        model.dsl.contains("scope_"),
-        "pg_has_role should produce a scope relation; DSL:\n{}",
+        model.dsl.contains("define can_select: scope_"),
+        "pg_has_role should drive can_select from a scope relation, not a deny; DSL:\n{}",
         model.dsl
     );
     insta::assert_snapshot!("pg_has_role_model", model.dsl.trim());
@@ -279,8 +276,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
     assert!(
-        !model.dsl.contains("no_access"),
-        "role accessor should NOT produce no_access; DSL:\n{}",
+        model.dsl.contains("define can_select: scope_"),
+        "role accessor should drive can_select from a scope relation, not a deny; DSL:\n{}",
         model.dsl
     );
     insta::assert_snapshot!("role_accessor_model", model.dsl.trim());

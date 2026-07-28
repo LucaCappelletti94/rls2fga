@@ -9,10 +9,18 @@ type user
 
 type projects
   relations
+    define no_access: [user]
     define owner: [user]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: owner
+    define can_update: no_access
 
 type tasks
   relations
+    define no_access: [user]
     define projects: [projects]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: can_select from projects
+    define can_update: no_access

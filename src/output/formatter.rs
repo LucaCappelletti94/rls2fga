@@ -1,6 +1,6 @@
 use std::path::{Component, Path};
 
-use crate::classifier::patterns::{filter_policies_for_output, ClassifiedPolicy, ConfidenceLevel};
+use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::generator::model_generator::GeneratedModel;
 use crate::generator::tuple_generator::{self, TupleQuery};
 use crate::output::report;
@@ -32,8 +32,7 @@ pub fn write_output(
 
     // Write _report.md
     let report_path = output_dir.join(format!("{name}_report.md"));
-    let filtered = filter_policies_for_output(policies, min_confidence);
-    let report_content = report::build_report(model, &filtered);
+    let report_content = report::build_report(model, policies, min_confidence);
     std::fs::write(&report_path, &report_content)
         .map_err(|e| format!("Failed to write {}: {e}", report_path.display()))?;
 

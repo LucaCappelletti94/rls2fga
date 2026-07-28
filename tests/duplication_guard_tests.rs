@@ -86,7 +86,7 @@ fn function_arg_extraction_has_single_source_of_truth() {
 fn missing_object_identifier_todo_message_is_centralized() {
     let source = read_module("src/generator/model_generator");
     let count = source
-        .matches("table needs a primary key or `id` column for stable object IDs.")
+        .matches("table needs a single-column primary key or `id` column for stable object IDs.")
         .count();
     assert_eq!(
         count, 1,

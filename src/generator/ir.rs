@@ -227,6 +227,28 @@ pub(crate) enum TupleSource {
 }
 
 impl TupleSource {
+    /// True when the rendered objects belong to the type plan this source is
+    /// attached to, rather than to a type named inside the source itself.
+    ///
+    /// Such a source is identified only up to its owning type, since two tables
+    /// canonicalizing alike become separate types. The rest name their object
+    /// type explicitly and deduplicate on content alone.
+    pub(crate) fn emits_owner_type_objects(&self) -> bool {
+        match self {
+            Self::DirectOwnership { .. }
+            | Self::RoleOwnerUser { .. }
+            | Self::RoleOwnerTeam { .. }
+            | Self::ExplicitGrants { .. }
+            | Self::ParentBridge { .. }
+            | Self::PublicFlag { .. }
+            | Self::ConstantTrue { .. }
+            | Self::PolicyScope { .. } => true,
+            Self::TeamMembership { .. } | Self::ExistsMembership { .. } | Self::Todo { .. } => {
+                false
+            }
+        }
+    }
+
     /// A stable string key used to deduplicate identical tuple queries.
     ///
     /// Two sources with the same key produce the same SQL; only the first is

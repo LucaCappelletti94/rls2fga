@@ -1,6 +1,5 @@
 ---
 source: tests/generator_tests.rs
-assertion_line: 151
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
 -- User ownership (owner_id references users)

@@ -496,6 +496,12 @@ fn unwrap_accessor_expr(mut expr: &Expr) -> &Expr {
     }
 }
 
+/// Extract the literal setting key from `current_setting('key')` or
+/// `current_setting('key', missing_ok)`.
+///
+/// The two-argument form returns NULL instead of raising when the key is unset.
+/// That only makes the policy deny (a NULL comparison is never true), so the key
+/// identifies the current user exactly as in the one-argument form.
 fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let Expr::Function(func) = expr else {
         return None;
@@ -506,7 +512,7 @@ fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let FunctionArguments::List(arg_list) = &func.args else {
         return None;
     };
-    let [arg] = arg_list.args.as_slice() else {
+    let ([arg] | [arg, _]) = arg_list.args.as_slice() else {
         return None;
     };
     let arg_expr = function_arg_expr(arg)?;

@@ -9,8 +9,12 @@ type user
 
 type docs
   relations
+    define no_access: [user]
     define scope_docs_select_14425117: [pg_role]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: scope_docs_select_14425117
+    define can_update: no_access
 
 type pg_role
   relations
