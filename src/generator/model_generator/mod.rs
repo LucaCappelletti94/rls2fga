@@ -76,16 +76,60 @@ pub(crate) struct TypePlan {
     /// Table-level tuple sources not tied to a specific relation (e.g. policy
     /// scope tuples).
     pub table_tuple_sources: Vec<TupleSource>,
+    /// Ownership column → the relation carrying its subjects. One relation per
+    /// column: sharing one would union two different sets of principals.
+    ownership_relations: BTreeMap<String, String>,
 }
+
+/// Relation names the generator reserves for its own structural relations, so a
+/// column-derived name never lands on one regardless of translation order.
+const RESERVED_RELATIONS: [&str; 5] = [
+    "no_access",
+    "public_viewer",
+    "member",
+    "owner_user",
+    "owner_team",
+];
 
 impl TypePlan {
     fn new(type_name: impl Into<String>) -> Self {
         Self {
             type_name: type_name.into(),
-            direct_relations: BTreeMap::new(),
-            computed_relations: BTreeMap::new(),
-            table_tuple_sources: Vec::new(),
+            ..Self::default()
         }
+    }
+
+    /// Relation that carries the subjects of ownership column `column`.
+    ///
+    /// Derived from the column so the model reads naturally (`owner_id` → `owner`,
+    /// `editor_id` → `editor`), and disambiguated when two columns would land on
+    /// the same name or on a name the generator already uses.
+    fn ownership_relation(&mut self, column: &str) -> String {
+        if let Some(existing) = self.ownership_relations.get(column) {
+            return existing.clone();
+        }
+
+        let base = canonical_fga_type_name(column.strip_suffix("_id").unwrap_or(column));
+        let taken = |name: &str, plan: &Self| {
+            RESERVED_RELATIONS.contains(&name)
+                || ACTION_RELATIONS.contains(&name)
+                || plan.direct_relations.contains_key(name)
+                || plan.computed_relations.contains_key(name)
+        };
+        let relation = if base.is_empty() || taken(&base, self) {
+            let fallback = format!("owner_{}", canonical_fga_type_name(column));
+            if taken(&fallback, self) {
+                format!("{fallback}_{}", stable_hex_suffix(column))
+            } else {
+                fallback
+            }
+        } else {
+            base
+        };
+
+        self.ownership_relations
+            .insert(column.to_string(), relation.clone());
+        relation
     }
 
     fn ensure_direct(&mut self, relation: impl Into<String>, subjects: Vec<DirectSubject>) {
@@ -938,12 +982,17 @@ fn translate_pattern(
             }
         }
         PatternClass::P3DirectOwnership { column } => {
-            table_plan.ensure_direct("owner", vec![DirectSubject::Type("user".to_string())]);
+            let relation = table_plan.ownership_relation(column);
+            table_plan.ensure_direct(
+                relation.clone(),
+                vec![DirectSubject::Type("user".to_string())],
+            );
             if let Some(pk_col) = resolve_pk_column(source_table, db) {
                 table_plan.add_source(TupleSource::DirectOwnership {
                     table: source_table.to_string(),
                     pk_col,
                     owner_col: column.clone(),
+                    relation: relation.clone(),
                 });
             } else {
                 add_missing_object_identifier_todo(
@@ -953,7 +1002,7 @@ fn translate_pattern(
                     db,
                 );
             }
-            UsersetExpr::Computed("owner".to_string())
+            UsersetExpr::Computed(relation)
         }
         PatternClass::P4ExistsMembership {
             join_table,

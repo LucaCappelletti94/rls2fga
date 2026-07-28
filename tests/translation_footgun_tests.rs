@@ -610,3 +610,215 @@ CREATE POLICY docs_sel ON docs FOR SELECT TO "billing admin" USING (owner_id = c
         model.todos
     );
 }
+
+// ---------------------------------------------------------------------------
+// DSL and JSON parity.
+// ---------------------------------------------------------------------------
+
+/// The DSL and the JSON model are rendered from one plan, so they must describe
+/// the same relations. A variant handled by only one renderer would let an
+/// operator load a model that grants more than the `.fga` file they reviewed.
+#[test]
+fn json_model_declares_the_same_relations_as_the_dsl() {
+    // Exercises collision renaming, role scoping, inheritance, a public flag, a
+    // union, and a table present only as a deny-all.
+    let db = db_of(
+        r"
+CREATE TABLE aaa.projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE aaa.projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY aaa_sel ON aaa.projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE zzz.projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE zzz.projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY zzz_sel ON zzz.projects FOR SELECT TO analyst USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES zzz.projects(id), is_public BOOLEAN);
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_all ON tasks FOR ALL USING (
+  EXISTS (SELECT 1 FROM zzz.projects p
+          WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+CREATE POLICY tasks_public ON tasks FOR SELECT USING (is_public = TRUE);
+CREATE TABLE audit(id UUID PRIMARY KEY);
+ALTER TABLE audit ENABLE ROW LEVEL SECURITY;
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let dsl = translator.generate_model(&db).dsl;
+    let json = translator.generate_json_model(&db);
+
+    let mut from_dsl: Vec<String> = Vec::new();
+    let mut current_type = String::new();
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            current_type = name.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("define ") {
+            if let Some((relation, _)) = rest.split_once(':') {
+                from_dsl.push(format!("{current_type}#{}", relation.trim()));
+            }
+        }
+    }
+
+    let mut from_json: Vec<String> = json
+        .type_definitions
+        .iter()
+        .flat_map(|definition| {
+            definition
+                .relations
+                .iter()
+                .flat_map(|relations| relations.keys())
+                .map(|relation| format!("{}#{relation}", definition.type_name))
+        })
+        .collect();
+
+    from_dsl.sort();
+    from_json.sort();
+    assert!(
+        from_dsl.len() > 20,
+        "expected a substantial model to compare, got {from_dsl:?}"
+    );
+    assert_eq!(from_dsl, from_json, "DSL and JSON must agree\n{dsl}");
+}
+
+// ---------------------------------------------------------------------------
+// Ownership columns.
+// ---------------------------------------------------------------------------
+
+/// Each ownership column is a distinct relationship. Collapsing two of them into
+/// one relation unions their subjects, so a policy that only admits `owner_id`
+/// starts admitting everyone named by the other column.
+#[test]
+fn distinct_ownership_columns_get_distinct_relations() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator.generate_model(&db).dsl;
+
+    let select =
+        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
+    let update =
+        relation_definition(&dsl, "docs", "can_update").expect("docs should define can_update");
+    assert_ne!(
+        select, update,
+        "SELECT admits owner_id and UPDATE admits editor_id, so they cannot share a relation:\n{dsl}"
+    );
+
+    // Every ownership query must populate the relation its own column feeds.
+    for query in translator.generate_tuple_queries(&db) {
+        let column = if query.sql.contains(r#"|| "owner_id""#) {
+            &select
+        } else if query.sql.contains(r#"|| "editor_id""#) {
+            &update
+        } else {
+            continue;
+        };
+        assert!(
+            query.sql.contains(&format!("'{column}' AS relation")),
+            "this query feeds the wrong relation, expected '{column}':\n{}",
+            query.sql
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Correlated subqueries through an intermediate table.
+// ---------------------------------------------------------------------------
+
+/// When an `EXISTS` correlates to a column of an enclosing subquery, the linking
+/// column is the enclosing one. Reading the scanned table's own key instead names
+/// a type after that column and files two tables' rows under one object id.
+#[test]
+fn nested_correlated_exists_resolves_to_the_scanned_table() {
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orgs_sel ON orgs FOR SELECT USING (owner_id = current_user);
+CREATE TABLE projects(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (
+  EXISTS (SELECT 1 FROM orgs o WHERE o.id = projects.org_id AND o.owner_id = current_user));
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id
+          AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = p.org_id AND o.owner_id = current_user)));
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator.generate_model(&db).dsl;
+
+    assert!(
+        !type_names(&dsl).iter().any(|name| name == "id"),
+        "a join column must not become a type:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "tasks", "can_select").as_deref(),
+        Some("can_select from projects"),
+        "the chain must resolve through projects:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "projects", "can_select").as_deref(),
+        Some("can_select from orgs"),
+        "and projects through orgs:\n{dsl}"
+    );
+
+    // projects rows link to orgs by org_id only; keying that link on projects.id
+    // would grant a project the permissions of the org with the same identifier.
+    for query in translator.generate_tuple_queries(&db) {
+        if !query.sql.contains(r#"FROM "projects""#) || !query.sql.contains("'orgs:'") {
+            continue;
+        }
+        assert!(
+            query.sql.contains(r#"'orgs:' || "org_id""#),
+            "a projects row must reference its org by org_id:\n{}",
+            query.sql
+        );
+    }
+}
+
+/// A subquery that scans an entity table keyed by its own primary key is not a
+/// membership join table. Treating it as one keys the parent objects by the child's
+/// identifier, granting each row the permissions of the unrelated row that happens
+/// to share its id.
+#[test]
+fn membership_join_on_the_scanned_tables_own_key_is_refused() {
+    // No foreign key is declared, so parent inheritance cannot be confirmed either.
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orgs_sel ON orgs FOR SELECT USING (owner_id = current_user);
+CREATE TABLE projects(id UUID PRIMARY KEY, org_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (
+  EXISTS (SELECT 1 FROM orgs o WHERE o.id = projects.org_id AND o.owner_id = current_user));
+",
+    );
+    // Keep D-level classifications so the diagnostic itself is observable.
+    let translator = translator(ConfidenceLevel::D);
+    let model = translator.generate_model(&db);
+
+    assert!(
+        !type_names(&model.dsl).iter().any(|name| name == "id"),
+        "a join column must not become a type:\n{}",
+        model.dsl
+    );
+    assert_eq!(
+        relation_definition(&model.dsl, "projects", "can_select").as_deref(),
+        Some("no_access"),
+        "an unconfirmable parent link must deny, not guess:\n{}",
+        model.dsl
+    );
+    assert!(
+        model.todos.iter().any(|todo| {
+            todo.policy_name == "projects_sel" && todo.message.contains("own primary key")
+        }),
+        "the operator must be told why the subquery was refused, got: {:#?}",
+        model.todos
+    );
+}

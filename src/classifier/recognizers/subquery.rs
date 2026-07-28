@@ -45,12 +45,16 @@ pub fn recognize_p5(
         for candidate in analysis.candidates {
             let P5InheritanceCandidate {
                 parent_table,
+                parent_alias,
                 fk_column,
                 inner_predicates,
             } = candidate;
-            let Some(inner_expr) = combine_predicates_with_and(inner_predicates) else {
+            let Some(mut inner_expr) = combine_predicates_with_and(inner_predicates) else {
                 continue;
             };
+            // Predicates nested deeper reach the parent through its alias, and the
+            // inner classification only knows the parent by name.
+            strip_qualifier_from_expr_deep(&mut inner_expr, &parent_table, parent_alias.as_deref());
             let inner_classified = crate::classifier::policy_classifier::classify_expr(
                 &inner_expr,
                 db,
@@ -156,6 +160,7 @@ fn classify_membership_select(
         }),
         MembershipSelectAnalysis::AmbiguousMultiple
         | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
+        | MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { .. }
         | MembershipSelectAnalysis::NoMatch => None,
     }
 }
@@ -169,6 +174,11 @@ enum MembershipSelectAnalysis {
     },
     AmbiguousMultiple,
     AmbiguousNoUniqueJoin,
+    /// The join column is the scanned table's own primary key, so the subquery
+    /// scans an entity table rather than a membership table.
+    JoinedOnOwnPrimaryKey {
+        join_table: String,
+    },
     NoMatch,
 }
 
@@ -203,6 +213,13 @@ fn analyze_membership_select(
     }
     match matches.pop() {
         Some((join_table, inferred_fk_column, user_column, extra_predicate_sql)) => {
+            // A membership row points at a parent through a foreign key. When the
+            // join column is the scanned table's own key, the rows are the parent
+            // entities and the caller must model inheritance instead: keying them
+            // by the child's identifier pairs unrelated rows.
+            if joins_on_own_primary_key(db, &join_table, &inferred_fk_column) {
+                return MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { join_table };
+            }
             MembershipSelectAnalysis::Unique {
                 join_table,
                 inferred_fk_column,
@@ -215,6 +232,16 @@ fn analyze_membership_select(
         }
         None => MembershipSelectAnalysis::NoMatch,
     }
+}
+
+/// True when `column` is the single-column primary key of `table`.
+fn joins_on_own_primary_key(db: &ParserDB, table: &str, column: &str) -> bool {
+    lookup_table(db, table)
+        .and_then(|meta| meta.primary_key_column(db))
+        .is_some_and(|pk| {
+            crate::parser::names::normalize_identifier(pk.column_name())
+                == crate::parser::names::normalize_identifier(column)
+        })
 }
 
 pub(crate) fn diagnose_p4_membership_ambiguity(
@@ -237,6 +264,11 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
                 "Ambiguous membership pattern: could not infer a unique membership join"
                     .to_string(),
             ),
+            MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { join_table } => Some(format!(
+                "Subquery joins '{join_table}' on its own primary key, so it selects \
+                 '{join_table}' rows rather than membership rows; declare the foreign key \
+                 to '{join_table}' so the link can be translated as parent inheritance"
+            )),
             MembershipSelectAnalysis::Unique { .. } | MembershipSelectAnalysis::NoMatch => None,
         }
     }
@@ -300,6 +332,9 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
 #[derive(Debug, Clone)]
 pub(super) struct P5InheritanceCandidate {
     pub(super) parent_table: String,
+    /// Alias the subquery gave the parent table, if any. Predicates nested inside
+    /// this subquery refer to the parent through it.
+    pub(super) parent_alias: Option<String>,
     pub(super) fk_column: String,
     pub(super) inner_predicates: Vec<Expr>,
 }
@@ -383,6 +418,7 @@ pub(super) fn analyze_p5_parent_inheritance(
 
         analysis.candidates.push(P5InheritanceCandidate {
             parent_table: source.table_name,
+            parent_alias: source.alias,
             fk_column,
             inner_predicates,
         });
@@ -796,6 +832,30 @@ pub(super) fn strip_qualifier_from_expr(
     join_table: &str,
     join_alias: Option<&str>,
 ) {
+    strip_qualifier(expr, join_table, join_alias, false);
+}
+
+/// As [`strip_qualifier_from_expr`], but also rewriting references inside nested
+/// subqueries.
+///
+/// Used when the qualifier names a table from an enclosing scope, so a nested
+/// reference to it means the same table. A nested query that rebinds the same
+/// alias to a different table would be rewritten too, which no realistic policy
+/// does.
+pub(super) fn strip_qualifier_from_expr_deep(
+    expr: &mut Expr,
+    join_table: &str,
+    join_alias: Option<&str>,
+) {
+    strip_qualifier(expr, join_table, join_alias, true);
+}
+
+fn strip_qualifier(
+    expr: &mut Expr,
+    join_table: &str,
+    join_alias: Option<&str>,
+    descend_into_subqueries: bool,
+) {
     use core::ops::ControlFlow;
     use sqlparser::ast::{Query, VisitMut, VisitorMut};
 
@@ -803,6 +863,7 @@ pub(super) fn strip_qualifier_from_expr(
         join_table: &'a str,
         join_alias: Option<&'a str>,
         subquery_depth: usize,
+        descend_into_subqueries: bool,
     }
 
     impl VisitorMut for QualifierStripper<'_> {
@@ -817,7 +878,7 @@ pub(super) fn strip_qualifier_from_expr(
             ControlFlow::Continue(())
         }
         fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-            if self.subquery_depth == 0 {
+            if self.subquery_depth == 0 || self.descend_into_subqueries {
                 if let Expr::CompoundIdentifier(parts) = &*expr {
                     if let [.., qualifier, last] = parts.as_slice() {
                         if qualifier_matches_table(
@@ -838,6 +899,7 @@ pub(super) fn strip_qualifier_from_expr(
         join_table,
         join_alias,
         subquery_depth: 0,
+        descend_into_subqueries,
     };
     let _ = expr.visit(&mut v);
 }

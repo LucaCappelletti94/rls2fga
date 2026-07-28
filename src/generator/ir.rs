@@ -45,6 +45,10 @@ pub(crate) enum TupleSource {
         pk_col: String,
         /// Column whose value is the owner's identifier.
         owner_col: String,
+        /// Relation the subjects of `owner_col` are written to. Derived from the
+        /// column, since one relation per column keeps two ownership columns from
+        /// unioning their principals.
+        relation: String,
     },
 
     /// User-side ownership inferred from a role-threshold function.
@@ -259,8 +263,9 @@ impl TupleSource {
                 table,
                 pk_col,
                 owner_col,
+                relation,
             } => {
-                format!("p3:{table}:{pk_col}:{owner_col}")
+                format!("p3:{table}:{pk_col}:{owner_col}:{relation}")
             }
             Self::RoleOwnerUser {
                 table,

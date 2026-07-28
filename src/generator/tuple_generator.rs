@@ -185,6 +185,7 @@ fn render_tuple_source_inner(
             table,
             pk_col,
             owner_col,
+            relation,
         } => Some(render_ownership_tuple_source(
             ObjectSource {
                 table,
@@ -192,7 +193,7 @@ fn render_tuple_source_inner(
                 pk_col,
             },
             owner_col,
-            "owner",
+            relation,
             "user",
             format!("-- User ownership ({owner_col} references users)"),
             None,
