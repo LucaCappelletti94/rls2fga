@@ -1237,11 +1237,11 @@ fn quoted_for_lookup(part: &str) -> String {
     }
 }
 
-/// Schema-qualified name, matching the spelling used in `CREATE POLICY`.
+/// Schema-qualified stored name, in the spelling `lookup_table` resolves.
 fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
-    let relation = quoted_for_lookup(table.table_name());
-    match table.table_schema() {
-        Some(schema) => format!("{}.{relation}", quoted_for_lookup(schema)),
+    let relation = quoted_for_lookup(&table.stored_table_name());
+    match table.stored_table_schema() {
+        Some(schema) => format!("{}.{relation}", quoted_for_lookup(&schema)),
         None => relation,
     }
 }
@@ -2364,9 +2364,9 @@ fn exact_roles_expr(
 fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
     let table_info = lookup_table(db, table)?;
     for col in table_info.columns(db) {
-        let name = col.column_name();
-        if is_owner_like_column_name(name) {
-            return Some(name.to_string());
+        let name = col.stored_column_name();
+        if is_owner_like_column_name(&name) {
+            return Some(name.into_owned());
         }
     }
     for fk in table_info.foreign_keys(db) {
@@ -2377,7 +2377,7 @@ fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
             if let Some(col_name) = fk
                 .host_columns(db)
                 .next()
-                .map(|col| col.column_name().to_string())
+                .map(|col| col.stored_column_name().into_owned())
             {
                 return Some(col_name);
             }
@@ -2395,7 +2395,9 @@ fn referenced_table_for_fk_col<'db>(
 ) -> Option<&'db str> {
     let table_info = lookup_table(db, table)?;
     for fk in table_info.foreign_keys(db) {
-        let uses_col = fk.host_columns(db).any(|c| c.column_name() == fk_column);
+        let uses_col = fk
+            .host_columns(db)
+            .any(|c| c.stored_column_name() == fk_column);
         if uses_col {
             return Some(fk.referenced_table(db).table_name());
         }

@@ -28,6 +28,21 @@ pub fn same_identifier(left: &str, right: &str) -> bool {
     normalize_identifier(left) == normalize_identifier(right)
 }
 
+/// The name `PostgreSQL` stores for an identifier written in SQL: unquoted folds
+/// to lowercase, quoted keeps its case.
+///
+/// Declared identifiers use `ColumnLike::stored_column_name`,
+/// `TableLike::stored_table_name` and `TableLike::stored_table_schema` instead.
+/// This is the sqlparser side, which those traits do not cover.
+pub fn stored_identifier(value: &str, quoted: bool) -> alloc::borrow::Cow<'_, str> {
+    sql_traits::utils::identifier_resolution::normalize_identifier(value, quoted)
+}
+
+/// Stored name of an identifier written in a policy expression.
+pub fn stored_ident_name(ident: &sqlparser::ast::Ident) -> alloc::borrow::Cow<'_, str> {
+    stored_identifier(&ident.value, ident.quote_style.is_some())
+}
+
 /// True when `name` is a SQL keyword that resolves to the current session role.
 ///
 /// `session_user` is intentionally excluded: it does not follow `SET ROLE`.
@@ -337,6 +352,30 @@ mod tests {
 
         // Unquoted identifier → returned unchanged.
         assert_eq!(unquote_identifier("foo").as_ref(), "foo");
+    }
+
+    #[test]
+    fn stored_identifier_folds_only_unquoted_spellings() {
+        assert_eq!(stored_identifier("Owner_Id", false), "owner_id");
+        assert_eq!(stored_identifier("Owner_Id", true), "Owner_Id");
+
+        // Both spellings can name distinct columns of one table, so folding a
+        // quoted identifier would merge them.
+        assert_ne!(
+            stored_identifier("Owner_Id", true),
+            stored_identifier("owner_id", false)
+        );
+    }
+
+    #[test]
+    fn stored_ident_name_follows_the_parsed_quote_style() {
+        use sqlparser::ast::Ident;
+
+        assert_eq!(stored_ident_name(&Ident::new("Owner_Id")), "owner_id");
+        assert_eq!(
+            stored_ident_name(&Ident::with_quote('"', "Owner_Id")),
+            "Owner_Id"
+        );
     }
 
     #[test]

@@ -1019,3 +1019,187 @@ async fn upsert_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+/// One seeded `notes` row: `(id, owner_id)`.
+const SEEDED_FOLDED_NOTES: [(&str, &str); 3] = [
+    ("note-owned-by-alice", USER_ALICE),
+    ("note-owned-by-bob-shared", USER_BOB),
+    ("note-owned-by-bob-private", USER_BOB),
+];
+
+/// One seeded `note_members` row: `(id, note_id, user_id)`.
+const SEEDED_FOLDED_MEMBERS: [(&str, &str, &str); 1] = [(
+    "member-alice-shared",
+    "note-owned-by-bob-shared",
+    USER_ALICE,
+)];
+
+/// One reader: `(app user id, login role)`.
+const FOLDED_READERS: [(&str, &str); 2] = [(USER_ALICE, "app_alice"), (USER_BOB, "app_bob")];
+
+diesel::table! {
+    #[sql_name = "notes"]
+    notes_folded (id) {
+        id -> diesel::sql_types::Text,
+        owner_id -> diesel::sql_types::Text,
+    }
+}
+
+diesel::table! {
+    note_members (id) {
+        id -> diesel::sql_types::Text,
+        note_id -> diesel::sql_types::Text,
+        user_id -> diesel::sql_types::Text,
+    }
+}
+
+/// Whether `login_role`, acting as `user_id`, can read the `notes` row `note_id`.
+fn postgres_allows_folded_select(
+    conn: &mut PgConnection,
+    user_id: &str,
+    login_role: &str,
+    note_id: &str,
+) -> bool {
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query(format!("SET LOCAL ROLE {login_role}")).execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let visible: i64 = notes_folded::table
+            .filter(notes_folded::id.eq(note_id))
+            .count()
+            .get_result(conn)?;
+        Ok(visible == 1)
+    })
+    .expect("reading notes under row level security should not error")
+}
+
+/// The schema spells every table and column in a case `PostgreSQL` does not store,
+/// so the generated statements only run if they name the stored identifiers.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn folded_identifier_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("folded_identifiers");
+    let (classified, db, registry) = support::load_fixture_classified("folded_identifiers");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the folded_identifiers schema on PostgreSQL 18");
+
+    diesel::insert_into(users::table)
+        .values(
+            FOLDED_READERS
+                .map(|(user_id, _)| users::id.eq(user_id))
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed users");
+    diesel::insert_into(notes_folded::table)
+        .values(
+            SEEDED_FOLDED_NOTES
+                .map(|(id, owner)| (notes_folded::id.eq(id), notes_folded::owner_id.eq(owner)))
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed notes");
+    diesel::insert_into(note_members::table)
+        .values(
+            SEEDED_FOLDED_MEMBERS
+                .map(|(id, note_id, user_id)| {
+                    (
+                        note_members::id.eq(id),
+                        note_members::note_id.eq(note_id),
+                        note_members::user_id.eq(user_id),
+                    )
+                })
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed note_members");
+
+    for (_, login_role) in FOLDED_READERS {
+        conn.batch_execute(&format!(
+            "CREATE ROLE {login_role} LOGIN; \
+             GRANT SELECT ON notes, note_members TO {login_role};"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+    assert!(
+        !tuple_keys.is_empty(),
+        "the generated statements must return rows, otherwise every check answers no"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "folded-identifier-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut denied = 0usize;
+    for (user_id, login_role) in FOLDED_READERS {
+        for (note_id, _) in SEEDED_FOLDED_NOTES {
+            let expected = postgres_allows_folded_select(&mut conn, user_id, login_role, note_id);
+            if !expected {
+                denied += 1;
+            }
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        denied > 0,
+        "every row is readable by everyone, so the comparison proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA folded identifier parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

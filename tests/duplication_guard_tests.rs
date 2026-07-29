@@ -266,3 +266,37 @@ fn well_known_names_have_a_single_source_of_truth() {
         );
     }
 }
+
+#[test]
+fn identifier_folding_has_a_single_source_of_truth() {
+    let modules = [
+        "src/parser",
+        "src/classifier",
+        "src/classifier/recognizers",
+        "src/generator",
+        "src/generator/model_generator",
+    ];
+
+    // Only the sqlparser side is ours. A declared identifier folds through
+    // `ColumnLike::stored_column_name`, `TableLike::stored_table_name` and
+    // `TableLike::stored_table_schema`.
+    let definitions = definition_count(&modules, "fn stored_identifier(");
+    assert_eq!(
+        definitions, 1,
+        "one place folds an identifier to the name PostgreSQL stores, found {definitions}"
+    );
+
+    // A quote flag read means a site is re-pairing a value with its flag by
+    // hand, which is the mistake the stored-name accessors exist to prevent.
+    for accessor in [
+        "column_name_is_quoted(",
+        "table_name_is_quoted(",
+        "table_schema_is_quoted(",
+    ] {
+        let uses = definition_count(&modules, accessor);
+        assert_eq!(
+            uses, 0,
+            "'{accessor}' means a hand-rolled fold, use the stored-name accessor, found {uses}"
+        );
+    }
+}

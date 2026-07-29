@@ -3045,3 +3045,191 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
         "an INSERT needs no read, so nothing is unreachable"
     );
 }
+
+/// `PostgreSQL` folds an unquoted identifier to lowercase, so a table declared
+/// `Docs` with a column `ID` is stored as `docs` and `id`. Emitting the source
+/// spelling quoted asks for a relation and a column that do not exist.
+#[test]
+fn generated_sql_names_identifiers_the_way_postgres_stores_them() {
+    let db = db_of(
+        r"
+CREATE TABLE Docs(ID UUID PRIMARY KEY, Owner_Id TEXT);
+ALTER TABLE Docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+
+    assert!(
+        rendered.contains(r#"FROM "docs""#),
+        "the stored relation name is docs:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"'docs:' || "id""#),
+        "the stored column name is id:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(r#""owner_id""#),
+        "the stored column name is owner_id:\n{rendered}"
+    );
+}
+
+/// A quoted declaration keeps its case, and both spellings may name distinct
+/// columns of one table, so folding must follow the quoting.
+#[test]
+fn a_quoted_column_keeps_the_case_postgres_stores_it_under() {
+    let db = db_of(
+        r#"
+CREATE TABLE docs(id UUID PRIMARY KEY, "Owner_Id" TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING ("Owner_Id" = current_user);
+"#,
+    );
+    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+
+    assert!(
+        rendered.contains(r#""Owner_Id""#),
+        "a quoted column is stored verbatim:\n{rendered}"
+    );
+}
+
+/// The policy and the declaration may spell one column in different cases, and
+/// unquoted they still name the same stored column.
+#[test]
+fn a_policy_reaches_a_column_the_declaration_spells_in_another_case() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (Owner_Id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let dsl = translator.generate_model(&db).dsl;
+    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the relation name follows the stored column, not the policy's spelling:\n{dsl}"
+    );
+    assert!(
+        rendered.contains(r#""owner_id""#) && !rendered.contains(r#""Owner_Id""#),
+        "the stored column name is owner_id:\n{rendered}"
+    );
+}
+
+/// A membership join whose columns are declared in mixed case still resolves,
+/// since `PostgreSQL` reads the policy's folded spelling as the same column.
+#[test]
+fn mixed_case_membership_columns_still_infer_the_join() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(Doc_Id UUID REFERENCES docs(id), User_Id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user)
+);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    assert_ne!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "the membership join resolves, so reads are granted:\n{dsl}"
+    );
+
+    // The other direction: the declaration is lowercase and the policy spells
+    // the same columns in another case.
+    let policy_side = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.Doc_Id = docs.ID AND m.User_Id = current_user)
+);
+",
+    );
+    let policy_side_dsl = translator(ConfidenceLevel::B)
+        .generate_model(&policy_side)
+        .dsl;
+    assert_ne!(
+        relation_definition(&policy_side_dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "the policy's spelling folds to the declared columns:\n{policy_side_dsl}"
+    );
+}
+
+/// A foreign key declared in mixed case still carries parent inheritance.
+#[test]
+fn a_mixed_case_foreign_key_still_inherits_the_parent_rule() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, Project_Id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let dsl = translator.generate_model(&db).dsl;
+
+    assert_eq!(
+        relation_definition(&dsl, "tasks", "can_select").as_deref(),
+        Some("owner from projects"),
+        "the parent link resolves through the stored column name:\n{dsl}"
+    );
+    assert!(
+        format_tuples(&translator.generate_tuple_queries(&db))
+            .contains(r#"'projects:' || "project_id""#),
+        "the bridge query reads the stored column name"
+    );
+
+    // The other direction: the declaration is lowercase and the policy spells
+    // the join columns in another case.
+    let policy_side = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.ID = tasks.Project_Id AND p.Owner_Id = current_user));
+",
+    );
+    assert_eq!(
+        relation_definition(
+            &translator.generate_model(&policy_side).dsl,
+            "tasks",
+            "can_select"
+        )
+        .as_deref(),
+        Some("owner from projects"),
+        "the policy's spelling folds to the declared columns"
+    );
+}
+
+/// The `id` fallback for a row identifier answers for a column declared `ID`.
+#[test]
+fn a_mixed_case_unique_id_column_identifies_a_row() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(ID UUID UNIQUE NOT NULL, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+
+    assert!(
+        rendered.contains(r#"'docs:' || "id""#),
+        "the unique NOT NULL id column identifies the row:\n{rendered}"
+    );
+}

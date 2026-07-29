@@ -18,7 +18,7 @@ pub(crate) const TEAM_PRINCIPAL_TABLES: &[&str] = &["teams", "team"];
 pub(crate) fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
     let table_info = lookup_table(db, table)?;
     if let Some(pk) = table_info.primary_key_column(db) {
-        return Some(pk.column_name().to_string());
+        return Some(pk.stored_column_name().into_owned());
     }
     if composite_primary_key_columns(table, db).is_some() {
         return None;
@@ -26,9 +26,11 @@ pub(crate) fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
     table_info
         .columns(db)
         .find(|c| {
-            c.column_name() == "id" && !c.is_nullable(db) && uniquely_constrained("id", table, db)
+            c.stored_column_name() == "id"
+                && !c.is_nullable(db)
+                && uniquely_constrained("id", table, db)
         })
-        .map(|c| c.column_name().to_string())
+        .map(|c| c.stored_column_name().into_owned())
 }
 
 /// True when a unique index over `column` alone constrains `table`.
@@ -38,7 +40,10 @@ pub(crate) fn uniquely_constrained(column: &str, table: &str, db: &ParserDB) -> 
     };
     table_info.unique_indices(db).any(|index| {
         let mut columns = index.columns(db);
-        columns.next().is_some_and(|c| c.column_name() == column) && columns.next().is_none()
+        columns
+            .next()
+            .is_some_and(|c| c.stored_column_name() == column)
+            && columns.next().is_none()
     })
 }
 
@@ -47,12 +52,12 @@ pub(crate) fn composite_primary_key_columns(table: &str, db: &ParserDB) -> Optio
     let table_info = lookup_table(db, table)?;
     let columns: Vec<String> = table_info
         .primary_key_columns(db)
-        .map(|c| c.column_name().to_string())
+        .map(|c| c.stored_column_name().into_owned())
         .collect();
     (columns.len() > 1).then_some(columns)
 }
 
 /// Returns true when `table` has a column named `col`.
 pub(crate) fn table_has_column(db: &ParserDB, table: &str, col: &str) -> bool {
-    lookup_table(db, table).is_some_and(|t| t.columns(db).any(|c| c.column_name() == col))
+    lookup_table(db, table).is_some_and(|t| t.columns(db).any(|c| c.stored_column_name() == col))
 }

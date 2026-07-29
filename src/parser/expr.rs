@@ -2,14 +2,17 @@
 use crate::no_std_prelude::*;
 use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
+use crate::parser::names::stored_ident_name;
+
 /// Extract a simple column name from an expression.
 ///
 /// Supports plain identifiers (`owner_id`) and qualified identifiers
-/// (`public.docs.owner_id`), returning only the terminal column component.
+/// (`public.docs.owner_id`), returning only the terminal column component under
+/// the name `PostgreSQL` stores it.
 pub fn extract_column_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Identifier(ident) => Some(ident.value.clone()),
-        Expr::CompoundIdentifier(parts) => Some(parts.last()?.value.clone()),
+        Expr::Identifier(ident) => Some(stored_ident_name(ident).into_owned()),
+        Expr::CompoundIdentifier(parts) => Some(stored_ident_name(parts.last()?).into_owned()),
         Expr::Nested(inner) => extract_column_name(inner),
         Expr::Cast { expr, .. } => extract_column_name(expr),
         _ => None,

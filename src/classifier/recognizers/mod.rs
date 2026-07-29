@@ -12,7 +12,7 @@ use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrap
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
     lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
-    split_schema_and_relation,
+    split_schema_and_relation, stored_ident_name,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 
@@ -622,9 +622,12 @@ fn flatten_and_predicates<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 
 fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     match expr {
-        Expr::Identifier(id) => Some((None, id.value.clone())),
+        Expr::Identifier(id) => Some((None, stored_ident_name(id).into_owned())),
         Expr::CompoundIdentifier(parts) => match parts.as_slice() {
-            [.., qualifier, last] => Some((Some(qualifier.value.clone()), last.value.clone())),
+            [.., qualifier, last] => Some((
+                Some(stored_ident_name(qualifier).into_owned()),
+                stored_ident_name(last).into_owned(),
+            )),
             _ => None,
         },
         _ => None,

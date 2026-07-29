@@ -17,7 +17,7 @@ db = ["std", "diesel"]
 
 [dependencies]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
-sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "c315d2cfd7df00f62a64b49ee42858871eeaf505", default-features = false }
+sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "6070c45d46c12dddd2315e3218287c27898686b2", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

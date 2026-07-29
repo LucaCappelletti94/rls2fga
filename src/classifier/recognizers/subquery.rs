@@ -407,7 +407,7 @@ pub(super) fn analyze_p5_parent_inheritance(
 
     let outer_cols: Vec<String> = outer_table_meta
         .columns(db)
-        .map(|c| c.column_name().to_string())
+        .map(|c| c.stored_column_name().into_owned())
         .collect();
     let mut predicates = Vec::new();
     flatten_and_predicates(selection, &mut predicates);
@@ -420,7 +420,7 @@ pub(super) fn analyze_p5_parent_inheritance(
         };
         let parent_cols: Vec<String> = parent_table
             .columns(db)
-            .map(|c| c.column_name().to_string())
+            .map(|c| c.stored_column_name().into_owned())
             .collect();
 
         let mut fk_column: Option<String> = None;
@@ -581,7 +581,7 @@ fn membership_matches(
         };
         let col_names: Vec<String> = table
             .columns(db)
-            .map(|c| c.column_name().to_string())
+            .map(|c| c.stored_column_name().into_owned())
             .collect();
 
         if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns_with_db(
@@ -1234,7 +1234,7 @@ fn table_has_fk_to_parent(
     outer_table.foreign_keys(db).any(|fk| {
         let host_col_matches = fk
             .host_column(db)
-            .is_some_and(|col| col.column_name() == fk_column);
+            .is_some_and(|col| col.stored_column_name() == fk_column);
         if !host_col_matches {
             return false;
         }
