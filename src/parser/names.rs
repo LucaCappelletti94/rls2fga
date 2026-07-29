@@ -191,6 +191,12 @@ pub fn membership_read_scope_relation_name(join_table: &str) -> String {
     scope_relation_name("read_scope", join_table)
 }
 
+/// Derive a stable relation name for the part of an action a role scoped
+/// RESTRICTIVE policy binds.
+pub fn role_limited_relation_name(policy_name: &str) -> String {
+    scope_relation_name("limit", policy_name)
+}
+
 fn scope_relation_name(prefix: &str, key: &str) -> String {
     let base = canonical_fga_type_name(key);
     let suffix = stable_hex_suffix(key);
@@ -458,6 +464,16 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.starts_with("scope_"));
         assert_ne!(first, third);
+    }
+
+    #[test]
+    fn role_limited_relation_name_is_stable_and_clamped() {
+        let first = role_limited_relation_name("DocsReview");
+
+        assert_eq!(first, role_limited_relation_name("DocsReview"));
+        assert!(first.starts_with("limit_"));
+        assert_ne!(first, role_limited_relation_name("docs_review"));
+        assert!(role_limited_relation_name(&"p".repeat(80)).len() <= MAX_RELATION_NAME_LEN);
     }
 
     #[test]

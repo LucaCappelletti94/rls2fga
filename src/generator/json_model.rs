@@ -94,6 +94,11 @@ pub enum Userset {
         /// Children combined with AND.
         intersection: IntersectionDef,
     },
+    /// Base userset minus a subtracted one (logical AND NOT).
+    Difference {
+        /// The base and the userset removed from it.
+        difference: DifferenceDef,
+    },
 }
 
 /// Identifies a single relation by name.
@@ -125,6 +130,15 @@ pub struct UnionDef {
 pub struct IntersectionDef {
     /// Child usersets: access is granted only if all children grant access.
     pub child: Vec<Userset>,
+}
+
+/// A userset minus another one.
+#[derive(Debug, Clone, Serialize)]
+pub struct DifferenceDef {
+    /// Users granted before the subtraction.
+    pub base: Box<Userset>,
+    /// Users removed from `base`.
+    pub subtract: Box<Userset>,
 }
 
 /// Build a JSON-serializable `AuthorizationModel` from classified RLS policies.
@@ -228,6 +242,12 @@ fn expr_to_userset(expr: &UsersetExpr) -> Userset {
         UsersetExpr::Intersection(children) => Userset::Intersection {
             intersection: IntersectionDef {
                 child: children.iter().map(expr_to_userset).collect(),
+            },
+        },
+        UsersetExpr::Exclusion { base, subtract } => Userset::Difference {
+            difference: DifferenceDef {
+                base: Box::new(expr_to_userset(base)),
+                subtract: Box::new(expr_to_userset(subtract)),
             },
         },
     }

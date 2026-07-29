@@ -470,6 +470,209 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
     );
 }
 
+/// One permissive read plus a barrier only `contractor` is subject to.
+const ROLE_SCOPED_BARRIER: &str = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (reviewer_id = current_user);
+";
+
+/// A RESTRICTIVE policy binds only the roles it names, so a user outside them keeps
+/// whatever the permissive policies grant.
+#[test]
+fn a_role_scoped_restrictive_policy_leaves_other_roles_unconstrained() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (reviewer_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let scope = pg_role_relation(&model.dsl, "docs")
+        .unwrap_or_else(|| panic!("the contractor scope must reach the model:\n{}", model.dsl));
+    let limited = relation_definition(&model.dsl, "docs", "can_select")
+        .and_then(|can_select| {
+            relation_definition(&model.dsl, "docs", can_select.trim()).or(Some(can_select))
+        })
+        .expect("docs should define can_select");
+    assert!(
+        limited.contains(&format!("but not member from {scope}")),
+        "a user outside the role must keep the grant, got '{limited}':\n{}",
+        model.dsl
+    );
+}
+
+/// The subtracted side of a barrier is consulted like any other, so its tuples must
+/// survive the reachability filter. Without them the barrier subtracts nobody and the
+/// bound role keeps the access it forbids.
+#[test]
+fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
+    let db = db_of(ROLE_SCOPED_BARRIER);
+    let translator = translator(ConfidenceLevel::B);
+    let model = translator.generate_model(&db);
+    let scope = pg_role_relation(&model.dsl, "docs")
+        .unwrap_or_else(|| panic!("the contractor scope must reach the model:\n{}", model.dsl));
+
+    let tuples = translator.generate_tuple_queries(&db);
+    assert!(
+        tuples.iter().any(|query| {
+            query.sql.contains(&format!("'{scope}' AS relation"))
+                && query.sql.contains("'pg_role:contractor' AS subject")
+        }),
+        "the subtracted role needs its tuples, got: {:#?}",
+        tuples.iter().map(|query| &query.sql).collect::<Vec<_>>()
+    );
+}
+
+/// A barrier reaches the JSON model as a `difference` node, which `OpenFGA` validates
+/// like any other userset.
+#[test]
+fn a_role_scoped_barrier_emits_a_consistent_json_model() {
+    let db = db_of(ROLE_SCOPED_BARRIER);
+    let json = translator(ConfidenceLevel::B).generate_json_model(&db);
+
+    assert_model_is_internally_consistent(&json);
+    let serialized = serde_json::to_string(&json).expect("model should serialize");
+    assert!(
+        serialized.contains(r#""difference""#),
+        "the barrier must survive into the JSON model, got:\n{serialized}"
+    );
+}
+
+/// Two barriers bind two roles, so each wraps the result of the one before it rather
+/// than replacing it.
+#[test]
+fn two_role_scoped_barriers_each_bind_their_own_role() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID, approver_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (reviewer_id = current_user);
+CREATE POLICY docs_approve ON docs AS RESTRICTIVE FOR SELECT TO auditor
+  USING (approver_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    let limits: Vec<String> = model
+        .dsl
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("define limit_"))
+        .filter_map(|rest| rest.split_once(':'))
+        .map(|(name, _)| format!("limit_{name}"))
+        .collect();
+    let [first, second] = limits.as_slice() else {
+        panic!(
+            "each barrier needs its own relation, got {limits:?}:\n{}",
+            model.dsl
+        );
+    };
+
+    let outer = relation_definition(&model.dsl, "docs", "can_select")
+        .expect("docs should define can_select");
+    let (outer, inner) = if outer.trim() == *second {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    let outer_body = relation_definition(&model.dsl, "docs", outer)
+        .unwrap_or_else(|| panic!("{outer} should be defined:\n{}", model.dsl));
+    assert_eq!(
+        outer_body.matches(inner.as_str()).count(),
+        2,
+        "the outer barrier applies to both sides of the inner one, got '{outer_body}':\n{}",
+        model.dsl
+    );
+    assert_eq!(
+        model.dsl.matches("but not").count(),
+        2,
+        "each barrier subtracts its own role:\n{}",
+        model.dsl
+    );
+}
+
+/// Changing a row needs it readable, and a barrier can take that readability away, so
+/// the read gate stays even when the rule sits behind one.
+#[test]
+fn a_write_behind_a_barrier_keeps_its_read_gate() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, editor_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_edit ON docs FOR UPDATE USING (editor_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR ALL TO contractor
+  USING (reviewer_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    let can_update_using = relation_definition(&model.dsl, "docs", "can_update_using")
+        .or_else(|| relation_definition(&model.dsl, "docs", "can_update"))
+        .expect("docs should define the update phase");
+    assert!(
+        can_update_using.contains("can_select"),
+        "an editor who cannot read the row cannot change it, got '{can_update_using}':\n{}",
+        model.dsl
+    );
+}
+
+/// A barrier over an inherited rule holds a reference the alias passes rewrite, so a
+/// pass that skips one side leaves the model dangling.
+#[test]
+fn a_barrier_over_an_inherited_rule_keeps_its_references() {
+    let db = db_of(
+        r"
+CREATE TABLE parents(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE parents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parents_own ON parents FOR SELECT USING (owner_id = current_user);
+CREATE TABLE docs(id UUID PRIMARY KEY, parent_id UUID REFERENCES parents(id), reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_inherit ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM parents p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (reviewer_id = current_user);
+",
+    );
+    let json = translator(ConfidenceLevel::B).generate_json_model(&db);
+
+    assert_model_is_internally_consistent(&json);
+}
+
+/// An unscoped RESTRICTIVE policy binds everyone, so nothing is subtracted.
+#[test]
+fn an_unscoped_restrictive_policy_binds_every_role() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT
+  USING (reviewer_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert!(
+        !model.dsl.contains("but not"),
+        "a barrier every role is subject to needs no exclusion:\n{}",
+        model.dsl
+    );
+    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+        .expect("docs should define can_select");
+    assert!(
+        can_select.contains(" and "),
+        "the barrier stays a conjunct, got '{can_select}':\n{}",
+        model.dsl
+    );
+}
+
 /// `PostgreSQL` identifiers may contain newlines, which end a `--` comment early
 /// and turn the rest of the identifier into an executable statement.
 #[test]
@@ -1082,6 +1285,65 @@ fn generated_names_respect_openfga_length_limits() {
     assert!(relations > 5, "expected a populated model, got:\n{dsl}");
 }
 
+/// Operators at the outermost nesting level of a DSL definition body.
+fn top_level_operators(body: &str) -> std::collections::BTreeSet<&'static str> {
+    let mut depth = 0i32;
+    let mut found = std::collections::BTreeSet::new();
+    for (idx, ch) in body.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ if depth == 0 => {
+                for op in [" but not ", " and ", " or "] {
+                    if body[idx..].starts_with(op) {
+                        found.insert(op.trim());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Every mixed expression in the `OpenFGA` language reference groups with
+/// parentheses, so one operator never sits beside a different one.
+#[test]
+fn no_definition_mixes_operators_without_parentheses() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, tenant_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT TO auditor USING (owner_id = current_user);
+CREATE POLICY docs_tenant ON docs FOR SELECT USING (tenant_id = current_user);
+CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (reviewer_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let mut checked = 0;
+    for line in dsl.lines() {
+        let Some(body) = line
+            .trim()
+            .strip_prefix("define ")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(_, body)| body.trim())
+        else {
+            continue;
+        };
+        let operators = top_level_operators(body);
+        assert!(
+            operators.len() <= 1,
+            "'{}' mixes {:?} at one level:\n{dsl}",
+            line.trim(),
+            operators
+        );
+        checked += 1;
+    }
+    assert!(checked > 5, "expected a populated model:\n{dsl}");
+}
+
 /// `OpenFGA` refuses a model with a dangling reference, so every name a userset
 /// reaches must exist.
 #[test]
@@ -1237,6 +1499,11 @@ fn check_userset_references(
         Userset::Intersection { intersection } => {
             for child in &intersection.child {
                 check_userset_references(declared, declared_types, type_name, relation, child);
+            }
+        }
+        Userset::Difference { difference } => {
+            for side in [&difference.base, &difference.subtract] {
+                check_userset_references(declared, declared_types, type_name, relation, side);
             }
         }
     }
@@ -2213,6 +2480,41 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
         Some("no_access"),
         "the definer's identity is not the caller's, so the row owner is not the caller:\n{}",
         model.dsl
+    );
+}
+
+/// Declaring the function in the registry asserts its semantics, which outranks what
+/// the body and the security mode suggest.
+#[test]
+fn an_explicitly_registered_accessor_outranks_its_security_mode() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
+",
+    );
+    let model = TranslatorBuilder::new()
+        .with_registry_json(r#"{"app_uid": {"kind": "current_user_accessor", "returns": "uuid"}}"#)
+        .expect("registry should parse")
+        .with_min_confidence(ConfidenceLevel::B)
+        .build()
+        .generate_model(&db);
+
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "a declared accessor stays one:\n{}",
+        model.dsl
+    );
+    assert!(
+        !model
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("runs as its owner")),
+        "the note only fires where the translation refused, got {:#?}",
+        model.todos
     );
 }
 

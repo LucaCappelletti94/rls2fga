@@ -18,7 +18,7 @@ pub(super) fn render_dsl(types: &[TypePlan]) -> String {
             let _ = writeln!(dsl, "    define {relation}: {}", format_subjects(subjects));
         }
         for (relation, expr) in &t.computed_relations {
-            let _ = writeln!(dsl, "    define {relation}: {}", expr_to_dsl(expr, 0));
+            let _ = writeln!(dsl, "    define {relation}: {}", expr_to_dsl(expr, None));
         }
     }
 
@@ -36,36 +36,45 @@ fn format_subjects(subjects: &[DirectSubject]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
-pub(super) fn expr_to_dsl(expr: &UsersetExpr, parent_precedence: u8) -> String {
-    // 0 = top, 1 = OR, 2 = AND, 3 = atom
-    match expr {
-        UsersetExpr::Computed(name) => name.clone(),
+/// Render one userset. The DSL admits a single operator per nesting level, so a
+/// child of another kind is parenthesized. `parent` is the operator this expression
+/// sits under, or `None` at the top of a definition.
+pub(super) fn expr_to_dsl(expr: &UsersetExpr, parent: Option<&str>) -> String {
+    const ATOM: &str = "";
+    let (operator, parts) = match expr {
+        UsersetExpr::Computed(name) => return name.clone(),
         UsersetExpr::TupleToUserset { tupleset, computed } => {
-            format!("{computed} from {tupleset}")
+            return format!("{computed} from {tupleset}")
         }
-        UsersetExpr::Union(children) => {
-            let rendered = children
+        UsersetExpr::Union(children) => (
+            "or",
+            children
                 .iter()
-                .map(|c| expr_to_dsl(c, 1))
-                .collect::<Vec<_>>()
-                .join(" or ");
-            if parent_precedence > 1 {
-                format!("({rendered})")
-            } else {
-                rendered
-            }
-        }
-        UsersetExpr::Intersection(children) => {
-            let rendered = children
+                .map(|child| expr_to_dsl(child, Some("or")))
+                .collect::<Vec<_>>(),
+        ),
+        UsersetExpr::Intersection(children) => (
+            "and",
+            children
                 .iter()
-                .map(|c| expr_to_dsl(c, 2))
-                .collect::<Vec<_>>()
-                .join(" and ");
-            if parent_precedence > 2 {
-                format!("({rendered})")
-            } else {
-                rendered
-            }
-        }
+                .map(|child| expr_to_dsl(child, Some("and")))
+                .collect::<Vec<_>>(),
+        ),
+        // `but not` takes exactly two operands and never chains, so both sides are
+        // rendered as if they sat under no operator of their own.
+        UsersetExpr::Exclusion { base, subtract } => (
+            "but not",
+            vec![
+                expr_to_dsl(base, Some(ATOM)),
+                expr_to_dsl(subtract, Some(ATOM)),
+            ],
+        ),
+    };
+
+    let rendered = parts.join(&format!(" {operator} "));
+    if parent.is_some_and(|parent| parent != operator) {
+        format!("({rendered})")
+    } else {
+        rendered
     }
 }

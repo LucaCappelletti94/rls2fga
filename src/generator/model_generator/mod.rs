@@ -23,7 +23,8 @@ use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name, same_identifier, stable_hex_suffix,
+    parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
+    same_identifier, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -82,9 +83,17 @@ fn subject_key(subjects: &[DirectSubject]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UsersetExpr {
     Computed(String),
-    TupleToUserset { tupleset: String, computed: String },
+    TupleToUserset {
+        tupleset: String,
+        computed: String,
+    },
     Union(Vec<UsersetExpr>),
     Intersection(Vec<UsersetExpr>),
+    /// `base` minus `subtract`, the only way to negate a userset in `OpenFGA`.
+    Exclusion {
+        base: Box<UsersetExpr>,
+        subtract: Box<UsersetExpr>,
+    },
 }
 
 /// Structural identity of a userset expression, stable against `Debug` formatting.
@@ -94,6 +103,9 @@ fn userset_key(expr: &UsersetExpr) -> String {
         UsersetExpr::TupleToUserset { tupleset, computed } => format!("t:{tupleset}:{computed}"),
         UsersetExpr::Union(children) => format!("u({})", child_keys(children)),
         UsersetExpr::Intersection(children) => format!("i({})", child_keys(children)),
+        UsersetExpr::Exclusion { base, subtract } => {
+            format!("x({},{})", userset_key(base), userset_key(subtract))
+        }
     }
 }
 
@@ -249,6 +261,16 @@ enum ActionTarget {
 struct ModeBuckets {
     permissive: Vec<UsersetExpr>,
     restrictive: Vec<UsersetExpr>,
+    /// Barriers that bind only the members of a role.
+    role_limited: Vec<RoleLimitedRule>,
+}
+
+/// A RESTRICTIVE rule and the relation holding the roles it binds.
+#[derive(Debug, Clone)]
+struct RoleLimitedRule {
+    policy: String,
+    rule: UsersetExpr,
+    scope_relation: String,
 }
 
 /// Pre-computed per-`(table, function_name)` resource column hints for P1/P2
@@ -422,11 +444,6 @@ pub(crate) fn build_schema_plan(
                     &table_types,
                     &source_table_name,
                 );
-                let expr = if let Some(scope_relation) = scope_relation.as_deref() {
-                    scoped_policy_expr(expr, scope_relation)
-                } else {
-                    expr
-                };
                 // A restrictive clause is a barrier, so a dropped conjunct must still deny.
                 let guards = dropped_attribute_guards(&classified.pattern);
                 let expr = if cp.mode() == PolicyMode::Restrictive && !guards.is_empty() {
@@ -448,7 +465,14 @@ pub(crate) fn build_schema_plan(
                 } else {
                     expr
                 };
-                push_action_expr(&mut action_buckets, target, cp.mode(), expr);
+                push_action_expr(
+                    &mut action_buckets,
+                    target,
+                    cp.name(),
+                    cp.mode(),
+                    expr,
+                    scope_relation.as_deref(),
+                );
             });
             dedup_todos_added_since(&mut todos, todos_before);
         }
@@ -643,7 +667,8 @@ fn rule_implies(
                     .get(name)
                     .is_some_and(|expr| rule_implies(rule, expr, relations, seen))
         }
-        UsersetExpr::TupleToUserset { .. } => false,
+        // An exclusion can remove the rule's own members, so it admits nothing.
+        UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => false,
     }
 }
 
@@ -768,6 +793,10 @@ fn repoint_inlined_aliases(
                 repoint_inlined_aliases(child, direct_relations, own, aliases);
             }
         }
+        UsersetExpr::Exclusion { base, subtract } => {
+            repoint_inlined_aliases(base, direct_relations, own, aliases);
+            repoint_inlined_aliases(subtract, direct_relations, own, aliases);
+        }
     }
 }
 
@@ -811,6 +840,9 @@ fn grants_nothing(expr: &UsersetExpr, plan: &TypePlan, seen: &mut BTreeSet<Strin
         UsersetExpr::Union(children) => children
             .iter()
             .all(|child| grants_nothing(child, plan, seen)),
+        // Subtracting from nothing still grants nothing, and how much a subtraction
+        // removes is unknowable here.
+        UsersetExpr::Exclusion { base, .. } => grants_nothing(base, plan, seen),
         UsersetExpr::TupleToUserset { .. } => false,
     }
 }
@@ -855,6 +887,11 @@ fn reach_userset(
             for child in children {
                 reach_userset(child, plan, by_name, reached);
             }
+        }
+        // Both sides are consulted, so both keep their tuples.
+        UsersetExpr::Exclusion { base, subtract } => {
+            reach_userset(base, plan, by_name, reached);
+            reach_userset(subtract, plan, by_name, reached);
         }
     }
 }
@@ -1036,16 +1073,31 @@ where
     }
 }
 
+/// Route one translated clause into its bucket.
+///
+/// A role scope narrows a PERMISSIVE grant, since the other permissive policies
+/// still stand for everyone else. A RESTRICTIVE barrier instead binds only the
+/// roles it names, which `compose_action` can express only once the base is known.
 fn push_action_expr(
     action_buckets: &mut BTreeMap<ActionTarget, ModeBuckets>,
     target: ActionTarget,
+    policy_name: &str,
     mode: PolicyMode,
     expr: UsersetExpr,
+    scope_relation: Option<&str>,
 ) {
     let bucket = action_buckets.entry(target).or_default();
-    match mode {
-        PolicyMode::Permissive => bucket.permissive.push(expr),
-        PolicyMode::Restrictive => bucket.restrictive.push(expr),
+    match (mode, scope_relation) {
+        (PolicyMode::Permissive, Some(scope)) => {
+            bucket.permissive.push(scoped_policy_expr(expr, scope));
+        }
+        (PolicyMode::Permissive, None) => bucket.permissive.push(expr),
+        (PolicyMode::Restrictive, Some(scope)) => bucket.role_limited.push(RoleLimitedRule {
+            policy: policy_name.to_string(),
+            rule: expr,
+            scope_relation: scope.to_string(),
+        }),
+        (PolicyMode::Restrictive, None) => bucket.restrictive.push(expr),
     }
 }
 
@@ -1108,12 +1160,37 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
     let permissive = combine_union(bucket.permissive.clone());
     let restrictive = combine_intersection(bucket.restrictive.clone());
 
-    match (permissive, restrictive) {
-        (Some(p), Some(r)) => Some(UsersetExpr::Intersection(vec![p, r])),
-        (Some(p), None) => Some(p),
-        (None, Some(_)) => Some(deny_expr(table_plan)),
-        (None, None) => None,
+    let Some(permissive) = permissive else {
+        // Barriers alone grant nobody anything, whichever roles they bind.
+        return (restrictive.is_some() || !bucket.role_limited.is_empty())
+            .then(|| deny_expr(table_plan));
+    };
+
+    let mut expr = match restrictive {
+        Some(restrictive) => UsersetExpr::Intersection(vec![permissive, restrictive]),
+        None => permissive,
+    };
+
+    // Members of the bound roles have to satisfy the barrier, everyone else is
+    // untouched by it. Each barrier wraps the previous result, so a second one costs
+    // one more relation rather than doubling the tree.
+    for limited in &bucket.role_limited {
+        let bound = UsersetExpr::Intersection(vec![expr.clone(), limited.rule.clone()]);
+        let unbound = UsersetExpr::Exclusion {
+            base: Box::new(expr),
+            subtract: Box::new(UsersetExpr::TupleToUserset {
+                tupleset: limited.scope_relation.clone(),
+                computed: MEMBER_RELATION.to_string(),
+            }),
+        };
+        let name = table_plan.ensure_computed(
+            role_limited_relation_name(&limited.policy),
+            UsersetExpr::Union(vec![bound, unbound]),
+        );
+        expr = UsersetExpr::Computed(name);
     }
+
+    Some(expr)
 }
 
 /// Quote `part` for a table-lookup key unless it is a bare lowercase identifier.

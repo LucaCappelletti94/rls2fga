@@ -70,6 +70,7 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     let bucket = ModeBuckets {
         permissive: Vec::new(),
         restrictive: vec![UsersetExpr::Computed("owner".to_string())],
+        role_limited: Vec::new(),
     };
 
     let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
@@ -77,6 +78,75 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     assert!(
         plan.direct_relations.contains_key("no_access"),
         "restrictive-only rules should synthesize no_access"
+    );
+}
+
+#[test]
+fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
+    let mut plan = TypePlan::new("docs");
+    let bucket = ModeBuckets {
+        permissive: Vec::new(),
+        restrictive: Vec::new(),
+        role_limited: vec![RoleLimitedRule {
+            policy: "docs_review".to_string(),
+            rule: UsersetExpr::Computed("reviewer".to_string()),
+            scope_relation: "scope_docs_review".to_string(),
+        }],
+    };
+
+    let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
+    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+}
+
+/// The fold always puts an exclusion beside a granting branch, so no generated model
+/// can tell a wrong answer here from a right one. The contract is pinned directly.
+#[test]
+fn grants_nothing_reads_only_the_base_of_an_exclusion() {
+    let mut plan = TypePlan::new("docs");
+    plan.ensure_direct(
+        DENY_RELATION,
+        vec![DirectSubject::Type(USER_TYPE.to_string())],
+    );
+    plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+
+    let from_nothing = UsersetExpr::Exclusion {
+        base: Box::new(UsersetExpr::Computed(DENY_RELATION.to_string())),
+        subtract: Box::new(UsersetExpr::Computed("owner".to_string())),
+    };
+    assert!(
+        grants_nothing(&from_nothing, &plan, &mut BTreeSet::new()),
+        "subtracting from a relation that grants nobody still grants nobody"
+    );
+
+    let from_owner = UsersetExpr::Exclusion {
+        base: Box::new(UsersetExpr::Computed("owner".to_string())),
+        subtract: Box::new(UsersetExpr::Computed(DENY_RELATION.to_string())),
+    };
+    assert!(
+        !grants_nothing(&from_owner, &plan, &mut BTreeSet::new()),
+        "how much a subtraction removes is unknowable, so the base decides"
+    );
+}
+
+/// `rule_implies` treats equal keys as the same rule, so an exclusion that ignored a
+/// side would let one stand for another.
+#[test]
+fn userset_key_separates_exclusions_by_both_sides() {
+    let exclusion = |base: &str, subtract: &str| UsersetExpr::Exclusion {
+        base: Box::new(UsersetExpr::Computed(base.to_string())),
+        subtract: Box::new(UsersetExpr::Computed(subtract.to_string())),
+    };
+
+    let key = userset_key(&exclusion("owner", "blocked"));
+    assert_eq!(key, userset_key(&exclusion("owner", "blocked")));
+    assert_ne!(key, userset_key(&exclusion("editor", "blocked")));
+    assert_ne!(key, userset_key(&exclusion("owner", "suspended")));
+    assert_ne!(
+        key,
+        userset_key(&UsersetExpr::Intersection(vec![
+            UsersetExpr::Computed("owner".to_string()),
+            UsersetExpr::Computed("blocked".to_string()),
+        ]))
     );
 }
 
@@ -549,7 +619,7 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
 }
 
 #[test]
-fn expr_to_dsl_adds_parentheses_when_required() {
+fn expr_to_dsl_parenthesizes_a_child_of_another_kind() {
     let union = UsersetExpr::Union(vec![
         UsersetExpr::Computed("a".to_string()),
         UsersetExpr::Computed("b".to_string()),
@@ -559,8 +629,25 @@ fn expr_to_dsl_adds_parentheses_when_required() {
         UsersetExpr::Computed("y".to_string()),
     ]);
 
-    assert_eq!(expr_to_dsl(&union, 2), "(a or b)");
-    assert_eq!(expr_to_dsl(&intersection, 3), "(x and y)");
+    assert_eq!(expr_to_dsl(&union, Some("and")), "(a or b)");
+    assert_eq!(expr_to_dsl(&intersection, Some("or")), "(x and y)");
+    assert_eq!(expr_to_dsl(&union, Some("or")), "a or b");
+    assert_eq!(expr_to_dsl(&union, None), "a or b");
+
+    let mixed = UsersetExpr::Union(vec![
+        intersection.clone(),
+        UsersetExpr::Exclusion {
+            base: Box::new(UsersetExpr::Computed("a".to_string())),
+            subtract: Box::new(UsersetExpr::Computed("b".to_string())),
+        },
+    ]);
+    assert_eq!(expr_to_dsl(&mixed, None), "(x and y) or (a but not b)");
+
+    let nested = UsersetExpr::Exclusion {
+        base: Box::new(union),
+        subtract: Box::new(intersection),
+    };
+    assert_eq!(expr_to_dsl(&nested, None), "(a or b) but not (x and y)");
 }
 
 #[test]

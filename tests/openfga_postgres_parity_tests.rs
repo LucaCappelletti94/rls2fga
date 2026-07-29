@@ -658,3 +658,175 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+/// One reviewer relationship: `(note id, owner, reviewer)`. The last row is owned by
+/// the reader outside `contractor`, whom the barrier must not touch.
+const SEEDED_REVIEWED_NOTES: [(&str, &str, &str); 3] = [
+    ("note-reviewed", USER_ALICE, USER_ALICE),
+    ("note-unreviewed", USER_ALICE, USER_BOB),
+    ("note-outside-the-role", USER_BOB, USER_ALICE),
+];
+
+/// One reader: `(app user id, login role, member of contractor)`.
+const RESTRICTED_READERS: [(&str, &str, bool); 2] = [
+    (USER_ALICE, "app_alice", true),
+    (USER_BOB, "app_bob", false),
+];
+
+diesel::table! {
+    #[sql_name = "notes"]
+    notes_reviewed (id) {
+        id -> diesel::sql_types::Text,
+        owner_id -> diesel::sql_types::Text,
+        reviewer_id -> diesel::sql_types::Text,
+    }
+}
+
+/// Whether `login_role`, acting as `user_id`, can read the `notes` row `note_id`.
+fn postgres_allows_reviewed_select(
+    conn: &mut PgConnection,
+    user_id: &str,
+    login_role: &str,
+    note_id: &str,
+) -> bool {
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query(format!("SET LOCAL ROLE {login_role}")).execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let visible: i64 = notes_reviewed::table
+            .filter(notes_reviewed::id.eq(note_id))
+            .count()
+            .get_result(conn)?;
+        Ok(visible == 1)
+    })
+    .expect("reading notes under row level security should not error")
+}
+
+/// A RESTRICTIVE policy scoped to a role binds that role alone, which the model can
+/// only express by subtracting the role from the grant.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("role_scoped_restrictive");
+    let (classified, db, registry) = support::load_fixture_classified("role_scoped_restrictive");
+    // The policy names the role, so it has to exist before the schema is applied.
+    conn.batch_execute("CREATE ROLE contractor")
+        .expect("Failed to create the scoped role");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the role_scoped_restrictive schema on PostgreSQL 18");
+
+    diesel::insert_into(users::table)
+        .values(
+            RESTRICTED_READERS
+                .map(|(user_id, _, _)| users::id.eq(user_id))
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed users");
+    let rows: Vec<_> = SEEDED_REVIEWED_NOTES
+        .iter()
+        .map(|(id, owner, reviewer)| {
+            (
+                notes_reviewed::id.eq(*id),
+                notes_reviewed::owner_id.eq(*owner),
+                notes_reviewed::reviewer_id.eq(*reviewer),
+            )
+        })
+        .collect();
+    diesel::insert_into(notes_reviewed::table)
+        .values(rows)
+        .execute(&mut conn)
+        .expect("Failed to seed notes");
+
+    for (_, login_role, in_contractor) in RESTRICTED_READERS {
+        let grant_contractor = if in_contractor {
+            format!("GRANT contractor TO {login_role};")
+        } else {
+            String::new()
+        };
+        conn.batch_execute(&format!(
+            "CREATE ROLE {login_role} LOGIN; \
+             GRANT SELECT ON notes TO {login_role}; \
+             {grant_contractor}"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "role-scoped-restrictive-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    for (user_id, _, in_contractor) in RESTRICTED_READERS {
+        if in_contractor {
+            writes.push(support::openfga::make_tuple(
+                "pg_role:contractor",
+                "member",
+                &format!("user:{user_id}"),
+            ));
+        }
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for (user_id, login_role, _) in RESTRICTED_READERS {
+        for (note_id, _, _) in SEEDED_REVIEWED_NOTES {
+            let expected = postgres_allows_reviewed_select(&mut conn, user_id, login_role, note_id);
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA role scoped restrictive parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
