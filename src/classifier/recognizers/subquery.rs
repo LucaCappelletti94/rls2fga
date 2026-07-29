@@ -1101,13 +1101,13 @@ pub(super) fn qualifier_matches_table(
     table_name: &str,
     alias: Option<&str>,
 ) -> bool {
-    if alias.is_some_and(|a| qualifier.eq_ignore_ascii_case(a)) {
+    if alias.is_some_and(|a| same_identifier(qualifier, a)) {
         return true;
     }
 
     table_qualifier_candidates(table_name)
         .iter()
-        .any(|candidate| qualifier.eq_ignore_ascii_case(candidate))
+        .any(|candidate| same_identifier(qualifier, candidate))
 }
 
 pub(super) fn table_qualifier_candidates(table_name: &str) -> Vec<String> {

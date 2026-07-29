@@ -46,3 +46,7 @@ pub(crate) const CAN_UPDATE_CHECK_RELATION: &str = "can_update_check";
 /// Inserting a row and reading it back, which returning a table column or naming
 /// an `ON CONFLICT` target both do, so the `SELECT` policies apply to the new row.
 pub(crate) const CAN_INSERT_RETURNING_RELATION: &str = "can_insert_returning";
+
+/// Inserting with `ON CONFLICT ... DO UPDATE`, which updates the conflicting row,
+/// so the `UPDATE` policies apply to it and to the merged row.
+pub(crate) const CAN_UPSERT_RELATION: &str = "can_upsert";

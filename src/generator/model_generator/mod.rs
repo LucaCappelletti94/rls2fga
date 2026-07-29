@@ -12,9 +12,9 @@ use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::well_known::{
     CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION, CAN_SELECT_RELATION,
-    CAN_UPDATE_CHECK_RELATION, CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, DENY_RELATION,
-    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION,
-    TEAM_TYPE, USER_TYPE,
+    CAN_UPDATE_CHECK_RELATION, CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPSERT_RELATION,
+    DENY_RELATION, MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE,
+    PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
@@ -24,7 +24,7 @@ use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
     parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
-    same_identifier, stable_hex_suffix,
+    stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -142,6 +142,14 @@ fn reserved_relation_subjects(relation: &str) -> Option<Vec<DirectSubject>> {
     }
 }
 
+/// Whether the generator defines `relation` itself once the actions are assembled,
+/// so a translated name taking it would be defined twice.
+fn generator_defines(relation: &str) -> bool {
+    action_relations()
+        .chain(DERIVED_ACTION_RELATIONS)
+        .any(|reserved| reserved == relation)
+}
+
 impl TypePlan {
     fn new(type_name: impl Into<String>) -> Self {
         Self {
@@ -160,7 +168,7 @@ impl TypePlan {
         let base = canonical_fga_type_name(column.strip_suffix("_id").unwrap_or(column));
         let taken = |name: &str, plan: &Self| {
             reserved_relation_subjects(name).is_some()
-                || action_relations().any(|action| action == name)
+                || generator_defines(name)
                 || plan.direct_relations.contains_key(name)
                 || plan.computed_relations.contains_key(name)
         };
@@ -194,7 +202,8 @@ impl TypePlan {
                 .direct_relations
                 .get(&relation)
                 .is_some_and(|held| *held != subjects)
-            || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects);
+            || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects)
+            || generator_defines(&relation);
         if conflicts {
             let key = subject_key(&subjects);
             relation =
@@ -213,7 +222,8 @@ impl TypePlan {
             || self
                 .computed_relations
                 .get(&relation)
-                .is_some_and(|held| *held != expr);
+                .is_some_and(|held| *held != expr)
+            || generator_defines(&relation);
         if conflicts {
             let key = userset_key(&expr);
             relation =
@@ -339,10 +349,13 @@ pub(crate) fn build_schema_plan(
         });
     }
 
-    // Group policies by source table
+    // Keyed by the schema's own spelling, since two policies may quote the table
+    // differently and one table must be built once.
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
-        by_table.entry(cp.table_name()).or_default().push(cp);
+        let named = cp.table_name();
+        let key = lookup_table(db, &named).map_or(named, qualified_table_name);
+        by_table.entry(key).or_default().push(cp);
     }
 
     // An RLS-enabled table with no policy denies every row, so seed it and let
@@ -362,8 +375,23 @@ pub(crate) fn build_schema_plan(
     let table_types = TableTypes::assign(db, &mut todos);
 
     for (source_table_name, table_policies) in by_table {
-        // Only RLS-enabled tables that resolve against the schema get a type.
+        // Only RLS-enabled tables that resolve against the schema get a type. A name
+        // the schema cannot resolve carries the policy nowhere, so say so.
         let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
+            if lookup_table(db, &source_table_name).is_none() {
+                for cp in &table_policies {
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: cp.name().to_string(),
+                        message: format!(
+                            "Policy '{}' names '{source_table_name}', which does not resolve to \
+                             one table in the schema, so qualify it with a schema to have the \
+                             policy translated",
+                            cp.name()
+                        ),
+                    });
+                }
+            }
             continue;
         };
         let canonical_table_name = canonical_table_name.to_string();
@@ -608,6 +636,7 @@ pub(crate) fn build_schema_plan(
     simplify_redundant_select_gates(&mut all_types);
     inline_synthetic_rule_aliases(&mut all_types);
     drop_implied_insert_readback(&mut all_types);
+    define_upsert_relations(&mut all_types);
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
@@ -1351,10 +1380,11 @@ fn action_relations() -> impl Iterator<Item = &'static str> {
 }
 
 /// Relations an action is assembled from rather than named by a SQL command.
-const DERIVED_ACTION_RELATIONS: [&str; 3] = [
+const DERIVED_ACTION_RELATIONS: [&str; 4] = [
     CAN_UPDATE_USING_RELATION,
     CAN_UPDATE_CHECK_RELATION,
     CAN_INSERT_RETURNING_RELATION,
+    CAN_UPSERT_RELATION,
 ];
 
 /// Drop items added since `start` that repeat an earlier one, comparing level,
@@ -1380,10 +1410,13 @@ fn dedup_todos_added_since(todos: &mut Vec<TodoItem>, start: usize) {
 /// denied command is a coverage gap in `PostgreSQL` or a gap in the translation.
 fn commands_a_permissive_policy_covers(db: &ParserDB, table: &str) -> BTreeSet<&'static str> {
     let mut commands = BTreeSet::new();
+    let Some(target) = lookup_table(db, table).map(table_identity) else {
+        return commands;
+    };
     for policy in db.policies() {
-        if !same_identifier(&policy.table_name.to_string(), table)
-            || derive_policy_mode(policy) != PolicyMode::Permissive
-        {
+        let names_target = lookup_table(db, &policy.table_name.to_string())
+            .is_some_and(|named| table_identity(named) == target);
+        if !names_target || derive_policy_mode(policy) != PolicyMode::Permissive {
             continue;
         }
         match derive_policy_command(policy.command.as_ref()) {
@@ -1421,6 +1454,32 @@ fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec<&'static s
         table_plan.set_computed(*relation, deny.clone());
     }
     missing.into_iter().map(|(_, command)| command).collect()
+}
+
+/// Answer for `INSERT ... ON CONFLICT ... DO UPDATE`, which updates the conflicting
+/// row and so needs the UPDATE policies too. Runs once the actions are final, and
+/// is left out wherever it would add no requirement to `can_insert`.
+fn define_upsert_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        let Some(insert) = plan.computed_relations.get(CAN_INSERT_RELATION) else {
+            continue;
+        };
+        let adds_nothing = grants_nothing(insert, plan, &mut BTreeSet::new())
+            || plan
+                .computed_relations
+                .get(CAN_UPDATE_RELATION)
+                .is_some_and(|update| update == insert);
+        if adds_nothing {
+            continue;
+        }
+        plan.set_computed(
+            CAN_UPSERT_RELATION,
+            UsersetExpr::Intersection(vec![
+                UsersetExpr::Computed(CAN_INSERT_RELATION.to_string()),
+                UsersetExpr::Computed(CAN_UPDATE_RELATION.to_string()),
+            ]),
+        );
+    }
 }
 
 /// Handle `P2RoleNameInList` when the function is *not* a `RoleThreshold` (e.g.

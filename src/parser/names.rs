@@ -285,7 +285,10 @@ pub fn table_lookup_candidates(name: &str) -> Vec<(Option<String>, String)> {
     deduped
 }
 
-/// Resolve a table by trying schema-aware fallback candidates.
+/// Resolve a table by trying schema-aware fallback candidates, then, for a name
+/// carrying no schema, the only table bearing it. `PostgreSQL` resolves such a name
+/// through the search path, which the schema alone does not record, so an ambiguous
+/// name stays unresolved.
 pub fn lookup_table<'db, DB>(
     db: &'db DB,
     name: &str,
@@ -293,9 +296,20 @@ pub fn lookup_table<'db, DB>(
 where
     DB: sql_traits::prelude::DatabaseLike,
 {
-    table_lookup_candidates(name)
+    use sql_traits::prelude::TableLike;
+
+    let candidate = table_lookup_candidates(name)
         .into_iter()
-        .find_map(|(schema, relation)| db.table(schema.as_deref(), &relation))
+        .find_map(|(schema, relation)| db.table(schema.as_deref(), &relation));
+    if candidate.is_some() || split_schema_and_relation(name).is_some() {
+        return candidate;
+    }
+
+    let mut bearers = db
+        .tables()
+        .filter(|table| same_identifier(table.table_name(), name));
+    let only = bearers.next()?;
+    bearers.next().is_none().then_some(only)
 }
 
 #[cfg(test)]

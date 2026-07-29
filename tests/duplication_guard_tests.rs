@@ -220,6 +220,17 @@ fn reserved_relation_subjects_have_a_single_source_of_truth() {
 }
 
 #[test]
+fn generator_owned_relation_names_have_a_single_source_of_truth() {
+    let modules = ["src/generator/model_generator"];
+
+    let definitions = definition_count(&modules, "fn generator_defines(");
+    assert_eq!(
+        definitions, 1,
+        "one place decides which relation names a translated name may not take, found {definitions}"
+    );
+}
+
+#[test]
 fn well_known_names_have_a_single_source_of_truth() {
     let modules = [
         "src/generator/ir.rs",
@@ -246,6 +257,7 @@ fn well_known_names_have_a_single_source_of_truth() {
         "can_update_using",
         "can_update_check",
         "can_insert_returning",
+        "can_upsert",
     ] {
         let literals = definition_count(&modules, &format!("\"{name}\""));
         assert_eq!(

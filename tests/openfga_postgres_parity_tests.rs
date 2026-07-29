@@ -830,3 +830,192 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+/// One seeded `notes` row: `(id, owner_id, author_id, editor_id)`.
+const SEEDED_UPSERT_NOTES: [(&str, &str, &str, &str); 5] = [
+    ("note-alice-all", USER_ALICE, USER_ALICE, USER_ALICE),
+    ("note-author-only", USER_BOB, USER_ALICE, USER_BOB),
+    ("note-author-editor", USER_BOB, USER_ALICE, USER_ALICE),
+    ("note-owner-author", USER_ALICE, USER_ALICE, USER_BOB),
+    ("note-bob-all", USER_BOB, USER_BOB, USER_BOB),
+];
+
+diesel::table! {
+    #[sql_name = "notes"]
+    notes_upsert (id) {
+        id -> diesel::sql_types::Text,
+        owner_id -> diesel::sql_types::Text,
+        author_id -> diesel::sql_types::Text,
+        editor_id -> diesel::sql_types::Text,
+        body -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+    }
+}
+
+/// Whether `app_user` acting as `user_id` may write `note` back. `conflict` picks
+/// the statement: an upsert onto the seeded row, or a plain insert of a fresh row
+/// carrying the same column values. Neither row is kept.
+fn postgres_allows_upsert(
+    conn: &mut PgConnection,
+    user_id: &str,
+    note: (&str, &str, &str, &str),
+    conflict: bool,
+) -> bool {
+    let (note_id, owner_id, author_id, editor_id) = note;
+    let fresh_id = format!("probe-{user_id}-{note_id}");
+    let outcome = conn.transaction::<(), AttemptError, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let id = if conflict { note_id } else { fresh_id.as_str() };
+        let values = (
+            notes_upsert::id.eq(id),
+            notes_upsert::owner_id.eq(owner_id),
+            notes_upsert::author_id.eq(author_id),
+            notes_upsert::editor_id.eq(editor_id),
+            notes_upsert::body.eq(Some("probe")),
+        );
+        if conflict {
+            diesel::insert_into(notes_upsert::table)
+                .values(values)
+                .on_conflict(notes_upsert::id)
+                .do_update()
+                .set(notes_upsert::body.eq(Some("probe")))
+                .execute(conn)?;
+        } else {
+            diesel::insert_into(notes_upsert::table)
+                .values(values)
+                .execute(conn)?;
+        }
+        Err(AttemptError::Rollback)
+    });
+
+    match outcome {
+        Err(AttemptError::Rollback) => true,
+        Err(AttemptError::Rejected(error)) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("row-level security"),
+                "writing {note_id} as {user_id} failed for a reason other than RLS: {rendered}"
+            );
+            false
+        }
+        Ok(()) => unreachable!("the transaction body always rolls back"),
+    }
+}
+
+/// `INSERT ... ON CONFLICT ... DO UPDATE` updates the conflicting row, so
+/// `PostgreSQL` applies the UPDATE policies to it as well as the INSERT ones, which
+/// is what `can_upsert` expresses.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn upsert_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("upsert");
+    let (classified, db, registry) = support::load_fixture_classified("upsert");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the upsert schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT, INSERT, UPDATE ON notes TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    diesel::insert_into(users::table)
+        .values([USER_ALICE, USER_BOB].map(|id| users::id.eq(id)).to_vec())
+        .execute(&mut conn)
+        .expect("Failed to seed users");
+    let rows: Vec<_> = SEEDED_UPSERT_NOTES
+        .iter()
+        .map(|(id, owner, author, editor)| {
+            (
+                notes_upsert::id.eq(*id),
+                notes_upsert::owner_id.eq(*owner),
+                notes_upsert::author_id.eq(*author),
+                notes_upsert::editor_id.eq(*editor),
+            )
+        })
+        .collect();
+    diesel::insert_into(notes_upsert::table)
+        .values(rows)
+        .execute(&mut conn)
+        .expect("Failed to seed notes");
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "upsert-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut separated = 0;
+    for user_id in [USER_ALICE, USER_BOB] {
+        for note in SEEDED_UPSERT_NOTES {
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{}", note.0);
+
+            let plain = postgres_allows_upsert(&mut conn, user_id, note, false);
+            let upsert = postgres_allows_upsert(&mut conn, user_id, note, true);
+            if plain && !upsert {
+                separated += 1;
+            }
+
+            for (relation, expected) in [("can_insert", plain), ("can_upsert", upsert)] {
+                let actual =
+                    support::openfga::check_allowed(&client, &user, relation, &object).await;
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} {relation} {object}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        separated > 0,
+        "no row separates a plain insert from an upsert, so the comparison proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA upsert parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

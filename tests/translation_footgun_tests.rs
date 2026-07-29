@@ -35,6 +35,27 @@ fn relation_definition(dsl: &str, type_name: &str, relation: &str) -> Option<Str
     None
 }
 
+/// Every relation `type_name` defines, paired with its body, in declaration order.
+fn relation_definitions(dsl: &str, type_name: &str) -> Vec<(String, String)> {
+    let mut in_type = false;
+    let mut defined = Vec::new();
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            in_type = name.trim() == type_name;
+            continue;
+        }
+        if in_type {
+            if let Some(rest) = trimmed.strip_prefix("define ") {
+                if let Some((name, body)) = rest.split_once(':') {
+                    defined.push((name.trim().to_string(), body.trim().to_string()));
+                }
+            }
+        }
+    }
+    defined
+}
+
 /// Name of the relation `type_name` declares with `pg_role` subjects, if any.
 fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
     let mut in_type = false;
@@ -246,6 +267,51 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     }
 }
 
+/// The generator assembles an action from relations it names, so a column whose
+/// relation would take one of those names leaves it defined twice and pointing at
+/// itself.
+#[test]
+fn a_column_named_after_an_action_relation_does_not_take_it() {
+    for reserved in [
+        "can_select",
+        "can_insert",
+        "can_update",
+        "can_delete",
+        "can_update_using",
+        "can_update_check",
+        "can_insert_returning",
+    ] {
+        let db = db_of(&format!(
+            "
+CREATE TABLE docs(id UUID PRIMARY KEY, {reserved}_id UUID, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING ({reserved}_id = current_user);
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING ({reserved}_id = current_user)
+  WITH CHECK (editor_id = current_user);
+"
+        ));
+        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+        let defined = relation_definitions(&dsl, "docs");
+        let mut names: Vec<&str> = defined.iter().map(|(name, _)| name.as_str()).collect();
+        let declared = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            declared,
+            names.len(),
+            "a column named '{reserved}_id' took the action relation:\n{dsl}"
+        );
+        for (name, body) in &defined {
+            assert!(
+                !body.split_whitespace().any(|token| token == name),
+                "'{name}' is defined as itself:\n{dsl}"
+            );
+        }
+    }
+}
+
 /// A quoted identifier may contain a dot. Treating it as a schema separator names
 /// the type after a fragment of the table name.
 #[test]
@@ -260,6 +326,166 @@ fn quoted_dot_in_a_table_name_is_not_read_as_a_schema_separator() {
         type_names(&dsl).iter().any(|name| name == "we_ird"),
         "the type must derive from the whole quoted name, got: {:?}\n{dsl}",
         type_names(&dsl)
+    );
+}
+
+/// A policy may spell the parent table quoted. Matching that spelling against the
+/// declared foreign key as raw text loses the inheritance and tells the operator to
+/// declare a foreign key the schema already has.
+#[test]
+fn a_quoted_parent_reference_still_inherits() {
+    let schema = |parent_ref: &str| {
+        format!(
+            "CREATE TABLE parents(id UUID PRIMARY KEY, owner_id UUID);\n\
+             ALTER TABLE parents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY parents_sel ON parents FOR SELECT USING (owner_id = current_user);\n\
+             CREATE TABLE docs(id UUID PRIMARY KEY, parent_id UUID REFERENCES parents(id));\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (EXISTS (\n\
+               SELECT 1 FROM {parent_ref} p\n\
+               WHERE p.id = docs.parent_id AND p.owner_id = current_user));\n"
+        )
+    };
+    let read_of = |parent_ref: &str| {
+        let dsl = translator(ConfidenceLevel::A)
+            .generate_model(&db_of(&schema(parent_ref)))
+            .dsl;
+        relation_definition(&dsl, "docs", "can_select")
+    };
+
+    assert_eq!(
+        read_of("parents").as_deref(),
+        Some("owner from parents"),
+        "the bare spelling must inherit, or this comparison proves nothing"
+    );
+    assert_eq!(
+        read_of("\"parents\"").as_deref(),
+        Some("owner from parents"),
+        "quoting the parent table in the policy must not lose the inheritance"
+    );
+}
+
+/// Two policies on one table may spell its name differently. Grouping them by that
+/// spelling builds the table twice, and the second group's actions overwrite the
+/// first, so a RESTRICTIVE barrier can disappear.
+#[test]
+fn policies_compose_however_each_one_spells_the_table() {
+    let schema = |restrictive_on: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);\n\
+             CREATE POLICY docs_reviewed ON {restrictive_on} AS RESTRICTIVE FOR SELECT\n\
+               USING (reviewer_id = current_user);\n"
+        )
+    };
+    let read_of = |restrictive_on: &str| {
+        let dsl = translator(ConfidenceLevel::A)
+            .generate_model(&db_of(&schema(restrictive_on)))
+            .dsl;
+        relation_definition(&dsl, "docs", "can_select")
+    };
+
+    assert_eq!(
+        read_of("docs").as_deref(),
+        Some("owner and reviewer"),
+        "the bare spelling must keep the barrier, or this comparison proves nothing"
+    );
+    assert_eq!(
+        read_of("\"docs\"").as_deref(),
+        Some("owner and reviewer"),
+        "quoting the table in the RESTRICTIVE policy must not drop it"
+    );
+}
+
+/// `PostgreSQL` resolves an unqualified table reference through the search path, so a
+/// policy may name a table in another schema without qualifying it. Leaving it
+/// unresolved drops the policy and denies what RLS grants.
+#[test]
+fn a_policy_naming_its_table_without_the_schema_still_translates() {
+    let db = db_of(
+        r"
+CREATE TABLE app.docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator.generate_model(&db).dsl;
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the policy names the table the search path resolves:\n{dsl}"
+    );
+    assert!(
+        !tuples_reading_from(&translator.generate_tuple_queries(&db), r#""docs""#).is_empty(),
+        "the ownership relation needs its rows"
+    );
+}
+
+/// Two schemas may hold a table of the same name, and only the search path decides
+/// which one an unqualified policy means. Guessing binds the policy to the wrong
+/// rows, so it goes untranslated and the operator hears about it.
+#[test]
+fn a_policy_naming_an_ambiguous_table_is_reported_rather_than_guessed() {
+    let db = db_of(
+        r"
+CREATE TABLE aaa.docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE aaa.docs ENABLE ROW LEVEL SECURITY;
+CREATE TABLE zzz.docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE zzz.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    for type_name in type_names(&model.dsl).iter().filter(|name| *name != "user") {
+        assert_eq!(
+            relation_definition(&model.dsl, type_name, "can_select").as_deref(),
+            Some("no_access"),
+            "'{type_name}' must not claim a policy naming an ambiguous table:\n{}",
+            model.dsl
+        );
+    }
+    assert!(
+        model
+            .todos
+            .iter()
+            .any(|todo| todo.policy_name == "docs_sel" && todo.message.contains("docs")),
+        "the untranslated policy must be named, got {:#?}",
+        model.todos
+    );
+}
+
+/// A policy may name its table without the schema. Matching that spelling against the
+/// schema qualified name as text tells the operator RLS denies a command that its own
+/// policy grants.
+#[test]
+fn a_filtered_policy_named_without_its_schema_is_reported_as_filtered() {
+    let db = db_of(
+        r"
+CREATE TABLE app.docs(id UUID PRIMARY KEY, tenant TEXT);
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant = current_setting('app.tenant'));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    assert!(
+        model.todos.iter().any(|todo| {
+            todo.message.contains("fell below the confidence threshold")
+                && todo.message.contains("SELECT")
+        }),
+        "the dropped SELECT policy must be reported as dropped, got {:#?}",
+        model.todos
+    );
+    assert!(
+        !model.todos.iter().any(|todo| {
+            todo.message.contains("No permissive policy") && todo.message.contains("SELECT")
+        }),
+        "a policy PostgreSQL applies must not be reported as absent, got {:#?}",
+        model.todos
     );
 }
 
@@ -435,6 +661,57 @@ CREATE POLICY docs_all ON docs FOR ALL USING (owner_id = current_user)
     assert!(
         relation_definition(&dsl, "docs", "can_insert_returning").is_none(),
         "the insert rule already implies the read:\n{dsl}"
+    );
+}
+
+/// `INSERT ... ON CONFLICT ... DO UPDATE` updates the conflicting row, so
+/// `PostgreSQL` applies the UPDATE policies to it and to the merged row. An insert
+/// policy alone does not allow it.
+#[test]
+fn an_upsert_requires_the_update_policies_as_well_as_the_insert() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (owner_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_upsert").as_deref(),
+        Some("can_insert and can_update"),
+        "an upsert needs the UPDATE policies as well as the INSERT ones:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_update").as_deref(),
+        Some("no_access"),
+        "no UPDATE policy leaves the upsert denied:\n{dsl}"
+    );
+}
+
+/// Where no row can be inserted at all the upsert relation repeats `can_insert`,
+/// and a relation that says nothing is noise.
+#[test]
+fn upsert_relation_is_absent_where_no_row_can_be_inserted() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_insert").as_deref(),
+        Some("no_access"),
+        "no INSERT policy denies inserts:\n{dsl}"
+    );
+    assert!(
+        relation_definition(&dsl, "docs", "can_upsert").is_none(),
+        "a denied insert already denies the upsert:\n{dsl}"
     );
 }
 
