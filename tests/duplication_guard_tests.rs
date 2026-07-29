@@ -86,7 +86,7 @@ fn function_arg_extraction_has_single_source_of_truth() {
 fn missing_object_identifier_todo_message_is_centralized() {
     let source = read_module("src/generator/model_generator");
     let count = source
-        .matches("table needs a single-column primary key or `id` column for stable object IDs.")
+        .matches("table needs a single-column primary key or a NOT NULL UNIQUE `id` column")
         .count();
     assert_eq!(
         count, 1,
@@ -185,5 +185,58 @@ fn relation_reference_walking_has_single_source_of_truth() {
     assert_eq!(
         walkers, 1,
         "walking an expression for the relations it reads belongs in one helper, found {walkers}"
+    );
+}
+
+#[test]
+fn the_insert_readback_relation_is_named_once() {
+    let modules = [
+        "src/generator/model_generator",
+        "src/generator/json_model.rs",
+        "src/generator/tuple_generator.rs",
+    ];
+
+    let literals = definition_count(&modules, "\"can_insert_returning\"");
+
+    assert_eq!(
+        literals, 1,
+        "the readback relation name belongs to its constant alone, found {literals}"
+    );
+}
+
+#[test]
+fn action_relations_and_their_commands_are_paired_once() {
+    let modules = ["src/generator/model_generator", "src/output/report.rs"];
+
+    let tables = definition_count(&modules, "const ACTION_RELATION_COMMANDS");
+    assert_eq!(
+        tables, 1,
+        "one table maps an action relation to its SQL command, found {tables}"
+    );
+
+    let strays = definition_count(&modules, "\"can_select\" => ");
+    assert_eq!(
+        strays, 0,
+        "mapping a relation to a command by match duplicates that table, found {strays}"
+    );
+}
+
+#[test]
+fn reserved_relation_subjects_have_a_single_source_of_truth() {
+    let modules = [
+        "src/generator/model_generator",
+        "src/generator/json_model.rs",
+    ];
+
+    let definitions = definition_count(&modules, "fn reserved_relation_subjects(");
+    assert_eq!(
+        definitions, 1,
+        "one place decides which relation names the generator keeps, found {definitions}"
+    );
+
+    let public_literals = definition_count(&modules, "\"public_viewer\"");
+    assert_eq!(
+        public_literals, 1,
+        "the public relation name belongs to its constant alone, found {public_literals}"
     );
 }

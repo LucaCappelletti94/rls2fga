@@ -647,9 +647,17 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
             "{relation} should deny when nothing translated"
         );
     }
-    assert!(plan.todos.iter().any(|t| t
-        .message
-        .contains("No permissive policy on 'docs' covers SELECT, INSERT, UPDATE, DELETE")));
+    let messages: Vec<&str> = plan.todos.iter().map(|t| t.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|message| message
+            .contains("Every permissive policy on 'docs' covering SELECT fell below")),
+        "the schema has a SELECT policy, it did not translate: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("No permissive policy on 'docs' covers INSERT, UPDATE, DELETE")),
+        "nothing covers the write commands: {messages:#?}"
+    );
 }
 
 #[test]

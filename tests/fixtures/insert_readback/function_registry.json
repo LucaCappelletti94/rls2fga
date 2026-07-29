@@ -1,0 +1,6 @@
+{
+  "auth_current_user_id": {
+    "kind": "current_user_accessor",
+    "returns": "text"
+  }
+}

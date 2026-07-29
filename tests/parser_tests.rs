@@ -1,3 +1,4 @@
+use rls2fga::parser::sql_parser::parse_schema;
 use sql_traits::prelude::*;
 
 mod support;
@@ -113,4 +114,36 @@ fn parse_emi_rls_enabled() {
     let rls_tables: Vec<_> = db.rls_tables().collect();
     assert_eq!(rls_tables.len(), 1);
     assert_eq!(rls_tables[0].table_name(), "ownables");
+}
+
+/// `ALTER POLICY ... USING` supersedes the expression the policy was created
+/// with. The parser keeps the original, so translating the schema would model a
+/// policy `PostgreSQL` no longer has.
+#[test]
+fn a_policy_expression_the_parser_cannot_apply_is_refused() {
+    let sql = "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+ALTER POLICY docs_sel ON docs USING (TRUE);
+";
+    let error = parse_schema(sql).expect_err("a superseded policy expression must be refused");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("docs_sel"),
+        "the operator needs to know which policy was altered, got: {rendered}"
+    );
+}
+
+/// Renaming a policy leaves its expression alone, so the schema still describes
+/// what `PostgreSQL` enforces.
+#[test]
+fn renaming_a_policy_is_still_accepted() {
+    let sql = "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+ALTER POLICY docs_sel ON docs RENAME TO docs_select;
+";
+    parse_schema(sql).expect("a rename does not change the expression");
 }

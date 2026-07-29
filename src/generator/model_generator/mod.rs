@@ -17,7 +17,7 @@ use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
     normalize_identifier, normalize_relation_name, parent_type_from_fk_column,
-    policy_scope_relation_name, stable_hex_suffix,
+    policy_scope_relation_name, same_identifier, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -111,15 +111,18 @@ pub(crate) struct TypePlan {
     ownership_relations: BTreeMap<String, String>,
 }
 
-/// Relation names the generator reserves for its own structural relations, so a
-/// column-derived name never lands on one regardless of translation order.
-const RESERVED_RELATIONS: [&str; 5] = [
-    DENY_RELATION,
-    "public_viewer",
-    "member",
-    "owner_user",
-    "owner_team",
-];
+/// Subjects the generator's own structural relations hold, or `None` when the
+/// name is free. These relations are referenced by name, so any other caller
+/// asking for one is renamed regardless of translation order.
+fn reserved_relation_subjects(relation: &str) -> Option<Vec<DirectSubject>> {
+    let user = || vec![DirectSubject::Type("user".to_string())];
+    match relation {
+        DENY_RELATION | "member" | "owner_user" => Some(user()),
+        PUBLIC_RELATION => Some(vec![DirectSubject::Wildcard("user".to_string())]),
+        "owner_team" => Some(vec![DirectSubject::Type("team".to_string())]),
+        _ => None,
+    }
+}
 
 impl TypePlan {
     fn new(type_name: impl Into<String>) -> Self {
@@ -138,8 +141,8 @@ impl TypePlan {
 
         let base = canonical_fga_type_name(column.strip_suffix("_id").unwrap_or(column));
         let taken = |name: &str, plan: &Self| {
-            RESERVED_RELATIONS.contains(&name)
-                || ACTION_RELATIONS.contains(&name)
+            reserved_relation_subjects(name).is_some()
+                || action_relations().any(|action| action == name)
                 || plan.direct_relations.contains_key(name)
                 || plan.computed_relations.contains_key(name)
         };
@@ -172,7 +175,8 @@ impl TypePlan {
             || self
                 .direct_relations
                 .get(&relation)
-                .is_some_and(|held| *held != subjects);
+                .is_some_and(|held| *held != subjects)
+            || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects);
         if conflicts {
             let key = subject_key(&subjects);
             relation =
@@ -463,6 +467,7 @@ pub(crate) fn build_schema_plan(
             table_plan.set_computed("can_select", expr);
         }
         if let Some(expr) = insert_expr.take() {
+            table_plan.set_computed(INSERT_READBACK_RELATION, requires_read_access(expr.clone()));
             table_plan.set_computed("can_insert", expr);
         }
         // PostgreSQL applies the SELECT policies to any row a statement reads, and
@@ -497,16 +502,33 @@ pub(crate) fn build_schema_plan(
         // how RLS coverage gaps become open access.
         let uncovered = fill_uncovered_actions_with_deny(&mut table_plan);
         if !uncovered.is_empty() {
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: source_table_name.clone(),
-                message: format!(
-                    "No permissive policy on '{source_table_name}' covers {}; RLS denies \
-                     {those} outright and the model mirrors that with no_access",
-                    uncovered.join(", "),
-                    those = if uncovered.len() == 1 { "it" } else { "them" }
-                ),
-            });
+            let covered_by_schema = commands_a_permissive_policy_covers(db, &source_table_name);
+            let (dropped, unpolicied): (Vec<&str>, Vec<&str>) = uncovered
+                .into_iter()
+                .partition(|command| covered_by_schema.contains(command));
+            if !unpolicied.is_empty() {
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: source_table_name.clone(),
+                    message: format!(
+                        "No permissive policy on '{source_table_name}' covers {}; RLS denies \
+                         {those} outright and the model mirrors that with no_access",
+                        unpolicied.join(", "),
+                        those = if unpolicied.len() == 1 { "it" } else { "them" }
+                    ),
+                });
+            }
+            if !dropped.is_empty() {
+                todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: source_table_name.clone(),
+                    message: format!(
+                        "Every permissive policy on '{source_table_name}' covering {} fell below \
+                         the confidence threshold, so the model denies what RLS grants",
+                        dropped.join(", ")
+                    ),
+                });
+            }
         }
 
         // Denying this silently would hide a schema mistake.
@@ -539,6 +561,7 @@ pub(crate) fn build_schema_plan(
 
     simplify_redundant_select_gates(&mut all_types);
     inline_synthetic_rule_aliases(&mut all_types);
+    drop_implied_insert_readback(&mut all_types);
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
@@ -624,6 +647,21 @@ fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
             if rule_implies(rule, visible, &relations, &mut BTreeSet::new()) {
                 *expr = rule.clone();
             }
+        }
+    }
+}
+
+/// Drop the readback relation where it repeats `can_insert`, since a relation
+/// that adds no requirement is noise.
+fn drop_implied_insert_readback(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        let repeats = plan
+            .computed_relations
+            .get(INSERT_READBACK_RELATION)
+            .zip(plan.computed_relations.get("can_insert"))
+            .is_some_and(|(readback, insert)| readback == insert);
+        if repeats {
+            plan.computed_relations.remove(INSERT_READBACK_RELATION);
         }
     }
 }
@@ -716,10 +754,7 @@ pub(crate) fn grantable_relations(types: &[TypePlan]) -> BTreeSet<(String, Strin
         .collect();
     let mut reached: BTreeSet<(String, String)> = BTreeSet::new();
     for plan in types {
-        for action in ACTION_RELATIONS
-            .into_iter()
-            .chain(["can_update_using", "can_update_check"])
-        {
+        for action in action_relations().chain(DERIVED_ACTION_RELATIONS) {
             let Some(expr) = plan.computed_relations.get(action) else {
                 continue;
             };
@@ -1181,10 +1216,37 @@ impl TableTypes {
 /// Relation that grants nobody, used wherever a policy must fail closed.
 const DENY_RELATION: &str = "no_access";
 
+/// Relation that grants everyone, used wherever a policy is unconditionally open.
+const PUBLIC_RELATION: &str = "public_viewer";
+
 /// Prefix for relations synthesized to hold a parent-side rule.
 const INHERITED_RELATION_PREFIX: &str = "inherited_";
 
-const ACTION_RELATIONS: [&str; 4] = ["can_select", "can_insert", "can_update", "can_delete"];
+/// Action relations and the SQL command each answers for.
+const ACTION_RELATION_COMMANDS: [(&str, &str); 4] = [
+    ("can_select", "SELECT"),
+    ("can_insert", "INSERT"),
+    ("can_update", "UPDATE"),
+    ("can_delete", "DELETE"),
+];
+
+/// The action relations alone, in command order.
+fn action_relations() -> impl Iterator<Item = &'static str> {
+    ACTION_RELATION_COMMANDS
+        .into_iter()
+        .map(|(relation, _)| relation)
+}
+
+/// Relations an action is assembled from rather than named by a SQL command.
+const DERIVED_ACTION_RELATIONS: [&str; 3] = [
+    "can_update_using",
+    "can_update_check",
+    INSERT_READBACK_RELATION,
+];
+
+/// Returning a table column, or naming an `ON CONFLICT` target, reads the new
+/// row back, so the `SELECT` policies apply to it too.
+const INSERT_READBACK_RELATION: &str = "can_insert_returning";
 
 /// Drop items added since `start` that repeat an earlier one, comparing level,
 /// policy and message. Scoped to one policy so two same-named policies on
@@ -1204,28 +1266,52 @@ fn dedup_todos_added_since(todos: &mut Vec<TodoItem>, start: usize) {
     }
 }
 
+/// Commands a permissive policy on `table` covers, whatever its confidence. The
+/// filtered policy set cannot answer this, and the answer decides whether a
+/// denied command is a coverage gap in `PostgreSQL` or a gap in the translation.
+fn commands_a_permissive_policy_covers(db: &ParserDB, table: &str) -> BTreeSet<&'static str> {
+    let mut commands = BTreeSet::new();
+    for policy in db.policies() {
+        if !same_identifier(&policy.table_name.to_string(), table)
+            || derive_policy_mode(policy) != PolicyMode::Permissive
+        {
+            continue;
+        }
+        match derive_policy_command(policy.command.as_ref()) {
+            PolicyCommand::All => {
+                commands.extend(ACTION_RELATION_COMMANDS.into_iter().map(|(_, cmd)| cmd));
+            }
+            PolicyCommand::Select => {
+                commands.insert("SELECT");
+            }
+            PolicyCommand::Insert => {
+                commands.insert("INSERT");
+            }
+            PolicyCommand::Update => {
+                commands.insert("UPDATE");
+            }
+            PolicyCommand::Delete => {
+                commands.insert("DELETE");
+            }
+        }
+    }
+    commands
+}
+
 /// Deny every action relation no policy produced, returning the denied commands.
 fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec<&'static str> {
-    let missing: Vec<&'static str> = ACTION_RELATIONS
+    let missing: Vec<(&'static str, &'static str)> = ACTION_RELATION_COMMANDS
         .into_iter()
-        .filter(|relation| !table_plan.computed_relations.contains_key(*relation))
+        .filter(|(relation, _)| !table_plan.computed_relations.contains_key(*relation))
         .collect();
     if missing.is_empty() {
         return Vec::new();
     }
     let deny = deny_expr(table_plan);
-    for relation in &missing {
+    for (relation, _) in &missing {
         table_plan.set_computed(*relation, deny.clone());
     }
-    missing
-        .into_iter()
-        .map(|relation| match relation {
-            "can_select" => "SELECT",
-            "can_insert" => "INSERT",
-            "can_update" => "UPDATE",
-            _ => "DELETE",
-        })
-        .collect()
+    missing.into_iter().map(|(_, command)| command).collect()
 }
 
 /// Handle `P2RoleNameInList` when the function is *not* a `RoleThreshold` (e.g.
@@ -1274,10 +1360,10 @@ fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
 
 fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
-        "public_viewer",
+        PUBLIC_RELATION,
         vec![DirectSubject::Wildcard("user".to_string())],
     );
-    UsersetExpr::Computed("public_viewer".to_string())
+    UsersetExpr::Computed(PUBLIC_RELATION.to_string())
 }
 
 fn combine_exprs(
@@ -1879,17 +1965,22 @@ fn prepare_role_threshold_translation(
 
 /// Explain why `source_table` has no usable `OpenFGA` object identifier.
 fn missing_object_identifier_reason(source_table: &str, db: &ParserDB) -> String {
-    match composite_primary_key_columns(source_table, db) {
-        Some(columns) => format!(
+    if let Some(columns) = composite_primary_key_columns(source_table, db) {
+        return format!(
             "composite primary key ({}) leaves no single-column object identifier",
             columns.join(", ")
-        ),
-        None => "missing object identifier column".to_string(),
+        );
     }
+    if table_has_column(db, source_table, "id") {
+        return "no primary key, and 'id' is nullable or not uniquely constrained, so it does \
+                not identify a row"
+            .to_string();
+    }
+    "missing object identifier column".to_string()
 }
 
 const MISSING_OBJECT_IDENTIFIER_SQL: &str =
-    "-- Tuple query not emitted; table needs a single-column primary key or `id` column for stable object IDs.";
+    "-- Tuple query not emitted; table needs a single-column primary key or a NOT NULL UNIQUE `id` column for stable object IDs.";
 
 fn add_missing_object_identifier_todo(
     table_plan: &mut TypePlan,

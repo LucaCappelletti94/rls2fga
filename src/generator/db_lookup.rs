@@ -1,13 +1,14 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::parser::names::lookup_table;
-use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
+use crate::parser::sql_parser::{ColumnLike, IndexLike, ParserDB, TableLike};
 
 /// Resolve the primary object identifier column for a table.
 ///
-/// Prefers the declared primary key and falls back to a literal `id` column.
-/// Returns `None` for a composite primary key: no single column identifies a
-/// row, so using one would merge distinct rows into one `OpenFGA` object.
+/// Prefers the declared primary key and falls back to an `id` column a single
+/// column unique index and a `NOT NULL` constraint make identify a row.
+/// Returns `None` when no single column identifies one, since sharing an object
+/// id merges distinct rows into one `OpenFGA` object.
 pub(crate) fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
     let table_info = lookup_table(db, table)?;
     if let Some(pk) = table_info.primary_key_column(db) {
@@ -18,8 +19,21 @@ pub(crate) fn resolve_pk_column(table: &str, db: &ParserDB) -> Option<String> {
     }
     table_info
         .columns(db)
-        .find(|c| c.column_name() == "id")
+        .find(|c| {
+            c.column_name() == "id" && !c.is_nullable(db) && uniquely_constrained("id", table, db)
+        })
         .map(|c| c.column_name().to_string())
+}
+
+/// True when a unique index over `column` alone constrains `table`.
+pub(crate) fn uniquely_constrained(column: &str, table: &str, db: &ParserDB) -> bool {
+    let Some(table_info) = lookup_table(db, table) else {
+        return false;
+    };
+    table_info.unique_indices(db).any(|index| {
+        let mut columns = index.columns(db);
+        columns.next().is_some_and(|c| c.column_name() == column) && columns.next().is_none()
+    })
 }
 
 /// Column names of `table`'s primary key when it spans more than one column.

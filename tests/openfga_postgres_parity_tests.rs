@@ -241,3 +241,237 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+diesel::table! {
+    users (id) {
+        id -> diesel::sql_types::Text,
+    }
+}
+
+diesel::table! {
+    notes (id) {
+        id -> diesel::sql_types::Text,
+        owner_id -> diesel::sql_types::Text,
+        author_id -> diesel::sql_types::Text,
+    }
+}
+
+/// One seeded `notes` row: `(id, owner_id, author_id)`.
+const SEEDED_NOTES: [(&str, &str, &str); 4] = [
+    ("note-author-only", USER_BOB, USER_ALICE),
+    ("note-owner-only", USER_ALICE, USER_BOB),
+    ("note-both", USER_ALICE, USER_ALICE),
+    ("note-neither", USER_BOB, USER_BOB),
+];
+
+/// The `INSERT` statement shapes whose row-level security differs.
+#[derive(Debug, Clone, Copy)]
+enum InsertShape {
+    /// Only the `INSERT` policies apply.
+    Plain,
+    /// Returns table columns, so the `SELECT` policies apply to the new row too.
+    Returning,
+    /// Naming a conflict arbiter applies them as well, conflict or not.
+    ConflictOnTarget,
+    /// Without an arbiter nothing extra is read.
+    ConflictWithoutTarget,
+}
+
+/// Either the statement ran, or it was rejected before the deliberate rollback.
+#[derive(Debug)]
+enum AttemptError {
+    Rejected(diesel::result::Error),
+    Rollback,
+}
+
+impl From<diesel::result::Error> for AttemptError {
+    fn from(error: diesel::result::Error) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+fn seed_notes_data(conn: &mut PgConnection) {
+    diesel::insert_into(users::table)
+        .values([USER_ALICE, USER_BOB].map(|id| users::id.eq(id)).to_vec())
+        .execute(conn)
+        .expect("Failed to seed users");
+
+    let rows: Vec<_> = SEEDED_NOTES
+        .iter()
+        .map(|(id, owner, author)| {
+            (
+                notes::id.eq(*id),
+                notes::owner_id.eq(*owner),
+                notes::author_id.eq(*author),
+            )
+        })
+        .collect();
+    diesel::insert_into(notes::table)
+        .values(rows)
+        .execute(conn)
+        .expect("Failed to seed notes");
+}
+
+/// Whether `app_user` acting as `user_id` may insert a row carrying `owner_id`
+/// and `author_id`. The row is never kept.
+fn postgres_allows_insert(
+    conn: &mut PgConnection,
+    user_id: &str,
+    owner_id: &str,
+    author_id: &str,
+    shape: InsertShape,
+) -> bool {
+    let new_id = format!("probe-{user_id}-{owner_id}-{author_id}-{shape:?}");
+    let outcome = conn.transaction::<(), AttemptError, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let values = (
+            notes::id.eq(&new_id),
+            notes::owner_id.eq(owner_id),
+            notes::author_id.eq(author_id),
+        );
+        match shape {
+            InsertShape::Plain => {
+                diesel::insert_into(notes::table)
+                    .values(values)
+                    .execute(conn)?;
+            }
+            InsertShape::Returning => {
+                diesel::insert_into(notes::table)
+                    .values(values)
+                    .returning(notes::id)
+                    .get_result::<String>(conn)?;
+            }
+            InsertShape::ConflictOnTarget => {
+                diesel::insert_into(notes::table)
+                    .values(values)
+                    .on_conflict(notes::id)
+                    .do_nothing()
+                    .execute(conn)?;
+            }
+            InsertShape::ConflictWithoutTarget => {
+                diesel::insert_into(notes::table)
+                    .values(values)
+                    .on_conflict_do_nothing()
+                    .execute(conn)?;
+            }
+        }
+        Err(AttemptError::Rollback)
+    });
+
+    match outcome {
+        Err(AttemptError::Rollback) => true,
+        Err(AttemptError::Rejected(error)) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("row-level security"),
+                "{shape:?} as {user_id} failed for a reason other than RLS: {rendered}"
+            );
+            false
+        }
+        Ok(()) => unreachable!("the transaction body always rolls back"),
+    }
+}
+
+/// `INSERT ... RETURNING` and `INSERT ... ON CONFLICT` check the new row against
+/// the `SELECT` policies, which is what `can_insert_returning` expresses. Plain
+/// `INSERT` does not, which is what leaves `can_insert` ungated.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn insert_readback_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("insert_readback");
+    let (classified, db, registry) = support::load_fixture_classified("insert_readback");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the insert_readback schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, INSERT ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+    seed_notes_data(&mut conn);
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "insert-readback-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for user_id in [USER_ALICE, USER_BOB] {
+        for (note_id, owner_id, author_id) in SEEDED_NOTES {
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+
+            let mut allows =
+                |shape| postgres_allows_insert(&mut conn, user_id, owner_id, author_id, shape);
+            let plain = allows(InsertShape::Plain);
+            let returning = allows(InsertShape::Returning);
+            assert_eq!(
+                returning,
+                allows(InsertShape::ConflictOnTarget),
+                "naming a conflict arbiter reads the new row back, like RETURNING, for {user} on {object}"
+            );
+            assert_eq!(
+                plain,
+                allows(InsertShape::ConflictWithoutTarget),
+                "ON CONFLICT without an arbiter reads nothing back for {user} on {object}"
+            );
+
+            for (relation, expected) in [("can_insert", plain), ("can_insert_returning", returning)]
+            {
+                let actual =
+                    support::openfga::check_allowed(&client, &user, relation, &object).await;
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} {relation} {object}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA insert parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

@@ -50,10 +50,6 @@ fn tuples_reading_from(tuples: &[TupleQuery], from_clause: &str) -> Vec<String> 
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Two source tables canonicalising to the same OpenFGA type name.
-// ---------------------------------------------------------------------------
-
 const COLLIDING_SCHEMAS: &str = r"
 CREATE TABLE app.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
@@ -194,6 +190,40 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     }
 }
 
+/// The generator refers to its own structural relations by name, so a table
+/// named after one must not take it on a type that also needs it. Holding
+/// `no_access` turns every denied action into a granted parent link.
+#[test]
+fn a_table_named_after_a_structural_relation_does_not_take_it() {
+    for reserved in [
+        "no_access",
+        "public_viewer",
+        "member",
+        "owner_user",
+        "owner_team",
+    ] {
+        let db = db_of(&format!(
+            "
+CREATE TABLE {reserved}(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE {reserved} ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parent_sel ON {reserved} FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, parent_id UUID REFERENCES {reserved}(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM {reserved} p
+          WHERE p.id = tasks.parent_id AND p.owner_id = current_user));
+"
+        ));
+        let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+        assert_ne!(
+            relation_definition(&dsl, "tasks", reserved).as_deref(),
+            Some(format!("[{reserved}]").as_str()),
+            "the parent link took the structural relation '{reserved}':\n{dsl}"
+        );
+    }
+}
+
 /// A quoted identifier may contain a dot. Treating it as a schema separator names
 /// the type after a fragment of the table name.
 #[test]
@@ -271,10 +301,6 @@ CREATE POLICY tasks_all ON tasks FOR ALL USING (
     }
 }
 
-// ---------------------------------------------------------------------------
-// Composite primary keys.
-// ---------------------------------------------------------------------------
-
 /// `PRIMARY KEY (tenant_id, id)` says `id` alone is not unique, so using it as
 /// the object identifier merges rows across tenants.
 #[test]
@@ -299,9 +325,96 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
 }
 
-// ---------------------------------------------------------------------------
-// RESTRICTIVE policies dropped by confidence filtering.
-// ---------------------------------------------------------------------------
+/// Without a primary key or a unique constraint two rows can share `id`, so
+/// keying objects on it merges their permissions.
+#[test]
+fn column_no_constraint_makes_unique_does_not_identify_objects() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+    assert!(
+        !rendered.contains(r#"'docs:' || "id""#),
+        "a non-unique column must not identify objects:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("does not identify a row"),
+        "the operator must be told why no ownership tuples were emitted:\n{rendered}"
+    );
+}
+
+/// A `NOT NULL UNIQUE` column identifies a row as well as a primary key does,
+/// so refusing it would deny access the policy grants.
+#[test]
+fn not_null_unique_column_identifies_objects_without_a_primary_key() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID NOT NULL UNIQUE, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+    assert!(
+        rendered.contains(r#"'docs:' || "id""#),
+        "a uniquely constrained column identifies objects:\n{rendered}"
+    );
+}
+
+const SPLIT_INSERT_AND_SELECT: &str = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, author_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (author_id = current_user);
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+";
+
+/// Returning a table column, or naming an `ON CONFLICT` target, also checks the
+/// new row against the `SELECT` policies, so inserting a row the author cannot
+/// read back fails even though plain `INSERT` succeeds.
+#[test]
+fn reading_the_inserted_row_back_needs_select_as_well_as_insert() {
+    let db = db_of(SPLIT_INSERT_AND_SELECT);
+    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+    let insert = relation_definition(&dsl, "docs", "can_insert")
+        .expect("an INSERT policy defines can_insert");
+    let readback = relation_definition(&dsl, "docs", "can_insert_returning")
+        .unwrap_or_else(|| panic!("reading the new row back needs its own relation:\n{dsl}"));
+
+    assert_eq!(
+        readback,
+        format!("{insert} and can_select"),
+        "reading back requires the insert rule and the read:\n{dsl}"
+    );
+}
+
+/// When the same expression governs both commands the readback relation repeats
+/// `can_insert`, and a relation that says nothing is noise.
+#[test]
+fn readback_relation_is_absent_when_inserting_implies_reading() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_all ON docs FOR ALL USING (owner_id = current_user)
+    WITH CHECK (owner_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+    assert!(
+        relation_definition(&dsl, "docs", "can_insert_returning").is_none(),
+        "the insert rule already implies the read:\n{dsl}"
+    );
+}
 
 /// RLS is `(permissive OR ...) AND restrictive AND ...`, so dropping a
 /// RESTRICTIVE policy grants access it forbids.
@@ -334,10 +447,6 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
         model.todos
     );
 }
-
-// ---------------------------------------------------------------------------
-// Generated SQL comments.
-// ---------------------------------------------------------------------------
 
 /// `PostgreSQL` identifiers may contain newlines, which end a `--` comment early
 /// and turn the rest of the identifier into an executable statement.
@@ -378,10 +487,6 @@ fn generated_comments_cannot_escape_into_executable_sql() {
         "the comment must still name the source table, collapsed onto one line: {tuples:#?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// RLS enabled without a usable policy.
-// ---------------------------------------------------------------------------
 
 /// Enabling RLS without any policy denies every row. Omitting the table from the
 /// model instead implies unrestricted access.
@@ -458,6 +563,35 @@ CREATE POLICY docs_tenant ON docs FOR ALL USING (tenant = current_setting('app.t
     );
 }
 
+/// A dropped permissive policy leaves the model denying what RLS grants. Saying
+/// no policy covers the command instead tells the operator that `PostgreSQL`
+/// denies it, which is the opposite of the truth.
+#[test]
+fn a_command_denied_only_by_filtering_is_not_reported_as_unpolicied() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_pub ON docs FOR SELECT USING (is_public = TRUE);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("No permissive policy on 'docs' covers SELECT")),
+        "a permissive SELECT policy exists and was dropped: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("confidence threshold") && message.contains("SELECT")),
+        "the operator must be told the policy was dropped: {messages:#?}"
+    );
+}
+
 /// A dropped PERMISSIVE clause narrows the model rather than widening it, but the
 /// operator still loses a policy they wrote.
 #[test]
@@ -484,10 +618,6 @@ CREATE POLICY docs_tenant ON docs FOR SELECT USING (tenant = current_setting('ap
         "the report must state the confidence that caused the drop:\n{report}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Report disclosure.
-// ---------------------------------------------------------------------------
 
 /// A dropped clause appears in neither the model nor the tuples, so the report is
 /// the only place its loss is visible.
@@ -516,10 +646,6 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
         "a policy dropped below the confidence threshold must still be listed:\n{report}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Missing translations.
-// ---------------------------------------------------------------------------
 
 /// The missing-key-tolerant `current_setting(key, true)` identifies the current
 /// user exactly like the single-argument form.
@@ -581,10 +707,6 @@ CREATE POLICY docs_sel ON docs FOR SELECT
     );
 }
 
-// ---------------------------------------------------------------------------
-// Identifier rewriting.
-// ---------------------------------------------------------------------------
-
 /// Canonicalizing a quoted role can map it onto a different existing role, which
 /// changes who the policy admits.
 #[test]
@@ -608,10 +730,6 @@ CREATE POLICY docs_sel ON docs FOR SELECT TO "billing admin" USING (owner_id = c
         model.todos
     );
 }
-
-// ---------------------------------------------------------------------------
-// DSL and JSON parity.
-// ---------------------------------------------------------------------------
 
 /// The DSL and the JSON model are rendered from one plan, so they must describe
 /// the same relations. A variant handled by only one renderer would let an

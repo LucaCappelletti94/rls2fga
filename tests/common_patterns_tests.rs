@@ -12,10 +12,6 @@ use rls2fga::parser::sql_parser;
 
 mod support;
 
-// ============================================================================
-// Helper
-// ============================================================================
-
 fn classify_fixture(
     fixture: &str,
     registry_setup: impl FnOnce(&mut FunctionRegistry),
@@ -40,12 +36,6 @@ fn classify_fixture_with_json_registry(
 ) {
     support::load_fixture_classified(fixture)
 }
-
-// ============================================================================
-// 1. Tenant isolation — tenant_id = current_tenant_id()
-//    This is the #1 SaaS pattern. Tests whether P3 recognizer handles
-//    non-standard column names (tenant_id) with a registry-confirmed accessor.
-// ============================================================================
 
 #[test]
 fn tenant_isolation_is_classified() {
@@ -79,11 +69,6 @@ fn tenant_isolation_is_classified() {
         }
     }
 }
-
-// ============================================================================
-// 2. Compound OR — owner_id = auth() OR is_public = TRUE
-//    Very common "owner or public" pattern. Should be classified as P8(OR).
-// ============================================================================
 
 #[test]
 fn compound_or_owner_or_public() {
@@ -136,11 +121,6 @@ fn compound_or_owner_or_public() {
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
-// ============================================================================
-// 3. Supabase auth.uid() pattern — user_id = auth.uid()
-//    Tests schema-qualified function names (auth.uid).
-// ============================================================================
-
 #[test]
 fn supabase_auth_uid_pattern() {
     let sql = std::fs::read_to_string("tests/fixtures/supabase_auth/input.sql").unwrap();
@@ -173,11 +153,6 @@ fn supabase_auth_uid_pattern() {
         );
     }
 }
-
-// ============================================================================
-// 4. IN-subquery membership — team_id IN (SELECT team_id FROM team_members ...)
-//    Alternative to EXISTS. Very common in Supabase apps.
-// ============================================================================
 
 #[test]
 fn in_subquery_membership() {
@@ -283,11 +258,6 @@ fn fixture_wrapped_outer_table_membership_predicate_fails_closed_with_unknown_re
     }
 }
 
-// ============================================================================
-// 5. PostgreSQL current_user keyword — manager = current_user
-//    Uses the SQL standard keyword, not a function call.
-// ============================================================================
-
 #[test]
 fn current_user_keyword_equality() {
     let (classified, _db, _reg) = classify_fixture("current_user_equality", |_reg| {});
@@ -309,12 +279,6 @@ fn current_user_keyword_equality() {
         }
     }
 }
-
-// ============================================================================
-// 6. Multiple permissive policies on same table
-//    PostgreSQL OR's permissive policies together.
-//    Tests: status = 'published' (attribute) + author_id = auth() (ownership)
-// ============================================================================
 
 #[test]
 fn multi_policy_table_classification() {
@@ -363,11 +327,6 @@ fn multi_policy_table_classification() {
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
-// ============================================================================
-// 7. Role IN-list (P2) — get_owner_role(...) IN (2, 3, 4)
-//    Tests the P2 recognizer with integer values.
-// ============================================================================
-
 #[test]
 fn role_in_list_classification() {
     let (classified, db, registry) = classify_fixture_with_json_registry("role_in_list");
@@ -402,10 +361,6 @@ fn role_in_list_classification() {
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
-
-// ============================================================================
-// Summary: end-to-end pipeline for all common patterns
-// ============================================================================
 
 #[test]
 fn pipeline_summary_all_common_patterns() {
