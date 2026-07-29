@@ -475,3 +475,186 @@ async fn insert_readback_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+diesel::table! {
+    docs (id) {
+        id -> diesel::sql_types::Text,
+    }
+}
+
+diesel::table! {
+    doc_members (id) {
+        id -> diesel::sql_types::Text,
+        doc_id -> diesel::sql_types::Text,
+        user_id -> diesel::sql_types::Text,
+    }
+}
+
+/// One reader: `(app user id, login role, member of auditor)`.
+const SCOPED_READERS: [(&str, &str, bool); 2] = [
+    (USER_ALICE, "app_alice", true),
+    (USER_BOB, "app_bob", false),
+];
+
+/// One seeded `doc_members` row: `(id, doc_id, user_id)`. `DOC_2` has none.
+const SEEDED_DOC_MEMBERS: [(&str, &str, &str); 2] =
+    [("dm-alice", DOC_1, USER_ALICE), ("dm-bob", DOC_1, USER_BOB)];
+
+fn seed_doc_members_data(conn: &mut PgConnection) {
+    diesel::insert_into(users::table)
+        .values(
+            SCOPED_READERS
+                .map(|(user_id, _, _)| users::id.eq(user_id))
+                .to_vec(),
+        )
+        .execute(conn)
+        .expect("Failed to seed users");
+    diesel::insert_into(docs::table)
+        .values([DOC_1, DOC_2].map(|id| docs::id.eq(id)).to_vec())
+        .execute(conn)
+        .expect("Failed to seed docs");
+
+    let rows: Vec<_> = SEEDED_DOC_MEMBERS
+        .iter()
+        .map(|(id, doc_id, user_id)| {
+            (
+                doc_members::id.eq(*id),
+                doc_members::doc_id.eq(*doc_id),
+                doc_members::user_id.eq(*user_id),
+            )
+        })
+        .collect();
+    diesel::insert_into(doc_members::table)
+        .values(rows)
+        .execute(conn)
+        .expect("Failed to seed doc_members");
+}
+
+/// Whether `login_role`, acting as `user_id`, can read the `docs` row `doc_id`.
+fn postgres_allows_select(
+    conn: &mut PgConnection,
+    user_id: &str,
+    login_role: &str,
+    doc_id: &str,
+) -> bool {
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query(format!("SET LOCAL ROLE {login_role}")).execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let visible: i64 = docs::table
+            .filter(docs::id.eq(doc_id))
+            .count()
+            .get_result(conn)?;
+        Ok(visible == 1)
+    })
+    .expect("reading docs under row level security should not error")
+}
+
+/// The membership subquery reads `doc_members` as the querying user, and only
+/// `auditor` may read it, so a member outside that role is denied.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn role_scoped_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("role_scoped_membership");
+    let (classified, db, registry) = support::load_fixture_classified("role_scoped_membership");
+    // The policy names the role, so it has to exist before the schema is applied.
+    conn.batch_execute("CREATE ROLE auditor")
+        .expect("Failed to create the scoped role");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the role_scoped_membership schema on PostgreSQL 18");
+    seed_doc_members_data(&mut conn);
+
+    for (_, login_role, in_auditor) in SCOPED_READERS {
+        let grant_auditor = if in_auditor {
+            format!("GRANT auditor TO {login_role};")
+        } else {
+            String::new()
+        };
+        conn.batch_execute(&format!(
+            "CREATE ROLE {login_role} LOGIN; \
+             GRANT SELECT ON docs, doc_members TO {login_role}; \
+             {grant_auditor}"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "role-scoped-membership-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    // The report asks the operator for these: role membership lives outside the
+    // policy tables, so no generated query can produce it.
+    for (user_id, _, in_auditor) in SCOPED_READERS {
+        if in_auditor {
+            writes.push(support::openfga::make_tuple(
+                "pg_role:auditor",
+                "member",
+                &format!("user:{user_id}"),
+            ));
+        }
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for (user_id, login_role, _) in SCOPED_READERS {
+        for doc_id in [DOC_1, DOC_2] {
+            let expected = postgres_allows_select(&mut conn, user_id, login_role, doc_id);
+            let user = format!("user:{user_id}");
+            let object = format!("docs:{doc_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA role scoped membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

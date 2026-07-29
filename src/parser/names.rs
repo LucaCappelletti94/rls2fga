@@ -182,9 +182,19 @@ pub fn clamp_relation_name(name: String) -> String {
 
 /// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
 pub fn policy_scope_relation_name(policy_name: &str) -> String {
-    let base = canonical_fga_type_name(policy_name);
-    let suffix = stable_hex_suffix(policy_name);
-    clamp_relation_name(format!("scope_{base}_{suffix}"))
+    scope_relation_name("scope", policy_name)
+}
+
+/// Derive a stable relation name used to scope reads of a membership table by
+/// `PostgreSQL` roles.
+pub fn membership_read_scope_relation_name(join_table: &str) -> String {
+    scope_relation_name("read_scope", join_table)
+}
+
+fn scope_relation_name(prefix: &str, key: &str) -> String {
+    let base = canonical_fga_type_name(key);
+    let suffix = stable_hex_suffix(key);
+    clamp_relation_name(format!("{prefix}_{base}_{suffix}"))
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.

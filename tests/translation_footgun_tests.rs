@@ -35,6 +35,28 @@ fn relation_definition(dsl: &str, type_name: &str, relation: &str) -> Option<Str
     None
 }
 
+/// Name of the relation `type_name` declares with `pg_role` subjects, if any.
+fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
+    let mut in_type = false;
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            in_type = name.trim() == type_name;
+            continue;
+        }
+        if in_type {
+            if let Some(rest) = trimmed.strip_prefix("define ") {
+                if let Some((name, subjects)) = rest.split_once(':') {
+                    if subjects.trim() == "[pg_role]" {
+                        return Some(name.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn type_names(dsl: &str) -> Vec<String> {
     dsl.lines()
         .filter_map(|line| line.trim().strip_prefix("type "))
@@ -2065,6 +2087,197 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
         }),
         "an unprotected join table needs no note, got {:#?}",
         model.todos
+    );
+}
+
+/// A membership table whose only read policy targets a role hides every row from a
+/// user outside that role, so the grant it feeds requires that role too.
+#[test]
+fn membership_readable_only_by_a_role_requires_that_role() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY dm_read ON doc_members FOR SELECT TO auditor USING (true);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let model = translator.generate_model(&db);
+    let scope = pg_role_relation(&model.dsl, "docs").unwrap_or_else(|| {
+        panic!(
+            "docs must scope the membership grant by role:\n{}",
+            model.dsl
+        )
+    });
+    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+        .expect("docs should define can_select");
+    assert!(
+        can_select.contains(&format!("from {scope}")),
+        "reading docs must require the role that can read doc_members, got '{can_select}':\n{}",
+        model.dsl
+    );
+
+    let tuples = translator.generate_tuple_queries(&db);
+    assert!(
+        tuples.iter().any(|q| {
+            q.sql.contains("'docs:'")
+                && q.sql.contains(&format!("'{scope}' AS relation"))
+                && q.sql.contains("'pg_role:auditor' AS subject")
+        }),
+        "the scope relation needs auditor tuples on docs, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+}
+
+/// One read policy any role may use makes the membership rows reachable without a
+/// role, so narrowing the grant would deny access `PostgreSQL` allows.
+#[test]
+fn membership_readable_by_public_keeps_the_grant_unscoped() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY dm_audit ON doc_members FOR SELECT TO auditor USING (true);
+CREATE POLICY dm_self ON doc_members FOR SELECT USING (user_id = current_user);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        pg_role_relation(&model.dsl, "docs"),
+        None,
+        "an unscoped read policy leaves the membership grant open to every role:\n{}",
+        model.dsl
+    );
+}
+
+/// Permissive read policies are an OR, so being in either role is enough.
+#[test]
+fn membership_readable_by_two_roles_admits_either_role() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY dm_audit ON doc_members FOR SELECT TO auditor USING (true);
+CREATE POLICY dm_support ON doc_members FOR SELECT TO support USING (true);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let model = translator.generate_model(&db);
+    let scope = pg_role_relation(&model.dsl, "docs").unwrap_or_else(|| {
+        panic!(
+            "docs must scope the membership grant by role:\n{}",
+            model.dsl
+        )
+    });
+    let tuples = translator.generate_tuple_queries(&db);
+    for role in ["auditor", "support"] {
+        assert!(
+            tuples.iter().any(|q| {
+                q.sql.contains("'docs:'")
+                    && q.sql.contains(&format!("'{scope}' AS relation"))
+                    && q.sql.contains(&format!("'pg_role:{role}' AS subject"))
+            }),
+            "either role can read the membership rows, so {role} needs scope tuples, got: {:#?}",
+            tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// `current_user` inside a `SECURITY DEFINER` function is the function owner, the
+/// same value for every caller, so the policy is not per-user ownership.
+#[test]
+fn security_definer_current_user_is_not_the_caller() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "the definer's identity is not the caller's, so the row owner is not the caller:\n{}",
+        model.dsl
+    );
+}
+
+/// A dropped policy tells the operator nothing about the cause, so the function that
+/// cannot identify the caller is named.
+#[test]
+fn an_owner_bound_accessor_is_reported_by_name() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert!(
+        model
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("app_uid") && todo.message.contains("owner")),
+        "the operator must be told which function runs as its owner, got {:#?}",
+        model.todos
+    );
+}
+
+/// The same body under the default `SECURITY INVOKER` does identify the caller.
+#[test]
+fn security_invoker_current_user_stays_the_caller() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql AS 'SELECT current_user::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "an invoker accessor is per-caller ownership:\n{}",
+        model.dsl
+    );
+}
+
+/// A session setting is unaffected by whose privileges the function runs with, so a
+/// `SECURITY DEFINER` body reading one still identifies the caller.
+#[test]
+fn security_definer_current_setting_still_identifies_the_caller() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "a session setting is per-caller regardless of the security mode:\n{}",
+        model.dsl
     );
 }
 

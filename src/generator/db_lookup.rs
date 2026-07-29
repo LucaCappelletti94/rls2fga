@@ -3,6 +3,12 @@ use crate::no_std_prelude::*;
 use crate::parser::names::lookup_table;
 use crate::parser::sql_parser::{ColumnLike, IndexLike, ParserDB, TableLike};
 
+/// SQL tables a user principal conventionally lives in, most specific first.
+pub(crate) const USER_PRINCIPAL_TABLES: &[&str] = &["users", "user"];
+
+/// SQL tables a team principal conventionally lives in, most specific first.
+pub(crate) const TEAM_PRINCIPAL_TABLES: &[&str] = &["teams", "team"];
+
 /// Resolve the primary object identifier column for a table.
 ///
 /// Prefers the declared primary key and falls back to an `id` column a single

@@ -2,7 +2,9 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{Expr, FunctionArguments, SelectItem, SetExpr, Statement, Value};
+use sqlparser::ast::{
+    Expr, FunctionArguments, FunctionSecurity, SelectItem, SetExpr, Statement, Value,
+};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
@@ -573,10 +575,10 @@ fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenc
 
 impl FunctionSemantic {
     /// Attempt to classify a function body by simple heuristic analysis with
-    /// default accessor inference settings.
+    /// default accessor inference settings, as `SECURITY INVOKER`.
     pub fn analyze_body(body: &str, return_type: &str, language: &str) -> Option<FunctionSemantic> {
         let settings = AccessorInferenceSettings::default();
-        Self::analyze_body_with_settings(body, return_type, language, &settings)
+        Self::analyze_body_with_settings(body, return_type, language, None, &settings)
     }
 
     /// Attempt to classify a function body by simple heuristic analysis.
@@ -585,6 +587,7 @@ impl FunctionSemantic {
         body: &str,
         return_type: &str,
         _language: &str,
+        security: Option<&FunctionSecurity>,
         settings: &AccessorInferenceSettings,
     ) -> Option<FunctionSemantic> {
         let body_lower = body.to_lowercase();
@@ -598,6 +601,7 @@ impl FunctionSemantic {
             && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
             && has_single_direct_accessor_expression(body, settings)
+            && !runs_as_owner_reading_effective_user(&body_lower, security)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
                 returns: "uuid".to_string(),
@@ -608,9 +612,21 @@ impl FunctionSemantic {
     }
 }
 
+/// True when the body identifies its caller through `current_user` or `current_role`
+/// but runs as the owner, which makes that value the owner's for every caller.
+///
+/// A session setting is per session, so a `current_setting` body is unaffected.
+fn runs_as_owner_reading_effective_user(
+    body_lower: &str,
+    security: Option<&FunctionSecurity>,
+) -> bool {
+    matches!(security, Some(FunctionSecurity::Definer))
+        && contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(body_lower))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AccessorInferenceSettings, FunctionSemantic};
+    use super::{AccessorInferenceSettings, FunctionSecurity, FunctionSemantic};
     use alloc::collections::BTreeMap;
 
     #[test]
@@ -642,6 +658,39 @@ mod tests {
             semantic_role,
             Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
         ));
+    }
+
+    #[test]
+    fn analyze_body_rejects_the_keyword_accessor_when_the_function_runs_as_its_owner() {
+        let settings = AccessorInferenceSettings::default();
+        for body in ["SELECT current_user::uuid", "SELECT CURRENT_USER::uuid"] {
+            let semantic = FunctionSemantic::analyze_body_with_settings(
+                body,
+                "UUID",
+                "sql",
+                Some(&FunctionSecurity::Definer),
+                &settings,
+            );
+            assert!(
+                semantic.is_none(),
+                "a definer body returns the owner's name, not the caller's, for {body}"
+            );
+        }
+
+        let setting_body = FunctionSemantic::analyze_body_with_settings(
+            "SELECT current_setting('app.current_user_id')::uuid",
+            "UUID",
+            "sql",
+            Some(&FunctionSecurity::Definer),
+            &settings,
+        );
+        assert!(
+            matches!(
+                setting_body,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            ),
+            "a session setting is per session, so the security mode cannot change it"
+        );
     }
 
     #[test]
@@ -689,6 +738,7 @@ mod tests {
             "SELECT current_setting('app.from_user_id')::uuid",
             "UUID",
             "sql",
+            None,
             &settings,
         );
         assert!(
@@ -707,6 +757,7 @@ mod tests {
             "SELECT current_setting('custom.update_marker')::uuid",
             "UUID",
             "sql",
+            None,
             &settings,
         );
         assert!(
@@ -905,6 +956,7 @@ mod tests {
             "SELECT current_setting('tenant.current_user_uuid')::uuid",
             "UUID",
             "sql",
+            None,
             &settings,
         );
         assert!(

@@ -5,6 +5,9 @@
 //! cannot drift apart.
 
 use crate::classifier::patterns::ConfidenceLevel;
+use crate::generator::well_known::{
+    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PUBLIC_RELATION, TEAM_TYPE,
+};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
@@ -163,17 +166,19 @@ impl TupleSource {
             Self::DirectOwnership { relation, .. } | Self::ParentBridge { relation, .. } => {
                 own(relation)
             }
-            Self::RoleOwnerUser { .. } => own("owner_user"),
-            Self::RoleOwnerTeam { .. } => own("owner_team"),
+            Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
+            Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
             Self::ExplicitGrants { role_cases, .. } => role_cases
                 .iter()
                 .map(|(_, relation, _)| (owner_type.to_string(), relation.clone()))
                 .collect(),
-            Self::TeamMembership { .. } => vec![("team".to_string(), "member".to_string())],
-            Self::ExistsMembership { parent_type, .. } => {
-                vec![(parent_type.clone(), "member".to_string())]
+            Self::TeamMembership { .. } => {
+                vec![(TEAM_TYPE.to_string(), MEMBER_RELATION.to_string())]
             }
-            Self::PublicFlag { .. } | Self::ConstantTrue { .. } => own("public_viewer"),
+            Self::ExistsMembership { parent_type, .. } => {
+                vec![(parent_type.clone(), MEMBER_RELATION.to_string())]
+            }
+            Self::PublicFlag { .. } | Self::ConstantTrue { .. } => own(PUBLIC_RELATION),
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
             Self::Todo { .. } => Vec::new(),
         }

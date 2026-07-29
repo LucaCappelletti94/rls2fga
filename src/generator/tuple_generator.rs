@@ -8,6 +8,9 @@ use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
+use crate::generator::well_known::{
+    OWNER_TEAM_RELATION, OWNER_USER_RELATION, TEAM_TYPE, USER_TYPE,
+};
 use crate::parser::names::{
     lookup_table, split_qualified_identifier_parts, split_schema_and_relation,
 };
@@ -196,7 +199,7 @@ fn render_tuple_source_inner(
             },
             owner_col,
             relation,
-            "user",
+            USER_TYPE,
             format!("-- User ownership ({owner_col} references users)"),
             None,
         )),
@@ -214,8 +217,8 @@ fn render_tuple_source_inner(
                 pk_col,
             },
             owner_col,
-            "owner_user",
-            "user",
+            OWNER_USER_RELATION,
+            USER_TYPE,
             format!("-- User ownership ({owner_col} references {user_table})"),
             Some((user_table, user_pk_col)),
         )),
@@ -233,8 +236,8 @@ fn render_tuple_source_inner(
                 pk_col,
             },
             owner_col,
-            "owner_team",
-            "team",
+            OWNER_TEAM_RELATION,
+            TEAM_TYPE,
             format!("-- Team ownership ({owner_col} references {team_table})"),
             Some((team_table, team_pk_col)),
         )),

@@ -236,14 +236,15 @@ fn expr_to_userset(expr: &UsersetExpr) -> Userset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generator::well_known::{MEMBER_RELATION, TEAM_TYPE};
 
     #[test]
     fn expr_to_userset_supports_intersection_nodes() {
         let expr = UsersetExpr::Intersection(vec![
             UsersetExpr::Computed("owner".to_string()),
             UsersetExpr::TupleToUserset {
-                tupleset: "team".to_string(),
-                computed: "member".to_string(),
+                tupleset: TEAM_TYPE.to_string(),
+                computed: MEMBER_RELATION.to_string(),
             },
         ]);
 

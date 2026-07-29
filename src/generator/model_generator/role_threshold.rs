@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::generator::db_lookup::{TEAM_PRINCIPAL_TABLES, USER_PRINCIPAL_TABLES};
+
 // Infers which column each P1/P2 role-threshold call passes as its resource
 // argument, so the tuple renderer knows the JOIN column without re-walking the AST.
 
@@ -202,14 +204,14 @@ pub(super) fn populate_role_threshold_sources(
         db,
         user_table.as_deref(),
         user_pk_col.as_deref(),
-        &["users", "user"],
+        USER_PRINCIPAL_TABLES,
     );
     let team_principal = if has_team {
         resolve_principal_info(
             db,
             team_table.as_deref(),
             team_pk_col.as_deref(),
-            &["teams", "team"],
+            TEAM_PRINCIPAL_TABLES,
         )
     } else {
         None
@@ -269,7 +271,7 @@ pub(super) fn populate_role_threshold_sources(
     // --- Team membership ---
     // Add to table_plan first so the membership source appears in the correct position
     // in the IR renderer (between team-ownership and explicit-grants, matching the old
-    // generate_tuple_queries ordering).  Also add to all_types["team"] for semantic
+    // generate_tuple_queries ordering).  Also add to the team type for semantic
     // correctness; the renderer deduplicates via dedup_key so it is only emitted once.
     if let (Some(tm_table), Some(tm_user), Some(tm_team)) = (
         team_membership_table,
@@ -283,8 +285,8 @@ pub(super) fn populate_role_threshold_sources(
         };
         table_plan.add_source(membership_source.clone());
         all_types
-            .entry("team".to_string())
-            .or_insert_with(|| TypePlan::new("team"))
+            .entry(TEAM_TYPE.to_string())
+            .or_insert_with(|| TypePlan::new(TEAM_TYPE))
             .add_source(membership_source);
     }
 

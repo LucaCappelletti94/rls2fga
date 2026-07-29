@@ -10,3 +10,5 @@ pub mod model_generator;
 pub(crate) mod role_relations;
 /// SQL queries that populate `OpenFGA` relationship tuples from live data.
 pub mod tuple_generator;
+/// Type and relation names the generator reserves.
+pub(crate) mod well_known;

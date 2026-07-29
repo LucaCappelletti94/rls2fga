@@ -15,6 +15,9 @@ pub struct FunctionRegistry {
     /// Columns confirmed as public flags. Only these reach confidence A, so an
     /// implicit wildcard grant always surfaces for review.
     pub(crate) public_flag_columns: BTreeSet<String>,
+    /// Functions whose body describes a caller accessor their security mode
+    /// invalidates, kept so the report can name the cause.
+    owner_bound_accessors: BTreeSet<String>,
 }
 
 impl FunctionRegistry {
@@ -44,7 +47,14 @@ impl FunctionRegistry {
         Self {
             functions: BTreeMap::new(),
             public_flag_columns: BTreeSet::new(),
+            owner_bound_accessors: BTreeSet::new(),
         }
+    }
+
+    /// Functions that would identify the caller but run as their owner, so
+    /// `current_user` inside them is the owner's for every caller.
+    pub fn owner_bound_accessors(&self) -> impl Iterator<Item = &str> {
+        self.owner_bound_accessors.iter().map(String::as_str)
     }
 
     /// Confirm a column as a public flag, lifting its `P6BooleanFlag` to confidence A.
@@ -129,10 +139,28 @@ impl FunctionRegistry {
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default();
-            if let Some(semantic) =
-                FunctionSemantic::analyze_body_with_settings(body, &return_type, "sql", settings)
-            {
+            if let Some(semantic) = FunctionSemantic::analyze_body_with_settings(
+                body,
+                &return_type,
+                "sql",
+                function.security.as_ref(),
+                settings,
+            ) {
                 self.register_if_absent(function.name(), &semantic);
+            } else if self.get(function.name()).is_none()
+                && FunctionSemantic::analyze_body_with_settings(
+                    body,
+                    &return_type,
+                    "sql",
+                    None,
+                    settings,
+                )
+                .is_some()
+            {
+                // The same body as `SECURITY INVOKER` is an accessor, so the security
+                // mode is what stops it identifying the caller.
+                self.owner_bound_accessors
+                    .insert(function.name().to_string());
             }
         }
     }

@@ -189,22 +189,6 @@ fn relation_reference_walking_has_single_source_of_truth() {
 }
 
 #[test]
-fn the_insert_readback_relation_is_named_once() {
-    let modules = [
-        "src/generator/model_generator",
-        "src/generator/json_model.rs",
-        "src/generator/tuple_generator.rs",
-    ];
-
-    let literals = definition_count(&modules, "\"can_insert_returning\"");
-
-    assert_eq!(
-        literals, 1,
-        "the readback relation name belongs to its constant alone, found {literals}"
-    );
-}
-
-#[test]
 fn action_relations_and_their_commands_are_paired_once() {
     let modules = ["src/generator/model_generator", "src/output/report.rs"];
 
@@ -233,10 +217,40 @@ fn reserved_relation_subjects_have_a_single_source_of_truth() {
         definitions, 1,
         "one place decides which relation names the generator keeps, found {definitions}"
     );
+}
 
-    let public_literals = definition_count(&modules, "\"public_viewer\"");
-    assert_eq!(
-        public_literals, 1,
-        "the public relation name belongs to its constant alone, found {public_literals}"
-    );
+#[test]
+fn well_known_names_have_a_single_source_of_truth() {
+    let modules = [
+        "src/generator/ir.rs",
+        "src/generator/json_model.rs",
+        "src/generator/tuple_generator.rs",
+        "src/generator/model_generator/mod.rs",
+        "src/generator/model_generator/dsl.rs",
+        "src/generator/model_generator/role_threshold.rs",
+    ];
+
+    for name in [
+        "user",
+        "team",
+        "pg_role",
+        "no_access",
+        "public_viewer",
+        "member",
+        "owner_user",
+        "owner_team",
+        "can_select",
+        "can_insert",
+        "can_update",
+        "can_delete",
+        "can_update_using",
+        "can_update_check",
+        "can_insert_returning",
+    ] {
+        let literals = definition_count(&modules, &format!("\"{name}\""));
+        assert_eq!(
+            literals, 0,
+            "'{name}' must come from generator::well_known, found {literals} literals"
+        );
+    }
 }

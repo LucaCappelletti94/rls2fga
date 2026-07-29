@@ -244,6 +244,34 @@ pub fn policy_grants_select(policy: &sqlparser::ast::CreatePolicy) -> bool {
         )
 }
 
+/// Roles in `TO (...)` that constrain policy applicability.
+///
+/// Returns an empty vector when no explicit role scope is present or when the
+/// scope includes `PUBLIC`.
+pub fn derive_scoped_roles(policy: &sqlparser::ast::CreatePolicy) -> Vec<String> {
+    let Some(to) = policy.to.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut roles: Vec<String> = to
+        .iter()
+        .map(ToString::to_string)
+        .map(|role| role.trim().to_string())
+        .filter(|role| !role.is_empty())
+        .collect();
+
+    if roles
+        .iter()
+        .any(|role| normalize_identifier(role) == "public")
+    {
+        return Vec::new();
+    }
+
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
 /// A classified policy with classifications for USING and WITH CHECK.
 #[derive(Debug, Clone)]
 pub struct ClassifiedPolicy {
@@ -295,34 +323,8 @@ impl ClassifiedPolicy {
     }
 
     /// Roles in `TO (...)` that constrain policy applicability.
-    ///
-    /// Returns an empty vector when no explicit role scope is present or when
-    /// scope includes `PUBLIC`.
     pub fn scoped_roles(&self) -> Vec<String> {
-        let Some(to) = self.policy.to.as_ref() else {
-            return Vec::new();
-        };
-
-        let mut roles: Vec<String> = to
-            .iter()
-            .map(ToString::to_string)
-            .map(|role| role.trim().to_string())
-            .filter(|role| !role.is_empty())
-            .collect();
-        if roles.is_empty() {
-            return Vec::new();
-        }
-
-        if roles
-            .iter()
-            .any(|role| normalize_identifier(role) == "public")
-        {
-            return Vec::new();
-        }
-
-        roles.sort();
-        roles.dedup();
-        roles
+        derive_scoped_roles(&self.policy)
     }
 }
 

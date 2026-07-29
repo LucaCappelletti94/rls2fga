@@ -10,14 +10,20 @@ use crate::generator::db_lookup::{
 };
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
+use crate::generator::well_known::{
+    CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION, CAN_SELECT_RELATION,
+    CAN_UPDATE_CHECK_RELATION, CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, DENY_RELATION,
+    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION,
+    TEAM_TYPE, USER_TYPE,
+};
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::reads_relation;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
-    normalize_identifier, normalize_relation_name, parent_type_from_fk_column,
-    policy_scope_relation_name, same_identifier, stable_hex_suffix,
+    membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
+    parent_type_from_fk_column, policy_scope_relation_name, same_identifier, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -115,11 +121,11 @@ pub(crate) struct TypePlan {
 /// name is free. These relations are referenced by name, so any other caller
 /// asking for one is renamed regardless of translation order.
 fn reserved_relation_subjects(relation: &str) -> Option<Vec<DirectSubject>> {
-    let user = || vec![DirectSubject::Type("user".to_string())];
+    let user = || vec![DirectSubject::Type(USER_TYPE.to_string())];
     match relation {
-        DENY_RELATION | "member" | "owner_user" => Some(user()),
-        PUBLIC_RELATION => Some(vec![DirectSubject::Wildcard("user".to_string())]),
-        "owner_team" => Some(vec![DirectSubject::Type("team".to_string())]),
+        DENY_RELATION | MEMBER_RELATION | OWNER_USER_RELATION => Some(user()),
+        PUBLIC_RELATION => Some(vec![DirectSubject::Wildcard(USER_TYPE.to_string())]),
+        OWNER_TEAM_RELATION => Some(vec![DirectSubject::Type(TEAM_TYPE.to_string())]),
         _ => None,
     }
 }
@@ -299,6 +305,18 @@ pub(crate) fn build_schema_plan(
     let mut confidence_summary = Vec::new();
     let mut has_role_scopes = false;
 
+    for function in registry.owner_bound_accessors() {
+        todos.push(TodoItem {
+            level: ConfidenceLevel::C,
+            policy_name: function.to_string(),
+            message: format!(
+                "Function '{function}' runs as its owner, so current_user inside it is the \
+                 owner's name for every caller and identifies nobody; policies calling it are \
+                 dropped"
+            ),
+        });
+    }
+
     // Group policies by source table
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
@@ -464,16 +482,19 @@ pub(crate) fn build_schema_plan(
         }
 
         if let Some(expr) = select_expr.take() {
-            table_plan.set_computed("can_select", expr);
+            table_plan.set_computed(CAN_SELECT_RELATION, expr);
         }
         if let Some(expr) = insert_expr.take() {
-            table_plan.set_computed(INSERT_READBACK_RELATION, requires_read_access(expr.clone()));
-            table_plan.set_computed("can_insert", expr);
+            table_plan.set_computed(
+                CAN_INSERT_RETURNING_RELATION,
+                requires_read_access(expr.clone()),
+            );
+            table_plan.set_computed(CAN_INSERT_RELATION, expr);
         }
         // PostgreSQL applies the SELECT policies to any row a statement reads, and
         // naming the row to change reads it.
         if let Some(expr) = delete_expr.take() {
-            table_plan.set_computed("can_delete", requires_read_access(expr));
+            table_plan.set_computed(CAN_DELETE_RELATION, requires_read_access(expr));
         }
 
         if let Some(using_expr) = update_using_expr
@@ -484,15 +505,16 @@ pub(crate) fn build_schema_plan(
                 .take()
                 .unwrap_or_else(|| using_expr.clone());
             if using_expr == check_expr {
-                table_plan.set_computed("can_update", requires_read_access(using_expr));
+                table_plan.set_computed(CAN_UPDATE_RELATION, requires_read_access(using_expr));
             } else {
-                table_plan.set_computed("can_update_using", requires_read_access(using_expr));
-                table_plan.set_computed("can_update_check", check_expr);
+                table_plan
+                    .set_computed(CAN_UPDATE_USING_RELATION, requires_read_access(using_expr));
+                table_plan.set_computed(CAN_UPDATE_CHECK_RELATION, check_expr);
                 table_plan.set_computed(
-                    "can_update",
+                    CAN_UPDATE_RELATION,
                     UsersetExpr::Intersection(vec![
-                        UsersetExpr::Computed("can_update_using".to_string()),
-                        UsersetExpr::Computed("can_update_check".to_string()),
+                        UsersetExpr::Computed(CAN_UPDATE_USING_RELATION.to_string()),
+                        UsersetExpr::Computed(CAN_UPDATE_CHECK_RELATION.to_string()),
                     ]),
                 );
             }
@@ -535,7 +557,7 @@ pub(crate) fn build_schema_plan(
         if has_row_scoped_write_policy
             && table_plan
                 .computed_relations
-                .get("can_select")
+                .get(CAN_SELECT_RELATION)
                 .is_some_and(|expr| grants_nothing(expr, &table_plan, &mut BTreeSet::new()))
         {
             todos.push(TodoItem {
@@ -556,8 +578,8 @@ pub(crate) fn build_schema_plan(
     }
 
     all_types
-        .entry("user".to_string())
-        .or_insert_with(|| TypePlan::new("user"));
+        .entry(USER_TYPE.to_string())
+        .or_insert_with(|| TypePlan::new(USER_TYPE));
 
     simplify_redundant_select_gates(&mut all_types);
     inline_synthetic_rule_aliases(&mut all_types);
@@ -565,7 +587,7 @@ pub(crate) fn build_schema_plan(
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
-    if let Some(pos) = type_names.iter().position(|n| n == "user") {
+    if let Some(pos) = type_names.iter().position(|n| n == USER_TYPE) {
         let user = type_names.remove(pos);
         type_names.insert(0, user);
     }
@@ -590,7 +612,7 @@ fn select_gate_rule(expr: &UsersetExpr) -> Option<&UsersetExpr> {
     let [rule, UsersetExpr::Computed(gate)] = children.as_slice() else {
         return None;
     };
-    (gate == "can_select").then_some(rule)
+    (gate == CAN_SELECT_RELATION).then_some(rule)
 }
 
 /// Whether `rule` can only hold where `visible` holds. Unrecognized shapes keep the
@@ -627,18 +649,21 @@ fn rule_implies(
 
 /// Require the row to be readable, which every per-row change does.
 fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
-    UsersetExpr::Intersection(vec![expr, UsersetExpr::Computed("can_select".to_string())])
+    UsersetExpr::Intersection(vec![
+        expr,
+        UsersetExpr::Computed(CAN_SELECT_RELATION.to_string()),
+    ])
 }
 
 /// Drop a `can_select` gate the rule already implies.
 fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
     for plan in all_types.values_mut() {
         let relations = plan.computed_relations.clone();
-        let Some(visible) = relations.get("can_select") else {
+        let Some(visible) = relations.get(CAN_SELECT_RELATION) else {
             continue;
         };
         for (relation, expr) in &mut plan.computed_relations {
-            if relation == "can_select" {
+            if relation == CAN_SELECT_RELATION {
                 continue;
             }
             let Some(rule) = select_gate_rule(expr) else {
@@ -657,11 +682,12 @@ fn drop_implied_insert_readback(all_types: &mut BTreeMap<String, TypePlan>) {
     for plan in all_types.values_mut() {
         let repeats = plan
             .computed_relations
-            .get(INSERT_READBACK_RELATION)
-            .zip(plan.computed_relations.get("can_insert"))
+            .get(CAN_INSERT_RETURNING_RELATION)
+            .zip(plan.computed_relations.get(CAN_INSERT_RELATION))
             .is_some_and(|(readback, insert)| readback == insert);
         if repeats {
-            plan.computed_relations.remove(INSERT_READBACK_RELATION);
+            plan.computed_relations
+                .remove(CAN_INSERT_RETURNING_RELATION);
         }
     }
 }
@@ -838,7 +864,7 @@ fn scoped_policy_expr(expr: UsersetExpr, scope_relation: &str) -> UsersetExpr {
         expr,
         UsersetExpr::TupleToUserset {
             tupleset: scope_relation.to_string(),
-            computed: "member".to_string(),
+            computed: MEMBER_RELATION.to_string(),
         },
     ])
 }
@@ -934,8 +960,10 @@ fn expr_reads_table(expr: &Expr, db: &ParserDB, table_types: &TableTypes, type_n
 enum JoinTableReadability {
     /// No row level security, so every membership row counts.
     Open,
-    /// Row level security with at least one policy that can grant reads.
-    Guarded,
+    /// Row level security with at least one policy that can grant reads. `roles` is
+    /// non-empty when every such policy is role scoped, so reads also require one of
+    /// those roles.
+    Guarded { roles: Vec<String> },
     /// Row level security with nothing granting reads, so no row is visible.
     Unreadable,
 }
@@ -947,8 +975,22 @@ fn join_table_readability(join_table: &str, db: &ParserDB) -> JoinTableReadabili
     if !table.has_row_level_security(db) {
         return JoinTableReadability::Open;
     }
-    if table.policies(db).any(policy_grants_select) {
-        JoinTableReadability::Guarded
+
+    let mut roles = BTreeSet::new();
+    let mut grants_read = false;
+    for policy in table.policies(db).filter(|p| policy_grants_select(p)) {
+        grants_read = true;
+        let scoped = derive_scoped_roles(policy);
+        if scoped.is_empty() {
+            return JoinTableReadability::Guarded { roles: Vec::new() };
+        }
+        roles.extend(scoped);
+    }
+
+    if grants_read {
+        JoinTableReadability::Guarded {
+            roles: roles.into_iter().collect(),
+        }
     } else {
         JoinTableReadability::Unreadable
     }
@@ -1024,7 +1066,7 @@ fn register_pg_role_scope(
 
     table_plan.ensure_direct(
         scope_relation.to_string(),
-        vec![DirectSubject::Type("pg_role".to_string())],
+        vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
     );
     todos.push(TodoItem {
         level: ConfidenceLevel::C,
@@ -1213,21 +1255,15 @@ impl TableTypes {
     }
 }
 
-/// Relation that grants nobody, used wherever a policy must fail closed.
-const DENY_RELATION: &str = "no_access";
-
-/// Relation that grants everyone, used wherever a policy is unconditionally open.
-const PUBLIC_RELATION: &str = "public_viewer";
-
 /// Prefix for relations synthesized to hold a parent-side rule.
 const INHERITED_RELATION_PREFIX: &str = "inherited_";
 
 /// Action relations and the SQL command each answers for.
 const ACTION_RELATION_COMMANDS: [(&str, &str); 4] = [
-    ("can_select", "SELECT"),
-    ("can_insert", "INSERT"),
-    ("can_update", "UPDATE"),
-    ("can_delete", "DELETE"),
+    (CAN_SELECT_RELATION, "SELECT"),
+    (CAN_INSERT_RELATION, "INSERT"),
+    (CAN_UPDATE_RELATION, "UPDATE"),
+    (CAN_DELETE_RELATION, "DELETE"),
 ];
 
 /// The action relations alone, in command order.
@@ -1239,14 +1275,10 @@ fn action_relations() -> impl Iterator<Item = &'static str> {
 
 /// Relations an action is assembled from rather than named by a SQL command.
 const DERIVED_ACTION_RELATIONS: [&str; 3] = [
-    "can_update_using",
-    "can_update_check",
-    INSERT_READBACK_RELATION,
+    CAN_UPDATE_USING_RELATION,
+    CAN_UPDATE_CHECK_RELATION,
+    CAN_INSERT_RETURNING_RELATION,
 ];
-
-/// Returning a table column, or naming an `ON CONFLICT` target, reads the new
-/// row back, so the `SELECT` policies apply to it too.
-const INSERT_READBACK_RELATION: &str = "can_insert_returning";
 
 /// Drop items added since `start` that repeat an earlier one, comparing level,
 /// policy and message. Scoped to one policy so two same-named policies on
@@ -1354,14 +1386,17 @@ fn handle_p2_role_gate(
 }
 
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
-    table_plan.ensure_direct(DENY_RELATION, vec![DirectSubject::Type("user".to_string())]);
+    table_plan.ensure_direct(
+        DENY_RELATION,
+        vec![DirectSubject::Type(USER_TYPE.to_string())],
+    );
     UsersetExpr::Computed(DENY_RELATION.to_string())
 }
 
 fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         PUBLIC_RELATION,
-        vec![DirectSubject::Wildcard("user".to_string())],
+        vec![DirectSubject::Wildcard(USER_TYPE.to_string())],
     );
     UsersetExpr::Computed(PUBLIC_RELATION.to_string())
 }
@@ -1525,7 +1560,7 @@ fn translate_pattern(
             let relation = table_plan.ownership_relation(column);
             table_plan.ensure_direct(
                 relation.clone(),
-                vec![DirectSubject::Type("user".to_string())],
+                vec![DirectSubject::Type(USER_TYPE.to_string())],
             );
             if let Some(pk_col) = resolve_pk_column(source_table, db) {
                 table_plan.add_source(TupleSource::DirectOwnership {
@@ -1553,7 +1588,7 @@ fn translate_pattern(
         } => {
             // The subquery reads `join_table` as the user, so its own RLS decides which
             // membership rows count.
-            match join_table_readability(join_table, db) {
+            let read_scope_roles = match join_table_readability(join_table, db) {
                 JoinTableReadability::Unreadable => {
                     todos.push(TodoItem {
                         level: ConfidenceLevel::C,
@@ -1565,17 +1600,20 @@ fn translate_pattern(
                     });
                     return deny_expr(table_plan);
                 }
-                JoinTableReadability::Guarded => todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Row level security on membership table '{join_table}' decides which \
-                         membership rows a user sees, which no relation can express. Load \
-                         tuples only for the rows it exposes."
-                    ),
-                }),
-                JoinTableReadability::Open => {}
-            }
+                JoinTableReadability::Guarded { roles } => {
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: policy_name.to_string(),
+                        message: format!(
+                            "Row level security on membership table '{join_table}' decides which \
+                             membership rows a user sees, which no relation can express. Load \
+                             tuples only for the rows it exposes."
+                        ),
+                    });
+                    roles
+                }
+                JoinTableReadability::Open => Vec::new(),
+            };
 
             // Prefer the table that fk_column actually references (e.g. "teams"
             // for team_members.team_id → teams.id).  Fall back to the FK-column
@@ -1596,7 +1634,10 @@ fn translate_pattern(
             // self-referential membership has to register `member` on it directly or
             // the re-insert at the end of the loop drops it.
             if parent_type == table_plan.type_name {
-                table_plan.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
+                table_plan.ensure_direct(
+                    MEMBER_RELATION,
+                    vec![DirectSubject::Type(USER_TYPE.to_string())],
+                );
             } else {
                 ensure_member_type(all_types, &parent_type);
             }
@@ -1639,10 +1680,33 @@ fn translate_pattern(
                 add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
             }
 
-            UsersetExpr::TupleToUserset {
+            let membership = UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
-                computed: "member".to_string(),
+                computed: MEMBER_RELATION.to_string(),
+            };
+            if read_scope_roles.is_empty() {
+                return membership;
             }
+
+            // Only those roles can read the membership rows, so only they inherit
+            // the grant.
+            let scope_relation = membership_read_scope_relation_name(join_table);
+            register_pg_role_scope(
+                table_plan,
+                all_types,
+                source_table,
+                &scope_relation,
+                &read_scope_roles,
+                policy_name,
+                format!(
+                    "Reading membership table '{join_table}' needs PostgreSQL role ({}), mapped to relation '{scope_relation}'; ensure pg_role memberships are loaded",
+                    read_scope_roles.join(", ")
+                ),
+                db,
+                todos,
+                "membership read scope tuples",
+            );
+            scoped_policy_expr(membership, &scope_relation)
         }
         PatternClass::P5ParentInheritance {
             parent_table,
@@ -1714,7 +1778,7 @@ fn translate_pattern(
             // parent's `can_select` instead would import every other permissive
             // policy the parent has.
             let rule_is_denial =
-                matches!(&inner_expr, UsersetExpr::Computed(name) if name == "no_access");
+                matches!(&inner_expr, UsersetExpr::Computed(name) if name == DENY_RELATION);
             // A row the parent hides cannot satisfy the rule, self references included.
             let gate_on_parent = !rule_is_denial
                 && lookup_table(db, parent_table)
@@ -1722,7 +1786,7 @@ fn translate_pattern(
             let rule_expr = if gate_on_parent {
                 UsersetExpr::Intersection(vec![
                     inner_expr,
-                    UsersetExpr::Computed("can_select".to_string()),
+                    UsersetExpr::Computed(CAN_SELECT_RELATION.to_string()),
                 ])
             } else {
                 inner_expr
@@ -2031,11 +2095,14 @@ fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &st
     let entry = all_types
         .entry(type_name.to_string())
         .or_insert_with(|| TypePlan::new(type_name));
-    entry.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
+    entry.ensure_direct(
+        MEMBER_RELATION,
+        vec![DirectSubject::Type(USER_TYPE.to_string())],
+    );
 }
 
 fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
-    ensure_member_type(all_types, "pg_role");
+    ensure_member_type(all_types, PG_ROLE_TYPE);
 }
 
 fn ensure_role_threshold_scaffold(
@@ -2046,20 +2113,26 @@ fn ensure_role_threshold_scaffold(
 ) -> Vec<RoleRelationName> {
     let sorted_roles = sorted_role_relation_names(role_levels);
 
-    table_plan.ensure_direct("owner_user", vec![DirectSubject::Type("user".to_string())]);
+    table_plan.ensure_direct(
+        OWNER_USER_RELATION,
+        vec![DirectSubject::Type(USER_TYPE.to_string())],
+    );
 
     if has_team_support {
-        table_plan.ensure_direct("owner_team", vec![DirectSubject::Type("team".to_string())]);
-        ensure_member_type(all_types, "team");
+        table_plan.ensure_direct(
+            OWNER_TEAM_RELATION,
+            vec![DirectSubject::Type(TEAM_TYPE.to_string())],
+        );
+        ensure_member_type(all_types, TEAM_TYPE);
     }
 
     let grant_subjects = if has_team_support {
         vec![
-            DirectSubject::Type("user".to_string()),
-            DirectSubject::Type("team".to_string()),
+            DirectSubject::Type(USER_TYPE.to_string()),
+            DirectSubject::Type(TEAM_TYPE.to_string()),
         ]
     } else {
-        vec![DirectSubject::Type("user".to_string())]
+        vec![DirectSubject::Type(USER_TYPE.to_string())]
     };
 
     for role in &sorted_roles {
@@ -2073,11 +2146,11 @@ fn ensure_role_threshold_scaffold(
         let mut children = Vec::new();
 
         if idx == 0 {
-            children.push(UsersetExpr::Computed("owner_user".to_string()));
+            children.push(UsersetExpr::Computed(OWNER_USER_RELATION.to_string()));
             if has_team_support {
                 children.push(UsersetExpr::TupleToUserset {
-                    tupleset: "owner_team".to_string(),
-                    computed: "member".to_string(),
+                    tupleset: OWNER_TEAM_RELATION.to_string(),
+                    computed: MEMBER_RELATION.to_string(),
                 });
             }
         } else if let Some(prev) = descending.get(idx - 1) {
@@ -2089,7 +2162,7 @@ fn ensure_role_threshold_scaffold(
         if has_team_support {
             children.push(UsersetExpr::TupleToUserset {
                 tupleset: grant_name,
-                computed: "member".to_string(),
+                computed: MEMBER_RELATION.to_string(),
             });
         }
 
@@ -2126,7 +2199,7 @@ fn exact_roles_expr(
             if has_team_support {
                 children.push(UsersetExpr::TupleToUserset {
                     tupleset: grant_name,
-                    computed: "member".to_string(),
+                    computed: MEMBER_RELATION.to_string(),
                 });
             }
         }
@@ -2139,11 +2212,11 @@ fn exact_roles_expr(
             .iter()
             .any(|r| r.level == max && selected_names.contains(&r.original_name.to_lowercase()));
         if max_is_selected {
-            children.push(UsersetExpr::Computed("owner_user".to_string()));
+            children.push(UsersetExpr::Computed(OWNER_USER_RELATION.to_string()));
             if has_team_support {
                 children.push(UsersetExpr::TupleToUserset {
-                    tupleset: "owner_team".to_string(),
-                    computed: "member".to_string(),
+                    tupleset: OWNER_TEAM_RELATION.to_string(),
+                    computed: MEMBER_RELATION.to_string(),
                 });
             }
         }
