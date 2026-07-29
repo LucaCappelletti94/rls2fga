@@ -1903,3 +1903,127 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
         model.todos
     );
 }
+
+/// A membership subquery reads the join table as the querying user, so that
+/// table's own RLS decides which membership rows count. Verified on `PostgreSQL`
+/// 16: enabling RLS on the membership table with no policies made every document
+/// disappear even though the membership row was there.
+#[test]
+fn membership_through_an_unreadable_join_table_grants_nothing() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "no membership row is readable, so the policy grants nothing:\n{}",
+        model.dsl
+    );
+    assert!(
+        model.todos.iter().any(|todo| {
+            todo.message.contains("doc_members") && todo.message.contains("membership")
+        }),
+        "the operator must be told which table hides the rows, got {:#?}",
+        model.todos
+    );
+}
+
+/// When the join table does grant reads, which rows a user sees is up to its own
+/// policies and no relation can carry that, so the translation says so. Verified
+/// on `PostgreSQL` 16: a self-visibility policy restored the grant, while a
+/// membership row belonging to someone else stayed hidden.
+#[test]
+fn membership_through_a_guarded_join_table_is_disclosed() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY dm_self ON doc_members FOR SELECT USING (user_id = current_user);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+        .expect("docs should define can_select");
+    assert!(
+        can_select.contains(" from "),
+        "the membership grant stays, got '{can_select}':\n{}",
+        model.dsl
+    );
+    assert!(
+        model.todos.iter().any(|todo| {
+            todo.message.contains("doc_members") && todo.message.contains("membership")
+        }),
+        "the operator must be told the join table filters memberships, got {:#?}",
+        model.todos
+    );
+}
+
+/// A join table without RLS filters nothing, so the plain membership translation
+/// needs no caveat.
+#[test]
+fn membership_through_an_open_join_table_needs_no_caveat() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert!(
+        !model.todos.iter().any(|todo| {
+            todo.message.contains("doc_members") && todo.message.contains("membership")
+        }),
+        "an unprotected join table needs no note, got {:#?}",
+        model.todos
+    );
+}
+
+/// `PostgreSQL` assumes a default deny when a table has RLS enabled and no
+/// applicable policy, so a parent in that state hides every row from the subquery
+/// that reads it and the child inherits nothing.
+#[test]
+fn inheriting_from_a_parent_with_no_policies_grants_nothing() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    assert_eq!(
+        relation_definition(&dsl, "projects", "can_select").as_deref(),
+        Some("no_access"),
+        "a parent with RLS and no policies denies reads:\n{dsl}"
+    );
+    let can_select =
+        relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
+    let (read, _) = can_select
+        .split_once(" from ")
+        .unwrap_or_else(|| panic!("expected an inherited walk, got '{can_select}':\n{dsl}"));
+    let rule = relation_definition(&dsl, "projects", read)
+        .unwrap_or_else(|| panic!("projects should define '{read}':\n{dsl}"));
+    assert!(
+        rule.contains("can_select"),
+        "the rule '{read}' = '{rule}' must be gated, which is what denies it here:\n{dsl}"
+    );
+    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}

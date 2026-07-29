@@ -4,7 +4,7 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
 
-use crate::parser::names::normalize_identifier;
+use crate::parser::names::{normalize_identifier, normalize_relation_name};
 
 /// The command a policy applies to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -227,6 +227,24 @@ pub fn derive_policy_command(command: Option<&CreatePolicyCommand>) -> PolicyCom
     command.map_or(PolicyCommand::All, |cmd| PolicyCommand::from(*cmd))
 }
 
+/// Derive a policy mode from a parsed policy (`PERMISSIVE` when absent).
+pub fn derive_policy_mode(policy: &sqlparser::ast::CreatePolicy) -> PolicyMode {
+    policy
+        .policy_type
+        .as_ref()
+        .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
+}
+
+/// Whether a policy can grant reads, which needs it to be permissive and to cover
+/// `SELECT`. Only restrictive policies means no row is readable at all.
+pub fn policy_grants_select(policy: &sqlparser::ast::CreatePolicy) -> bool {
+    derive_policy_mode(policy) == PolicyMode::Permissive
+        && matches!(
+            derive_policy_command(policy.command.as_ref()),
+            PolicyCommand::Select | PolicyCommand::All
+        )
+}
+
 /// A classified policy with classifications for USING and WITH CHECK.
 #[derive(Debug, Clone)]
 pub struct ClassifiedPolicy {
@@ -264,10 +282,7 @@ impl ClassifiedPolicy {
 
     /// Policy mode (`PERMISSIVE` by default when omitted).
     pub fn mode(&self) -> PolicyMode {
-        self.policy
-            .policy_type
-            .as_ref()
-            .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
+        derive_policy_mode(&self.policy)
     }
 
     /// Iterate over all classified policy expressions (`USING` and `WITH CHECK`).
@@ -358,7 +373,7 @@ pub fn filter_policies_for_output(
 }
 
 /// Whether a policy guarding reads also reads the table it guards, judged on the
-/// unqualified names alone. Retaining one policy too many costs nothing here,
+/// normalized relation names alone. Retaining one policy too many costs nothing here,
 /// since the generator resolves the types properly before acting.
 fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
     if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
@@ -367,25 +382,8 @@ fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
     let Some(using) = cp.policy.using.as_ref() else {
         return false;
     };
-    let guarded = unqualified_name(&cp.table_name());
-    let mut reads = false;
-    let _ = sqlparser::ast::visit_relations(using, |name| {
-        if unqualified_name(&name.to_string()) == guarded {
-            reads = true;
-            return core::ops::ControlFlow::Break(());
-        }
-        core::ops::ControlFlow::Continue(())
-    });
-    reads
-}
-
-/// Last segment of a possibly schema-qualified name, lowercased and unquoted.
-fn unqualified_name(name: &str) -> String {
-    name.rsplit('.')
-        .next()
-        .unwrap_or(name)
-        .trim_matches('"')
-        .to_ascii_lowercase()
+    let guarded = normalize_relation_name(&cp.table_name());
+    crate::parser::expr::reads_relation(using, |name| normalize_relation_name(name) == guarded)
 }
 
 #[cfg(test)]

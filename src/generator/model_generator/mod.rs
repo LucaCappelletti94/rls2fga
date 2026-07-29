@@ -12,6 +12,7 @@ use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
+use crate::parser::expr::reads_relation;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
@@ -798,15 +799,31 @@ fn policy_recurses_on_reads(
 /// Whether any relation the expression reads resolves to `type_name`. Column
 /// qualifiers are identifiers rather than relations, so they are not counted.
 fn expr_reads_table(expr: &Expr, db: &ParserDB, table_types: &TableTypes, type_name: &str) -> bool {
-    let mut reads = false;
-    let _ = sqlparser::ast::visit_relations(expr, |name| {
-        if table_types.resolve(db, &name.to_string()) == type_name {
-            reads = true;
-            return core::ops::ControlFlow::Break(());
-        }
-        core::ops::ControlFlow::Continue(())
-    });
-    reads
+    reads_relation(expr, |name| table_types.resolve(db, name) == type_name)
+}
+
+/// How much of a membership table a querying user may read.
+enum JoinTableReadability {
+    /// No row level security, so every membership row counts.
+    Open,
+    /// Row level security with at least one policy that can grant reads.
+    Guarded,
+    /// Row level security with nothing granting reads, so no row is visible.
+    Unreadable,
+}
+
+fn join_table_readability(join_table: &str, db: &ParserDB) -> JoinTableReadability {
+    let Some(table) = lookup_table(db, join_table) else {
+        return JoinTableReadability::Open;
+    };
+    if !table.has_row_level_security(db) {
+        return JoinTableReadability::Open;
+    }
+    if table.policies(db).any(policy_grants_select) {
+        JoinTableReadability::Guarded
+    } else {
+        JoinTableReadability::Unreadable
+    }
 }
 
 fn for_each_policy_target_expr<F>(cp: &ClassifiedPolicy, mut f: F)
@@ -1364,6 +1381,34 @@ fn translate_pattern(
             extra_predicate_sql,
             ..
         } => {
+            // The subquery reads `join_table` as the querying user, so that table's
+            // own RLS decides which membership rows count. Verified on PostgreSQL 16.
+            match join_table_readability(join_table, db) {
+                JoinTableReadability::Unreadable => {
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: policy_name.to_string(),
+                        message: format!(
+                            "Membership table '{join_table}' has row level security with no \
+                             policy granting reads, so no membership row is visible and the \
+                             subquery matches nothing. The model denies the command to match."
+                        ),
+                    });
+                    return deny_expr(table_plan);
+                }
+                JoinTableReadability::Guarded => todos.push(TodoItem {
+                    level: ConfidenceLevel::C,
+                    policy_name: policy_name.to_string(),
+                    message: format!(
+                        "Row level security on membership table '{join_table}' decides which \
+                         membership rows a user sees, which no relation can express. Load \
+                         tuples only for rows that table's own policies expose, or the model \
+                         grants more than the policy."
+                    ),
+                }),
+                JoinTableReadability::Open => {}
+            }
+
             // Prefer the table that fk_column actually references (e.g. "teams"
             // for team_members.team_id → teams.id).  Fall back to the FK-column
             // name heuristic when no FK constraint metadata is available

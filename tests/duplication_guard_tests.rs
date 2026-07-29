@@ -170,3 +170,20 @@ fn identifier_equality_has_single_source_of_truth() {
         "expected one shared identifier-equality helper, found {definitions}"
     );
 }
+
+#[test]
+fn relation_reference_walking_has_single_source_of_truth() {
+    let modules = [
+        "src/parser/expr.rs",
+        "src/classifier/patterns.rs",
+        "src/classifier/recognizers",
+        "src/generator/model_generator",
+    ];
+
+    let walkers = definition_count(&modules, "visit_relations(");
+
+    assert_eq!(
+        walkers, 1,
+        "walking an expression for the relations it reads belongs in one helper, found {walkers}"
+    );
+}

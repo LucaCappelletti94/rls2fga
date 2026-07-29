@@ -62,6 +62,21 @@ pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
     false
 }
 
+/// Whether any relation the expression reads satisfies `matches`, including the
+/// relations of nested subqueries. Column qualifiers are identifiers rather than
+/// relations, so `docs.owner_id` never reports `docs`.
+pub fn reads_relation(expr: &Expr, mut matches: impl FnMut(&str) -> bool) -> bool {
+    let mut reads = false;
+    let _ = sqlparser::ast::visit_relations(expr, |name| {
+        if matches(&name.to_string()) {
+            reads = true;
+            return core::ops::ControlFlow::Break(());
+        }
+        core::ops::ControlFlow::Continue(())
+    });
+    reads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
