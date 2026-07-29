@@ -49,6 +49,9 @@ let sql = "
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
     );
+    CREATE FUNCTION current_user_id() RETURNS UUID
+        LANGUAGE sql STABLE
+        AS 'SELECT current_setting(''app.current_user_id'', true)::uuid';
     ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
     CREATE POLICY documents_owner ON documents
         FOR SELECT TO PUBLIC
@@ -85,6 +88,8 @@ The `min_confidence` parameter controls which policies appear in the output:
 | `C` | Partial translation, ABAC crossovers or attribute guards present |
 | `D` | Unrecognised expression, always emits a TODO item |
 
+Dropping is not silent: `output::report::build_report` lists every clause below the threshold. A dropped `PERMISSIVE` clause grants nothing, so the model is narrower than the policy. A `RESTRICTIVE` clause instead becomes `no_access`, since RLS is `(permissive OR ...) AND restrictive AND ...`.
+
 ### Generated model (example)
 
 For the ownership example above, `model.dsl` contains:
@@ -97,9 +102,15 @@ type user
 
 type documents
   relations
+    define no_access: [user]
     define owner: [user]
+    define can_delete: no_access
+    define can_insert: no_access
     define can_select: owner
+    define can_update: no_access
 ```
+
+Only `SELECT` has a policy, and an RLS-enabled table denies every command no permissive policy covers.
 
 Apply it with the [OpenFGA CLI](https://openfga.dev/docs/getting-started/setup-openfga):
 
@@ -110,12 +121,10 @@ fga model write --store-id "$FGA_STORE_ID" --file model.fga
 ### Generated tuple SQL (example)
 
 ```sql
--- documents#owner: direct ownership
-SELECT 'documents:' || id    AS object,
-       'owner'               AS relation,
-       'user:' || owner_id   AS subject
-FROM documents
-WHERE owner_id IS NOT NULL;
+-- User ownership (owner_id references users)
+SELECT 'documents:' || "id" AS object, 'owner' AS relation, 'user:' || "owner_id" AS subject
+FROM "documents"
+WHERE "owner_id" IS NOT NULL;
 ```
 
 Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`.
@@ -127,14 +136,14 @@ Run this query against your database, convert the rows to `OpenFGA` tuple object
 | P1 | `NumericThreshold` | `role_fn(user, resource) >= N` | Hierarchical relations derived from a numeric level |
 | P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One direct relation per allowed role name |
 | P3 | `DirectOwnership` | `owner_id = current_user_id()` | `define owner: [user]` direct relation |
-| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members WHERE ...)` | Group membership via a `member` relation |
-| P5 | `ParentInheritance` | FK join carrying a parent table's policy | Tuple-to-userset (`parent->relation`) |
+| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members WHERE ...)`, `id IN (SELECT ...)`, `id = ANY (SELECT ...)` | Group membership via a `member` relation |
+| P5 | `ParentInheritance` | FK join carrying a parent-side rule | Tuple-to-userset onto that rule (`owner from parent`) |
 | P6 | `BooleanFlag` | `is_public = TRUE` | Wildcard `[user:*]` public access |
 | P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship part translated; attribute guard emitted as `-- TODO [Level C]` |
 | P8 | `Composite` | `expr1 OR expr2` / `expr1 AND expr2` | `union` / `intersection` of sub-expressions |
 | P9 | `AttributeCondition` | `status = 'published'`, `priority >= 3` | Not directly translatable; emitted as `-- TODO [Level C]` |
 | P10 | `ConstantBool` | `TRUE` / `FALSE` | Open (`[user:*]`) or closed (no access) |
-| — | `Unknown` | Unrecognised expression | Always emitted as `-- TODO [Level D]` |
+| - | `Unknown` | Unrecognised expression | Always emitted as `-- TODO [Level D]` |
 
 ## Policy Role Scope (`TO <role>`)
 
