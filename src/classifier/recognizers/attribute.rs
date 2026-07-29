@@ -1,7 +1,6 @@
 use super::*;
 
-/// Check if an expression references a column that looks like an attribute
-/// (not a user/owner reference).
+/// Column name compared in a non-user attribute guard, if `expr` is one.
 pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     if let Expr::BinaryOp { left, op, right } = expr {
         if matches!(
@@ -25,7 +24,6 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
             }
         }
     }
-    // `col IN ('a', 'b', ...)` with all-literal items (non-negated).
     if let Expr::InList {
         expr: col_expr,
         list,
@@ -124,7 +122,6 @@ fn is_literal_or_temporal(expr: &Expr) -> bool {
     is_well_known_temporal_function(expr)
 }
 
-/// Recognise zero-arg temporal built-in functions that produce a deterministic
 /// (within a statement) date/time value.
 fn is_well_known_temporal_function(expr: &Expr) -> bool {
     let Expr::Function(func) = unwrap_cast_or_nested(expr) else {

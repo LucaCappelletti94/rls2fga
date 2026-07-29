@@ -11,17 +11,9 @@ use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
-    /// Function name → semantic classification lookup table.
     pub(crate) functions: BTreeMap<String, FunctionSemantic>,
-    /// Explicitly registered public-flag column names (normalized to lowercase).
-    ///
-    /// When non-empty, only these columns will produce a high-confidence (A) `P6BooleanFlag`
-    /// classification.  Columns that match the heuristic (`is_public_flag_column_name`) but
-    /// are *not* in this set receive `ConfidenceLevel::B` instead, signalling that manual
-    /// review is recommended before granting wildcard public access.
-    ///
-    /// When empty (the default), all heuristic matches receive `ConfidenceLevel::B` —
-    /// ensuring that implicit public-access grants always surface for review.
+    /// Columns confirmed as public flags. Only these reach confidence A, so an
+    /// implicit wildcard grant always surfaces for review.
     pub(crate) public_flag_columns: BTreeSet<String>,
 }
 
@@ -55,11 +47,7 @@ impl FunctionRegistry {
         }
     }
 
-    /// Register a column name as a confirmed public-flag column (e.g. `"is_public"`).
-    ///
-    /// Registered columns produce a `P6BooleanFlag` at `ConfidenceLevel::A`.
-    /// Unregistered columns that match the name heuristic still produce `P6BooleanFlag`
-    /// but at `ConfidenceLevel::B` to encourage manual review.
+    /// Confirm a column as a public flag, lifting its `P6BooleanFlag` to confidence A.
     pub fn register_public_flag_column(&mut self, column: impl Into<String>) {
         self.public_flag_columns
             .insert(normalize_identifier(&column.into()));

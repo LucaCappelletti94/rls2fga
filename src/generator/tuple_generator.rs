@@ -159,14 +159,10 @@ fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
     query
 }
 
-/// Render a single [`TupleSource`] to a [`TupleQuery`].
+/// Render one [`TupleSource`].
 ///
-/// `owner_type` is the type of the plan the source is attached to. Variants that
-/// emit objects of their own table MUST use it: re-deriving a name from `table`
-/// would file one table's tuples under a colliding table's type.
-///
-/// Returns `None` only when the source has no renderable output (currently
-/// unused; all variants produce at least a comment).
+/// Variants emitting objects of their own table MUST use `owner_type`: re-deriving
+/// a name from `table` files one table's tuples under a colliding table's type.
 fn render_tuple_source(
     source: &TupleSource,
     owner_type: &str,
@@ -1125,7 +1121,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
     #[test]
     fn quote_sql_identifier_part_always_double_quotes() {
-        // All identifiers — simple or keyword — are now always double-quoted.
+        // All identifiers, simple or keyword, are now always double-quoted.
         // This prevents any reserved-word confusion without requiring a keyword list.
         assert_eq!(quote_sql_identifier_part("simple"), "\"simple\"");
         assert_eq!(quote_sql_identifier_part("null"), "\"null\"");

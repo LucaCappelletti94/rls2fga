@@ -92,22 +92,13 @@ pub fn normalize_relation_name(name: &str) -> String {
     normalize_identifier(name)
 }
 
-/// Normalize a function's potentially schema-qualified name to its terminal
-/// lowercase identifier.
+/// Terminal lowercase identifier of a possibly schema-qualified function name.
 pub fn normalized_function_name(func: &sqlparser::ast::Function) -> String {
     normalize_relation_name(&func.name.to_string())
 }
 
-/// Canonicalize a SQL object name into an `OpenFGA`-safe type identifier.
-///
-/// Rules:
-/// - keep the terminal relation when schema-qualified
-/// - lowercase ASCII
-/// - replace non `[a-z0-9_]` with `_`
-/// - collapse repeated `_`
-/// - trim leading/trailing `_`
-/// - if empty, return `"resource"`
-/// - if starting with a digit, prefix with `"t_"`
+/// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation
+/// when schema-qualified. Falls back to `resource` when nothing survives.
 pub fn canonical_fga_type_name(name: &str) -> String {
     let relation = if let Some((_, relation)) = split_schema_and_relation(name.trim()) {
         relation

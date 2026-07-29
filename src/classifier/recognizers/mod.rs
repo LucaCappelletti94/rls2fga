@@ -26,7 +26,7 @@ pub(crate) use subquery::{
 };
 pub use subquery::{recognize_p4, recognize_p4_in_subquery, recognize_p5};
 
-/// Try to recognize P1: numeric role threshold `func(user, resource) >= N`.
+/// Recognize P1: `role_fn(user, resource) >= N`, in either operand order.
 pub fn recognize_p1(
     expr: &Expr,
     _db: &ParserDB,
@@ -46,9 +46,7 @@ pub fn recognize_p1(
         if !registry.is_role_threshold(&func_name) {
             return None;
         }
-        // Require that the function call contains a current-user argument, otherwise
-        // a role comparison on resource attributes (e.g. `resource_level(id, resource_id) >= 2`)
-        // would be misclassified as P1.
+        // Guard against resource attribute comparisons.
         if !function_has_current_user_arg(func_expr, registry) {
             return None;
         }
@@ -68,10 +66,7 @@ pub fn recognize_p1(
     None
 }
 
-/// Try to recognize P2: role name IN-list `func(user, resource) IN ('viewer', ...)`.
-///
-/// Also recognises the `PostgreSQL` built-in `pg_has_role(user, 'role', privilege)`
-/// which checks database-level role membership for the current user.
+/// Role name IN-list or `pg_has_role` built-in.
 pub fn recognize_p2(
     expr: &Expr,
     _db: &ParserDB,
@@ -83,14 +78,13 @@ pub fn recognize_p2(
         negated,
     } = expr
     {
-        // Negated IN-lists are never expressible as static OpenFGA tuples.
+        // Negated IN-lists cannot be expressed as static tuples.
         if *negated {
             return None;
         }
 
         if let Some(func_name) = extract_function_name(inner_expr) {
             if registry.is_role_threshold(&func_name) {
-                // Require that the function call contains a current-user argument.
                 if !function_has_current_user_arg(inner_expr, registry) {
                     return None;
                 }
@@ -107,25 +101,16 @@ pub fn recognize_p2(
                     });
                 }
             }
-            // Not a role-threshold function — fall through to role-accessor check below.
         }
     }
 
-    // Phase 6c: pg_has_role(user, 'role', privilege) — `PostgreSQL` built-in role-membership check.
-    // Supports:
-    //   - three-arg form: pg_has_role(current_user, 'rolename', 'MEMBER')
-    //   - two-arg form:   pg_has_role('rolename', 'MEMBER')  (current session user implied)
     if let Some(c) = recognize_pg_has_role(expr, registry) {
         return Some(c);
     }
 
-    // Phase 6d: role_func() = 'name'  /  role_func() IN ('name', ...) where the function
-    // is registered as a RoleAccessor (e.g. Supabase `auth.role()`).
     recognize_role_accessor_comparison(expr, registry)
 }
 
-/// Recognise `pg_has_role(user, 'role', privilege)` / `pg_has_role('role', privilege)`.
-/// Maps to `P2RoleNameInList` at confidence A since the built-in has fixed semantics.
 fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
     use sqlparser::ast::FunctionArguments;
 
@@ -142,14 +127,13 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     let args: Vec<&Expr> = arg_list.args.iter().filter_map(function_arg_expr).collect();
 
     let role_expr = match args.as_slice() {
-        // Three-arg: pg_has_role(user, 'role', privilege) — user must be current_user.
+        // Three-arg: pg_has_role(user, 'role', privilege), user must be current_user.
         [user_expr, role_expr, _priv] if is_current_user_expr(user_expr, registry) => role_expr,
-        // Two-arg: pg_has_role('role', privilege) — current session user is implicit.
+        // Two-arg: pg_has_role('role', privilege), current session user is implicit.
         [role_expr, _priv] => role_expr,
         _ => return None,
     };
 
-    // Extract the role name from the second positional argument.
     let role_name = match role_expr {
         Expr::Value(v) => match &v.value {
             Value::SingleQuotedString(s) => s.clone(),
@@ -167,19 +151,10 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     })
 }
 
-/// Phase 6d: Recognise role-accessor comparisons.
-///
-/// Handles two forms where the function is registered as `RoleAccessor`:
-/// - `role_func() = 'rolename'`
-/// - `role_func() IN ('role1', 'role2', ...)`
-///
-/// Maps to `P2RoleNameInList` at confidence A.  Typical use: Supabase
-/// `auth.role() = 'authenticated'`.
 fn recognize_role_accessor_comparison(
     expr: &Expr,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    // Helper: extract a zero-arg function name from a possibly-cast expression.
     let extract_role_func_name = |e: &Expr| -> Option<String> {
         let name = extract_function_name(e)?;
         if registry.is_role_accessor(&name) {
@@ -189,7 +164,6 @@ fn recognize_role_accessor_comparison(
         }
     };
 
-    // Form 1: role_func() = 'rolename'  or  'rolename' = role_func()
     if let Expr::BinaryOp {
         left,
         op: BinaryOperator::Eq,
@@ -220,7 +194,6 @@ fn recognize_role_accessor_comparison(
         });
     }
 
-    // Form 2: role_func() IN ('role1', 'role2', ...)
     if let Expr::InList {
         expr: inner,
         list,
@@ -261,7 +234,7 @@ fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Vec<St
         .collect()
 }
 
-/// Try to recognize P3: direct ownership `owner_id = auth.user_id()`.
+/// Direct ownership check.
 pub fn recognize_p3(
     expr: &Expr,
     _db: &ParserDB,
@@ -397,19 +370,13 @@ pub fn recognize_p3(
     })
 }
 
-/// Phase 6e: Recognise `PostgreSQL` array membership patterns.
-///
-/// - `current_user = ANY(col)` / `ANY(col) = current_user` → `P9AttributeCondition`
-///   at confidence B with a note explaining UNNEST-based tuple expansion.
-/// - `col1 && col2` (array overlap) → `P9AttributeCondition` at confidence C with TODO.
-///
-/// Both are mapped to P9 so they generate a structured TODO in the model output rather
-/// than falling through to `Unknown`, which signals a parsing failure.
+/// Recognise array membership (`current_user = ANY(col)`) and overlap (`col1 && col2`)
+/// as P9, so they surface as a structured TODO instead of a parse failure.
 pub fn recognize_array_patterns(
     expr: &Expr,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    // Case 1: `current_user = ANY(array_col)` — direct array membership.
+    // Case 1: `current_user = ANY(array_col)`, direct array membership.
     if let Expr::AnyOp {
         left,
         compare_op: BinaryOperator::Eq,
@@ -441,7 +408,7 @@ pub fn recognize_array_patterns(
         });
     }
 
-    // Case 2: `col1 && col2` — array overlap operator.
+    // Case 2: `col1 && col2`, array overlap operator.
     if let Expr::BinaryOp {
         op: BinaryOperator::PGOverlap,
         left,
@@ -463,7 +430,7 @@ pub fn recognize_array_patterns(
     None
 }
 
-/// Try to recognize P10: constant boolean policies (`TRUE` / `FALSE`).
+/// Constant boolean policy.
 pub fn recognize_p10_constant_bool(
     expr: &Expr,
     _db: &ParserDB,
@@ -475,7 +442,7 @@ pub fn recognize_p10_constant_bool(
     })
 }
 
-/// Try to recognize P6: boolean flag `is_public = TRUE` or bare boolean column.
+/// Boolean flag check.
 pub fn recognize_p6(
     expr: &Expr,
     _db: &ParserDB,
@@ -485,7 +452,6 @@ pub fn recognize_p6(
     ///
     /// Heuristic-only matches are capped at B because column names like `published`
     /// or `visible` commonly represent editorial state rather than access control;
-    /// wildcard public grants must be confirmed by the operator.
     fn p6_confidence(col: &str, registry: &FunctionRegistry) -> ConfidenceLevel {
         if registry.is_confirmed_public_flag_column(col) {
             ConfidenceLevel::A
@@ -534,11 +500,7 @@ pub fn recognize_p6(
     None
 }
 
-/// Returns the column name if the expression is a negated public-flag check
-/// (`col = FALSE`, `FALSE = col`, `col IS FALSE`, `col IS NOT TRUE`).
-///
-/// These forms look similar to P6 but cannot be expressed as static `OpenFGA`
-/// tuples because they filter OUT rows rather than granting access.
+/// Negated public-flag check: not expressible as static `OpenFGA` tuples.
 pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
     if let Some((col_name, value)) = extract_boolean_column_equality(expr) {
         if !value && is_public_flag_column_name(&col_name) {
@@ -594,9 +556,7 @@ pub(crate) fn constant_bool_value(expr: &Expr) -> Option<bool> {
     }
 }
 
-// ---- Helper functions ----
-
-/// Extract a function name from an expression.
+/// Normalized name of the function `expr` calls, through casts and parentheses.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Function(func) => Some(normalized_function_name(func)),
@@ -606,12 +566,10 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
     }
 }
 
-/// True when the function call in `expr` has at least one argument that resolves
 /// to a current-user expression.
 ///
 /// Used by the P1/P2 recognizers to guard against false positives where a
 /// role-threshold function is called with non-user arguments, e.g.
-/// `get_owner_role(owner_id, id) >= 2`.
 fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bool {
     use sqlparser::ast::FunctionArguments;
     let Expr::Function(func) = expr else {
@@ -627,7 +585,6 @@ fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bo
         .any(|e| is_current_user_expr(e, registry))
 }
 
-/// Extract an integer value from an expression.
 fn extract_integer_value(expr: &Expr) -> Option<i32> {
     match expr {
         Expr::Value(v) => match &v.value {
@@ -682,7 +639,7 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
             .then(|| normalize_relation_name(&ident.value)),
         Expr::Cast { expr, .. } => current_user_accessor_name(expr),
         Expr::Nested(inner) => current_user_accessor_name(inner),
-        // Phase 6b: unwrap a scalar subquery — `(SELECT auth.uid())`.
+        // Phase 6b: unwrap a scalar subquery, `(SELECT auth.uid())`.
         // The subquery must project exactly one non-wildcard expression.
         Expr::Subquery(query) => {
             if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
@@ -714,14 +671,12 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.
-/// Used in [`recognize_p3`] to cap confidence at B for subquery-wrapped accessors.
 fn is_subquery_wrapped(expr: &Expr) -> bool {
     matches!(unwrap_cast_or_nested(expr), Expr::Subquery(_))
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) contains a JSON
 /// accessor operator (`->`, `->>`, `#>`, `#>>`).  Used in [`recognize_p3`] to
-/// cap confidence at B for JSON-extracted user identifiers.
 fn is_json_accessor_wrapped(expr: &Expr) -> bool {
     matches!(
         unwrap_cast_or_nested(expr),

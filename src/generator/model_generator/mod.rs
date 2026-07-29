@@ -139,7 +139,7 @@ impl TypePlan {
         subjects: Vec<DirectSubject>,
     ) -> String {
         let relation = clamp_relation_name(relation.into());
-        // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
+        // Guard: a relation cannot be both direct and computed, OpenFGA would reject duplicate `define` lines.
         debug_assert!(
             !self.computed_relations.contains_key(&relation),
             "relation '{relation}' already registered as computed; cannot also register as direct"
@@ -152,7 +152,7 @@ impl TypePlan {
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
         let relation = clamp_relation_name(relation.into());
-        // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
+        // Guard: a relation cannot be both direct and computed, OpenFGA would reject duplicate `define` lines.
         debug_assert!(
             !self.direct_relations.contains_key(&relation),
             "relation '{relation}' already registered as direct; cannot also register as computed"
@@ -680,14 +680,12 @@ struct TableTypes {
 }
 
 impl TableTypes {
-    /// Assign one type name per RLS-enabled table, suffixing collisions with a
-    /// stable hash of the qualified name (`app.users` and `auth.users` both
-    /// canonicalize to `users`).
+    /// One type name per RLS-enabled table, collisions suffixed with a hash of the
+    /// qualified name.
     ///
-    /// Derived from the schema alone, never from which policies survived confidence
-    /// filtering, so tuples loaded from one run keep matching a model generated at
-    /// another threshold. Tables carrying policies claim their canonical name first:
-    /// a table present only as a deny-all must not rename a type already in use.
+    /// Derived from the schema alone, never from which policies survived filtering,
+    /// so names do not move with the confidence threshold. Tables carrying policies
+    /// claim their canonical name first.
     fn assign(db: &ParserDB, todos: &mut Vec<TodoItem>) -> Self {
         let mut types = Self::default();
         let mut policied: BTreeSet<(Option<String>, String)> = BTreeSet::new();
@@ -963,7 +961,7 @@ fn translate_pattern(
                 db,
                 todos,
             ) else {
-                // Non-RoleThreshold function (e.g. pg_has_role, auth.role()) —
+                // Non-RoleThreshold function (e.g. pg_has_role, auth.role()) ,
                 // fall back to scope-style direct relations per role name.
                 return handle_p2_role_gate(
                     role_names,
@@ -976,14 +974,8 @@ fn translate_pattern(
                 );
             };
 
-            // Collect the exact set of role names that the policy grants access to.
-            //
-            // Role names are matched by name (case-insensitive), not by integer
-            // level, to avoid conflating two roles that happen to share the same
-            // level (e.g. `viewer=1` and `guest=1`).
-            //
-            // Numeric items in the IN list (e.g. `IN (2, 4)`) are treated as
-            // level values: all roles at the given level are included.
+            // Matched by name, not by level, so `viewer=1` and `guest=1` stay
+            // distinct. A numeric item means every role at that level.
             let mut selected_names: BTreeSet<String> = BTreeSet::new();
             for role in role_names {
                 if let Ok(level) = role.parse::<i32>() {
@@ -1515,13 +1507,10 @@ fn role_for_level(sorted_roles: &[RoleRelationName], min_level: i32) -> Option<S
         .map(RoleRelationName::role_relation)
 }
 
-/// Build the `OpenFGA` userset expression for a P2 role-name-in-list policy.
+/// Userset for a P2 role-name-in-list policy.
 ///
-/// `selected_names` is the set of role **original names** (lowercased) that the
-/// policy grants access to.  Roles that share an integer level but have a
-/// *different* name are intentionally excluded — this prevents the conflation
-/// bug where `viewer=1` and `guest=1` both grant access when only `'viewer'`
-/// is listed in the SQL policy.
+/// Keyed on the listed role names, so a same-level role with a different name
+/// (`guest=1` beside `viewer=1`) is not admitted.
 fn exact_roles_expr(
     sorted_roles: &[RoleRelationName],
     selected_names: &BTreeSet<String>,

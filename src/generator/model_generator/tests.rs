@@ -849,7 +849,7 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     );
     // WITH CHECK was filtered, NOT mirrored → can_insert or can_update_check should NOT
     // exist (we don't mirror low-confidence USING into WITH CHECK slot).
-    // For UPDATE the check target is can_update_check — it should be absent.
+    // For UPDATE the check target is can_update_check, it should be absent.
     assert!(
         !docs.computed_relations.contains_key("can_update_check"),
         "can_update_check must not be silently mirrored from USING when with_check was filtered; \
@@ -1054,7 +1054,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 
 #[test]
 fn resolve_principal_info_auto_resolves_pk_for_configured_table() {
-    // Configure table but no pk_col — should auto-resolve from PK
+    // Configure table but no pk_col, should auto-resolve from PK
     let db = parse_schema(r"CREATE TABLE accounts(id UUID PRIMARY KEY, email TEXT);").unwrap();
     let result = resolve_principal_info(&db, Some("accounts"), None, &[]);
     assert!(result.is_some());
@@ -1102,9 +1102,7 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     );
 }
 
-// ---------------------------------------------------------------
-// positional_function_arg — non-List FunctionArguments (line 1552)
-// ---------------------------------------------------------------
+// positional_function_arg, non-List FunctionArguments
 #[test]
 fn positional_function_arg_returns_none_for_non_list_args() {
     use sqlparser::ast::{FunctionArguments, Ident, ObjectName, ObjectNamePart};
@@ -1125,9 +1123,7 @@ fn positional_function_arg_returns_none_for_non_list_args() {
     );
 }
 
-// ---------------------------------------------------------------
-// extract_resource_columns_for_function — visitor-based integration
-// ---------------------------------------------------------------
+// extract_resource_columns_for_function, visitor-based integration
 #[test]
 fn extract_resource_columns_finds_function_in_nested_binary_op() {
     use sqlparser::dialect::PostgreSqlDialect;
@@ -1176,9 +1172,7 @@ fn extract_resource_columns_returns_empty_for_non_matching_function() {
     assert!(cols.is_empty());
 }
 
-// ---------------------------------------------------------------
-// resolve_owner_column — returns None (line 1580)
-// ---------------------------------------------------------------
+// resolve_owner_column, returns None
 #[test]
 fn resolve_owner_column_returns_none_when_no_owner_col_and_no_fk_to_users() {
     let db = parse_schema(
@@ -1194,9 +1188,7 @@ CREATE TABLE widgets(name TEXT, value INT);
     );
 }
 
-// ---------------------------------------------------------------
-// populate_role_threshold_sources — pk_col is None (line 1792)
-// ---------------------------------------------------------------
+// populate_role_threshold_sources, pk_col is None
 #[test]
 fn populate_role_threshold_sources_emits_todo_for_missing_pk_col() {
     // Table without a PK or `id` column → pk_col will be None → line 1792
@@ -1239,9 +1231,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     );
 }
 
-// ---------------------------------------------------------------
 // TypePlan debug_assert panics (lines 86-87, 96-97, 106-107)
-// ---------------------------------------------------------------
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "already registered as computed")]
@@ -1269,9 +1259,7 @@ fn set_computed_panics_when_relation_already_direct() {
     plan.set_computed("rel", UsersetExpr::Computed("x".into()));
 }
 
-// ---------------------------------------------------------------
-// canonical name collision (line 218) — two tables → same canonical name
-// ---------------------------------------------------------------
+// canonical name collision, two tables → same canonical name
 #[test]
 fn build_schema_plan_disambiguates_canonical_name_collision() {
     let db = parse_schema(
@@ -1333,9 +1321,7 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
     }
 }
 
-// ---------------------------------------------------------------
-// scoped_roles missing PK → TODO (line 294)
-// ---------------------------------------------------------------
+// scoped_roles missing PK → TODO
 #[test]
 fn build_schema_plan_emits_todo_for_scoped_roles_missing_pk() {
     // Table with no PK and no `id` column
@@ -1389,9 +1375,7 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     }
 }
 
-// ---------------------------------------------------------------
-// P5 inner pattern results in no_access → TODO (lines 878-885)
-// ---------------------------------------------------------------
+// P5 inner pattern results in no_access → TODO
 #[test]
 fn pattern_to_expr_p5_with_inner_no_access_emits_todo() {
     let registry = FunctionRegistry::new();

@@ -142,7 +142,7 @@ impl Default for AccessorInferenceSettings {
 }
 
 /// Returns `true` when the lowercase function body looks like a simple, direct
-/// accessor expression — i.e. the body reduces to a single `current_setting(…)`
+/// accessor expression: i.e. the body reduces to a single `current_setting(…)`
 /// or `current_user` expression, optionally with a type cast.
 ///
 /// Rejects bodies that contain DML or control-flow keywords, which indicate a

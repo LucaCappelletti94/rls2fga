@@ -1,14 +1,7 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Role-threshold resource column pre-pass
-//
-// These functions walk the raw policy Expr AST to infer which column name is
-// passed as the "resource" argument in each P1/P2 role-threshold function
-// call.  The result is threaded into pattern_to_expr_for_target so that the
-// tuple-SQL renderer can emit the correct JOIN column without re-walking the
-// AST a second time.
-// ---------------------------------------------------------------------------
+// Infers which column each P1/P2 role-threshold call passes as its resource
+// argument, so the tuple renderer knows the JOIN column without re-walking the AST.
 
 pub(crate) fn infer_role_threshold_resource_columns(
     policies: &[ClassifiedPolicy],

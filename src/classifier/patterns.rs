@@ -81,85 +81,85 @@ pub enum BoolOp {
 /// Classified pattern for an expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternClass {
-    /// P1: Numeric role threshold — `role_level(user, resource) >= N`.
+    /// P1: Numeric role threshold: `role_level(user, resource) >= N`.
     P1NumericThreshold {
-        /// Name of the role-level function being called.
+        /// Role-level function called.
         function_name: String,
-        /// Numeric comparison operator.
+        /// Comparison used.
         operator: ThresholdOperator,
-        /// Minimum integer level required by the policy.
+        /// Level the policy requires.
         threshold: i32,
-        /// DML command this threshold applies to.
+        /// Command the threshold applies to.
         command: PolicyCommand,
     },
-    /// P2: Role name IN-list — `role_name(user, resource) IN ('viewer', ...)`.
+    /// P2: Role name IN-list: `role_name(user, resource) IN ('viewer', ...)`.
     P2RoleNameInList {
-        /// Name of the role-level function being called.
+        /// Role-name function called.
         function_name: String,
-        /// Allowed role names extracted from the IN list.
+        /// Roles the list admits.
         role_names: Vec<String>,
     },
-    /// P3: Direct column equality — `owner_id = current_user_id()`.
+    /// P3: Direct column equality: `owner_id = current_user_id()`.
     P3DirectOwnership {
         /// Column compared against the current user.
         column: String,
     },
-    /// P4: EXISTS subquery membership — `EXISTS (SELECT 1 FROM members ...)`.
+    /// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
     P4ExistsMembership {
-        /// Table scanned in the EXISTS subquery.
+        /// Table scanned in the subquery.
         join_table: String,
-        /// Foreign-key column referencing the parent entity.
+        /// Column of `join_table` identifying the parent entity.
         fk_column: String,
-        /// Column referencing the user in the join table.
+        /// Column of `join_table` identifying the user.
         user_column: String,
-        /// Additional filter predicate from the membership query (e.g. `role = 'admin'`).
+        /// Residual filter such as `role = 'admin'`, which no tuple can express.
         extra_predicate_sql: Option<String>,
     },
-    /// P5: Parent resource permission inheritance via FK join.
+    /// P5: Parent permission inheritance through a foreign key.
     P5ParentInheritance {
-        /// Parent table whose policy is inherited.
+        /// Parent table read by the policy.
         parent_table: String,
-        /// FK column linking child to parent.
+        /// Column of the child table linking to `parent_table`.
         fk_column: String,
-        /// Recursively classified inner expression on the parent.
+        /// The parent-side rule the policy requires.
         inner_pattern: Box<ClassifiedExpr>,
     },
-    /// P6: Boolean flag / public access — `is_public = TRUE`.
+    /// P6: Boolean flag or public access: `is_public = TRUE`.
     P6BooleanFlag {
-        /// Boolean column name controlling public visibility.
+        /// Column controlling visibility.
         column: String,
     },
-    /// P7: Relationship AND attribute (ABAC crossover) — relationship check combined with an attribute filter.
+    /// P7: A relationship check AND an attribute guard.
     P7AbacAnd {
-        /// The relationship-based sub-expression (e.g. ownership or role check).
+        /// The translatable relationship half.
         relationship_part: Box<ClassifiedExpr>,
-        /// Column name used as an attribute guard.
+        /// Column the attribute guard reads.
         attribute_part: String,
     },
-    /// P8: Composite boolean — OR/AND of two or more sub-patterns.
+    /// P8: `OR` or `AND` of two or more sub-patterns.
     P8Composite {
-        /// Boolean operator joining the sub-patterns.
+        /// Operator joining `parts`.
         op: BoolOp,
-        /// Classified sub-expressions combined by `op`.
+        /// Sub-patterns being combined.
         parts: Vec<ClassifiedExpr>,
     },
-    /// P9: Standalone attribute condition — `status = 'published'` or `priority >= 3`.
+    /// P9: Standalone attribute condition: `status = 'published'`.
     P9AttributeCondition {
-        /// Column name used as the attribute guard.
+        /// Column the guard reads.
         column: String,
-        /// Human-readable description of the comparison value.
+        /// Human-readable form of the compared value.
         value_description: String,
     },
-    /// P10: Constant boolean policy (`TRUE` / `FALSE`).
+    /// P10: Constant `TRUE` or `FALSE` policy.
     P10ConstantBool {
-        /// Constant value in the policy.
+        /// The constant.
         value: bool,
     },
-    /// Expression that could not be matched to any known pattern.
+    /// No known pattern matched.
     Unknown {
-        /// SQL text of the unrecognised expression.
+        /// The expression as written.
         sql_text: String,
-        /// Human-readable explanation of why classification failed.
+        /// Why classification failed, surfaced to the operator.
         reason: String,
     },
 }
@@ -167,13 +167,13 @@ pub enum PatternClass {
 /// Confidence level for a classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ConfidenceLevel {
-    /// Lowest confidence — unrecognised or unsupported expression.
+    /// Lowest confidence: unrecognised or unsupported expression.
     D,
-    /// Low confidence — partially recognised (e.g. ABAC crossover).
+    /// Low confidence: partially recognised (e.g. ABAC crossover).
     C,
-    /// Medium confidence — composite patterns where sub-parts are well-understood.
+    /// Medium confidence: composite patterns where sub-parts are well-understood.
     B,
-    /// Highest confidence — fully recognised, single-pattern expression.
+    /// Highest confidence: fully recognised, single-pattern expression.
     A,
 }
 
@@ -204,7 +204,7 @@ impl core::str::FromStr for ConfidenceLevel {
 /// A classified expression with its pattern and confidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassifiedExpr {
-    /// The matched pattern (P1–P10 or Unknown).
+    /// The matched pattern (P1 to P10 or Unknown).
     pub pattern: PatternClass,
     /// How confident the classifier is in this match.
     pub confidence: ConfidenceLevel,

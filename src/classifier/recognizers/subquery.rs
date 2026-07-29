@@ -1,7 +1,7 @@
 use super::*;
 use alloc::collections::BTreeSet;
 
-/// Try to recognize P4: EXISTS membership check.
+/// EXISTS membership check.
 pub fn recognize_p4(
     expr: &Expr,
     db: &ParserDB,
@@ -22,7 +22,7 @@ pub fn recognize_p4(
     None
 }
 
-/// Try to recognize P5: parent inheritance via correlated EXISTS on parent table.
+/// Parent inheritance via correlated EXISTS.
 pub fn recognize_p5(
     expr: &Expr,
     db: &ParserDB,
@@ -52,8 +52,7 @@ pub fn recognize_p5(
             let Some(mut inner_expr) = combine_predicates_with_and(inner_predicates) else {
                 continue;
             };
-            // Predicates nested deeper reach the parent through its alias, and the
-            // inner classification only knows the parent by name.
+            // Nested queries use parent alias from outer scope.
             strip_qualifier_from_expr_deep(&mut inner_expr, &parent_table, parent_alias.as_deref());
             let inner_classified = crate::classifier::policy_classifier::classify_expr(
                 &inner_expr,
@@ -62,9 +61,7 @@ pub fn recognize_p5(
                 &parent_table,
                 command,
             );
-            // Only accept user-resource relationship patterns as inner patterns.
-            // Attribute checks (P6, P9, P10) do not represent a relationship
-            // between a user and the parent resource and must not become P5.
+            // Only accept relationship patterns, not attribute checks.
             if !matches!(
                 inner_classified.pattern,
                 PatternClass::P1NumericThreshold { .. }
@@ -95,10 +92,6 @@ pub fn recognize_p5(
     None
 }
 
-/// Destructure `col IN (SELECT ...)` and its equivalent `col = ANY/SOME (SELECT ...)`.
-///
-/// Rejects the negated spellings and every operator but `=`: `col > ANY (...)`
-/// and `col = ALL (...)` are not membership tests.
 fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::Query)> {
     match expr {
         Expr::InSubquery {
@@ -119,7 +112,7 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::
     }
 }
 
-/// Try to recognize P4 via IN-subquery: `col IN (SELECT col FROM membership_table ...)`.
+/// Recognize P4 membership through `col IN (SELECT ...)` or `col = ANY (SELECT ...)`.
 pub fn recognize_p4_in_subquery(
     expr: &Expr,
     db: &ParserDB,
@@ -194,9 +187,7 @@ fn analyze_membership_select(
         return MembershipSelectAnalysis::AmbiguousNoUniqueJoin;
     }
 
-    // Fail closed when the same table appears more than once (self-join).
-    // Self-joins add constraints we cannot express as static membership tuples;
-    // accepting them would produce tuples more permissive than the original policy.
+    // Fail closed on self-joins: not expressible as static tuples.
     let all_sources = relation_sources(select);
     let unique_table_count = all_sources
         .iter()
@@ -238,7 +229,6 @@ fn analyze_membership_select(
 ///
 /// A dependent row keyed by its parent (`doc_owner(doc_id PRIMARY KEY REFERENCES
 /// docs)`) is a membership row and stays translatable. A root entity scanned by its
-/// own key is not.
 fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> bool {
     let Some(meta) = lookup_table(db, table) else {
         return false;
@@ -460,7 +450,6 @@ pub(super) fn selection_references_current_user(
         _ => is_current_user_expr(predicate, registry),
     })
 }
-/// Extract a table name from a `TableFactor`.
 pub(super) fn extract_table_name_from_table_factor(tf: &TableFactor) -> Option<String> {
     if let TableFactor::Table { name, .. } = tf {
         Some(name.to_string())
@@ -576,7 +565,6 @@ pub(super) fn extract_projection_column(select: &Select) -> Option<String> {
     })
 }
 
-/// Extract the ON expression from a `JoinOperator`, if present.
 pub(super) fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
     use sqlparser::ast::JoinConstraint;
     use sqlparser::ast::JoinOperator::{
@@ -834,14 +822,9 @@ fn is_join_column_ref(
     }
 }
 
-/// Strip join-table qualifiers from all `CompoundIdentifier` nodes in `expr`
-/// whose qualifier matches `join_table` or `join_alias`.  Qualifying identifiers
-/// are replaced with bare `Identifier` nodes, making the predicate suitable for
-/// embedding in a single-table query that does not include the join table.
-///
-/// Operates at the AST level to correctly handle double-quoted identifiers,
-/// dollar-quoted strings, and other SQL literal forms that text-based rewriting
-/// would mangle.
+/// Drop `join_table` or `join_alias` qualifiers, leaving bare identifiers that a
+/// single-table query can host. Rewrites the AST, not the text, so quoted and
+/// dollar-quoted forms survive.
 pub(super) fn strip_qualifier_from_expr(
     expr: &mut Expr,
     join_table: &str,
@@ -919,9 +902,6 @@ fn strip_qualifier(
     let _ = expr.visit(&mut v);
 }
 
-/// Returns `true` if `expr` contains any column reference whose qualifier is
-/// NOT the join table (or its alias).  Bare (unqualified) column references are
-/// assumed to belong to the join table and are allowed.
 pub(super) fn predicate_references_other_table(
     expr: &Expr,
     join_table: &str,

@@ -4,5 +4,5 @@ pub mod function_registry;
 pub mod patterns;
 /// Top-level policy classification: walks each policy's USING/WITH CHECK expression tree.
 pub mod policy_classifier;
-/// Individual pattern recognizers (P1–P6) that probe a single AST expression node.
+/// Individual pattern recognizers (P1 to P6) that probe a single AST expression node.
 pub mod recognizers;

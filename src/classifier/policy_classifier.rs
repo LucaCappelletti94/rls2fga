@@ -201,7 +201,6 @@ fn classify_expr_inner(
     depth: u32,
 ) -> ClassifiedExpr {
     // Gap 7: Row-value comparison decomposition.
-    // `(a, b) = (c, d)` → `a = c AND b = d`, then recurse.
     if let Expr::BinaryOp {
         left,
         op: BinaryOperator::Eq,
@@ -307,7 +306,6 @@ fn classify_expr_inner(
     }
 
     // Gap 4: CASE WHEN cond1 THEN TRUE WHEN cond2 THEN TRUE ... ELSE FALSE END
-    // Normalise boolean CASE expressions into an OR-tree of the TRUE-branch
     // conditions, then recurse.
     if let Expr::Case {
         operand: None,
@@ -337,14 +335,13 @@ fn classify_expr_inner(
             expr,
             format!(
                 "NOT applied to {desc}; negation cannot be expressed as a static \
-                 OpenFGA tuple — consider rewriting as an allowlist policy"
+                 OpenFGA tuple, consider rewriting as an allowlist policy"
             ),
         );
     }
 
     // Handle negated structural forms (NOT IN list / NOT EXISTS / NOT IN subquery).
     // Each recognizer already returns None for these, so intercept them here to give
-    // a specific diagnostic reason instead of the generic "unknown pattern" fallback.
     if let Expr::InList { negated: true, .. } = expr {
         return unknown_d(
             expr,
@@ -423,7 +420,6 @@ fn classify_expr_inner(
     }
 
     // Detect negated public-flag: `is_public = FALSE`, `col IS FALSE`, `col IS NOT TRUE`.
-    // These fall through P6 because they're not an allowlist — they must not degrade silently
     // to P9 (attribute condition) since they cannot be expressed as static OpenFGA tuples.
     if let Some(col) = recognizers::is_negated_boolean_flag(expr) {
         return unknown_d(
@@ -462,7 +458,6 @@ fn classify_expr_inner(
         };
     }
 
-    // Check for function call with unknown function → Level D
     if let Some(func_name) = recognizers::extract_function_name(expr) {
         if !registry.is_current_user_accessor(&func_name) {
             let reason = match registry.get(&func_name) {
@@ -1122,7 +1117,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         .expect("schema should parse");
         let registry = FunctionRegistry::new();
 
-        // EXISTS with no current-user filter is an "exists any member" check —
+        // EXISTS with no current-user filter is an "exists any member" check ,
         // it does not identify the current user and must not classify as P4.
         let expr = parse_expr("EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id)");
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
@@ -1139,7 +1134,6 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         let db = docs_db();
         let registry = FunctionRegistry::new();
 
-        // NOT TRUE → P10ConstantBool{value: false}
         let not_true = parse_expr("NOT TRUE");
         let classified_not_true =
             classify_expr(&not_true, &db, &registry, "docs", &PolicyCommand::Select);
@@ -1150,7 +1144,6 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         );
         assert_eq!(classified_not_true.confidence, ConfidenceLevel::A);
 
-        // NOT FALSE → P10ConstantBool{value: true}
         let not_false = parse_expr("NOT FALSE");
         let classified_not_false =
             classify_expr(&not_false, &db, &registry, "docs", &PolicyCommand::Select);
@@ -1437,13 +1430,11 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             reason: "r".into(),
         }));
 
-        // Recursive P7: P7 with P3 inner → true
         assert!(is_relationship_pattern_for_p7(&PatternClass::P7AbacAnd {
             relationship_part: Box::new(p3_expr.clone()),
             attribute_part: "a".into(),
         }));
 
-        // Recursive P8: all relationship parts → true
         assert!(is_relationship_pattern_for_p7(&PatternClass::P8Composite {
             op: BoolOp::Or,
             parts: vec![
@@ -1460,7 +1451,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             ],
         }));
 
-        // P8 with non-relationship part → false
         assert!(!is_relationship_pattern_for_p7(
             &PatternClass::P8Composite {
                 op: BoolOp::Or,
@@ -1471,7 +1461,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             }
         ));
 
-        // P8 empty → false
         assert!(!is_relationship_pattern_for_p7(
             &PatternClass::P8Composite {
                 op: BoolOp::Or,
@@ -1479,8 +1468,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             }
         ));
     }
-
-    // ── Gap 8: IS DISTINCT FROM → P9 ──────────────────────────────────────
 
     #[test]
     fn is_distinct_from_classified_as_p9() {
@@ -1508,8 +1495,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         );
     }
 
-    // ── Gap 5: BETWEEN → P9 ───────────────────────────────────────────────
-
     #[test]
     fn between_classified_as_p9_attribute_condition() {
         let db = docs_db();
@@ -1522,8 +1507,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             classified.pattern
         );
     }
-
-    // ── Gap 6: temporal predicate → P9 ──────────────────────────────────────
 
     #[test]
     fn temporal_comparison_classified_as_p9() {
@@ -1560,7 +1543,6 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
 
         // (owner_id, status) = (current_user, 'active') should decompose to
-        // owner_id = current_user AND status = 'active' → P7 (ABAC AND)
         let expr = parse_expr("(owner_id, status) = (current_user, 'active')");
         let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
         assert!(
@@ -1585,8 +1567,6 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             classified.pattern
         );
     }
-
-    // ── Gap 4: CASE WHEN → OR-tree ──────────────────────────────────────────
 
     #[test]
     fn case_when_true_else_false_normalizes_to_or() {
