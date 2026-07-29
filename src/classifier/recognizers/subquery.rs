@@ -160,7 +160,7 @@ fn classify_membership_select(
         }),
         MembershipSelectAnalysis::AmbiguousMultiple
         | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
-        | MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { .. }
+        | MembershipSelectAnalysis::ScansEntityByOwnKey { .. }
         | MembershipSelectAnalysis::NoMatch => None,
     }
 }
@@ -174,9 +174,9 @@ enum MembershipSelectAnalysis {
     },
     AmbiguousMultiple,
     AmbiguousNoUniqueJoin,
-    /// The join column is the scanned table's own primary key, so the subquery
-    /// scans an entity table rather than a membership table.
-    JoinedOnOwnPrimaryKey {
+    /// The join column is the scanned table's own identity, so the subquery selects
+    /// entities rather than membership rows.
+    ScansEntityByOwnKey {
         join_table: String,
     },
     NoMatch,
@@ -213,12 +213,11 @@ fn analyze_membership_select(
     }
     match matches.pop() {
         Some((join_table, inferred_fk_column, user_column, extra_predicate_sql)) => {
-            // A membership row points at a parent through a foreign key. When the
-            // join column is the scanned table's own key, the rows are the parent
-            // entities and the caller must model inheritance instead: keying them
-            // by the child's identifier pairs unrelated rows.
-            if joins_on_own_primary_key(db, &join_table, &inferred_fk_column) {
-                return MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { join_table };
+            // A membership row points at a parent. When the join column is the
+            // scanned table's own identity, the rows are the entities themselves and
+            // keying them by the child's identifier pairs unrelated rows.
+            if scans_root_entity_by_its_key(db, &join_table, &inferred_fk_column) {
+                return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
             }
             MembershipSelectAnalysis::Unique {
                 join_table,
@@ -234,14 +233,29 @@ fn analyze_membership_select(
     }
 }
 
-/// True when `column` is the single-column primary key of `table`.
-fn joins_on_own_primary_key(db: &ParserDB, table: &str, column: &str) -> bool {
-    lookup_table(db, table)
-        .and_then(|meta| meta.primary_key_column(db))
-        .is_some_and(|pk| {
-            crate::parser::names::normalize_identifier(pk.column_name())
+/// True when `column` is `table`'s own identity rather than a link to a parent:
+/// the single-column primary key, and not itself a foreign key.
+///
+/// A dependent row keyed by its parent (`doc_owner(doc_id PRIMARY KEY REFERENCES
+/// docs)`) is a membership row and stays translatable. A root entity scanned by its
+/// own key is not.
+fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> bool {
+    let Some(meta) = lookup_table(db, table) else {
+        return false;
+    };
+    let is_primary_key = meta.primary_key_column(db).is_some_and(|pk| {
+        crate::parser::names::normalize_identifier(pk.column_name())
+            == crate::parser::names::normalize_identifier(column)
+    });
+    if !is_primary_key {
+        return false;
+    }
+    !meta.foreign_keys(db).any(|fk| {
+        fk.host_column(db).is_some_and(|host| {
+            crate::parser::names::normalize_identifier(host.column_name())
                 == crate::parser::names::normalize_identifier(column)
         })
+    })
 }
 
 pub(crate) fn diagnose_p4_membership_ambiguity(
@@ -264,10 +278,11 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
                 "Ambiguous membership pattern: could not infer a unique membership join"
                     .to_string(),
             ),
-            MembershipSelectAnalysis::JoinedOnOwnPrimaryKey { join_table } => Some(format!(
-                "Subquery joins '{join_table}' on its own primary key, so it selects \
-                 '{join_table}' rows rather than membership rows; declare the foreign key \
-                 to '{join_table}' so the link can be translated as parent inheritance"
+            MembershipSelectAnalysis::ScansEntityByOwnKey { join_table } => Some(format!(
+                "Subquery selects '{join_table}' rows by their own primary key, so they are \
+                 '{join_table}' entities rather than membership rows; declare the foreign key \
+                 from the policy's table to '{join_table}' so the link translates as parent \
+                 inheritance"
             )),
             MembershipSelectAnalysis::Unique { .. } | MembershipSelectAnalysis::NoMatch => None,
         }

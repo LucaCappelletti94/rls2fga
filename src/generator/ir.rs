@@ -170,6 +170,9 @@ pub(crate) enum TupleSource {
         fk_col: String,
         /// `OpenFGA` type name of the parent entity.
         parent_type: String,
+        /// Relation on the child that holds the link. Named after `parent_type` but
+        /// subject to the shorter relation-name limit, so the two can differ.
+        relation: String,
     },
 
     /// Boolean public-flag column — `flag_col = TRUE`.
@@ -326,8 +329,9 @@ impl TupleSource {
                 table,
                 fk_col,
                 parent_type,
+                relation,
             } => {
-                format!("bridge:{table}:{fk_col}:{parent_type}")
+                format!("bridge:{table}:{fk_col}:{parent_type}:{relation}")
             }
             Self::PublicFlag {
                 table,

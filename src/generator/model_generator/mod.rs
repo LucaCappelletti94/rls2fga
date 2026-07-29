@@ -14,9 +14,9 @@ use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    canonical_fga_type_name, is_owner_like_column_name, lookup_table, normalize_identifier,
-    normalize_relation_name, parent_type_from_fk_column, policy_scope_relation_name,
-    stable_hex_suffix,
+    canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
+    normalize_identifier, normalize_relation_name, parent_type_from_fk_column,
+    policy_scope_relation_name, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -116,7 +116,7 @@ impl TypePlan {
                 || plan.direct_relations.contains_key(name)
                 || plan.computed_relations.contains_key(name)
         };
-        let relation = if base.is_empty() || taken(&base, self) {
+        let relation = clamp_relation_name(if base.is_empty() || taken(&base, self) {
             let fallback = format!("owner_{}", canonical_fga_type_name(column));
             if taken(&fallback, self) {
                 format!("{fallback}_{}", stable_hex_suffix(column))
@@ -125,41 +125,53 @@ impl TypePlan {
             }
         } else {
             base
-        };
+        });
 
         self.ownership_relations
             .insert(column.to_string(), relation.clone());
         relation
     }
 
-    fn ensure_direct(&mut self, relation: impl Into<String>, subjects: Vec<DirectSubject>) {
-        let relation = relation.into();
+    /// Register a directly-assignable relation, returning the name actually used.
+    fn ensure_direct(
+        &mut self,
+        relation: impl Into<String>,
+        subjects: Vec<DirectSubject>,
+    ) -> String {
+        let relation = clamp_relation_name(relation.into());
         // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
         debug_assert!(
             !self.computed_relations.contains_key(&relation),
             "relation '{relation}' already registered as computed; cannot also register as direct"
         );
-        self.direct_relations.entry(relation).or_insert(subjects);
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert(subjects);
+        relation
     }
 
-    fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) {
-        let relation = relation.into();
+    fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
+        let relation = clamp_relation_name(relation.into());
         // Guard: a relation cannot be both direct and computed — OpenFGA would reject duplicate `define` lines.
         debug_assert!(
             !self.direct_relations.contains_key(&relation),
             "relation '{relation}' already registered as direct; cannot also register as computed"
         );
-        self.computed_relations.entry(relation).or_insert(expr);
+        self.computed_relations
+            .entry(relation.clone())
+            .or_insert(expr);
+        relation
     }
 
-    fn set_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) {
-        let relation = relation.into();
+    fn set_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
+        let relation = clamp_relation_name(relation.into());
         // Guard: if this relation was already registered as direct, that is a programming error.
         debug_assert!(
             !self.direct_relations.contains_key(&relation),
             "relation '{relation}' already registered as direct; cannot overwrite as computed"
         );
-        self.computed_relations.insert(relation, expr);
+        self.computed_relations.insert(relation.clone(), expr);
+        relation
     }
 
     fn add_source(&mut self, source: TupleSource) {
@@ -263,7 +275,7 @@ pub(crate) fn build_schema_plan(
         by_table.entry(qualified_table_name(table)).or_default();
     }
 
-    let table_types = TableTypes::assign(&by_table, db, &mut todos);
+    let table_types = TableTypes::assign(db, &mut todos);
 
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type.
@@ -614,12 +626,21 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
     }
 }
 
-/// Quote `part` when leaving it bare would change how the name parses.
+/// Quote `part` unless it is a bare lowercase identifier.
+///
+/// The result is used both to derive the type name and to look the table back up,
+/// and `lookup_table` tries the quoted spelling as well as the unquoted one, so
+/// quoting is the form that resolves either way.
 fn quote_name_part(part: &str) -> String {
-    if part.contains('.') || part.contains('"') {
-        format!("\"{}\"", part.replace('"', "\"\""))
-    } else {
+    let is_bare = !part.is_empty()
+        && !part.starts_with(|ch: char| ch.is_ascii_digit())
+        && part
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+    if is_bare {
         part.to_string()
+    } else {
+        format!("\"{}\"", part.replace('"', "\"\""))
     }
 }
 
@@ -663,24 +684,35 @@ impl TableTypes {
     /// stable hash of the qualified name (`app.users` and `auth.users` both
     /// canonicalize to `users`).
     ///
-    /// Tables with policies claim their canonical name first: a table present only
-    /// as a deny-all must not rename a type whose tuples are already loaded.
-    fn assign(
-        by_table: &BTreeMap<String, Vec<&ClassifiedPolicy>>,
-        db: &ParserDB,
-        todos: &mut Vec<TodoItem>,
-    ) -> Self {
+    /// Derived from the schema alone, never from which policies survived confidence
+    /// filtering, so tuples loaded from one run keep matching a model generated at
+    /// another threshold. Tables carrying policies claim their canonical name first:
+    /// a table present only as a deny-all must not rename a type already in use.
+    fn assign(db: &ParserDB, todos: &mut Vec<TodoItem>) -> Self {
         let mut types = Self::default();
-        let with_policies = by_table.iter().filter(|(_, ps)| !ps.is_empty());
-        let deny_only = by_table.iter().filter(|(_, ps)| ps.is_empty());
+        let mut policied: BTreeSet<(Option<String>, String)> = BTreeSet::new();
+        for policy in db.policies() {
+            if let Some(table) = lookup_table(db, &policy.table_name.to_string()) {
+                policied.insert(table_identity(table));
+            }
+        }
 
-        for (name, _) in with_policies.chain(deny_only) {
+        let mut names: Vec<(bool, String)> = db
+            .tables()
+            .filter(|table| table.has_row_level_security(db))
+            .map(|table| {
+                (
+                    !policied.contains(&table_identity(table)),
+                    qualified_table_name(table),
+                )
+            })
+            .collect();
+        names.sort();
+
+        for (_, name) in &names {
             let Some(table) = lookup_table(db, name) else {
                 continue;
             };
-            if !table.has_row_level_security(db) {
-                continue;
-            }
             let identity = table_identity(table);
             if types.by_identity.contains_key(&identity) {
                 continue;
@@ -1019,7 +1051,9 @@ fn translate_pattern(
                 |referenced| table_types.resolve(db, referenced),
             );
 
-            table_plan.ensure_direct(
+            // The relation is named after the parent type, but relation names have a
+            // tighter length limit, so use the name the plan actually registered.
+            let parent_relation = table_plan.ensure_direct(
                 parent_type.clone(),
                 vec![DirectSubject::Type(parent_type.clone())],
             );
@@ -1057,13 +1091,14 @@ fn translate_pattern(
                     table: source_table.to_string(),
                     fk_col: fk_column.clone(),
                     parent_type: parent_type.clone(),
+                    relation: parent_relation.clone(),
                 });
             } else {
                 add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
             }
 
             UsersetExpr::TupleToUserset {
-                tupleset: parent_type,
+                tupleset: parent_relation,
                 computed: "member".to_string(),
             }
         }
@@ -1083,22 +1118,24 @@ fn translate_pattern(
                 return deny_expr(table_plan);
             }
 
-            let parent_relation = table_types.resolve(db, parent_table);
+            let parent_type = table_types.resolve(db, parent_table);
 
-            table_plan.ensure_direct(
-                parent_relation.clone(),
-                vec![DirectSubject::Type(parent_relation.clone())],
+            // The relation is named after the parent type, but relation names have a
+            // tighter length limit, so use the name the plan actually registered.
+            let parent_relation = table_plan.ensure_direct(
+                parent_type.clone(),
+                vec![DirectSubject::Type(parent_type.clone())],
             );
             // Pre-populate the parent TypePlan with the relations derived from the
             // inner pattern, so the parent exposes them even if its own policies
             // have not been processed yet.
             let parent_plan = all_types
-                .entry(parent_relation.clone())
-                .or_insert_with(|| TypePlan::new(&parent_relation));
+                .entry(parent_type.clone())
+                .or_insert_with(|| TypePlan::new(&parent_type));
             // Temporarily take the parent plan out to call pattern_to_expr_for_target.
             // We'll re-insert it afterwards.
             let mut parent_plan_owned =
-                core::mem::replace(parent_plan, TypePlan::new(&parent_relation));
+                core::mem::replace(parent_plan, TypePlan::new(&parent_type));
             let inner_expr = translate_pattern(
                 &inner_pattern.pattern,
                 policy_name,
@@ -1113,8 +1150,8 @@ fn translate_pattern(
             );
             // Re-insert the (now populated) parent plan.
             *all_types
-                .entry(parent_relation.clone())
-                .or_insert_with(|| TypePlan::new(&parent_relation)) = parent_plan_owned;
+                .entry(parent_type.clone())
+                .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
 
             if matches!(inner_expr, UsersetExpr::Computed(ref name) if name == "no_access") {
                 todos.push(TodoItem {
@@ -1133,10 +1170,11 @@ fn translate_pattern(
                 table_plan.add_source(TupleSource::ParentBridge {
                     table: source_table.to_string(),
                     fk_col: fk_column.clone(),
-                    parent_type: parent_relation.clone(),
+                    parent_type: parent_type.clone(),
+                    relation: parent_relation.clone(),
                 });
             } else {
-                add_missing_bridge_todo(table_plan, source_table, &parent_relation, db);
+                add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
             }
 
             // The policy only reads the parent, so PostgreSQL applies the parent's

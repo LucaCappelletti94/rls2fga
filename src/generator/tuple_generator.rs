@@ -411,6 +411,7 @@ fn render_tuple_source_inner(
             table,
             fk_col,
             parent_type,
+            relation,
         } => {
             let table_type = owner_type;
             let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
@@ -430,7 +431,7 @@ fn render_tuple_source_inner(
                 comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
                 sql: format!(
                     "SELECT '{table_type}:' || {object_col_sql} AS object, \
-                     '{parent_type}' AS relation, \
+                     '{relation}' AS relation, \
                      '{parent_type}:' || {parent_ref_col_sql} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {object_col_sql} IS NOT NULL\n\

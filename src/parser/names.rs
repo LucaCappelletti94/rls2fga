@@ -163,11 +163,32 @@ pub(crate) fn stable_hex_suffix(input: &str) -> String {
     format!("{:08x}", (hash & 0xffff_ffff) as u32)
 }
 
+/// `OpenFGA` rejects a relation name longer than this.
+pub const MAX_RELATION_NAME_LEN: usize = 50;
+
+/// Shorten `name` to `OpenFGA`'s relation-name limit, keeping distinct names
+/// distinct by ending an over-long one with a hash of the original.
+///
+/// Applies to relations only. Type names have a far larger limit and are left
+/// alone, so a relation named after a long type is shortened while the type it
+/// points at keeps its full name.
+pub fn clamp_relation_name(name: String) -> String {
+    if name.len() <= MAX_RELATION_NAME_LEN {
+        return name;
+    }
+    let suffix = stable_hex_suffix(&name);
+    let head: String = name
+        .chars()
+        .take(MAX_RELATION_NAME_LEN - suffix.len() - 1)
+        .collect();
+    format!("{head}_{suffix}")
+}
+
 /// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
 pub fn policy_scope_relation_name(policy_name: &str) -> String {
     let base = canonical_fga_type_name(policy_name);
     let suffix = stable_hex_suffix(policy_name);
-    format!("scope_{base}_{suffix}")
+    clamp_relation_name(format!("scope_{base}_{suffix}"))
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.
