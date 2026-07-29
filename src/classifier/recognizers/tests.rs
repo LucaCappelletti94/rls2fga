@@ -485,7 +485,7 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
                WHERE doc_members.doc_id = docs.id
              )",
     );
-    assert!(recognize_p4(&negated, &db, &registry).is_none());
+    assert!(recognize_p4(&negated, &db, &registry, "docs").is_none());
 
     let exists_expr = parse_expr(
         "EXISTS (
@@ -496,7 +496,7 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
                  AND doc_members.role = 'admin'
              )",
     );
-    let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -528,7 +528,7 @@ fn recognize_p4_exists_supports_joined_membership_tables() {
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -555,7 +555,7 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -588,7 +588,7 @@ fn recognize_p4_fails_closed_for_outer_table_is_false_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry).is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
         "outer-table IS FALSE predicate should fail closed for P4"
     );
 }
@@ -616,7 +616,7 @@ fn recognize_p4_fails_closed_for_outer_table_boolean_is_wrappers() {
         ));
 
         assert!(
-            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
             "outer-table predicate `{clause}` should fail closed for P4"
         );
     }
@@ -644,7 +644,7 @@ fn recognize_p4_fails_closed_for_outer_table_distinct_predicates() {
         ));
 
         assert!(
-            recognize_p4(&exists_expr, &db, &registry).is_none(),
+            recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
             "outer-table DISTINCT predicate `{clause}` should fail closed for P4"
         );
     }
@@ -665,7 +665,7 @@ fn recognize_p4_supports_function_wrapped_membership_predicates_without_alias_le
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
@@ -696,7 +696,7 @@ fn recognize_p4_fails_closed_for_function_wrapped_outer_table_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry).is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
         "function-wrapped outer-table predicate should fail closed for P4"
     );
 }
@@ -718,7 +718,7 @@ fn recognize_p4_fails_closed_for_joined_source_unqualified_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry).is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
         "joined-source unqualified extra predicate should fail closed for P4"
     );
 }
@@ -740,7 +740,7 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry).is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
         "derived joined-source unqualified extra predicate should fail closed for P4"
     );
 }
@@ -760,7 +760,7 @@ fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry).expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
@@ -782,7 +782,7 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
-    assert!(recognize_p4_in_subquery(&negated, &db, &registry).is_none());
+    assert!(recognize_p4_in_subquery(&negated, &db, &registry, "docs").is_none());
 
     let in_subquery = parse_expr(
         "doc_id IN (
@@ -792,7 +792,7 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
              )",
     );
     let classified =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected match");
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").expect("expected match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -818,7 +818,7 @@ fn recognize_p4_in_subquery_supports_joined_membership_tables() {
     );
 
     let classified =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected P4 match");
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -852,7 +852,7 @@ fn recognize_p4_in_subquery_fails_closed_for_non_membership_distinct_predicates(
         ));
 
         assert!(
-            recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+            recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
             "non-membership DISTINCT predicate `{clause}` should fail closed for P4 IN-subquery"
         );
     }
@@ -874,7 +874,7 @@ fn recognize_p4_in_subquery_fails_closed_for_function_wrapped_non_membership_ref
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
         "function-wrapped non-membership reference should fail closed for P4 IN-subquery"
     );
 }
@@ -902,9 +902,9 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
              )",
     );
 
-    let exists = recognize_p4(&exists_expr, &db, &registry).expect("expected EXISTS match");
-    let in_sub =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry).expect("expected IN-subquery match");
+    let exists = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected EXISTS match");
+    let in_sub = recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs")
+        .expect("expected IN-subquery match");
 
     let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicate_sql) =
         match exists.pattern {
@@ -963,11 +963,11 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry).is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
         "ambiguous EXISTS sources should fail closed"
     );
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry).is_none(),
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
         "ambiguous IN-subquery sources should fail closed"
     );
 }
@@ -1280,7 +1280,7 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE odd_members.alpha = 'x'
              )",
     );
-    assert!(recognize_p4(&exists_expr, &db, &registry).is_none());
+    assert!(recognize_p4(&exists_expr, &db, &registry, "docs").is_none());
 
     let in_subquery_expr = parse_expr(
         "id IN (
@@ -1289,7 +1289,7 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE odd_members.beta = 'x'
              )",
     );
-    assert!(recognize_p4_in_subquery(&in_subquery_expr, &db, &registry).is_none());
+    assert!(recognize_p4_in_subquery(&in_subquery_expr, &db, &registry, "docs").is_none());
 }
 
 #[test]
@@ -1315,7 +1315,7 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
              )",
     );
     assert!(
-        recognize_p4(&uncorrelated, &db, &registry).is_none(),
+        recognize_p4(&uncorrelated, &db, &registry, "docs").is_none(),
         "EXISTS without outer-row correlation must fail closed to avoid over-permissive grants"
     );
 }
@@ -1332,7 +1332,7 @@ fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
                WHERE ghost_members.doc_id = docs.id
              )",
     );
-    assert!(recognize_p4(&unknown_table, &db, &registry).is_none());
+    assert!(recognize_p4(&unknown_table, &db, &registry, "docs").is_none());
 
     let unsupported = parse_expr(
         "doc_id IN (
@@ -1341,7 +1341,7 @@ fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
                (SELECT dm.doc_id FROM doc_members dm)
              )",
     );
-    assert!(recognize_p4_in_subquery(&unsupported, &db, &registry).is_none());
+    assert!(recognize_p4_in_subquery(&unsupported, &db, &registry, "docs").is_none());
 }
 
 #[test]
@@ -1352,8 +1352,8 @@ fn recognize_p4_paths_fail_closed_for_values_subqueries() {
     let exists_values = parse_expr("EXISTS (VALUES (1))");
     let in_values = parse_expr("id IN (VALUES (1))");
 
-    assert!(recognize_p4(&exists_values, &db, &registry).is_none());
-    assert!(recognize_p4_in_subquery(&in_values, &db, &registry).is_none());
+    assert!(recognize_p4(&exists_values, &db, &registry, "docs").is_none());
+    assert!(recognize_p4_in_subquery(&in_values, &db, &registry, "docs").is_none());
 }
 
 #[test]
@@ -1371,7 +1371,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
              )",
     );
     assert!(
-        recognize_p4(&exists_no_user, &db, &registry).is_none(),
+        recognize_p4(&exists_no_user, &db, &registry, "docs").is_none(),
         "EXISTS with no user predicate is an 'exists any row' false positive"
     );
 
@@ -1385,7 +1385,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
              )",
     );
     assert!(matches!(
-        recognize_p4_in_subquery(&in_with_user, &db, &registry),
+        recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs"),
         Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
             ..
@@ -1951,7 +1951,7 @@ fn diagnose_p4_membership_ambiguity_in_subquery_form() {
     // Multiple membership sources -> ambiguous
     let expr = parse_expr("id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
     // The IN-subquery form should at least not panic
-    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry);
+    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs");
     // It should return None (single match) or Some (ambiguous)
     // either is fine -- we just need the code path exercised
     let _ = result;
@@ -2388,7 +2388,7 @@ CREATE TABLE doc_editors(doc_id UUID, user_id UUID);
                   AND de.doc_id = docs.id
             )",
     );
-    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry);
+    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs");
     // Should reach the InSubquery branch and produce Some diagnostic
     // (either "multiple candidate" or "could not infer")
     assert!(
@@ -2402,7 +2402,7 @@ fn diagnose_p4_membership_ambiguity_returns_none_for_non_exists_non_insubquery()
     let db = db_with_docs_and_members();
     let registry = FunctionRegistry::new();
     let expr = parse_expr("owner_id = current_user");
-    assert!(diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none());
+    assert!(diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none());
 }
 
 // 10. diagnose_p5_parent_inheritance_ambiguity: negated, non-Select, conflicting join
@@ -2637,7 +2637,7 @@ fn diagnose_p4_membership_ambiguity_exists_non_select_body() {
     let registry = FunctionRegistry::new();
     let expr = parse_expr("EXISTS (VALUES (1))");
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
         "EXISTS with non-Select body should return None"
     );
 }
@@ -2651,7 +2651,7 @@ fn diagnose_p4_membership_ambiguity_negated_exists() {
         "NOT EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
     );
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
         "negated EXISTS should return None from diagnose_p4"
     );
 }
@@ -2664,7 +2664,7 @@ fn diagnose_p4_membership_ambiguity_negated_in_subquery() {
     let expr =
         parse_expr("id NOT IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry).is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
         "negated IN subquery should return None"
     );
 }

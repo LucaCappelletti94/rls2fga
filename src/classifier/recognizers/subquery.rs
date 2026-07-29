@@ -6,6 +6,7 @@ pub fn recognize_p4(
     expr: &Expr,
     db: &ParserDB,
     registry: &FunctionRegistry,
+    outer_table: &str,
 ) -> Option<ClassifiedExpr> {
     if let Expr::Exists { subquery, negated } = expr {
         if *negated {
@@ -16,7 +17,7 @@ pub fn recognize_p4(
         let body = query.body.as_ref();
 
         if let sqlparser::ast::SetExpr::Select(select) = body {
-            return classify_membership_select(select.as_ref(), db, registry, None);
+            return classify_membership_select(select.as_ref(), db, registry, outer_table, None);
         }
     }
     None
@@ -117,6 +118,7 @@ pub fn recognize_p4_in_subquery(
     expr: &Expr,
     db: &ParserDB,
     registry: &FunctionRegistry,
+    outer_table: &str,
 ) -> Option<ClassifiedExpr> {
     let (lhs, query) = membership_subquery_operands(expr)?;
 
@@ -125,7 +127,13 @@ pub fn recognize_p4_in_subquery(
 
     if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
         let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-        return classify_membership_select(select.as_ref(), db, registry, Some(projected_col));
+        return classify_membership_select(
+            select.as_ref(),
+            db,
+            registry,
+            outer_table,
+            Some(projected_col),
+        );
     }
     None
 }
@@ -134,9 +142,10 @@ fn classify_membership_select(
     select: &Select,
     db: &ParserDB,
     registry: &FunctionRegistry,
+    outer_table: &str,
     projected_fk: Option<String>,
 ) -> Option<ClassifiedExpr> {
-    match analyze_membership_select(select, db, registry, projected_fk.as_deref()) {
+    match analyze_membership_select(select, db, registry, outer_table, projected_fk.as_deref()) {
         MembershipSelectAnalysis::Unique {
             join_table,
             inferred_fk_column,
@@ -153,6 +162,7 @@ fn classify_membership_select(
         }),
         MembershipSelectAnalysis::AmbiguousMultiple
         | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
+        | MembershipSelectAnalysis::JoinsAnotherTable { .. }
         | MembershipSelectAnalysis::ScansEntityByOwnKey { .. }
         | MembershipSelectAnalysis::NoMatch => None,
     }
@@ -167,6 +177,11 @@ enum MembershipSelectAnalysis {
     },
     AmbiguousMultiple,
     AmbiguousNoUniqueJoin,
+    /// The subquery reads more than one table, so it carries conditions a single
+    /// membership relation cannot express.
+    JoinsAnotherTable {
+        tables: Vec<String>,
+    },
     /// The join column is the scanned table's own identity, so the subquery selects
     /// entities rather than membership rows.
     ScansEntityByOwnKey {
@@ -179,6 +194,7 @@ fn analyze_membership_select(
     select: &Select,
     db: &ParserDB,
     registry: &FunctionRegistry,
+    outer_table: &str,
     projected_fk_hint: Option<&str>,
 ) -> MembershipSelectAnalysis {
     if membership_sources_include_ambiguous_unresolvable_shape(select, db)
@@ -209,6 +225,21 @@ fn analyze_membership_select(
             // keying them by the child's identifier pairs unrelated rows.
             if scans_root_entity_by_its_key(db, &join_table, &inferred_fk_column) {
                 return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
+            }
+            // A third table in the subquery carries conditions that no single
+            // membership relation can express, and keeping only the matching side
+            // would drop them. A join back to the policy's own table is harmless.
+            let foreign: Vec<String> = all_sources
+                .iter()
+                .map(|source| source.table_name.clone())
+                .filter(|name| {
+                    let normalized = normalize_relation_name(name);
+                    normalized != normalize_relation_name(&join_table)
+                        && normalized != normalize_relation_name(outer_table)
+                })
+                .collect();
+            if !foreign.is_empty() {
+                return MembershipSelectAnalysis::JoinsAnotherTable { tables: foreign };
             }
             MembershipSelectAnalysis::Unique {
                 join_table,
@@ -252,14 +283,16 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
     expr: &Expr,
     db: &ParserDB,
     registry: &FunctionRegistry,
+    outer_table: &str,
 ) -> Option<String> {
     fn diagnose_select(
         select: &Select,
         db: &ParserDB,
         registry: &FunctionRegistry,
+        outer_table: &str,
         projected_fk: Option<&str>,
     ) -> Option<String> {
-        match analyze_membership_select(select, db, registry, projected_fk) {
+        match analyze_membership_select(select, db, registry, outer_table, projected_fk) {
             MembershipSelectAnalysis::AmbiguousMultiple => Some(
                 "Ambiguous membership pattern: multiple candidate membership sources matched"
                     .to_string(),
@@ -268,6 +301,12 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
                 "Ambiguous membership pattern: could not infer a unique membership join"
                     .to_string(),
             ),
+            MembershipSelectAnalysis::JoinsAnotherTable { tables } => Some(format!(
+                "Membership subquery reads {} together, and a condition on the joined \
+                 table cannot be carried by a single OpenFGA relation; split the check or \
+                 pre-compute a membership table",
+                tables.join(" and ")
+            )),
             MembershipSelectAnalysis::ScansEntityByOwnKey { join_table } => Some(format!(
                 "Subquery selects '{join_table}' rows by their own primary key, so they are \
                  '{join_table}' entities rather than membership rows; declare the foreign key \
@@ -283,7 +322,7 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
             let query = subquery.as_ref();
             let body = query.body.as_ref();
             if let sqlparser::ast::SetExpr::Select(select) = body {
-                return diagnose_select(select.as_ref(), db, registry, None);
+                return diagnose_select(select.as_ref(), db, registry, outer_table, None);
             }
             None
         }
@@ -294,7 +333,13 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
                 let projected_fk = extract_projection_column(select.as_ref())
                     .unwrap_or(lhs_col)
                     .clone();
-                return diagnose_select(select.as_ref(), db, registry, Some(&projected_fk));
+                return diagnose_select(
+                    select.as_ref(),
+                    db,
+                    registry,
+                    outer_table,
+                    Some(&projected_fk),
+                );
             }
             None
         }

@@ -267,8 +267,8 @@ CREATE POLICY tasks_all ON tasks FOR ALL USING (
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
             relation_definition(&dsl, "tasks", relation).as_deref(),
-            Some("can_select from projects"),
-            "projects only has a SELECT policy, so inherited {relation} must read it:\n{dsl}"
+            Some("owner from projects"),
+            "every inherited command reads the same parent-side rule:\n{dsl}"
         );
     }
 }
@@ -757,14 +757,15 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "a join column must not become a type:\n{dsl}"
     );
     assert_eq!(
-        relation_definition(&dsl, "tasks", "can_select").as_deref(),
-        Some("can_select from projects"),
-        "the chain must resolve through projects:\n{dsl}"
-    );
-    assert_eq!(
         relation_definition(&dsl, "projects", "can_select").as_deref(),
-        Some("can_select from orgs"),
-        "and projects through orgs:\n{dsl}"
+        Some("owner from orgs"),
+        "projects requires ownership of its org:\n{dsl}"
+    );
+    let tasks_select =
+        relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
+    assert!(
+        tasks_select.ends_with(" from projects"),
+        "and tasks reaches that rule through projects, got '{tasks_select}':\n{dsl}"
     );
 
     // projects rows link to orgs by org_id only; keying that link on projects.id
@@ -978,13 +979,36 @@ fn no_userset_references_an_undefined_relation() {
 
     for definition in &json.type_definitions {
         for (relation, userset) in definition.relations.iter().flatten() {
-            check_userset_references(&declared, &definition.type_name, relation, userset);
+            check_userset_references(
+                &declared,
+                &json.type_definitions,
+                &definition.type_name,
+                relation,
+                userset,
+            );
         }
     }
 }
 
+/// Types a tupleset relation can reach, from its declared subject types.
+fn targets_of(
+    declared_types: &[rls2fga::generator::json_model::TypeDefinition],
+    type_name: &str,
+    tupleset: &str,
+) -> Vec<String> {
+    declared_types
+        .iter()
+        .filter(|definition| definition.type_name == type_name)
+        .flat_map(|definition| definition.metadata.iter())
+        .filter_map(|metadata| metadata.relations.get(tupleset))
+        .flat_map(|relation| &relation.directly_related_user_types)
+        .map(|reference| reference.type_name.clone())
+        .collect()
+}
+
 fn check_userset_references(
     declared: &std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>>,
+    declared_types: &[rls2fga::generator::json_model::TypeDefinition],
     type_name: &str,
     relation: &str,
     userset: &rls2fga::generator::json_model::Userset,
@@ -1006,16 +1030,130 @@ fn check_userset_references(
                 own.is_some_and(|rels| rels.contains(tupleset)),
                 "{type_name}#{relation} walks '{tupleset}', which {type_name} does not define"
             );
+            // The relation is evaluated on whatever types the tupleset admits, so
+            // each of them has to define it.
+            let computed = tuple_to_userset.computed_userset.relation.as_str();
+            for target in targets_of(declared_types, type_name, tupleset) {
+                assert!(
+                    declared
+                        .get(target.as_str())
+                        .is_some_and(|rels| rels.contains(computed)),
+                    "{type_name}#{relation} walks '{tupleset}' to '{target}' and reads \
+                     '{computed}', which {target} does not define"
+                );
+            }
         }
         Userset::Union { union } => {
             for child in &union.child {
-                check_userset_references(declared, type_name, relation, child);
+                check_userset_references(declared, declared_types, type_name, relation, child);
             }
         }
         Userset::Intersection { intersection } => {
             for child in &intersection.child {
-                check_userset_references(declared, type_name, relation, child);
+                check_userset_references(declared, declared_types, type_name, relation, child);
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Inherited and joined subqueries.
+// ---------------------------------------------------------------------------
+
+/// A policy inheriting from a parent requires the specific parent-side rule it
+/// names, not everything the parent grants. Referencing the parent's whole
+/// `can_select` imports its other permissive policies.
+#[test]
+fn inheritance_requires_only_the_rule_the_policy_names() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user);
+CREATE POLICY projects_public ON projects FOR SELECT USING (is_public = TRUE);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p
+          WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+",
+    );
+    // Level B keeps the parent's public-flag policy, which is the whole point.
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let projects_select = relation_definition(&dsl, "projects", "can_select")
+        .expect("projects should define can_select");
+    assert!(
+        projects_select.contains("public_viewer"),
+        "the parent's own public policy still applies to the parent:\n{dsl}"
+    );
+
+    let tasks_select =
+        relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
+    assert_eq!(
+        tasks_select, "owner from projects",
+        "the task policy names ownership of the project, not any access to it:\n{dsl}"
+    );
+}
+
+/// A membership subquery that joins a second table carries a condition on that
+/// table. Dropping it grants access to every row the join would have excluded.
+#[test]
+fn membership_subquery_with_a_join_is_refused() {
+    let db = db_of(
+        r"
+CREATE TABLE departments(id UUID PRIMARY KEY, region TEXT);
+CREATE TABLE user_permissions(id UUID PRIMARY KEY, user_id UUID, dept_id UUID REFERENCES departments(id));
+CREATE TABLE orders(id UUID PRIMARY KEY, region TEXT);
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orders_sel ON orders FOR SELECT USING (
+  EXISTS (SELECT 1 FROM user_permissions up JOIN departments d ON up.dept_id = d.id
+          WHERE up.user_id = current_user AND d.region = orders.region));
+",
+    );
+    let model = translator(ConfidenceLevel::D).generate_model(&db);
+
+    assert_eq!(
+        relation_definition(&model.dsl, "orders", "can_select").as_deref(),
+        Some("no_access"),
+        "a join the model cannot express must deny, not drop the condition:\n{}",
+        model.dsl
+    );
+    assert!(
+        model
+            .todos
+            .iter()
+            .any(|todo| todo.policy_name == "orders_sel"),
+        "the operator must be told the subquery was refused, got: {:#?}",
+        model.todos
+    );
+}
+
+/// A membership subquery may join back to the policy's own table. The parent type
+/// is then that same table, and it still has to expose the `member` relation the
+/// userset reads.
+#[test]
+fn self_referential_membership_defines_the_relation_it_reads() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM docs d2 JOIN doc_members dm ON dm.doc_id = d2.id
+          WHERE d2.id = docs.id AND dm.user_id = current_user));
+",
+    );
+    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
+    let read = can_select
+        .split(" from ")
+        .next()
+        .expect("a tuple-to-userset reads a relation");
+    assert!(
+        relation_definition(&dsl, "docs", read).is_some(),
+        "can_select reads '{read}', which docs does not define:\n{dsl}"
+    );
 }

@@ -218,11 +218,10 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         "expected tasks type in model, got:\n{}",
         model.dsl
     );
+    // The policy names ownership of the project, so that is what the task requires.
     assert!(
-        model
-            .dsl
-            .contains("define can_select: can_select from projects"),
-        "expected task select permission to inherit from projects can_select, got:\n{}",
+        model.dsl.contains("define can_select: owner from projects"),
+        "expected task select permission to require project ownership, got:\n{}",
         model.dsl
     );
 

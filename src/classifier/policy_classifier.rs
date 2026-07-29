@@ -402,12 +402,12 @@ fn classify_expr_inner(
     }
 
     // Try P4: EXISTS membership
-    if let Some(classified) = recognizers::recognize_p4(expr, db, registry) {
+    if let Some(classified) = recognizers::recognize_p4(expr, db, registry, table) {
         return classified;
     }
 
     // Try P4: IN-subquery membership
-    if let Some(classified) = recognizers::recognize_p4_in_subquery(expr, db, registry) {
+    if let Some(classified) = recognizers::recognize_p4_in_subquery(expr, db, registry, table) {
         return classified;
     }
 
@@ -415,7 +415,7 @@ fn classify_expr_inner(
         return unknown_d(expr, reason);
     }
 
-    if let Some(reason) = recognizers::diagnose_p4_membership_ambiguity(expr, db, registry) {
+    if let Some(reason) = recognizers::diagnose_p4_membership_ambiguity(expr, db, registry, table) {
         return unknown_d(expr, reason);
     }
 

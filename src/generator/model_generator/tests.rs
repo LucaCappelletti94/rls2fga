@@ -304,11 +304,13 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
             ),
             "attribute + constant-true composite should remain deny-biased, got: {p8_and_attr_true_expr:?}"
         );
+    // The inherited rule is the parent-side ownership the policy names, not the
+    // parent's whole read permission.
     assert_eq!(
         p5_expr,
         UsersetExpr::TupleToUserset {
             tupleset: "projects".to_string(),
-            computed: "can_select".to_string(),
+            computed: "owner".to_string(),
         }
     );
     assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
@@ -868,30 +870,6 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     assert!(
         docs2.computed_relations.contains_key("can_update"),
         "mirror should still apply when with_check was never present"
-    );
-}
-
-#[test]
-fn action_relation_for_target_covers_all_arms() {
-    assert_eq!(
-        action_relation_for_target(ActionTarget::Select),
-        "can_select"
-    );
-    assert_eq!(
-        action_relation_for_target(ActionTarget::Insert),
-        "can_insert"
-    );
-    assert_eq!(
-        action_relation_for_target(ActionTarget::UpdateUsing),
-        "can_update"
-    );
-    assert_eq!(
-        action_relation_for_target(ActionTarget::UpdateCheck),
-        "can_update"
-    );
-    assert_eq!(
-        action_relation_for_target(ActionTarget::Delete),
-        "can_delete"
     );
 }
 

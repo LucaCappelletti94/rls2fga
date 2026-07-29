@@ -22,5 +22,5 @@ type tasks
     define projects: [projects]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: can_select from projects
+    define can_select: owner from projects
     define can_update: no_access

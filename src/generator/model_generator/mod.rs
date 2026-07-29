@@ -537,15 +537,6 @@ where
     }
 }
 
-fn action_relation_for_target(target: ActionTarget) -> &'static str {
-    match target {
-        ActionTarget::Select => "can_select",
-        ActionTarget::Insert => "can_insert",
-        ActionTarget::UpdateUsing | ActionTarget::UpdateCheck => "can_update",
-        ActionTarget::Delete => "can_delete",
-    }
-}
-
 fn push_action_expr(
     action_buckets: &mut BTreeMap<ActionTarget, ModeBuckets>,
     target: ActionTarget,
@@ -1049,7 +1040,14 @@ fn translate_pattern(
                 parent_type.clone(),
                 vec![DirectSubject::Type(parent_type.clone())],
             );
-            ensure_member_type(all_types, &parent_type);
+            // The plan for `source_table` is held here, not in `all_types`, so a
+            // self-referential membership has to register `member` on it directly or
+            // the re-insert at the end of the loop drops it.
+            if parent_type == table_plan.type_name {
+                table_plan.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
+            } else {
+                ensure_member_type(all_types, &parent_type);
+            }
 
             if let Some(extra) = extra_predicate_sql {
                 todos.push(TodoItem {
@@ -1145,15 +1143,31 @@ fn translate_pattern(
                 .entry(parent_type.clone())
                 .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
 
-            if matches!(inner_expr, UsersetExpr::Computed(ref name) if name == "no_access") {
+            // The policy requires this specific parent-side rule. Pointing at the
+            // parent's `can_select` instead would import every other permissive
+            // policy the parent has.
+            let inherited = match inner_expr {
+                UsersetExpr::Computed(name) => name,
+                expr => {
+                    let name = clamp_relation_name(format!(
+                        "inherited_{}",
+                        stable_hex_suffix(&format!("{policy_name}:{parent_table}:{expr:?}"))
+                    ));
+                    all_types
+                        .entry(parent_type.clone())
+                        .or_insert_with(|| TypePlan::new(&parent_type))
+                        .ensure_computed(name.clone(), expr);
+                    name
+                }
+            };
+
+            if inherited == "no_access" {
                 todos.push(TodoItem {
                     level: ConfidenceLevel::C,
                     policy_name: policy_name.to_string(),
                     message: format!(
-                        "Parent inheritance from '{parent_table}' inner pattern could not be \
-                         safely translated; '{parent_table}' may not expose '{}' \
-                         (check parent table's RLS policies)",
-                        action_relation_for_target(ActionTarget::Select)
+                        "Parent inheritance from '{parent_table}' could not translate the \
+                         parent-side rule, so the command is denied"
                     ),
                 });
             }
@@ -1169,11 +1183,9 @@ fn translate_pattern(
                 add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
             }
 
-            // The policy only reads the parent, so PostgreSQL applies the parent's
-            // SELECT policy whatever command the child covers.
             UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
-                computed: action_relation_for_target(ActionTarget::Select).to_string(),
+                computed: inherited,
             }
         }
         PatternClass::P6BooleanFlag { column } => {
