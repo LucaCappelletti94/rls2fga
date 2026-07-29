@@ -23,6 +23,11 @@ pub fn normalize_identifier(ident: &str) -> String {
     unquote_identifier(ident.trim()).to_ascii_lowercase()
 }
 
+/// True when two identifiers name the same thing, ignoring case and quoting.
+pub fn same_identifier(left: &str, right: &str) -> bool {
+    normalize_identifier(left) == normalize_identifier(right)
+}
+
 /// True when `name` is a SQL keyword that resolves to the current session role.
 ///
 /// `session_user` is intentionally excluded: it does not follow `SET ROLE`.

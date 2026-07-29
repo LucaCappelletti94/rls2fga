@@ -11,7 +11,8 @@ use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
-    lookup_table, normalize_relation_name, normalized_function_name, split_schema_and_relation,
+    lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
+    split_schema_and_relation,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 

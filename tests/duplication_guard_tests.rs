@@ -137,3 +137,36 @@ fn token_pair_matching_has_single_source_of_truth() {
         "expected one shared token-pair helper in names.rs, found {definitions}"
     );
 }
+
+#[test]
+fn relation_name_clamping_has_single_source_of_truth() {
+    let modules = [
+        "src/parser/names.rs",
+        "src/generator/model_generator",
+        "src/generator/role_relations.rs",
+        "src/generator/tuple_generator.rs",
+    ];
+
+    let definitions = definition_count(&modules, "fn clamp_relation_name(");
+
+    assert_eq!(
+        definitions, 1,
+        "every generated relation name must pass through one clamp, found {definitions}"
+    );
+}
+
+#[test]
+fn identifier_equality_has_single_source_of_truth() {
+    let modules = [
+        "src/parser/names.rs",
+        "src/classifier/recognizers",
+        "src/generator/model_generator",
+    ];
+
+    let definitions = definition_count(&modules, "fn same_identifier(");
+
+    assert_eq!(
+        definitions, 1,
+        "expected one shared identifier-equality helper, found {definitions}"
+    );
+}

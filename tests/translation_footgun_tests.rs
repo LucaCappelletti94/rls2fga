@@ -1157,3 +1157,72 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
         "can_select reads '{read}', which docs does not define:\n{dsl}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Duplicated output.
+// ---------------------------------------------------------------------------
+
+/// `FOR UPDATE` covers two phases, so one untranslatable clause is translated
+/// twice. The operator should still be told once: a doubled list inflates the
+/// apparent amount of manual work and hides how many policies really need review.
+#[test]
+fn one_clause_is_reported_once_even_when_it_covers_two_phases() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, status TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user AND status = 'live');
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user AND status = 'live');
+",
+    );
+    let model = translator(ConfidenceLevel::D).generate_model(&db);
+
+    for policy in ["docs_sel", "docs_upd"] {
+        let count = model
+            .todos
+            .iter()
+            .filter(|todo| todo.policy_name == policy && todo.message.contains("status"))
+            .count();
+        assert_eq!(
+            count, 1,
+            "{policy} should report its attribute guard once, got {count}: {:#?}",
+            model.todos
+        );
+    }
+}
+
+/// A table can inherit from itself through a parent pointer. The parent plan is
+/// then the plan being built, so the inner rule has to land on it: writing it
+/// elsewhere loses both the rule and the relations it needs.
+#[test]
+fn self_referential_inheritance_keeps_the_rule_it_reads() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(
+  id UUID PRIMARY KEY,
+  parent_id UUID REFERENCES docs(id),
+  owner_id UUID,
+  is_public BOOLEAN
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM docs parent WHERE parent.id = docs.parent_id
+          AND (parent.owner_id = current_user OR parent.is_public = TRUE)));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
+    let (read, tupleset) = can_select
+        .split_once(" from ")
+        .expect("inheritance reads a relation through a tupleset");
+    assert!(
+        relation_definition(&dsl, "docs", tupleset).is_some(),
+        "can_select walks '{tupleset}', which docs does not define:\n{dsl}"
+    );
+    assert!(
+        relation_definition(&dsl, "docs", read).is_some(),
+        "can_select reads '{read}', which docs does not define:\n{dsl}"
+    );
+}

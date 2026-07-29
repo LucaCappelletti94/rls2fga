@@ -264,18 +264,15 @@ fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> boo
     let Some(meta) = lookup_table(db, table) else {
         return false;
     };
-    let is_primary_key = meta.primary_key_column(db).is_some_and(|pk| {
-        crate::parser::names::normalize_identifier(pk.column_name())
-            == crate::parser::names::normalize_identifier(column)
-    });
+    let is_primary_key = meta
+        .primary_key_column(db)
+        .is_some_and(|pk| same_identifier(pk.column_name(), column));
     if !is_primary_key {
         return false;
     }
     !meta.foreign_keys(db).any(|fk| {
-        fk.host_column(db).is_some_and(|host| {
-            crate::parser::names::normalize_identifier(host.column_name())
-                == crate::parser::names::normalize_identifier(column)
-        })
+        fk.host_column(db)
+            .is_some_and(|host| same_identifier(host.column_name(), column))
     })
 }
 

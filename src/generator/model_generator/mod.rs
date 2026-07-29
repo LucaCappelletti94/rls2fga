@@ -322,6 +322,9 @@ pub(crate) fn build_schema_plan(
                 Some(relation)
             };
 
+            // A policy covering several phases is translated once per phase, so the
+            // same clause reports the same item repeatedly. Keep one per policy.
+            let todos_before = todos.len();
             for_each_policy_target_expr(cp, |target, classified| {
                 let expr = translate_pattern(
                     &classified.pattern,
@@ -342,6 +345,7 @@ pub(crate) fn build_schema_plan(
                 };
                 push_action_expr(&mut action_buckets, target, cp.mode(), expr);
             });
+            dedup_todos_added_since(&mut todos, todos_before);
         }
 
         let mut select_expr =
@@ -617,12 +621,14 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
     }
 }
 
-/// Quote `part` unless it is a bare lowercase identifier.
+/// Quote `part` for a table-lookup key unless it is a bare lowercase identifier.
+///
+/// Not the SQL quoter: `tuple_generator::quote_sql_identifier` always quotes.
 ///
 /// The result is used both to derive the type name and to look the table back up,
 /// and `lookup_table` tries the quoted spelling as well as the unquoted one, so
 /// quoting is the form that resolves either way.
-fn quote_name_part(part: &str) -> String {
+fn quoted_for_lookup(part: &str) -> String {
     let is_bare = !part.is_empty()
         && !part.starts_with(|ch: char| ch.is_ascii_digit())
         && part
@@ -637,9 +643,9 @@ fn quote_name_part(part: &str) -> String {
 
 /// Schema-qualified name, matching the spelling used in `CREATE POLICY`.
 fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
-    let relation = quote_name_part(table.table_name());
+    let relation = quoted_for_lookup(table.table_name());
     match table.table_schema() {
-        Some(schema) => format!("{}.{relation}", quote_name_part(schema)),
+        Some(schema) => format!("{}.{relation}", quoted_for_lookup(schema)),
         None => relation,
     }
 }
@@ -764,6 +770,24 @@ impl TableTypes {
 }
 
 const ACTION_RELATIONS: [&str; 4] = ["can_select", "can_insert", "can_update", "can_delete"];
+
+/// Drop items added since `start` that repeat an earlier one, comparing level,
+/// policy and message. Scoped to one policy so two same-named policies on
+/// different tables keep their own entries.
+fn dedup_todos_added_since(todos: &mut Vec<TodoItem>, start: usize) {
+    let mut seen: Vec<(ConfidenceLevel, String, String)> = Vec::new();
+    let mut index = start;
+    while index < todos.len() {
+        let Some(todo) = todos.get(index) else { break };
+        let key = (todo.level, todo.policy_name.clone(), todo.message.clone());
+        if seen.contains(&key) {
+            todos.remove(index);
+        } else {
+            seen.push(key);
+            index += 1;
+        }
+    }
+}
 
 /// Deny every action relation no policy produced, returning the denied commands.
 fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec<&'static str> {
@@ -1116,32 +1140,47 @@ fn translate_pattern(
                 parent_type.clone(),
                 vec![DirectSubject::Type(parent_type.clone())],
             );
-            // Pre-populate the parent TypePlan with the relations derived from the
-            // inner pattern, so the parent exposes them even if its own policies
-            // have not been processed yet.
-            let parent_plan = all_types
-                .entry(parent_type.clone())
-                .or_insert_with(|| TypePlan::new(&parent_type));
-            // Temporarily take the parent plan out to call pattern_to_expr_for_target.
-            // We'll re-insert it afterwards.
-            let mut parent_plan_owned =
-                core::mem::replace(parent_plan, TypePlan::new(&parent_type));
-            let inner_expr = translate_pattern(
-                &inner_pattern.pattern,
-                policy_name,
-                &mut parent_plan_owned,
-                all_types,
-                registry,
-                todos,
-                hints,
-                db,
-                table_types,
-                parent_table,
-            );
-            // Re-insert the (now populated) parent plan.
-            *all_types
-                .entry(parent_type.clone())
-                .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
+            // The inner rule has to land on the parent's plan. When the parent is the
+            // table being built, that plan is `table_plan`, held here rather than in
+            // `all_types`, so writing it there would be dropped by the re-insert at
+            // the end of the table loop.
+            let inherits_from_self = parent_type == table_plan.type_name;
+            let inner_expr = if inherits_from_self {
+                translate_pattern(
+                    &inner_pattern.pattern,
+                    policy_name,
+                    table_plan,
+                    all_types,
+                    registry,
+                    todos,
+                    hints,
+                    db,
+                    table_types,
+                    parent_table,
+                )
+            } else {
+                let parent_plan = all_types
+                    .entry(parent_type.clone())
+                    .or_insert_with(|| TypePlan::new(&parent_type));
+                let mut parent_plan_owned =
+                    core::mem::replace(parent_plan, TypePlan::new(&parent_type));
+                let expr = translate_pattern(
+                    &inner_pattern.pattern,
+                    policy_name,
+                    &mut parent_plan_owned,
+                    all_types,
+                    registry,
+                    todos,
+                    hints,
+                    db,
+                    table_types,
+                    parent_table,
+                );
+                *all_types
+                    .entry(parent_type.clone())
+                    .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
+                expr
+            };
 
             // The policy requires this specific parent-side rule. Pointing at the
             // parent's `can_select` instead would import every other permissive
@@ -1153,10 +1192,14 @@ fn translate_pattern(
                         "inherited_{}",
                         stable_hex_suffix(&format!("{policy_name}:{parent_table}:{expr:?}"))
                     ));
-                    all_types
-                        .entry(parent_type.clone())
-                        .or_insert_with(|| TypePlan::new(&parent_type))
-                        .ensure_computed(name.clone(), expr);
+                    if inherits_from_self {
+                        table_plan.ensure_computed(name.clone(), expr);
+                    } else {
+                        all_types
+                            .entry(parent_type.clone())
+                            .or_insert_with(|| TypePlan::new(&parent_type))
+                            .ensure_computed(name.clone(), expr);
+                    }
                     name
                 }
             };
