@@ -235,8 +235,7 @@ pub fn derive_policy_mode(policy: &sqlparser::ast::CreatePolicy) -> PolicyMode {
         .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
 }
 
-/// Whether a policy can grant reads, which needs it to be permissive and to cover
-/// `SELECT`. Only restrictive policies means no row is readable at all.
+/// Whether a policy can grant reads: permissive and covering `SELECT`.
 pub fn policy_grants_select(policy: &sqlparser::ast::CreatePolicy) -> bool {
     derive_policy_mode(policy) == PolicyMode::Permissive
         && matches!(
@@ -332,8 +331,7 @@ impl ClassifiedPolicy {
 /// A RESTRICTIVE policy is kept even when all its classifications drop: RLS is
 /// `(permissive OR ...) AND restrictive AND ...`, so removing one grants access
 /// it forbids. A `SELECT` policy reading its own table is kept for the same
-/// reason, since it makes `PostgreSQL` refuse every read rather than grant one.
-/// The `*_was_filtered` flags tell the generator to fall closed.
+/// reason. The `*_was_filtered` flags tell the generator to fall closed.
 pub fn filter_policies_for_output(
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
@@ -372,9 +370,8 @@ pub fn filter_policies_for_output(
         .collect()
 }
 
-/// Whether a policy guarding reads also reads the table it guards, judged on the
-/// normalized relation names alone. Retaining one policy too many costs nothing here,
-/// since the generator resolves the types properly before acting.
+/// Whether a policy guarding reads also reads the table it guards. Retaining one too
+/// many is harmless, since the generator resolves types properly before acting.
 fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
     if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
         return false;

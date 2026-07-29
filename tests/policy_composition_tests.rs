@@ -132,7 +132,8 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID
   LANGUAGE sql STABLE
   AS 'SELECT current_setting(''app.current_user_id'')::uuid';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
+-- FOR ALL so the clause also grants reads, which an UPDATE needs to name its row.
+CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
   USING (owner_id = auth_current_user_id())
   WITH CHECK (
     EXISTS (

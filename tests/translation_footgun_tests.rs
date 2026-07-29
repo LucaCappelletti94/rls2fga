@@ -244,10 +244,8 @@ CREATE POLICY zzz_sel ON zzz.docs FOR SELECT USING (owner_id = current_user);
     );
 }
 
-/// A policy that inherits from a parent only *reads* the parent, so `PostgreSQL`
-/// applies the parent's SELECT policy to every command the child covers. Pointing
-/// an inherited command at the parent's relation of the same name denies work the
-/// database allows.
+/// An inherited command reads the parent, so it consults the parent's SELECT rule
+/// rather than the parent relation of the same name.
 #[test]
 fn inherited_commands_consult_the_parents_select_policy() {
     let db = db_of(
@@ -709,7 +707,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
 
     // Every ownership query must populate the relation its own column feeds.
     for query in translator.generate_tuple_queries(&db) {
-        // An action body may carry a trailing read-access conjunct.
+        // An action body may carry a trailing read gate.
         let leading = |body: &str| {
             body.split(" and ")
                 .next()
@@ -790,10 +788,8 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     }
 }
 
-/// A subquery that scans an entity table keyed by its own primary key is not a
-/// membership join table. Treating it as one keys the parent objects by the child's
-/// identifier, granting each row the permissions of the unrelated row that happens
-/// to share its id.
+/// A subquery scanning an entity by its own primary key is not a membership join, and
+/// treating it as one pairs rows that merely share an id.
 #[test]
 fn membership_join_on_the_scanned_tables_own_key_is_refused() {
     // No foreign key is declared, so parent inheritance cannot be confirmed either.
@@ -946,9 +942,8 @@ fn generated_names_respect_openfga_length_limits() {
     assert!(relations > 5, "expected a populated model, got:\n{dsl}");
 }
 
-/// Every relation a userset names must exist, on this type for a computed
-/// reference and on the tupleset's type for an indirection. `OpenFGA` refuses a
-/// model with a dangling reference, so one bad name discards the whole artifact.
+/// `OpenFGA` refuses a model with a dangling reference, so every name a userset
+/// reaches must exist.
 #[test]
 fn no_userset_references_an_undefined_relation() {
     let long_column = "c".repeat(60);
@@ -1180,10 +1175,8 @@ CREATE POLICY orders_sel ON orders FOR SELECT USING (
     );
 }
 
-/// A membership subquery may join back to the policy's own table. The parent type
-/// is then that same table, and it still has to expose the `member` relation the
-/// userset reads. The policy guards `DELETE`, since reading the guarded table from
-/// a `SELECT` policy would instead recurse.
+/// A membership subquery joining back to its own table must still expose the `member`
+/// relation the userset reads.
 #[test]
 fn self_referential_membership_defines_the_relation_it_reads() {
     let db = db_of(
@@ -1253,10 +1246,8 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user AND sta
     }
 }
 
-/// A table can inherit from itself through a parent pointer. The parent plan is
-/// then the plan being built, so the inner rule has to land on it: writing it
-/// elsewhere loses both the rule and the relations it needs. The policy guards
-/// `DELETE`, since a `SELECT` policy reading its own table would instead recurse.
+/// Inheriting from itself means the parent plan is the plan being built, so the inner
+/// rule has to land on it.
 #[test]
 fn self_referential_inheritance_keeps_the_rule_it_reads() {
     let db = db_of(
@@ -1293,9 +1284,8 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
 }
 
-/// A relation carries one kind of subject. When an ownership column derives the
-/// name a parent pointer needs, the first writer wins and the other one's tuples
-/// land in a relation that does not accept them.
+/// A relation carries one kind of subject, so an ownership column must not take the
+/// name a parent pointer needs.
 #[test]
 fn an_ownership_column_cannot_take_over_a_parent_pointer() {
     let db = db_of(
@@ -1343,8 +1333,8 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
     assert_model_is_internally_consistent(&translator.generate_json_model(&db));
 }
 
-/// A model mixing wildcards, a role scope, and two levels of indirection still
-/// has to satisfy every structural rule `OpenFGA` enforces on a write.
+/// Wildcards, a role scope and two levels of indirection still satisfy every rule
+/// `OpenFGA` enforces on a write.
 #[test]
 fn a_layered_model_stays_internally_consistent() {
     let db = db_of(
@@ -1368,8 +1358,7 @@ CREATE POLICY notes_sel ON notes FOR SELECT USING (
     assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
 }
 
-/// Two `define` lines for one relation make the whole DSL unparseable, so a type
-/// must never name a relation twice however its relations were derived.
+/// Two `define` lines for one relation make the DSL unparseable.
 #[test]
 fn no_type_defines_a_relation_twice() {
     let db = db_of(
@@ -1414,9 +1403,8 @@ CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
     assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
 }
 
-/// A RESTRICTIVE clause is a barrier every row must clear, so a conjunct the
-/// model cannot express has to keep denying. Dropping it the way a permissive
-/// hybrid does removes the barrier and grants rows `PostgreSQL` refuses.
+/// A RESTRICTIVE clause is a barrier, so a conjunct the model cannot express has to
+/// keep denying.
 #[test]
 fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
     let schema = |restriction: &str| {
@@ -1429,8 +1417,7 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
         )
     };
     let body = |restriction: &str| {
-        // The hybrid classifies at C, so a stricter threshold would drop the policy
-        // and hide the widening behind the deny-fill for a filtered restriction.
+        // At a stricter threshold the policy is dropped and the deny-fill hides this.
         let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(restriction)));
         relation_definition(&model.dsl, "docs", "can_select")
             .unwrap_or_else(|| panic!("docs should define can_select for '{restriction}'"))
@@ -1462,8 +1449,7 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
         "a barrier nested in a union vanished, leaving '{nested}'"
     );
 
-    // One clause, one story: a denied barrier must not also be reported as
-    // something the application is expected to enforce at runtime.
+    // A denied barrier must not also ask for runtime enforcement.
     let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(
         "deleted_at IS NULL AND tenant_id = current_user",
     )));
@@ -1485,10 +1471,8 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
     );
 }
 
-/// The rule a child inherits belongs to the parent, so its relation must be
-/// identified by what the rule is, not by which child policy happened to ask for
-/// it. Otherwise the parent grows a clone per child and an unrelated `SQL` rename
-/// renames a relation on another type.
+/// An inherited rule is named after the rule, not the child policy that asked for
+/// it, or the parent grows a clone per child.
 #[test]
 fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
     let schema = |tasks_policy: &str| {
@@ -1557,11 +1541,8 @@ fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
     }
 }
 
-/// A policy subquery reads the parent as the querying user, so the parent's own
-/// RLS filters it. Verified on `PostgreSQL` 16: with `parent` admitting only its
-/// owner, a child row whose parent is public stays invisible, and the subquery
-/// itself returns false. The inherited rule therefore has to be `AND`ed with the
-/// parent's `can_select`.
+/// The parent's own RLS filters the subquery, so the inherited rule is `AND`ed with
+/// the parent's `can_select`.
 #[test]
 fn inheritance_is_gated_by_the_parent_own_select_rule() {
     let db = db_of(
@@ -1599,9 +1580,8 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
 }
 
-/// A parent without RLS is not filtered, so gating there would deny rows
-/// `PostgreSQL` returns. Verified on `PostgreSQL` 16: with RLS left off the
-/// parent, the child row stays visible.
+/// A parent without RLS is unfiltered, so gating there would deny rows `PostgreSQL`
+/// returns.
 #[test]
 fn inheritance_from_an_unprotected_parent_is_not_gated() {
     let db = db_of(
@@ -1629,9 +1609,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
 }
 
-/// Gating is only meaningful when the parent grants more than the rule the child
-/// names. When the rule is exactly what the parent's own `can_select` allows, the
-/// conjunct is provably redundant and must not clutter the model.
+/// A rule the parent's own `can_select` already allows needs no gate.
 #[test]
 fn a_redundant_select_gate_is_left_out() {
     let inherited_body = |parent_policies: &str| {
@@ -1659,8 +1637,7 @@ fn a_redundant_select_gate_is_left_out() {
         )
     };
 
-    // The parent admits exactly the rule the child names, so no gate is needed and
-    // the child can walk the parent's own relation directly.
+    // The parent admits exactly the rule the child names, so no gate is needed.
     let (walked, body, dsl) = inherited_body(
         "CREATE POLICY proj_own ON projects FOR SELECT USING (owner_id = current_user);\n",
     );
@@ -1674,8 +1651,7 @@ fn a_redundant_select_gate_is_left_out() {
         "no gated relation should be synthesized:\n{dsl}"
     );
 
-    // The parent admits the rule as one branch of a union, so the rule still
-    // implies the parent's visibility.
+    // The rule is one branch of the parent's union, so it still implies visibility.
     let (walked, _, dsl) = inherited_body(
         "CREATE POLICY proj_own ON projects FOR SELECT USING (owner_id = current_user);\n\
          CREATE POLICY proj_pub ON projects FOR SELECT USING (is_public = TRUE);\n",
@@ -1695,11 +1671,8 @@ fn a_redundant_select_gate_is_left_out() {
     );
 }
 
-/// Reading a table applies its `SELECT` policies, so a `SELECT` policy that reads
-/// its own table needs itself and `PostgreSQL` answers every read with `ERROR:
-/// infinite recursion detected in policy for relation`. Verified on `PostgreSQL`
-/// 16, including with a second plain policy that would otherwise have granted
-/// every row, so one such policy makes the whole table unreadable.
+/// A `SELECT` policy reading its own table needs itself, which `PostgreSQL` rejects
+/// as infinite recursion, so one such policy makes the whole table unreadable.
 #[test]
 fn a_select_policy_reading_its_own_table_denies_the_table() {
     // The plain policy alone would grant every row to its owner.
@@ -1728,7 +1701,7 @@ CREATE POLICY docs_tree ON docs FOR SELECT USING (
         model.todos
     );
 
-    // The same shape reached through a join to another table recurses identically.
+    // The same shape through a join recurses identically.
     let joined = db_of(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
@@ -1747,10 +1720,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
     );
 }
 
-/// A policy for a command other than `SELECT` may read its own table: expanding it
-/// needs the table's `SELECT` policies, not itself. Verified on `PostgreSQL` 16,
-/// where such a `DELETE` policy ran without error and the inner read was filtered
-/// by the table's own `SELECT` policy.
+/// A non-`SELECT` policy may read its own table, since expanding it needs the
+/// table's `SELECT` policies rather than itself.
 #[test]
 fn a_non_select_policy_may_read_its_own_table() {
     let db = db_of(
@@ -1775,10 +1746,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
 }
 
-/// A non-`SELECT` policy reading its own table reads the parent row as the
-/// querying user, so that row is filtered by the table's own `SELECT` policy just
-/// as any other parent would be. Verified on `PostgreSQL` 16, where the inner read
-/// of such a `DELETE` policy saw only rows the `SELECT` policy admitted.
+/// A self reference reads a different row, so it is gated like any other parent.
 #[test]
 fn a_self_referential_rule_is_gated_like_any_other_parent() {
     let db = db_of(
@@ -1811,11 +1779,8 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
 }
 
-/// Identifying a row to update or delete means reading a column of it, which
-/// `PostgreSQL` gates on the table's `SELECT` policies. Verified on `PostgreSQL`
-/// 16: `UPDATE ... WHERE id = 2` under a permissive `UPDATE` policy changed
-/// nothing, because the `SELECT` policy hid that row. `INSERT` needs no read, so
-/// it stays ungated.
+/// Naming a row to update or delete reads it, which `PostgreSQL` gates on the
+/// `SELECT` policies. `INSERT` reads nothing.
 #[test]
 fn updating_and_deleting_a_row_requires_being_able_to_select_it() {
     let db = db_of(
@@ -1847,8 +1812,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
     assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
 }
 
-/// A table with no `SELECT` policy denies reads, so no row can be identified for a
-/// per-row update or delete either.
+/// No `SELECT` policy means no row can be named for a per-row update or delete.
 #[test]
 fn without_a_select_policy_no_row_can_be_updated_or_deleted() {
     let db = db_of(
@@ -1873,9 +1837,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
 }
 
 /// The recursion is a property of the `SQL`, not of how well the pattern was
-/// recognized. An undeclared parent link classifies as nothing translatable, and
-/// dropping such a clause would leave the other policies granting reads that
-/// `PostgreSQL` answers with an error.
+/// recognized.
 #[test]
 fn a_recursive_select_policy_denies_reads_even_when_unrecognized() {
     let db = db_of(
@@ -1904,10 +1866,8 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
     );
 }
 
-/// A membership subquery reads the join table as the querying user, so that
-/// table's own RLS decides which membership rows count. Verified on `PostgreSQL`
-/// 16: enabling RLS on the membership table with no policies made every document
-/// disappear even though the membership row was there.
+/// A membership table that grants no reads hides every membership row, so the
+/// subquery matches nothing.
 #[test]
 fn membership_through_an_unreadable_join_table_grants_nothing() {
     let db = db_of(
@@ -1936,10 +1896,8 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
 }
 
-/// When the join table does grant reads, which rows a user sees is up to its own
-/// policies and no relation can carry that, so the translation says so. Verified
-/// on `PostgreSQL` 16: a self-visibility policy restored the grant, while a
-/// membership row belonging to someone else stayed hidden.
+/// Which membership rows a user sees is up to the join table's own policies, which
+/// no relation can carry, so the translation says so.
 #[test]
 fn membership_through_a_guarded_join_table_is_disclosed() {
     let db = db_of(
@@ -1970,8 +1928,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
 }
 
-/// A join table without RLS filters nothing, so the plain membership translation
-/// needs no caveat.
+/// A join table without RLS needs no caveat.
 #[test]
 fn membership_through_an_open_join_table_needs_no_caveat() {
     let db = db_of(
@@ -1993,9 +1950,8 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
 }
 
-/// `PostgreSQL` assumes a default deny when a table has RLS enabled and no
-/// applicable policy, so a parent in that state hides every row from the subquery
-/// that reads it and the child inherits nothing.
+/// RLS with no policy is a default deny, so such a parent hides every row from the
+/// subquery.
 #[test]
 fn inheriting_from_a_parent_with_no_policies_grants_nothing() {
     let db = db_of(
@@ -2026,4 +1982,156 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "the rule '{read}' = '{rule}' must be gated, which is what denies it here:\n{dsl}"
     );
     assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}
+
+/// A relation no permission can reach needs no tuple query.
+#[test]
+fn no_tuple_query_feeds_a_relation_no_permission_reaches() {
+    let db = db_of(
+        r"
+CREATE TABLE t1(id INTEGER PRIMARY KEY, parent_id INTEGER, owner TEXT);
+ALTER TABLE t1 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t1_own ON t1 FOR SELECT USING (owner = current_user);
+CREATE POLICY t1_tree ON t1 FOR SELECT USING (
+  EXISTS (SELECT 1 FROM t1 p WHERE p.id = t1.parent_id AND p.owner = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let dsl = translator.generate_model(&db).dsl;
+    // The recursive policy makes every read fail.
+    for action in ["can_select", "can_insert", "can_update", "can_delete"] {
+        assert_eq!(
+            relation_definition(&dsl, "t1", action).as_deref(),
+            Some("no_access"),
+            "{action} should deny for this schema:\n{dsl}"
+        );
+    }
+
+    for query in translator.generate_tuple_queries(&db) {
+        assert!(
+            !query.sql.contains("AS relation"),
+            "nothing can consult a t1 relation, so this query is dead:\n{}",
+            query.sql
+        );
+    }
+}
+
+/// Per relation, not per table: a table denying reads can still grant inserts.
+#[test]
+fn a_relation_reached_only_by_insert_keeps_its_tuples() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id INTEGER PRIMARY KEY, parent_id INTEGER, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.editor_id = current_user));
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let dsl = translator.generate_model(&db).dsl;
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "the recursive read policy denies reads:\n{dsl}"
+    );
+    let can_insert =
+        relation_definition(&dsl, "docs", "can_insert").expect("docs should define can_insert");
+    assert_ne!(can_insert, "no_access", "the INSERT policy grants:\n{dsl}");
+
+    assert!(
+        translator
+            .generate_tuple_queries(&db)
+            .iter()
+            .any(|query| query.sql.contains(&format!("'{can_insert}' AS relation"))),
+        "can_insert reads '{can_insert}', so its tuples are still needed:\n{dsl}"
+    );
+}
+
+/// A model that grants normally keeps every query it needs.
+#[test]
+fn a_granting_model_keeps_its_tuple_queries() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let queries = translator.generate_tuple_queries(&db);
+    assert!(
+        queries
+            .iter()
+            .any(|query| query.sql.contains("'owner' AS relation")),
+        "the ownership query is still needed: {queries:#?}"
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|query| query.sql.contains("'projects' AS relation")),
+        "the parent bridge is still needed: {queries:#?}"
+    );
+}
+
+/// A write policy on a table whose reads are denied can never match, so say so.
+#[test]
+fn a_write_policy_without_readable_rows_is_reported() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let reports = model
+        .todos
+        .iter()
+        .filter(|todo| todo.message.contains("docs") && todo.message.contains("SELECT policy"))
+        .count();
+    assert_eq!(
+        reports, 1,
+        "the unreachable DELETE policy must be reported once, got {:#?}",
+        model.todos
+    );
+
+    // A table that grants reads has nothing to report.
+    let readable = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
+",
+    );
+    assert!(
+        !translator(ConfidenceLevel::B)
+            .generate_model(&readable)
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("SELECT policy")),
+        "a readable table needs no such note"
+    );
+
+    // An INSERT reads nothing, so an insert-only table is not affected either.
+    let insert_only = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
+",
+    );
+    assert!(
+        !translator(ConfidenceLevel::B)
+            .generate_model(&insert_only)
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("SELECT policy")),
+        "an INSERT needs no read, so nothing is unreachable"
+    );
 }

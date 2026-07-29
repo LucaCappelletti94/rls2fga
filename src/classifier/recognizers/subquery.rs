@@ -228,8 +228,7 @@ fn analyze_membership_select(
             }
             // A third table in the subquery carries conditions that no single
             // membership relation can express, and keeping only the matching side
-            // would drop them. A join back to the policy's own table stays
-            // translatable, and whether that recurses is decided from the SQL itself.
+            // would drop them. A join back to the policy's own table stays translatable.
             let foreign: Vec<String> = all_sources
                 .iter()
                 .map(|source| source.table_name.clone())

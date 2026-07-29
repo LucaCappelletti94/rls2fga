@@ -18,7 +18,8 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID
   LANGUAGE sql STABLE
   AS 'SELECT current_setting(''app.current_user_id'')::uuid';
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON projects FOR UPDATE TO PUBLIC USING (
+-- FOR ALL so the clause also grants reads, which an UPDATE needs to name its row.
+CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
   EXISTS (
     SELECT 1 FROM project_members
     WHERE project_id = projects.id

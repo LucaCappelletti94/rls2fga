@@ -49,9 +49,15 @@ pub(crate) fn generate_tuple_queries_from_plan(
 ) -> Vec<TupleQuery> {
     let mut queries = Vec::new();
     let mut generated: BTreeSet<String> = BTreeSet::new();
+    // A query for a relation no permission consults implies the model reads it.
+    let grantable = crate::generator::model_generator::grantable_relations(&plan.types);
 
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
+            let fed = source.feeds(&type_plan.type_name);
+            if !fed.is_empty() && !fed.iter().any(|target| grantable.contains(target)) {
+                continue;
+            }
             let key = if source.emits_owner_type_objects() {
                 format!("{}|{}", type_plan.type_name, source.dedup_key())
             } else {
@@ -677,9 +683,10 @@ CREATE TABLE categories(id uuid primary key);
     fn generate_tuple_queries_reads_using_and_with_check() {
         let db = parse_schema(
             r"
-CREATE TABLE docs(id uuid primary key, owner_id uuid);
+CREATE TABLE docs(id uuid primary key, owner_id uuid, is_public boolean);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY docs_update ON docs FOR UPDATE
+-- FOR ALL so the USING clause also grants reads, without which nothing is reachable.
+CREATE POLICY docs_update ON docs FOR ALL
   USING (owner_id = current_user)
   WITH CHECK (owner_id = current_user);
 ",

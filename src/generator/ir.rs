@@ -155,6 +155,30 @@ impl TupleSource {
         }
     }
 
+    /// The `(type, relation)` pairs this source populates. Empty means it carries no
+    /// tuples, so it is never dropped as unreachable.
+    pub(crate) fn feeds(&self, owner_type: &str) -> Vec<(String, String)> {
+        let own = |relation: &str| vec![(owner_type.to_string(), relation.to_string())];
+        match self {
+            Self::DirectOwnership { relation, .. } | Self::ParentBridge { relation, .. } => {
+                own(relation)
+            }
+            Self::RoleOwnerUser { .. } => own("owner_user"),
+            Self::RoleOwnerTeam { .. } => own("owner_team"),
+            Self::ExplicitGrants { role_cases, .. } => role_cases
+                .iter()
+                .map(|(_, relation, _)| (owner_type.to_string(), relation.clone()))
+                .collect(),
+            Self::TeamMembership { .. } => vec![("team".to_string(), "member".to_string())],
+            Self::ExistsMembership { parent_type, .. } => {
+                vec![(parent_type.clone(), "member".to_string())]
+            }
+            Self::PublicFlag { .. } | Self::ConstantTrue { .. } => own("public_viewer"),
+            Self::PolicyScope { scope_relation, .. } => own(scope_relation),
+            Self::Todo { .. } => Vec::new(),
+        }
+    }
+
     /// A stable string key used to deduplicate identical tuple queries.
     ///
     /// Two sources with the same key produce the same SQL; only the first is
