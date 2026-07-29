@@ -1209,14 +1209,38 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     );
 }
 
-// TypePlan debug_assert panics (lines 86-87, 96-97, 106-107)
+// A name held by one kind of relation must not be reused by the other, since the
+// DSL would then carry two `define` lines for it.
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "already registered as computed")]
-fn ensure_direct_panics_when_relation_already_computed() {
+fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
     let mut plan = TypePlan::new("test");
     plan.ensure_computed("rel", UsersetExpr::Computed("x".into()));
-    plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
+    let name = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
+    assert_ne!(name, "rel", "the computed relation still holds 'rel'");
+    assert!(plan.direct_relations.contains_key(&name));
+    assert!(!plan.computed_relations.contains_key(&name));
+}
+
+#[test]
+fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
+    let mut plan = TypePlan::new("test");
+    let first = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
+    let second = plan.ensure_direct("rel", vec![DirectSubject::Type("team".into())]);
+    assert_eq!(first, "rel");
+    assert_ne!(second, first);
+    assert_eq!(
+        plan.direct_relations.get(&first),
+        Some(&vec![DirectSubject::Type("user".into())])
+    );
+    assert_eq!(
+        plan.direct_relations.get(&second),
+        Some(&vec![DirectSubject::Type("team".into())])
+    );
+    // Asking again with the same subjects reuses the name it already minted.
+    assert_eq!(
+        plan.ensure_direct("rel", vec![DirectSubject::Type("team".into())]),
+        second
+    );
 }
 
 #[test]

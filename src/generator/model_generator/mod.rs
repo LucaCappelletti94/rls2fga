@@ -60,6 +60,18 @@ pub(crate) enum DirectSubject {
     Wildcard(String),
 }
 
+/// Structural identity of a subject list, stable against `Debug` formatting.
+fn subject_key(subjects: &[DirectSubject]) -> String {
+    subjects
+        .iter()
+        .map(|subject| match subject {
+            DirectSubject::Type(name) => format!("t:{name}"),
+            DirectSubject::Wildcard(name) => format!("w:{name}"),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UsersetExpr {
     Computed(String),
@@ -138,12 +150,20 @@ impl TypePlan {
         relation: impl Into<String>,
         subjects: Vec<DirectSubject>,
     ) -> String {
-        let relation = clamp_relation_name(relation.into());
-        // Guard: a relation cannot be both direct and computed, OpenFGA would reject duplicate `define` lines.
-        debug_assert!(
-            !self.computed_relations.contains_key(&relation),
-            "relation '{relation}' already registered as computed; cannot also register as direct"
-        );
+        let mut relation = clamp_relation_name(relation.into());
+        // A relation admits exactly one subject list and cannot also be computed, so
+        // a name already spoken for has to yield rather than emit a second `define`
+        // or quietly inherit subjects it does not accept.
+        let conflicts = self.computed_relations.contains_key(&relation)
+            || self
+                .direct_relations
+                .get(&relation)
+                .is_some_and(|held| *held != subjects);
+        if conflicts {
+            let key = subject_key(&subjects);
+            relation =
+                clamp_relation_name(format!("{relation}_{}", stable_hex_suffix(key.as_str())));
+        }
         self.direct_relations
             .entry(relation.clone())
             .or_insert(subjects);
@@ -343,6 +363,30 @@ pub(crate) fn build_schema_plan(
                 } else {
                     expr
                 };
+                // A permissive hybrid may hand its attribute half to the application,
+                // but a restrictive clause is a barrier: dropping a conjunct there
+                // admits rows PostgreSQL refuses, so the barrier keeps denying.
+                let guards = dropped_attribute_guards(&classified.pattern);
+                let expr = if cp.mode() == PolicyMode::Restrictive && !guards.is_empty() {
+                    // The command is denied, so asking for runtime enforcement of the
+                    // same guard would contradict the outcome.
+                    for guard in guards {
+                        let note = attribute_runtime_note(guard);
+                        todos.retain(|todo| todo.policy_name != cp.name() || todo.message != note);
+                    }
+                    todos.push(TodoItem {
+                        level: ConfidenceLevel::C,
+                        policy_name: cp.name().to_string(),
+                        message: format!(
+                            "RESTRICTIVE policy '{}' guards on an attribute the model cannot \
+                             express, so the command is denied rather than left unconstrained",
+                            cp.name()
+                        ),
+                    });
+                    UsersetExpr::Intersection(vec![expr, deny_expr(&mut table_plan)])
+                } else {
+                    expr
+                };
                 push_action_expr(&mut action_buckets, target, cp.mode(), expr);
             });
             dedup_todos_added_since(&mut todos, todos_before);
@@ -495,6 +539,24 @@ fn dropped_restrictive_expr(cp: &ClassifiedPolicy, clause_sql: Option<String>) -
             ),
         },
         confidence: ConfidenceLevel::D,
+    }
+}
+
+/// Operator note that a hybrid leaves its attribute half to the caller.
+fn attribute_runtime_note(attribute: &str) -> String {
+    format!("Attribute condition '{attribute}' still requires runtime enforcement")
+}
+
+/// Attribute guards this pattern discards when translated, which widens whatever
+/// the pattern guards.
+fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
+    match pattern {
+        PatternClass::P7AbacAnd { attribute_part, .. } => vec![attribute_part.as_str()],
+        PatternClass::P8Composite { parts, .. } => parts
+            .iter()
+            .flat_map(|part| dropped_attribute_guards(&part.pattern))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1255,9 +1317,7 @@ fn translate_pattern(
             todos.push(TodoItem {
                 level: ConfidenceLevel::C,
                 policy_name: policy_name.to_string(),
-                message: format!(
-                    "Attribute condition '{attribute_part}' still requires runtime enforcement"
-                ),
+                message: attribute_runtime_note(attribute_part),
             });
             // Recurse first so relationship sources appear before the attribute Todo
             // in table_tuple_sources (matching old generate_tuple_queries ordering).

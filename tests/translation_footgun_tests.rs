@@ -963,6 +963,13 @@ fn no_userset_references_an_undefined_relation() {
     ));
     let json = translator(ConfidenceLevel::B).generate_json_model(&db);
 
+    assert_model_is_internally_consistent(&json);
+}
+
+/// Runs every structural check over a generated model.
+fn assert_model_is_internally_consistent(
+    json: &rls2fga::generator::json_model::AuthorizationModel,
+) {
     let declared: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = json
         .type_definitions
         .iter()
@@ -988,6 +995,20 @@ fn no_userset_references_an_undefined_relation() {
             );
         }
     }
+}
+
+/// The userset a type declares for one relation.
+fn declared_userset<'model>(
+    declared_types: &'model [rls2fga::generator::json_model::TypeDefinition],
+    type_name: &str,
+    relation: &str,
+) -> Option<&'model rls2fga::generator::json_model::Userset> {
+    declared_types
+        .iter()
+        .find(|definition| definition.type_name == type_name)?
+        .relations
+        .as_ref()?
+        .get(relation)
 }
 
 /// Types a tupleset relation can reach, from its declared subject types.
@@ -1030,6 +1051,28 @@ fn check_userset_references(
                 own.is_some_and(|rels| rels.contains(tupleset)),
                 "{type_name}#{relation} walks '{tupleset}', which {type_name} does not define"
             );
+            // `OpenFGA` rejects a tupleset that is computed or that admits a
+            // wildcard, so an indirection has to start from a concrete assignment.
+            assert!(
+                matches!(
+                    declared_userset(declared_types, type_name, tupleset),
+                    Some(Userset::This { .. })
+                ),
+                "{type_name}#{relation} walks '{tupleset}', which must be directly assignable"
+            );
+            for reference in declared_types
+                .iter()
+                .filter(|definition| definition.type_name == type_name)
+                .flat_map(|definition| definition.metadata.iter())
+                .filter_map(|metadata| metadata.relations.get(tupleset))
+                .flat_map(|tupleset| &tupleset.directly_related_user_types)
+            {
+                assert!(
+                    reference.wildcard.is_none(),
+                    "{type_name}#{relation} walks '{tupleset}', which admits '{}:*'",
+                    reference.type_name
+                );
+            }
             // The relation is evaluated on whatever types the tupleset admits, so
             // each of them has to define it.
             let computed = tuple_to_userset.computed_userset.relation.as_str();
@@ -1224,5 +1267,196 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
     assert!(
         relation_definition(&dsl, "docs", read).is_some(),
         "can_select reads '{read}', which docs does not define:\n{dsl}"
+    );
+}
+
+/// A relation carries one kind of subject. When an ownership column derives the
+/// name a parent pointer needs, the first writer wins and the other one's tuples
+/// land in a relation that does not accept them.
+#[test]
+fn an_ownership_column_cannot_take_over_a_parent_pointer() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(
+  id UUID PRIMARY KEY,
+  projects_id UUID,
+  project_id UUID REFERENCES projects(id)
+);
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_own_column ON tasks FOR SELECT USING (projects_id = current_user);
+CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator.generate_model(&db).dsl;
+
+    let can_delete =
+        relation_definition(&dsl, "tasks", "can_delete").expect("tasks should define can_delete");
+    let (_, tupleset) = can_delete
+        .split_once(" from ")
+        .expect("inheritance walks a tupleset");
+    assert_eq!(
+        relation_definition(&dsl, "tasks", tupleset).as_deref(),
+        Some("[projects]"),
+        "the tupleset '{tupleset}' must accept projects, not whatever claimed the name first:\n{dsl}"
+    );
+
+    // Each generated query has to write a subject the relation accepts.
+    for query in translator.generate_tuple_queries(&db) {
+        if !query.sql.contains(&format!("'{tupleset}' AS relation")) {
+            continue;
+        }
+        assert!(
+            query.sql.contains("'projects:' ||"),
+            "a query feeding '{tupleset}' must write projects objects:\n{}",
+            query.sql
+        );
+    }
+    assert_model_is_internally_consistent(&translator.generate_json_model(&db));
+}
+
+/// A model mixing wildcards, a role scope, and two levels of indirection still
+/// has to satisfy every structural rule `OpenFGA` enforces on a write.
+#[test]
+fn a_layered_model_stays_internally_consistent() {
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN);
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orgs_own ON orgs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY orgs_pub ON orgs FOR SELECT USING (is_public = TRUE);
+CREATE TABLE projects(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_sel ON projects FOR SELECT TO analyst USING (
+  EXISTS (SELECT 1 FROM orgs o WHERE o.id = projects.org_id AND o.owner_id = current_user));
+CREATE TABLE members(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id), user_id UUID);
+CREATE TABLE notes(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_sel ON notes FOR SELECT USING (
+  EXISTS (SELECT 1 FROM members m WHERE m.project_id = notes.project_id
+          AND m.user_id = current_user));
+",
+    );
+    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}
+
+/// Two `define` lines for one relation make the whole DSL unparseable, so a type
+/// must never name a relation twice however its relations were derived.
+#[test]
+fn no_type_defines_a_relation_twice() {
+    let db = db_of(
+        r"
+CREATE TABLE teams(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
+CREATE POLICY teams_sel ON teams FOR SELECT USING (owner_id = current_user);
+CREATE TABLE docs(
+  id UUID PRIMARY KEY,
+  can_select_id UUID,
+  no_access_id UUID,
+  owner_id UUID,
+  teams_id UUID,
+  team_ref UUID REFERENCES teams(id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_reserved ON docs FOR SELECT USING (can_select_id = current_user);
+CREATE POLICY docs_b_deny ON docs FOR UPDATE USING (no_access_id = current_user);
+CREATE POLICY docs_c_owner ON docs FOR DELETE USING (owner_id = current_user);
+CREATE POLICY docs_d_named ON docs FOR INSERT WITH CHECK (teams_id = current_user);
+CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM teams t WHERE t.id = docs.team_ref AND t.owner_id = current_user));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let mut current = String::new();
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            current = name.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("define ") {
+            let relation = rest.split_once(':').map_or(rest, |(name, _)| name).trim();
+            assert!(
+                seen.insert((current.clone(), relation.to_string())),
+                "type {current} defines '{relation}' twice:\n{dsl}"
+            );
+        }
+    }
+    assert!(seen.len() > 8, "expected a populated model, got:\n{dsl}");
+    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}
+
+/// A RESTRICTIVE clause is a barrier every row must clear, so a conjunct the
+/// model cannot express has to keep denying. Dropping it the way a permissive
+/// hybrid does removes the barrier and grants rows `PostgreSQL` refuses.
+#[test]
+fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
+    let schema = |restriction: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, deleted_at TIMESTAMP, \
+             tenant_id UUID);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);\n\
+             CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT USING ({restriction});\n"
+        )
+    };
+    let body = |restriction: &str| {
+        // The hybrid classifies at C, so a stricter threshold would drop the policy
+        // and hide the widening behind the deny-fill for a filtered restriction.
+        let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(restriction)));
+        relation_definition(&model.dsl, "docs", "can_select")
+            .unwrap_or_else(|| panic!("docs should define can_select for '{restriction}'"))
+    };
+
+    let barrier_only = body("deleted_at IS NULL");
+    assert!(
+        barrier_only.contains("no_access"),
+        "an inexpressible restriction must deny, got '{barrier_only}'"
+    );
+
+    // Anding a relationship onto the same barrier must not discard the barrier.
+    let with_relationship = body("deleted_at IS NULL AND tenant_id = current_user");
+    assert!(
+        with_relationship.contains("no_access"),
+        "the 'deleted_at IS NULL' barrier vanished, leaving '{with_relationship}'"
+    );
+    assert_ne!(
+        with_relationship,
+        body("tenant_id = current_user"),
+        "the restriction with a barrier must be stricter than the one without it"
+    );
+
+    // The same holds when the barrier hides inside a branch of a union.
+    let nested =
+        body("(deleted_at IS NULL AND tenant_id = current_user) OR owner_id = current_user");
+    assert!(
+        nested.contains("no_access"),
+        "a barrier nested in a union vanished, leaving '{nested}'"
+    );
+
+    // One clause, one story: a denied barrier must not also be reported as
+    // something the application is expected to enforce at runtime.
+    let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(
+        "deleted_at IS NULL AND tenant_id = current_user",
+    )));
+    let notes: Vec<&str> = model
+        .todos
+        .iter()
+        .filter(|todo| todo.policy_name == "docs_bar")
+        .map(|todo| todo.message.as_str())
+        .collect();
+    assert!(
+        notes.iter().any(|note| note.contains("denied")),
+        "the denial must be reported, got {notes:?}"
+    );
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.contains("requires runtime enforcement")),
+        "a denied barrier cannot also ask for runtime enforcement, got {notes:?}"
     );
 }
