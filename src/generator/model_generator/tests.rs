@@ -1244,6 +1244,28 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
 }
 
 #[test]
+fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
+    let mut plan = TypePlan::new("test");
+    let first = plan.ensure_computed("rel", UsersetExpr::Computed("a".into()));
+    let second = plan.ensure_computed("rel", UsersetExpr::Computed("b".into()));
+    assert_eq!(first, "rel");
+    assert_ne!(second, first, "a different rule cannot reuse the name");
+    assert_eq!(
+        plan.computed_relations.get(&first),
+        Some(&UsersetExpr::Computed("a".into()))
+    );
+    assert_eq!(
+        plan.computed_relations.get(&second),
+        Some(&UsersetExpr::Computed("b".into()))
+    );
+    // The same rule keeps sharing the one relation.
+    assert_eq!(
+        plan.ensure_computed("rel", UsersetExpr::Computed("a".into())),
+        first
+    );
+}
+
+#[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "already registered as direct")]
 fn ensure_computed_panics_when_relation_already_direct() {

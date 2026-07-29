@@ -504,6 +504,7 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
             fk_column,
             user_column,
             extra_predicate_sql,
+            ..
         } if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
@@ -563,6 +564,7 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
             fk_column,
             user_column,
             extra_predicate_sql,
+            ..
         } if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
@@ -913,6 +915,7 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
                 fk_column,
                 user_column,
                 extra_predicate_sql,
+                ..
             } => (join_table, fk_column, user_column, extra_predicate_sql),
             other => panic!("expected P4 EXISTS classification, got: {other:?}"),
         };
@@ -924,6 +927,7 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
             fk_column,
             user_column,
             extra_predicate_sql,
+            ..
         } => (join_table, fk_column, user_column, extra_predicate_sql),
         other => panic!("expected P4 IN-subquery classification, got: {other:?}"),
     };

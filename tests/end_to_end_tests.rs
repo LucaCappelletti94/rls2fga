@@ -29,6 +29,30 @@ fn end_to_end_earth_metabolome() {
     assert!(model.todos.is_empty(), "EMI schema should produce no TODOs");
 }
 
+/// A role hierarchy already orders its levels, so `role_admin` implies the
+/// `role_viewer` that `can_select` grants and requiring the read again adds
+/// nothing. The gate has to recognize that through the levels between them.
+#[test]
+fn end_to_end_emi_role_hierarchy_needs_no_read_gate() {
+    let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+
+    for line in model.dsl.lines().map(str::trim) {
+        let Some(body) = line
+            .strip_prefix("define can_delete:")
+            .or_else(|| line.strip_prefix("define can_update:"))
+        else {
+            continue;
+        };
+        assert!(
+            !body.contains("can_select"),
+            "'{line}' gates on a read the role level already implies:\n{}",
+            model.dsl
+        );
+    }
+}
+
 /// Pipeline test: all EMI policies should be Level A confidence.
 #[test]
 fn end_to_end_emi_all_level_a() {

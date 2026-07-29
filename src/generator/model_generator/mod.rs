@@ -80,6 +80,25 @@ pub(crate) enum UsersetExpr {
     Intersection(Vec<UsersetExpr>),
 }
 
+/// Structural identity of a userset expression, stable against `Debug` formatting.
+/// Relation names are canonicalized, so the delimiters cannot appear inside one.
+fn userset_key(expr: &UsersetExpr) -> String {
+    match expr {
+        UsersetExpr::Computed(name) => format!("c:{name}"),
+        UsersetExpr::TupleToUserset { tupleset, computed } => format!("t:{tupleset}:{computed}"),
+        UsersetExpr::Union(children) => format!("u({})", child_keys(children)),
+        UsersetExpr::Intersection(children) => format!("i({})", child_keys(children)),
+    }
+}
+
+fn child_keys(children: &[UsersetExpr]) -> String {
+    children
+        .iter()
+        .map(userset_key)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TypePlan {
     pub type_name: String,
@@ -171,12 +190,19 @@ impl TypePlan {
     }
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
-        let relation = clamp_relation_name(relation.into());
-        // Guard: a relation cannot be both direct and computed, OpenFGA would reject duplicate `define` lines.
-        debug_assert!(
-            !self.direct_relations.contains_key(&relation),
-            "relation '{relation}' already registered as direct; cannot also register as computed"
-        );
+        let mut relation = clamp_relation_name(relation.into());
+        // One name, one rule: a name another rule holds has to yield, or callers that
+        // derive it from the rule would silently read someone else's definition.
+        let conflicts = self.direct_relations.contains_key(&relation)
+            || self
+                .computed_relations
+                .get(&relation)
+                .is_some_and(|held| *held != expr);
+        if conflicts {
+            let key = userset_key(&expr);
+            relation =
+                clamp_relation_name(format!("{relation}_{}", stable_hex_suffix(key.as_str())));
+        }
         self.computed_relations
             .entry(relation.clone())
             .or_insert(expr);
@@ -308,6 +334,11 @@ pub(crate) fn build_schema_plan(
             .remove(&canonical_table_name)
             .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
 
+        // A SELECT policy that reads its own table needs itself to expand, which
+        // PostgreSQL answers with `infinite recursion detected in policy for
+        // relation`. Every read of the table fails, whatever the other policies say.
+        let mut recursive_select: Option<String> = None;
+
         let mut action_buckets: BTreeMap<ActionTarget, ModeBuckets> = BTreeMap::new();
 
         for cp in table_policies {
@@ -342,10 +373,22 @@ pub(crate) fn build_schema_plan(
                 Some(relation)
             };
 
+            // The recursion is a property of the SQL, so it is judged before any
+            // classification: a clause dropped by filtering still poisons reads.
+            let recurses = policy_recurses_on_reads(cp, db, &table_types, &canonical_table_name);
+            if recurses {
+                recursive_select = Some(cp.name().to_string());
+            }
+
             // A policy covering several phases is translated once per phase, so the
             // same clause reports the same item repeatedly. Keep one per policy.
             let todos_before = todos.len();
             for_each_policy_target_expr(cp, |target, classified| {
+                if recurses && target == ActionTarget::Select {
+                    // Nothing this clause names can ever be evaluated, so translating
+                    // it would only leave relations no permission reaches.
+                    return;
+                }
                 let expr = translate_pattern(
                     &classified.pattern,
                     cp.name(),
@@ -407,14 +450,31 @@ pub(crate) fn build_schema_plan(
         let mut delete_expr =
             compose_action(&mut table_plan, action_buckets.get(&ActionTarget::Delete));
 
+        if let Some(policy_name) = recursive_select {
+            select_expr = Some(deny_expr(&mut table_plan));
+            todos.push(TodoItem {
+                level: ConfidenceLevel::C,
+                policy_name: policy_name.clone(),
+                message: format!(
+                    "SELECT policy '{policy_name}' reads '{source_table_name}', the table it \
+                     guards, so PostgreSQL raises infinite recursion and no read of the table \
+                     succeeds. The model denies reads to match, and the policy needs rewriting."
+                ),
+            });
+        }
+
         if let Some(expr) = select_expr.take() {
             table_plan.set_computed("can_select", expr);
         }
         if let Some(expr) = insert_expr.take() {
             table_plan.set_computed("can_insert", expr);
         }
+        // Naming the row to change means reading a column of it, so PostgreSQL also
+        // applies the table's SELECT policies. Verified on PostgreSQL 16. A blanket
+        // statement that reads no column escapes that, but it identifies no object
+        // and so has no counterpart in a per-object check.
         if let Some(expr) = delete_expr.take() {
-            table_plan.set_computed("can_delete", expr);
+            table_plan.set_computed("can_delete", requires_read_access(expr));
         }
 
         if let Some(using_expr) = update_using_expr
@@ -425,9 +485,9 @@ pub(crate) fn build_schema_plan(
                 .take()
                 .unwrap_or_else(|| using_expr.clone());
             if using_expr == check_expr {
-                table_plan.set_computed("can_update", using_expr);
+                table_plan.set_computed("can_update", requires_read_access(using_expr));
             } else {
-                table_plan.set_computed("can_update_using", using_expr);
+                table_plan.set_computed("can_update_using", requires_read_access(using_expr));
                 table_plan.set_computed("can_update_check", check_expr);
                 table_plan.set_computed(
                     "can_update",
@@ -466,6 +526,9 @@ pub(crate) fn build_schema_plan(
         .entry("user".to_string())
         .or_insert_with(|| TypePlan::new("user"));
 
+    simplify_redundant_select_gates(&mut all_types);
+    inline_synthetic_rule_aliases(&mut all_types);
+
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
     if let Some(pos) = type_names.iter().position(|n| n == "user") {
@@ -482,6 +545,158 @@ pub(crate) fn build_schema_plan(
         types,
         todos,
         confidence_summary,
+    }
+}
+
+/// The rule a `can_select` gate wraps, if this expression is such a gate.
+fn select_gate_rule(expr: &UsersetExpr) -> Option<&UsersetExpr> {
+    let UsersetExpr::Intersection(children) = expr else {
+        return None;
+    };
+    let [rule, UsersetExpr::Computed(gate)] = children.as_slice() else {
+        return None;
+    };
+    (gate == "can_select").then_some(rule)
+}
+
+/// Whether `rule` can only hold where `visible` holds, judged structurally against
+/// the relations of one type. Only the cases that are certain are reported, so an
+/// unrecognized shape keeps its gate.
+fn rule_implies(
+    rule: &UsersetExpr,
+    visible: &UsersetExpr,
+    relations: &BTreeMap<String, UsersetExpr>,
+    seen: &mut BTreeSet<String>,
+) -> bool {
+    if userset_key(rule) == userset_key(visible) {
+        return true;
+    }
+    match visible {
+        // Any branch that admits the rule admits it for the whole union.
+        UsersetExpr::Union(branches) => branches
+            .iter()
+            .any(|branch| rule_implies(rule, branch, relations, seen)),
+        // Every conjunct has to admit it.
+        UsersetExpr::Intersection(children) => children
+            .iter()
+            .all(|child| rule_implies(rule, child, relations, seen)),
+        // A named relation stands for its own definition. Levels of a role
+        // hierarchy chain through here, and `seen` keeps a cycle from looping.
+        UsersetExpr::Computed(name) => {
+            seen.insert(name.clone())
+                && relations
+                    .get(name)
+                    .is_some_and(|expr| rule_implies(rule, expr, relations, seen))
+        }
+        UsersetExpr::TupleToUserset { .. } => false,
+    }
+}
+
+/// Require the row to be readable, which every per-row change does.
+fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
+    UsersetExpr::Intersection(vec![expr, UsersetExpr::Computed("can_select".to_string())])
+}
+
+/// Replace every `can_select` gate a rule already implies with the rule itself,
+/// since the conjunct can never change the outcome there.
+fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        let relations = plan.computed_relations.clone();
+        let Some(visible) = relations.get("can_select") else {
+            continue;
+        };
+        for (relation, expr) in &mut plan.computed_relations {
+            if relation == "can_select" {
+                continue;
+            }
+            let Some(rule) = select_gate_rule(expr) else {
+                continue;
+            };
+            if rule_implies(rule, visible, &relations, &mut BTreeSet::new()) {
+                *expr = rule.clone();
+            }
+        }
+    }
+}
+
+/// Remove a synthesized rule relation that ended up as nothing but another name for
+/// one relation on the same type, pointing whatever walked it at the original. Only
+/// generated rule holders are disposable, since every other name is either an entry
+/// point or documents a phase.
+fn inline_synthetic_rule_aliases(all_types: &mut BTreeMap<String, TypePlan>) {
+    let mut aliases: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for (type_name, plan) in all_types.iter() {
+        for (relation, expr) in &plan.computed_relations {
+            if !relation.starts_with(INHERITED_RELATION_PREFIX) {
+                continue;
+            }
+            let UsersetExpr::Computed(target) = expr else {
+                continue;
+            };
+            if plan.direct_relations.contains_key(target)
+                || plan.computed_relations.contains_key(target)
+            {
+                aliases
+                    .entry(type_name.clone())
+                    .or_default()
+                    .insert(relation.clone(), target.clone());
+            }
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for plan in all_types.values_mut() {
+        let TypePlan {
+            type_name,
+            direct_relations,
+            computed_relations,
+            ..
+        } = plan;
+        if let Some(dropped) = aliases.get(type_name.as_str()) {
+            computed_relations.retain(|relation, _| !dropped.contains_key(relation));
+        }
+        let own = aliases.get(type_name.as_str());
+        for expr in computed_relations.values_mut() {
+            repoint_inlined_aliases(expr, direct_relations, own, &aliases);
+        }
+    }
+}
+
+/// Point every reference to an inlined alias at the relation it named.
+fn repoint_inlined_aliases(
+    expr: &mut UsersetExpr,
+    direct_relations: &BTreeMap<String, Vec<DirectSubject>>,
+    own: Option<&BTreeMap<String, String>>,
+    aliases: &BTreeMap<String, BTreeMap<String, String>>,
+) {
+    match expr {
+        UsersetExpr::Computed(name) => {
+            if let Some(replacement) = own.and_then(|dropped| dropped.get(name.as_str())) {
+                *name = replacement.clone();
+            }
+        }
+        UsersetExpr::TupleToUserset { tupleset, computed } => {
+            // The walked relation is evaluated on the types the tupleset admits.
+            let replacement = direct_relations
+                .get(tupleset.as_str())
+                .into_iter()
+                .flatten()
+                .filter_map(|subject| match subject {
+                    DirectSubject::Type(name) => aliases.get(name.as_str()),
+                    DirectSubject::Wildcard(_) => None,
+                })
+                .find_map(|dropped| dropped.get(computed.as_str()));
+            if let Some(replacement) = replacement {
+                *computed = replacement.clone();
+            }
+        }
+        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => {
+            for child in children {
+                repoint_inlined_aliases(child, direct_relations, own, aliases);
+            }
+        }
     }
 }
 
@@ -558,6 +773,40 @@ fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Whether a `SELECT` on `type_name` would expand this policy again, which happens
+/// when the policy guards reads of that type and its own expression reads it.
+/// `PostgreSQL` answers such a read with `infinite recursion detected in policy for
+/// relation`, whatever the rest of the expression turned out to be.
+fn policy_recurses_on_reads(
+    cp: &ClassifiedPolicy,
+    db: &ParserDB,
+    table_types: &TableTypes,
+    type_name: &str,
+) -> bool {
+    if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
+        return false;
+    }
+    // Only the read side matters: a WITH CHECK clause guards new rows.
+    cp.policy
+        .using
+        .as_ref()
+        .is_some_and(|using| expr_reads_table(using, db, table_types, type_name))
+}
+
+/// Whether any relation the expression reads resolves to `type_name`. Column
+/// qualifiers are identifiers rather than relations, so they are not counted.
+fn expr_reads_table(expr: &Expr, db: &ParserDB, table_types: &TableTypes, type_name: &str) -> bool {
+    let mut reads = false;
+    let _ = sqlparser::ast::visit_relations(expr, |name| {
+        if table_types.resolve(db, &name.to_string()) == type_name {
+            reads = true;
+            return core::ops::ControlFlow::Break(());
+        }
+        core::ops::ControlFlow::Continue(())
+    });
+    reads
 }
 
 fn for_each_policy_target_expr<F>(cp: &ClassifiedPolicy, mut f: F)
@@ -830,6 +1079,9 @@ impl TableTypes {
         }
     }
 }
+
+/// Prefix for relations synthesized to hold a parent-side rule.
+const INHERITED_RELATION_PREFIX: &str = "inherited_";
 
 const ACTION_RELATIONS: [&str; 4] = ["can_select", "can_insert", "can_update", "can_delete"];
 
@@ -1110,6 +1362,7 @@ fn translate_pattern(
             fk_column,
             user_column,
             extra_predicate_sql,
+            ..
         } => {
             // Prefer the table that fk_column actually references (e.g. "teams"
             // for team_members.team_id → teams.id).  Fall back to the FK-column
@@ -1247,26 +1500,45 @@ fn translate_pattern(
             // The policy requires this specific parent-side rule. Pointing at the
             // parent's `can_select` instead would import every other permissive
             // policy the parent has.
-            let inherited = match inner_expr {
+            let rule_is_denial =
+                matches!(&inner_expr, UsersetExpr::Computed(name) if name == "no_access");
+            // The subquery reads the parent as the querying user, so the parent's own
+            // RLS filters it: a row the parent hides cannot satisfy the rule. Verified
+            // on PostgreSQL 16. A parent without RLS is unfiltered. A table reading
+            // itself is gated the same way, since the row it reads is a different row.
+            let gate_on_parent = !rule_is_denial
+                && lookup_table(db, parent_table)
+                    .is_some_and(|table| table.has_row_level_security(db));
+            let rule_expr = if gate_on_parent {
+                UsersetExpr::Intersection(vec![
+                    inner_expr,
+                    UsersetExpr::Computed("can_select".to_string()),
+                ])
+            } else {
+                inner_expr
+            };
+            let inherited = match rule_expr {
                 UsersetExpr::Computed(name) => name,
                 expr => {
+                    // The rule belongs to the parent, so name it after the rule itself.
+                    // Two children needing the same rule then share one relation, and
+                    // renaming a policy leaves the parent's relations alone.
                     let name = clamp_relation_name(format!(
-                        "inherited_{}",
-                        stable_hex_suffix(&format!("{policy_name}:{parent_table}:{expr:?}"))
+                        "{INHERITED_RELATION_PREFIX}{}",
+                        stable_hex_suffix(userset_key(&expr).as_str())
                     ));
                     if inherits_from_self {
-                        table_plan.ensure_computed(name.clone(), expr);
+                        table_plan.ensure_computed(name, expr)
                     } else {
                         all_types
                             .entry(parent_type.clone())
                             .or_insert_with(|| TypePlan::new(&parent_type))
-                            .ensure_computed(name.clone(), expr);
+                            .ensure_computed(name, expr)
                     }
-                    name
                 }
             };
 
-            if inherited == "no_access" {
+            if rule_is_denial {
                 todos.push(TodoItem {
                     level: ConfidenceLevel::C,
                     policy_name: policy_name.to_string(),

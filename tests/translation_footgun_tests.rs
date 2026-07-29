@@ -709,10 +709,18 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
 
     // Every ownership query must populate the relation its own column feeds.
     for query in translator.generate_tuple_queries(&db) {
+        // An action body may carry a trailing read-access conjunct.
+        let leading = |body: &str| {
+            body.split(" and ")
+                .next()
+                .unwrap_or(body)
+                .trim()
+                .to_string()
+        };
         let column = if query.sql.contains(r#"|| "owner_id""#) {
-            &select
+            leading(&select)
         } else if query.sql.contains(r#"|| "editor_id""#) {
-            &update
+            leading(&update)
         } else {
             continue;
         };
@@ -1174,30 +1182,41 @@ CREATE POLICY orders_sel ON orders FOR SELECT USING (
 
 /// A membership subquery may join back to the policy's own table. The parent type
 /// is then that same table, and it still has to expose the `member` relation the
-/// userset reads.
+/// userset reads. The policy guards `DELETE`, since reading the guarded table from
+/// a `SELECT` policy would instead recurse.
 #[test]
 fn self_referential_membership_defines_the_relation_it_reads() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY docs_sel ON docs FOR SELECT USING (
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (
   EXISTS (SELECT 1 FROM docs d2 JOIN doc_members dm ON dm.doc_id = d2.id
           WHERE d2.id = docs.id AND dm.user_id = current_user));
 ",
     );
     let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
 
-    let can_select =
-        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
-    let read = can_select
-        .split(" from ")
-        .next()
-        .expect("a tuple-to-userset reads a relation");
+    let can_delete =
+        relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
+    let (read, tupleset) = can_delete
+        .split_once(" from ")
+        .unwrap_or_else(|| panic!("can_delete should walk a tupleset, got '{can_delete}':\n{dsl}"));
+    let tupleset = tupleset.split(" and ").next().unwrap_or(tupleset).trim();
+    assert!(
+        relation_definition(&dsl, "docs", tupleset).is_some(),
+        "can_delete walks '{tupleset}', which docs does not define:\n{dsl}"
+    );
+    let read = read.rsplit("and ").next().unwrap_or(read).trim();
     assert!(
         relation_definition(&dsl, "docs", read).is_some(),
-        "can_select reads '{read}', which docs does not define:\n{dsl}"
+        "can_delete reads '{read}', which docs does not define:\n{dsl}"
+    );
+    assert_ne!(
+        read, "no_access",
+        "the membership rule must survive:\n{dsl}"
     );
 }
 
@@ -1236,7 +1255,8 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user AND sta
 
 /// A table can inherit from itself through a parent pointer. The parent plan is
 /// then the plan being built, so the inner rule has to land on it: writing it
-/// elsewhere loses both the rule and the relations it needs.
+/// elsewhere loses both the rule and the relations it needs. The policy guards
+/// `DELETE`, since a `SELECT` policy reading its own table would instead recurse.
 #[test]
 fn self_referential_inheritance_keeps_the_rule_it_reads() {
     let db = db_of(
@@ -1248,25 +1268,28 @@ CREATE TABLE docs(
   is_public BOOLEAN
 );
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY docs_sel ON docs FOR SELECT USING (
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (
   EXISTS (SELECT 1 FROM docs parent WHERE parent.id = docs.parent_id
           AND (parent.owner_id = current_user OR parent.is_public = TRUE)));
 ",
     );
     let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
 
-    let can_select =
-        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
-    let (read, tupleset) = can_select
+    let can_delete =
+        relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
+    let (read, tupleset) = can_delete
         .split_once(" from ")
-        .expect("inheritance reads a relation through a tupleset");
+        .unwrap_or_else(|| panic!("can_delete should walk a tupleset, got '{can_delete}':\n{dsl}"));
+    let tupleset = tupleset.split(" and ").next().unwrap_or(tupleset).trim();
     assert!(
         relation_definition(&dsl, "docs", tupleset).is_some(),
-        "can_select walks '{tupleset}', which docs does not define:\n{dsl}"
+        "can_delete walks '{tupleset}', which docs does not define:\n{dsl}"
     );
+    let read = read.rsplit("and ").next().unwrap_or(read).trim();
     assert!(
         relation_definition(&dsl, "docs", read).is_some(),
-        "can_select reads '{read}', which docs does not define:\n{dsl}"
+        "can_delete reads '{read}', which docs does not define:\n{dsl}"
     );
 }
 
@@ -1299,6 +1322,7 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
     let (_, tupleset) = can_delete
         .split_once(" from ")
         .expect("inheritance walks a tupleset");
+    let tupleset = tupleset.split(" and ").next().unwrap_or(tupleset).trim();
     assert_eq!(
         relation_definition(&dsl, "tasks", tupleset).as_deref(),
         Some("[projects]"),
@@ -1458,5 +1482,424 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
             .iter()
             .any(|note| note.contains("requires runtime enforcement")),
         "a denied barrier cannot also ask for runtime enforcement, got {notes:?}"
+    );
+}
+
+/// The rule a child inherits belongs to the parent, so its relation must be
+/// identified by what the rule is, not by which child policy happened to ask for
+/// it. Otherwise the parent grows a clone per child and an unrelated `SQL` rename
+/// renames a relation on another type.
+#[test]
+fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
+    let schema = |tasks_policy: &str| {
+        format!(
+            "CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN);\n\
+             ALTER TABLE projects ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY proj_sel ON projects FOR SELECT USING (owner_id = current_user);\n\
+             CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));\n\
+             ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY {tasks_policy} ON tasks FOR SELECT USING (\n\
+               EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id\n\
+                       AND (p.owner_id = current_user OR p.is_public = TRUE)));\n\
+             CREATE TABLE notes(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));\n\
+             ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY notes_sel ON notes FOR SELECT USING (\n\
+               EXISTS (SELECT 1 FROM projects p WHERE p.id = notes.project_id\n\
+                       AND (p.owner_id = current_user OR p.is_public = TRUE)));\n"
+        )
+    };
+    let inherited_relations = |dsl: &str| {
+        let mut found: Vec<(String, String)> = Vec::new();
+        let mut current = String::new();
+        for line in dsl.lines() {
+            let trimmed = line.trim();
+            if let Some(name) = trimmed.strip_prefix("type ") {
+                current = name.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("define ") {
+                let (relation, body) = rest.split_once(':').expect("a define carries a body");
+                if current == "projects" && relation.starts_with("inherited_") {
+                    found.push((relation.to_string(), body.trim().to_string()));
+                }
+            }
+        }
+        found
+    };
+
+    let dsl = translator(ConfidenceLevel::B)
+        .generate_model(&db_of(&schema("tasks_sel")))
+        .dsl;
+    let inherited = inherited_relations(&dsl);
+    assert_eq!(
+        inherited.len(),
+        1,
+        "both children inherit the same rule, so projects needs it once, got {inherited:?}:\n{dsl}"
+    );
+
+    // Renaming a child policy must not rename a relation on the parent.
+    let renamed = translator(ConfidenceLevel::B)
+        .generate_model(&db_of(&schema("tasks_select_v2")))
+        .dsl;
+    assert_eq!(
+        inherited_relations(&renamed),
+        inherited,
+        "renaming the child policy renamed the parent's inherited rule"
+    );
+
+    // Both children must still point at that one relation.
+    for table in ["tasks", "notes"] {
+        let body = relation_definition(&dsl, table, "can_select")
+            .unwrap_or_else(|| panic!("{table} should define can_select"));
+        assert_eq!(
+            body,
+            format!("{} from projects", inherited[0].0),
+            "{table} must walk the shared inherited rule"
+        );
+    }
+}
+
+/// A policy subquery reads the parent as the querying user, so the parent's own
+/// RLS filters it. Verified on `PostgreSQL` 16: with `parent` admitting only its
+/// owner, a child row whose parent is public stays invisible, and the subquery
+/// itself returns false. The inherited rule therefore has to be `AND`ed with the
+/// parent's `can_select`.
+#[test]
+fn inheritance_is_gated_by_the_parent_own_select_rule() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY proj_own ON projects FOR SELECT USING (owner_id = current_user);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id
+          AND (p.owner_id = current_user OR p.is_public = TRUE)));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let can_select =
+        relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
+    let (_, tupleset) = can_select
+        .split_once(" from ")
+        .expect("inheritance walks a tupleset");
+    let walked = can_select
+        .split_once(" from ")
+        .map(|(relation, _)| relation.to_string())
+        .expect("inheritance names a parent relation");
+    assert_eq!(tupleset, "projects");
+
+    let parent_rule = relation_definition(&dsl, "projects", &walked)
+        .unwrap_or_else(|| panic!("projects should define '{walked}':\n{dsl}"));
+    assert!(
+        parent_rule.contains("can_select"),
+        "the inherited rule '{walked}' = '{parent_rule}' must be gated by the parent's own \
+         can_select, or a public project nobody may select still grants its tasks:\n{dsl}"
+    );
+    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}
+
+/// A parent without RLS is not filtered, so gating there would deny rows
+/// `PostgreSQL` returns. Verified on `PostgreSQL` 16: with RLS left off the
+/// parent, the child row stays visible.
+#[test]
+fn inheritance_from_an_unprotected_parent_is_not_gated() {
+    let db = db_of(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
+  EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id
+          AND (p.owner_id = current_user OR p.is_public = TRUE)));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let can_select =
+        relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
+    let (walked, _) = can_select
+        .split_once(" from ")
+        .expect("inheritance walks a tupleset");
+    let parent_rule = relation_definition(&dsl, "projects", walked)
+        .unwrap_or_else(|| panic!("projects should define '{walked}':\n{dsl}"));
+    assert!(
+        !parent_rule.contains("can_select"),
+        "an unprotected parent applies no filter, so '{walked}' = '{parent_rule}' must not be \
+         gated:\n{dsl}"
+    );
+}
+
+/// Gating is only meaningful when the parent grants more than the rule the child
+/// names. When the rule is exactly what the parent's own `can_select` allows, the
+/// conjunct is provably redundant and must not clutter the model.
+#[test]
+fn a_redundant_select_gate_is_left_out() {
+    let inherited_body = |parent_policies: &str| {
+        let db = db_of(&format!(
+            "CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID, editor_id UUID, \
+             is_public BOOLEAN);\n\
+             ALTER TABLE projects ENABLE ROW LEVEL SECURITY;\n\
+             {parent_policies}\
+             CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));\n\
+             ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY tasks_sel ON tasks FOR SELECT USING (\n\
+               EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id\n\
+                       AND p.owner_id = current_user));\n"
+        ));
+        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+        let can_select = relation_definition(&dsl, "tasks", "can_select")
+            .expect("tasks should define can_select");
+        let (walked, _) = can_select
+            .split_once(" from ")
+            .expect("inheritance walks a tupleset");
+        (
+            walked.to_string(),
+            relation_definition(&dsl, "projects", walked),
+            dsl,
+        )
+    };
+
+    // The parent admits exactly the rule the child names, so no gate is needed and
+    // the child can walk the parent's own relation directly.
+    let (walked, body, dsl) = inherited_body(
+        "CREATE POLICY proj_own ON projects FOR SELECT USING (owner_id = current_user);\n",
+    );
+    assert_eq!(
+        walked, "owner",
+        "the child should walk the parent's own relation, got '{walked}':\n{dsl}"
+    );
+    assert_eq!(
+        body.as_deref(),
+        Some("[user]"),
+        "no gated relation should be synthesized:\n{dsl}"
+    );
+
+    // The parent admits the rule as one branch of a union, so the rule still
+    // implies the parent's visibility.
+    let (walked, _, dsl) = inherited_body(
+        "CREATE POLICY proj_own ON projects FOR SELECT USING (owner_id = current_user);\n\
+         CREATE POLICY proj_pub ON projects FOR SELECT USING (is_public = TRUE);\n",
+    );
+    assert_eq!(
+        walked, "owner",
+        "a rule the parent's union already contains needs no gate, got '{walked}':\n{dsl}"
+    );
+
+    // The parent admits strictly less than the rule, so the gate has to stay.
+    let (walked, body, dsl) = inherited_body(
+        "CREATE POLICY proj_editor ON projects FOR SELECT USING (editor_id = current_user);\n",
+    );
+    assert!(
+        body.is_some_and(|body| body.contains("can_select")),
+        "a rule the parent does not already allow must stay gated, got '{walked}':\n{dsl}"
+    );
+}
+
+/// Reading a table applies its `SELECT` policies, so a `SELECT` policy that reads
+/// its own table needs itself and `PostgreSQL` answers every read with `ERROR:
+/// infinite recursion detected in policy for relation`. Verified on `PostgreSQL`
+/// 16, including with a second plain policy that would otherwise have granted
+/// every row, so one such policy makes the whole table unreadable.
+#[test]
+fn a_select_policy_reading_its_own_table_denies_the_table() {
+    // The plain policy alone would grant every row to its owner.
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, parent_id UUID REFERENCES docs(id), owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_tree ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "a recursive SELECT policy makes every read fail, so nothing is readable:\n{}",
+        model.dsl
+    );
+    assert!(
+        model
+            .todos
+            .iter()
+            .any(|todo| todo.policy_name == "docs_tree" && todo.message.contains("recursion")),
+        "the operator must be told the policy raises infinite recursion, got {:#?}",
+        model.todos
+    );
+
+    // The same shape reached through a join to another table recurses identically.
+    let joined = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM docs d2 JOIN doc_members dm ON dm.doc_id = d2.id
+          WHERE d2.id = docs.id AND dm.user_id = current_user));
+",
+    );
+    let dsl = translator(ConfidenceLevel::A).generate_model(&joined).dsl;
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "a membership subquery reading its own table recurses too:\n{dsl}"
+    );
+}
+
+/// A policy for a command other than `SELECT` may read its own table: expanding it
+/// needs the table's `SELECT` policies, not itself. Verified on `PostgreSQL` 16,
+/// where such a `DELETE` policy ran without error and the inner read was filtered
+/// by the table's own `SELECT` policy.
+#[test]
+fn a_non_select_policy_may_read_its_own_table() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, parent_id UUID REFERENCES docs(id), owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (
+  EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let can_delete =
+        relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
+    assert!(
+        can_delete.contains(" from "),
+        "the delete rule still walks the parent pointer, got '{can_delete}':\n{dsl}"
+    );
+    assert_ne!(
+        can_delete, "no_access",
+        "a non-SELECT self reference is valid SQL and must not be denied:\n{dsl}"
+    );
+}
+
+/// A non-`SELECT` policy reading its own table reads the parent row as the
+/// querying user, so that row is filtered by the table's own `SELECT` policy just
+/// as any other parent would be. Verified on `PostgreSQL` 16, where the inner read
+/// of such a `DELETE` policy saw only rows the `SELECT` policy admitted.
+#[test]
+fn a_self_referential_rule_is_gated_like_any_other_parent() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(
+  id UUID PRIMARY KEY,
+  parent_id UUID REFERENCES docs(id),
+  owner_id UUID,
+  is_public BOOLEAN
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (
+  EXISTS (SELECT 1 FROM docs parent WHERE parent.id = docs.parent_id
+          AND (parent.owner_id = current_user OR parent.is_public = TRUE)));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let can_delete =
+        relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
+    let Some((read, _)) = can_delete.split_once(" from ") else {
+        panic!("can_delete should walk a tupleset, got '{can_delete}':\n{dsl}");
+    };
+    let read = read.rsplit("and ").next().unwrap_or(read).trim();
+    let rule = relation_definition(&dsl, "docs", read)
+        .unwrap_or_else(|| panic!("docs should define '{read}':\n{dsl}"));
+    assert!(
+        rule.contains("can_select"),
+        "the parent row must still be selectable, so '{read}' = '{rule}' needs the gate:\n{dsl}"
+    );
+}
+
+/// Identifying a row to update or delete means reading a column of it, which
+/// `PostgreSQL` gates on the table's `SELECT` policies. Verified on `PostgreSQL`
+/// 16: `UPDATE ... WHERE id = 2` under a permissive `UPDATE` policy changed
+/// nothing, because the `SELECT` policy hid that row. `INSERT` needs no read, so
+/// it stays ungated.
+#[test]
+fn updating_and_deleting_a_row_requires_being_able_to_select_it() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
+CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
+CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    for action in ["can_update", "can_delete"] {
+        let body = relation_definition(&dsl, "docs", action)
+            .unwrap_or_else(|| panic!("docs should define {action}:\n{dsl}"));
+        assert!(
+            body.contains("can_select"),
+            "{action} = '{body}' must require reading the row:\n{dsl}"
+        );
+    }
+    let insert =
+        relation_definition(&dsl, "docs", "can_insert").expect("docs should define can_insert");
+    assert!(
+        !insert.contains("can_select"),
+        "an INSERT reads nothing, so can_insert = '{insert}' must stay ungated:\n{dsl}"
+    );
+    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+}
+
+/// A table with no `SELECT` policy denies reads, so no row can be identified for a
+/// per-row update or delete either.
+#[test]
+fn without_a_select_policy_no_row_can_be_updated_or_deleted() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let can_delete =
+        relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
+    assert!(
+        can_delete.contains("can_select"),
+        "can_delete = '{can_delete}' must require reading the row:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "with no SELECT policy the read must be denied, which denies the delete with it:\n{dsl}"
+    );
+}
+
+/// The recursion is a property of the `SQL`, not of how well the pattern was
+/// recognized. An undeclared parent link classifies as nothing translatable, and
+/// dropping such a clause would leave the other policies granting reads that
+/// `PostgreSQL` answers with an error.
+#[test]
+fn a_recursive_select_policy_denies_reads_even_when_unrecognized() {
+    let db = db_of(
+        r"
+CREATE TABLE t1(id INTEGER PRIMARY KEY, parent_id INTEGER, owner TEXT);
+ALTER TABLE t1 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t1_own ON t1 FOR SELECT USING (owner = current_user);
+CREATE POLICY t1_tree ON t1 FOR SELECT USING (
+  EXISTS (SELECT 1 FROM t1 p WHERE p.id = t1.parent_id AND p.owner = current_user));
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    assert_eq!(
+        relation_definition(&model.dsl, "t1", "can_select").as_deref(),
+        Some("no_access"),
+        "every read of t1 raises infinite recursion, so nothing is readable:\n{}",
+        model.dsl
+    );
+    assert!(
+        model
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("recursion")),
+        "the operator must be told why, got {:#?}",
+        model.todos
     );
 }

@@ -316,7 +316,9 @@ impl ClassifiedPolicy {
 ///
 /// A RESTRICTIVE policy is kept even when all its classifications drop: RLS is
 /// `(permissive OR ...) AND restrictive AND ...`, so removing one grants access
-/// it forbids. The `*_was_filtered` flags tell the generator to fall closed.
+/// it forbids. A `SELECT` policy reading its own table is kept for the same
+/// reason, since it makes `PostgreSQL` refuse every read rather than grant one.
+/// The `*_was_filtered` flags tell the generator to fall closed.
 pub fn filter_policies_for_output(
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
@@ -345,6 +347,7 @@ pub fn filter_policies_for_output(
             if filtered.using_classification.is_some()
                 || filtered.with_check_classification.is_some()
                 || filtered.mode() == PolicyMode::Restrictive
+                || reads_its_own_table_on_select(cp)
             {
                 Some(filtered)
             } else {
@@ -352,6 +355,37 @@ pub fn filter_policies_for_output(
             }
         })
         .collect()
+}
+
+/// Whether a policy guarding reads also reads the table it guards, judged on the
+/// unqualified names alone. Retaining one policy too many costs nothing here,
+/// since the generator resolves the types properly before acting.
+fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
+    if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
+        return false;
+    }
+    let Some(using) = cp.policy.using.as_ref() else {
+        return false;
+    };
+    let guarded = unqualified_name(&cp.table_name());
+    let mut reads = false;
+    let _ = sqlparser::ast::visit_relations(using, |name| {
+        if unqualified_name(&name.to_string()) == guarded {
+            reads = true;
+            return core::ops::ControlFlow::Break(());
+        }
+        core::ops::ControlFlow::Continue(())
+    });
+    reads
+}
+
+/// Last segment of a possibly schema-qualified name, lowercased and unquoted.
+fn unqualified_name(name: &str) -> String {
+    name.rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim_matches('"')
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
