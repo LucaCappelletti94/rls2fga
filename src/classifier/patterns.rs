@@ -79,7 +79,11 @@ pub enum BoolOp {
 }
 
 /// Classified pattern for an expression.
+///
+/// `#[non_exhaustive]`: a new recognizer adds a variant, so matching this outside the
+/// crate needs a wildcard arm. Two variants were added in one session already.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum PatternClass {
     /// P1: Numeric role threshold: `role_level(user, resource) >= N`.
     P1NumericThreshold {

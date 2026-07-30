@@ -93,24 +93,108 @@ pub fn recognize_p5(
     None
 }
 
+/// The `(tested value, subquery)` of `x IN (SELECT ...)` or `x = ANY (SELECT ...)`.
+///
+/// A query that limits or offsets its rows is refused: membership then tests one
+/// arbitrary row rather than the whole result, so reading it as full membership grants
+/// rows the policy refuses. Ordering alone is irrelevant to a set membership test.
 fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::Query)> {
-    match expr {
+    let (lhs, query) = match expr {
         Expr::InSubquery {
             expr: lhs,
             subquery,
             negated: false,
-        } => Some((lhs.as_ref(), subquery.as_ref())),
+        } => (lhs.as_ref(), subquery.as_ref()),
         Expr::AnyOp {
             left,
             compare_op: BinaryOperator::Eq,
             right,
             ..
         } => match right.as_ref() {
-            Expr::Subquery(subquery) => Some((left.as_ref(), subquery.as_ref())),
-            _ => None,
+            Expr::Subquery(subquery) => (left.as_ref(), subquery.as_ref()),
+            _ => return None,
         },
-        _ => None,
+        _ => return None,
+    };
+
+    if query.limit_clause.is_some() || query.fetch.is_some() {
+        return None;
     }
+    Some((lhs, query))
+}
+
+/// Membership written with the caller on the left: `caller IN (SELECT user_col FROM m
+/// WHERE m.fk = outer.id)`, and the `= ANY` spelling of the same.
+///
+/// Verified on `PostgreSQL` 18 to admit exactly the rows the `EXISTS` spelling admits,
+/// differing only where the projected column is NULL, which yields NULL against false and
+/// filters either way. So it is rewritten into that `EXISTS` and handed to the one
+/// membership analyzer, which keeps every refusal it already makes, the uncorrelated case
+/// included.
+pub fn recognize_p4_caller_in_subquery(
+    expr: &Expr,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    outer_table: &str,
+) -> Option<ClassifiedExpr> {
+    let (caller, query) = membership_subquery_operands(expr)?;
+    // The equivalence holds for any left-hand value, but only the caller spelling was
+    // verified against PostgreSQL, so the rewrite stays confined to it. Defensive: with a
+    // column on the left the analyzer finds no user column and refuses anyway, so no
+    // generated model distinguishes this check.
+    if !is_current_user_expr(caller, registry) {
+        return None;
+    }
+    recognize_p4(
+        &membership_exists_binding_caller(query, caller)?,
+        db,
+        registry,
+        outer_table,
+    )
+}
+
+/// `SELECT user_col FROM m WHERE p` rewritten as `EXISTS (SELECT user_col FROM m WHERE p
+/// AND user_col = caller)`. The projection is left alone because the `EXISTS` path never
+/// reads it.
+fn membership_exists_binding_caller(query: &sqlparser::ast::Query, caller: &Expr) -> Option<Expr> {
+    let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    let projected = single_projected_column(select.as_ref())?;
+
+    let mut rewritten = query.clone();
+    let sqlparser::ast::SetExpr::Select(select) = rewritten.body.as_mut() else {
+        return None;
+    };
+    let bound = Expr::BinaryOp {
+        left: Box::new(projected),
+        op: BinaryOperator::Eq,
+        right: Box::new(caller.clone()),
+    };
+    select.selection = Some(match select.selection.take() {
+        Some(existing) => Expr::BinaryOp {
+            left: Box::new(existing),
+            op: BinaryOperator::And,
+            right: Box::new(bound),
+        },
+        None => bound,
+    });
+    Some(Expr::Exists {
+        subquery: Box::new(rewritten),
+        negated: false,
+    })
+}
+
+/// The one column a select projects, qualifier kept. `*`, several items, or anything that
+/// is not a column reference yields `None`.
+fn single_projected_column(select: &Select) -> Option<Expr> {
+    let [item] = select.projection.as_slice() else {
+        return None;
+    };
+    let (SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }) = item else {
+        return None;
+    };
+    extract_column_name(expr).is_some().then(|| expr.clone())
 }
 
 /// Recognize P4 membership through `col IN (SELECT ...)` or `col = ANY (SELECT ...)`.

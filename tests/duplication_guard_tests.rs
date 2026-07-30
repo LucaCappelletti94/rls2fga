@@ -104,6 +104,34 @@ fn p5_inheritance_analysis_has_single_source_of_truth() {
     );
 }
 
+/// Three spellings reach P4 membership: `EXISTS`, `col IN (SELECT ...)`, and the caller on
+/// the left. The third is a rewrite into the first, so all three must land on one
+/// analyzer. A second analyzer would let one spelling keep a refusal another dropped.
+#[test]
+fn membership_analysis_has_a_single_source_of_truth() {
+    let source = read_module("src/classifier/recognizers");
+
+    for needle in [
+        "fn analyze_membership_select(",
+        "fn membership_subquery_operands(",
+        "fn membership_exists_binding_caller(",
+    ] {
+        let definitions = source.matches(needle).count();
+        assert_eq!(
+            definitions, 1,
+            "expected one '{needle}', found {definitions}"
+        );
+    }
+
+    // The row-limit refusal has to sit in the shared extractor, or the object-key spelling
+    // keeps the over-grant the caller spelling was fixed for.
+    let limit_guards = source.matches("limit_clause.is_some()").count();
+    assert_eq!(
+        limit_guards, 1,
+        "one place refuses a row-limited membership subquery, found {limit_guards}"
+    );
+}
+
 #[test]
 fn bool_equality_extraction_has_single_source_of_truth() {
     let source = read_module("src/classifier/recognizers");

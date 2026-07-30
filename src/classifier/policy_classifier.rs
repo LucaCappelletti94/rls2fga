@@ -404,6 +404,13 @@ fn classify_expr_inner(
         return classified;
     }
 
+    // Try P4: the caller inside a membership subquery, the same check written backwards.
+    if let Some(classified) =
+        recognizers::recognize_p4_caller_in_subquery(expr, db, registry, table)
+    {
+        return classified;
+    }
+
     if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, table) {
         return unknown_d(expr, reason);
     }

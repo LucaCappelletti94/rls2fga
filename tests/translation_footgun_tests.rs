@@ -3930,3 +3930,110 @@ CREATE POLICY docs_hybrid ON docs FOR SELECT
         "the field no longer being checked must be named: {messages:#?}"
     );
 }
+
+const MEMBERSHIP_SCHEMA: &str = "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT, role TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+";
+
+/// Model and tuples for a single `SELECT` policy over `MEMBERSHIP_SCHEMA`.
+fn membership_translation(clause: &str) -> (String, String) {
+    let db = db_of(&format!(
+        "{MEMBERSHIP_SCHEMA}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
+    ));
+    let translator = translator(ConfidenceLevel::B);
+    (
+        translator.generate_model(&db).dsl,
+        format_tuples(&translator.generate_tuple_queries(&db)),
+    )
+}
+
+/// `caller IN (SELECT user_id FROM m WHERE m.fk = outer.id)` is the membership `EXISTS`
+/// written the other way round. `PostgreSQL` 18, role alice, over rows covering a member,
+/// a non-member, no membership row at all, a row whose `user_id` is NULL, a member beside
+/// a NULL, and a member failing a residual predicate: the `IN`, `= ANY` and `EXISTS`
+/// spellings agree on every row, the only difference being NULL against false where
+/// `user_id` is NULL, and both filter the row out. So all three must translate alike.
+#[test]
+fn the_caller_inside_a_membership_subquery_translates_like_the_exists_spelling() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
+    );
+    assert!(
+        !expected_dsl.contains("can_select: no_access"),
+        "guard precondition: the EXISTS spelling must translate:\n{expected_dsl}"
+    );
+
+    for clause in [
+        "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id)",
+        "current_user = ANY (SELECT user_id FROM doc_members WHERE doc_id = docs.id)",
+        "current_user IN (SELECT dm.user_id FROM doc_members dm WHERE dm.doc_id = docs.id)",
+    ] {
+        let (dsl, tuples) = membership_translation(clause);
+        assert_eq!(
+            dsl, expected_dsl,
+            "`{clause}` must yield the same model as the EXISTS spelling"
+        );
+        assert_eq!(
+            tuples, expected_tuples,
+            "`{clause}` must yield the same tuples as the EXISTS spelling"
+        );
+    }
+}
+
+/// A residual predicate no tuple can express has to survive the rewrite, since it is what
+/// tells the operator the membership relation is wider than the policy.
+#[test]
+fn a_residual_predicate_survives_the_caller_in_subquery_rewrite() {
+    let (expected_dsl, _) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND role = 'admin' \
+         AND user_id = current_user)",
+    );
+    let (dsl, _) = membership_translation(
+        "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id \
+         AND role = 'admin')",
+    );
+    assert_eq!(
+        dsl, expected_dsl,
+        "the role predicate must reach the same place it does through EXISTS"
+    );
+}
+
+/// Without a correlation to the outer table the predicate is row independent: it admits
+/// every row once the caller is a member of anything. Translating it as per-row membership
+/// would answer a different question, so it stays refused, exactly as the uncorrelated
+/// `EXISTS` already is.
+#[test]
+fn an_uncorrelated_membership_subquery_is_still_refused() {
+    for clause in [
+        "EXISTS (SELECT 1 FROM doc_members WHERE user_id = current_user)",
+        "current_user IN (SELECT user_id FROM doc_members)",
+        "current_user = ANY (SELECT user_id FROM doc_members)",
+    ] {
+        let (dsl, _) = membership_translation(clause);
+        assert!(
+            relation_definition(&dsl, "docs", "can_select").as_deref() == Some("no_access"),
+            "`{clause}` names no row, so it must not become per-row membership:\n{dsl}"
+        );
+    }
+}
+
+/// `IN (SELECT ... LIMIT 1)` tests membership of one arbitrary row, not of the whole
+/// result, so translating it as full membership grants rows the policy refuses. The
+/// operand extractor is shared with the object-key spelling, which had the same hole.
+#[test]
+fn a_row_limited_membership_subquery_is_refused() {
+    for clause in [
+        "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user LIMIT 1)",
+        "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id LIMIT 1)",
+        "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user FETCH FIRST 1 ROWS ONLY)",
+    ] {
+        let (dsl, _) = membership_translation(clause);
+        assert_eq!(
+            relation_definition(&dsl, "docs", "can_select").as_deref(),
+            Some("no_access"),
+            "`{clause}` limits the rows it tests, so it cannot be full membership:\n{dsl}"
+        );
+    }
+}
