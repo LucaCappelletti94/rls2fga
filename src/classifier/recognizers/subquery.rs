@@ -264,14 +264,18 @@ fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> boo
     let Some(meta) = lookup_table(db, table) else {
         return false;
     };
-    let is_primary_key = meta
-        .primary_key_column(db)
-        .is_some_and(|pk| same_identifier(pk.column_name(), column));
+    // Returning true refuses the policy, so an unreadable key cannot rule the scan out.
+    let Ok(primary_key) = meta.primary_key_column(db) else {
+        return true;
+    };
+    let is_primary_key = primary_key.is_some_and(|pk| same_identifier(pk.column_name(), column));
     if !is_primary_key {
         return false;
     }
-    !meta.foreign_keys(db).any(|fk| {
+    !meta.foreign_keys(db).into_iter().flatten().any(|fk| {
         fk.host_column(db)
+            .ok()
+            .flatten()
             .is_some_and(|host| same_identifier(host.column_name(), column))
     })
 }
@@ -407,6 +411,8 @@ pub(super) fn analyze_p5_parent_inheritance(
 
     let outer_cols: Vec<String> = outer_table_meta
         .columns(db)
+        .into_iter()
+        .flatten()
         .map(|c| c.stored_column_name().into_owned())
         .collect();
     let mut predicates = Vec::new();
@@ -420,6 +426,8 @@ pub(super) fn analyze_p5_parent_inheritance(
         };
         let parent_cols: Vec<String> = parent_table
             .columns(db)
+            .into_iter()
+            .flatten()
             .map(|c| c.stored_column_name().into_owned())
             .collect();
 
@@ -581,6 +589,8 @@ fn membership_matches(
         };
         let col_names: Vec<String> = table
             .columns(db)
+            .into_iter()
+            .flatten()
             .map(|c| c.stored_column_name().into_owned())
             .collect();
 
@@ -1037,7 +1047,13 @@ fn build_unqualified_membership_scope(
             continue;
         };
 
-        for col in table.columns(db) {
+        // An unreadable column list is as blind as an unresolvable table, and this scope
+        // only ever adds a refusal, so both take the same flag.
+        let Ok(columns) = table.columns(db) else {
+            scope.unknown_other_source = true;
+            continue;
+        };
+        for col in columns {
             scope
                 .other_columns
                 .insert(normalize_relation_name(col.column_name()));
@@ -1231,20 +1247,24 @@ fn table_has_fk_to_parent(
     fk_column: &str,
     parent_table_name: &str,
 ) -> bool {
-    outer_table.foreign_keys(db).any(|fk| {
-        let host_col_matches = fk
-            .host_column(db)
-            .is_some_and(|col| col.stored_column_name() == fk_column);
-        if !host_col_matches {
-            return false;
-        }
+    outer_table
+        .foreign_keys(db)
+        .into_iter()
+        .flatten()
+        .any(|fk| {
+            let host_col_matches = fk
+                .host_column(db)
+                .ok()
+                .flatten()
+                .is_some_and(|col| col.stored_column_name() == fk_column);
+            if !host_col_matches {
+                return false;
+            }
 
-        qualifier_matches_table(
-            fk.referenced_table(db).table_name(),
-            parent_table_name,
-            None,
-        )
-    })
+            fk.referenced_table(db).is_ok_and(|referenced| {
+                qualifier_matches_table(referenced.table_name(), parent_table_name, None)
+            })
+        })
 }
 pub(super) fn infer_membership_fk_column(
     join_table: &str,

@@ -577,6 +577,8 @@ fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option
     let table_info = lookup_table(db, table)?;
     let cols: Vec<String> = table_info
         .columns(db)
+        .into_iter()
+        .flatten()
         .map(|c| c.stored_column_name().into_owned())
         .collect();
 

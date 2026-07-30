@@ -371,7 +371,10 @@ pub(crate) fn build_schema_plan(
         .map(table_identity)
         .collect();
     for table in db.tables() {
-        if !table.has_row_level_security(db) || covered.contains(&table_identity(table)) {
+        // A table whose RLS state cannot be read must still be deny-filled: a table
+        // absent from the model reads as unconstrained.
+        if table.has_row_level_security(db) == Ok(false) || covered.contains(&table_identity(table))
+        {
             continue;
         }
         by_table.entry(qualified_table_name(table)).or_default();
@@ -1079,13 +1082,19 @@ fn join_table_readability(join_table: &str, db: &ParserDB) -> JoinTableReadabili
     let Some(table) = lookup_table(db, join_table) else {
         return JoinTableReadability::Open;
     };
-    if !table.has_row_level_security(db) {
+    // Only a table positively known to have RLS off is open.
+    if table.has_row_level_security(db) == Ok(false) {
         return JoinTableReadability::Open;
     }
 
     let mut roles = BTreeSet::new();
     let mut grants_read = false;
-    for policy in table.policies(db).filter(|p| policy_grants_select(p)) {
+    for policy in table
+        .policies(db)
+        .into_iter()
+        .flatten()
+        .filter(|p| policy_grants_select(p))
+    {
         grants_read = true;
         let scoped = derive_scoped_roles(policy);
         if scoped.is_empty() {
@@ -1342,7 +1351,7 @@ impl TableTypes {
 
         let mut names: Vec<(bool, String)> = db
             .tables()
-            .filter(|table| table.has_row_level_security(db))
+            .filter(|table| table.has_row_level_security(db) != Ok(false))
             .map(|table| {
                 (
                     !policied.contains(&table_identity(table)),
@@ -2099,9 +2108,10 @@ fn translate_pattern(
             let rule_is_denial =
                 matches!(&inner_expr, UsersetExpr::Computed(name) if name == DENY_RELATION);
             // A row the parent hides cannot satisfy the rule, self references included.
+            // Gating narrows the rule, so an unreadable RLS state gates.
             let gate_on_parent = !rule_is_denial
                 && lookup_table(db, parent_table)
-                    .is_some_and(|table| table.has_row_level_security(db));
+                    .is_some_and(|table| table.has_row_level_security(db) != Ok(false));
             let rule_expr = if gate_on_parent {
                 UsersetExpr::Intersection(vec![
                     inner_expr,
@@ -2546,19 +2556,22 @@ fn exact_roles_expr(
 
 fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
     let table_info = lookup_table(db, table)?;
-    for col in table_info.columns(db) {
+    for col in table_info.columns(db).into_iter().flatten() {
         let name = col.stored_column_name();
         if is_owner_like_column_name(&name) {
             return Some(name.into_owned());
         }
     }
-    for fk in table_info.foreign_keys(db) {
-        let ref_table = fk.referenced_table(db);
-        let ref_name = ref_table.table_name();
-        let normalized_ref = normalize_relation_name(ref_name);
+    for fk in table_info.foreign_keys(db).into_iter().flatten() {
+        let Ok(ref_table) = fk.referenced_table(db) else {
+            continue;
+        };
+        let normalized_ref = normalize_relation_name(ref_table.table_name());
         if normalized_ref == "users" || normalized_ref == "owners" {
             if let Some(col_name) = fk
                 .host_columns(db)
+                .into_iter()
+                .flatten()
                 .next()
                 .map(|col| col.stored_column_name().into_owned())
             {
@@ -2577,12 +2590,14 @@ fn referenced_table_for_fk_col<'db>(
     fk_column: &str,
 ) -> Option<&'db str> {
     let table_info = lookup_table(db, table)?;
-    for fk in table_info.foreign_keys(db) {
+    for fk in table_info.foreign_keys(db).into_iter().flatten() {
         let uses_col = fk
             .host_columns(db)
+            .into_iter()
+            .flatten()
             .any(|c| c.stored_column_name() == fk_column);
         if uses_col {
-            return Some(fk.referenced_table(db).table_name());
+            return fk.referenced_table(db).ok().map(TableLike::table_name);
         }
     }
     None
