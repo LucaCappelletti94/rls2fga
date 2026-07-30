@@ -13,4 +13,5 @@ type articles
     define can_delete: no_access
     define can_insert: no_access
     define can_select: no_access
+    define can_select_for_update: can_update
     define can_update: no_access

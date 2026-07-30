@@ -280,6 +280,8 @@ fn a_column_named_after_an_action_relation_does_not_take_it() {
         "can_update_using",
         "can_update_check",
         "can_insert_returning",
+        "can_upsert",
+        "can_select_for_update",
     ] {
         let db = db_of(&format!(
             "
@@ -3231,5 +3233,447 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
     assert!(
         rendered.contains(r#"'docs:' || "id""#),
         "the unique NOT NULL id column identifies the row:\n{rendered}"
+    );
+}
+
+/// `CREATE POLICY p ON docs;` stores neither clause. `PostgreSQL` then has no
+/// permissive `USING` qual and no permissive `WITH CHECK`, so the table is
+/// closed on every command. Reading the missing clause as `TRUE` opens the
+/// table to everyone.
+#[test]
+fn a_policy_with_no_clause_at_all_grants_nothing() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_bare ON docs;
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
+        let definition = relation_definition(&model.dsl, "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.dsl));
+        assert!(
+            definition.contains("no_access"),
+            "a clauseless policy admits no row, so {relation} must deny, got \
+             'define {relation}: {definition}'"
+        );
+    }
+}
+
+/// A `SELECT` policy with no `USING` contributes no permissive read qual, and it
+/// is the only one here, so nothing is readable.
+#[test]
+fn a_select_policy_with_no_using_clause_grants_no_read() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT;
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.dsl));
+    assert!(
+        can_select.contains("no_access"),
+        "a SELECT policy with no USING reads nothing, got 'define can_select: {can_select}'"
+    );
+}
+
+/// `WITH CHECK` admits the new row and says nothing about the existing one. With
+/// no `USING` clause anywhere, `PostgreSQL` finds no permissive qual for the row
+/// being changed, so no `UPDATE` can ever succeed. Mirroring the check backwards
+/// onto the `USING` side grants what `PostgreSQL` refuses.
+#[test]
+fn an_update_policy_with_no_using_clause_updates_no_row() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    let can_update = relation_definition(&model.dsl, "docs", "can_update")
+        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.dsl));
+    assert!(
+        can_update.contains("no_access"),
+        "no USING clause admits the row to change, got 'define can_update: {can_update}'"
+    );
+}
+
+/// The clause a command reads decides whether a policy covers it. Telling the
+/// operator the `UPDATE` policy fell below the confidence threshold says
+/// `PostgreSQL` grants the update, which is the opposite of the truth.
+#[test]
+fn a_command_a_policy_names_without_the_clause_it_needs_is_reported_as_unpolicied() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("No permissive policy on 'docs' covers") && message.contains("UPDATE")
+        }),
+        "RLS denies the UPDATE outright and the report must say so: {messages:#?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("confidence threshold")),
+        "nothing was dropped by confidence here: {messages:#?}"
+    );
+}
+
+/// A membership table whose only read policy stores no `USING` shows no row, so
+/// the parent policy's `EXISTS` finds nothing and the grant is empty.
+#[test]
+fn membership_read_policy_with_no_using_clause_denies_the_parent_grant() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY members_sel ON doc_members FOR SELECT;
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user)
+);
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.dsl));
+    assert!(
+        can_select.contains("no_access"),
+        "no membership row is visible, so the grant is empty, got \
+         'define can_select: {can_select}'"
+    );
+}
+
+/// A locking read (`SELECT ... FOR UPDATE`, `FOR SHARE`, `FOR NO KEY UPDATE`,
+/// `FOR KEY SHARE`) is filtered by the `UPDATE` policies' `USING` clause as well
+/// as by the `SELECT` policies, so `can_select` answers for more rows than
+/// `PostgreSQL` returns.
+#[test]
+fn a_locking_read_needs_the_rows_an_update_may_touch() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user) WITH CHECK (TRUE);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    let locking = relation_definition(&model.dsl, "docs", "can_select_for_update")
+        .unwrap_or_else(|| panic!("docs should define can_select_for_update:\n{}", model.dsl));
+    assert_eq!(
+        locking, "can_update_using",
+        "a locking read sees the rows an UPDATE may touch:\n{}",
+        model.dsl
+    );
+    assert_ne!(
+        Some(locking.as_str()),
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        "everyone reads this table, but only an owner may lock a row"
+    );
+}
+
+/// With no `UPDATE` policy, `PostgreSQL` has no permissive `USING` qual for the
+/// row being locked, so a locking read returns nothing even where a plain read
+/// returns every row.
+#[test]
+fn a_locking_read_is_denied_where_no_policy_admits_an_update() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select_for_update").as_deref(),
+        Some("can_update"),
+        "the locking read answers with the update rule:\n{}",
+        model.dsl
+    );
+    let can_update = relation_definition(&model.dsl, "docs", "can_update")
+        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.dsl));
+    assert!(
+        can_update.contains("no_access"),
+        "and that rule denies, got 'define can_update: {can_update}'"
+    );
+}
+
+/// Where the two `UPDATE` clauses agree there is no separate `USING` relation, so
+/// the locking read still needs a name of its own to point at.
+#[test]
+fn a_locking_read_is_answered_even_where_the_update_clauses_agree() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+
+    assert!(
+        relation_definition(&model.dsl, "docs", "can_update_using").is_none(),
+        "one clause means one relation:\n{}",
+        model.dsl
+    );
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select_for_update").as_deref(),
+        Some("can_update"),
+        "the locking read answers with the update rule:\n{}",
+        model.dsl
+    );
+}
+
+/// "No permissive policy covers UPDATE" sends the operator looking for a policy
+/// they already wrote. The report has to name the one that stores no clause.
+#[test]
+fn report_names_the_policy_whose_clause_is_absent() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("'docs_upd' names UPDATE without a USING clause")),
+        "the policy at fault must be named: {messages:#?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("'docs_sel'")),
+        "a policy storing the clause it needs is not at fault: {messages:#?}"
+    );
+}
+
+/// A clauseless policy fails both halves, and the two halves read different
+/// clauses, so the operator needs both named.
+#[test]
+fn report_names_both_clauses_a_bare_policy_omits() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_bare ON docs;
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("'docs_bare' names SELECT, UPDATE, DELETE without a USING clause")
+        }),
+        "the commands a missing USING denies must be named: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("'docs_bare' names INSERT without a WITH CHECK clause")
+        }),
+        "an INSERT reads the WITH CHECK alone: {messages:#?}"
+    );
+}
+
+/// A policy storing no clause contributes nothing, but another policy may still
+/// grant the command, so the note must not claim the command is denied.
+#[test]
+fn a_clauseless_policy_beside_a_working_one_is_not_reported_as_a_denial() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_bare ON docs FOR SELECT;
+",
+    );
+    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the working policy still grants reads:\n{}",
+        model.dsl
+    );
+    let note = messages
+        .iter()
+        .find(|message| message.contains("'docs_bare'"))
+        .unwrap_or_else(|| panic!("the clauseless policy is worth naming: {messages:#?}"));
+    assert!(
+        note.contains("names SELECT without a USING clause"),
+        "the absent clause is the point: {note}"
+    );
+    assert!(
+        !note.contains("denie"),
+        "reads are granted by the other policy, so this note claims no denial: {note}"
+    );
+}
+
+/// A policy the schema gives no clause constrains nothing, so it must not mint a
+/// role scope relation, a `pg_role` type, or a note asking for memberships that
+/// nothing consults.
+#[test]
+fn a_clauseless_policy_mints_no_role_scope() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR ALL TO auditor;
+",
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    assert_eq!(
+        pg_role_relation(&model.dsl, "docs"),
+        None,
+        "the barrier stores no clause, so it binds nothing:\n{}",
+        model.dsl
+    );
+    assert!(
+        !type_names(&model.dsl).iter().any(|name| name == "pg_role"),
+        "no relation reads a role here:\n{}",
+        model.dsl
+    );
+    assert!(
+        !model
+            .todos
+            .iter()
+            .any(|todo| todo.message.contains("memberships are loaded")),
+        "asking for tuples nothing consults is noise: {:#?}",
+        model.todos
+    );
+}
+
+/// A RESTRICTIVE `UPDATE` policy storing only a `WITH CHECK` guards the new row and
+/// says nothing about the existing one, so it narrows `can_update` while leaving a
+/// locking read alone. `SELECT ... FOR UPDATE` returns the rows the permissive
+/// `USING` admits, whatever the barrier would refuse to write.
+#[test]
+fn a_restrictive_update_check_narrows_the_write_but_not_the_lock() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user);
+CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE WITH CHECK (reviewer_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    let check = relation_definition(&dsl, "docs", "can_update_check")
+        .unwrap_or_else(|| panic!("docs should define can_update_check:\n{dsl}"));
+    assert!(
+        check.contains("reviewer"),
+        "the barrier guards the new row, got 'define can_update_check: {check}'"
+    );
+
+    let using = relation_definition(&dsl, "docs", "can_update_using")
+        .unwrap_or_else(|| panic!("docs should define can_update_using:\n{dsl}"));
+    assert!(
+        !using.contains("reviewer"),
+        "a WITH CHECK says nothing about the existing row, got \
+         'define can_update_using: {using}'"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select_for_update").as_deref(),
+        Some("can_update_using"),
+        "so a locking read is not narrowed by the barrier either:\n{dsl}"
+    );
+}
+
+/// A RESTRICTIVE `UPDATE` policy storing a `USING` binds the existing row, and
+/// `PostgreSQL` mirrors that clause onto the new row as well, so both halves of the
+/// update carry it and a locking read is narrowed too.
+#[test]
+fn a_restrictive_update_barrier_binds_both_halves_of_the_update() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, reviewer_id UUID, editor_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user)
+  WITH CHECK (editor_id = current_user);
+CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE USING (reviewer_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+
+    for relation in ["can_update_using", "can_update_check"] {
+        let definition = relation_definition(&dsl, "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{dsl}"));
+        assert!(
+            definition.contains("reviewer"),
+            "the barrier binds {relation}, got 'define {relation}: {definition}'"
+        );
+    }
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select_for_update").as_deref(),
+        Some("can_update_using"),
+        "and a locking read carries it through the USING half:\n{dsl}"
+    );
+}
+
+/// Coverage reads the schema's own policies, grouped by the table each name resolves
+/// to. Grouping by the spelling instead loses the clauseless policy for a table
+/// another policy spells differently, and the operator is never told which policy
+/// admits nothing.
+#[test]
+fn a_clauseless_policy_is_found_through_any_spelling_of_its_table() {
+    let db = db_of(
+        r#"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_bare ON "docs" FOR SELECT;
+"#,
+    );
+    let model = translator(ConfidenceLevel::B).generate_model(&db);
+
+    assert_eq!(
+        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the policy that stores a clause still grants reads:\n{}",
+        model.dsl
+    );
+    assert!(
+        model.todos.iter().any(|todo| todo
+            .message
+            .contains("'docs_bare' names SELECT without a USING clause")),
+        "the clauseless policy belongs to the same table however it spells it: {:#?}",
+        model.todos
     );
 }

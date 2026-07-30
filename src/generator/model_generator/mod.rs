@@ -11,10 +11,11 @@ use crate::generator::db_lookup::{
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::well_known::{
-    CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION, CAN_SELECT_RELATION,
-    CAN_UPDATE_CHECK_RELATION, CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPSERT_RELATION,
-    DENY_RELATION, MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE,
-    PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
+    CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION,
+    CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
+    CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPSERT_RELATION, DENY_RELATION,
+    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION,
+    TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
@@ -350,11 +351,12 @@ pub(crate) fn build_schema_plan(
     }
 
     // Keyed by the schema's own spelling, since two policies may quote the table
-    // differently and one table must be built once.
+    // differently and one table must be built once. `group_keys` memoizes the
+    // resolution, which walks the tables, and every policy on one table repeats it.
+    let mut group_keys: BTreeMap<String, String> = BTreeMap::new();
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
-        let named = cp.table_name();
-        let key = lookup_table(db, &named).map_or(named, qualified_table_name);
+        let key = table_group_key(db, cp.table_name(), &mut group_keys);
         by_table.entry(key).or_default().push(cp);
     }
 
@@ -370,6 +372,19 @@ pub(crate) fn build_schema_plan(
             continue;
         }
         by_table.entry(qualified_table_name(table)).or_default();
+    }
+
+    // The schema's own permissive policies under the same key, since the filtered
+    // set cannot say whether a policy exists at all. Splitting the two keys would
+    // tell the operator RLS denies a command its own policy grants.
+    let mut declared_permissive: BTreeMap<String, Vec<&<ParserDB as DatabaseLike>::Policy>> =
+        BTreeMap::new();
+    for policy in db.policies() {
+        if derive_policy_mode(policy) != PolicyMode::Permissive {
+            continue;
+        }
+        let key = table_group_key(db, policy.table_name.to_string(), &mut group_keys);
+        declared_permissive.entry(key).or_default().push(policy);
     }
 
     let table_types = TableTypes::assign(db, &mut todos);
@@ -415,6 +430,11 @@ pub(crate) fn build_schema_plan(
         let mut action_buckets: BTreeMap<ActionTarget, ModeBuckets> = BTreeMap::new();
 
         for cp in table_policies {
+            // A policy the schema gives no clause constrains nothing, so it must not
+            // mint a scope relation or ask for tuples either.
+            if cp.policy.using.is_none() && cp.policy.with_check.is_none() {
+                continue;
+            }
             if let Some(ref c) = cp.using_classification {
                 confidence_summary.push((cp.name().to_string(), c.confidence));
             }
@@ -513,10 +533,14 @@ pub(crate) fn build_schema_plan(
             &mut table_plan,
             action_buckets.get(&ActionTarget::UpdateUsing),
         );
-        let mut update_check_expr = compose_action(
-            &mut table_plan,
-            action_buckets.get(&ActionTarget::UpdateCheck),
-        );
+        // Composed only where an existing row can pass, since a WITH CHECK admits
+        // the new row alone and never stands in for the missing USING.
+        let mut update_check_expr = update_using_expr.is_some().then(|| {
+            compose_action(
+                &mut table_plan,
+                action_buckets.get(&ActionTarget::UpdateCheck),
+            )
+        });
         let mut delete_expr =
             compose_action(&mut table_plan, action_buckets.get(&ActionTarget::Delete));
 
@@ -549,12 +573,10 @@ pub(crate) fn build_schema_plan(
             table_plan.set_computed(CAN_DELETE_RELATION, requires_read_access(expr));
         }
 
-        if let Some(using_expr) = update_using_expr
-            .take()
-            .or_else(|| update_check_expr.clone())
-        {
+        if let Some(using_expr) = update_using_expr.take() {
             let check_expr = update_check_expr
                 .take()
+                .flatten()
                 .unwrap_or_else(|| using_expr.clone());
             if using_expr == check_expr {
                 table_plan.set_computed(CAN_UPDATE_RELATION, requires_read_access(using_expr));
@@ -574,9 +596,12 @@ pub(crate) fn build_schema_plan(
 
         // An undefined action relation reads as "the consumer decides", which is
         // how RLS coverage gaps become open access.
+        let declared_here: &[&<ParserDB as DatabaseLike>::Policy] = declared_permissive
+            .get(&source_table_name)
+            .map_or(&[], Vec::as_slice);
         let uncovered = fill_uncovered_actions_with_deny(&mut table_plan);
         if !uncovered.is_empty() {
-            let covered_by_schema = commands_a_permissive_policy_covers(db, &source_table_name);
+            let covered_by_schema = commands_a_permissive_policy_covers(declared_here);
             let (dropped, unpolicied): (Vec<&str>, Vec<&str>) = uncovered
                 .into_iter()
                 .partition(|command| covered_by_schema.contains(command));
@@ -603,6 +628,18 @@ pub(crate) fn build_schema_plan(
                     ),
                 });
             }
+        }
+
+        for (policy_name, commands, clause) in policies_missing_a_clause(declared_here) {
+            let message = format!(
+                "Policy '{policy_name}' names {commands} without a {clause} clause, so \
+                 PostgreSQL admits no row through it"
+            );
+            todos.push(TodoItem {
+                level: ConfidenceLevel::C,
+                policy_name,
+                message,
+            });
         }
 
         // Denying this silently would hide a schema mistake.
@@ -637,6 +674,7 @@ pub(crate) fn build_schema_plan(
     inline_synthetic_rule_aliases(&mut all_types);
     drop_implied_insert_readback(&mut all_types);
     define_upsert_relations(&mut all_types);
+    define_locking_read_relations(&mut all_types);
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
@@ -1246,6 +1284,21 @@ fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
     }
 }
 
+/// Key grouping every spelling of one table together, memoized in `cache` because
+/// resolving a spelling walks the tables. Both groupings call this, so the filtered
+/// classifications and the schema's own policies cannot land under different keys.
+fn table_group_key(db: &ParserDB, named: String, cache: &mut BTreeMap<String, String>) -> String {
+    if let Some(key) = cache.get(&named) {
+        return key.clone();
+    }
+    let key = match lookup_table(db, &named) {
+        Some(table) => qualified_table_name(table),
+        None => named.clone(),
+    };
+    cache.insert(named, key.clone());
+    key
+}
+
 /// Identity that matches two table references however the policy spelled them.
 fn table_identity(table: &<ParserDB as DatabaseLike>::Table) -> (Option<String>, String) {
     (
@@ -1364,27 +1417,33 @@ impl TableTypes {
 /// Prefix for relations synthesized to hold a parent-side rule.
 const INHERITED_RELATION_PREFIX: &str = "inherited_";
 
-/// Action relations and the SQL command each answers for.
-const ACTION_RELATION_COMMANDS: [(&str, &str); 4] = [
-    (CAN_SELECT_RELATION, "SELECT"),
-    (CAN_INSERT_RELATION, "INSERT"),
-    (CAN_UPDATE_RELATION, "UPDATE"),
-    (CAN_DELETE_RELATION, "DELETE"),
+/// Action relations, the SQL command each answers for, and the clause targets a
+/// policy has to reach before any row passes that command.
+const ACTION_RELATION_COMMANDS: [(&str, &str, &[ActionTarget]); 4] = [
+    (CAN_SELECT_RELATION, "SELECT", &[ActionTarget::Select]),
+    (CAN_INSERT_RELATION, "INSERT", &[ActionTarget::Insert]),
+    (
+        CAN_UPDATE_RELATION,
+        "UPDATE",
+        &[ActionTarget::UpdateUsing, ActionTarget::UpdateCheck],
+    ),
+    (CAN_DELETE_RELATION, "DELETE", &[ActionTarget::Delete]),
 ];
 
 /// The action relations alone, in command order.
 fn action_relations() -> impl Iterator<Item = &'static str> {
     ACTION_RELATION_COMMANDS
         .into_iter()
-        .map(|(relation, _)| relation)
+        .map(|(relation, _, _)| relation)
 }
 
-/// Relations an action is assembled from rather than named by a SQL command.
-const DERIVED_ACTION_RELATIONS: [&str; 4] = [
+/// Relations a statement shape needs rather than a bare SQL command name.
+const DERIVED_ACTION_RELATIONS: [&str; 5] = [
     CAN_UPDATE_USING_RELATION,
     CAN_UPDATE_CHECK_RELATION,
     CAN_INSERT_RETURNING_RELATION,
     CAN_UPSERT_RELATION,
+    CAN_SELECT_FOR_UPDATE_RELATION,
 ];
 
 /// Drop items added since `start` that repeat an earlier one, comparing level,
@@ -1405,46 +1464,94 @@ fn dedup_todos_added_since(todos: &mut Vec<TodoItem>, start: usize) {
     }
 }
 
-/// Commands a permissive policy on `table` covers, whatever its confidence. The
-/// filtered policy set cannot answer this, and the answer decides whether a
-/// denied command is a coverage gap in `PostgreSQL` or a gap in the translation.
-fn commands_a_permissive_policy_covers(db: &ParserDB, table: &str) -> BTreeSet<&'static str> {
+/// Action targets a policy's stored clauses reach, which is the routing
+/// `for_each_policy_target_expr` performs once those clauses are classified.
+fn policy_clause_targets(policy: &sqlparser::ast::CreatePolicy) -> BTreeSet<ActionTarget> {
+    let command = derive_policy_command(policy.command.as_ref());
+    let mut targets = BTreeSet::new();
+    if policy.using.is_some() {
+        targets.extend(using_targets(&command));
+    }
+    if policy.with_check.is_some()
+        || (policy.using.is_some() && policy_uses_using_for_missing_with_check(&command))
+    {
+        targets.extend(with_check_targets(&command));
+    }
+    targets
+}
+
+/// Commands the schema's permissive policies on one table cover, whatever their
+/// confidence. The filtered policy set cannot answer this, and the answer decides
+/// whether a denied command is a coverage gap in `PostgreSQL` or in the translation.
+fn commands_a_permissive_policy_covers(
+    declared: &[&<ParserDB as DatabaseLike>::Policy],
+) -> BTreeSet<&'static str> {
     let mut commands = BTreeSet::new();
-    let Some(target) = lookup_table(db, table).map(table_identity) else {
-        return commands;
-    };
-    for policy in db.policies() {
-        let names_target = lookup_table(db, &policy.table_name.to_string())
-            .is_some_and(|named| table_identity(named) == target);
-        if !names_target || derive_policy_mode(policy) != PolicyMode::Permissive {
-            continue;
-        }
-        match derive_policy_command(policy.command.as_ref()) {
-            PolicyCommand::All => {
-                commands.extend(ACTION_RELATION_COMMANDS.into_iter().map(|(_, cmd)| cmd));
-            }
-            PolicyCommand::Select => {
-                commands.insert("SELECT");
-            }
-            PolicyCommand::Insert => {
-                commands.insert("INSERT");
-            }
-            PolicyCommand::Update => {
-                commands.insert("UPDATE");
-            }
-            PolicyCommand::Delete => {
-                commands.insert("DELETE");
-            }
-        }
+    for policy in declared {
+        let reached = policy_clause_targets(policy);
+        commands.extend(
+            ACTION_RELATION_COMMANDS
+                .into_iter()
+                .filter(|(_, _, needed)| needed.iter().all(|target| reached.contains(target)))
+                .map(|(_, command, _)| command),
+        );
     }
     commands
+}
+
+/// Permissive policies that name a command without storing the clause it reads,
+/// as `(policy, commands, clause)`. `PostgreSQL` finds no qual for those, so the
+/// policy admits nothing and the schema reads as if it covered them.
+fn policies_missing_a_clause(
+    declared: &[&<ParserDB as DatabaseLike>::Policy],
+) -> Vec<(String, String, &'static str)> {
+    let mut missing = Vec::new();
+    for policy in declared {
+        if policy.using.is_some() {
+            continue;
+        }
+        let command = derive_policy_command(policy.command.as_ref());
+        let checks: BTreeSet<ActionTarget> = with_check_targets(&command).into_iter().collect();
+        let applies: BTreeSet<ActionTarget> = using_targets(&command)
+            .into_iter()
+            .chain(checks.iter().copied())
+            .collect();
+
+        let mut needs_using = Vec::new();
+        let mut needs_check = Vec::new();
+        for (_, named, targets) in ACTION_RELATION_COMMANDS {
+            if !targets.iter().any(|target| applies.contains(target)) {
+                continue;
+            }
+            // A command every one of whose targets a WITH CHECK feeds, which is the
+            // INSERT, survives a missing USING.
+            if targets.iter().all(|target| checks.contains(target)) {
+                needs_check.push(named);
+            } else {
+                needs_using.push(named);
+            }
+        }
+
+        if !needs_using.is_empty() {
+            missing.push((policy.name.value.clone(), needs_using.join(", "), "USING"));
+        }
+        if !needs_check.is_empty() && policy.with_check.is_none() {
+            missing.push((
+                policy.name.value.clone(),
+                needs_check.join(", "),
+                "WITH CHECK",
+            ));
+        }
+    }
+    missing
 }
 
 /// Deny every action relation no policy produced, returning the denied commands.
 fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec<&'static str> {
     let missing: Vec<(&'static str, &'static str)> = ACTION_RELATION_COMMANDS
         .into_iter()
-        .filter(|(relation, _)| !table_plan.computed_relations.contains_key(*relation))
+        .filter(|(relation, _, _)| !table_plan.computed_relations.contains_key(*relation))
+        .map(|(relation, command, _)| (relation, command))
         .collect();
     if missing.is_empty() {
         return Vec::new();
@@ -1478,6 +1585,30 @@ fn define_upsert_relations(all_types: &mut BTreeMap<String, TypePlan>) {
                 UsersetExpr::Computed(CAN_INSERT_RELATION.to_string()),
                 UsersetExpr::Computed(CAN_UPDATE_RELATION.to_string()),
             ]),
+        );
+    }
+}
+
+/// Answer for a locking read, which `PostgreSQL` filters by the `UPDATE` policies'
+/// `USING` clause as well as the `SELECT` policies. That is the `USING` half where
+/// the two `UPDATE` clauses differ, and `can_update` itself where they agree or
+/// where nothing admits an update. Runs once the actions are final.
+fn define_locking_read_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        if !plan.computed_relations.contains_key(CAN_UPDATE_RELATION) {
+            continue;
+        }
+        let answers = if plan
+            .computed_relations
+            .contains_key(CAN_UPDATE_USING_RELATION)
+        {
+            CAN_UPDATE_USING_RELATION
+        } else {
+            CAN_UPDATE_RELATION
+        };
+        plan.set_computed(
+            CAN_SELECT_FOR_UPDATE_RELATION,
+            UsersetExpr::Computed(answers.to_string()),
         );
     }
 }

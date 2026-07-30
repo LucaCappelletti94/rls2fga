@@ -50,3 +50,8 @@ pub(crate) const CAN_INSERT_RETURNING_RELATION: &str = "can_insert_returning";
 /// Inserting with `ON CONFLICT ... DO UPDATE`, which updates the conflicting row,
 /// so the `UPDATE` policies apply to it and to the merged row.
 pub(crate) const CAN_UPSERT_RELATION: &str = "can_upsert";
+
+/// Reading a row under a locking clause (`FOR UPDATE`, `FOR NO KEY UPDATE`,
+/// `FOR SHARE`, `FOR KEY SHARE`), which `PostgreSQL` filters by the `UPDATE`
+/// policies' `USING` clause on top of the `SELECT` policies.
+pub(crate) const CAN_SELECT_FOR_UPDATE_RELATION: &str = "can_select_for_update";

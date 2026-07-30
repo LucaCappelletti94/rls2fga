@@ -1203,3 +1203,278 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+diesel::table! {
+    #[sql_name = "notes"]
+    notes_owned (id) {
+        id -> diesel::sql_types::Text,
+        owner_id -> diesel::sql_types::Text,
+    }
+}
+
+/// One seeded `notes` row: `(id, owner_id)`.
+const SEEDED_OWNED_NOTES: [(&str, &str); 2] = [("note-alice", USER_ALICE), ("note-bob", USER_BOB)];
+
+fn seed_owned_notes(conn: &mut PgConnection) {
+    diesel::insert_into(users::table)
+        .values([USER_ALICE, USER_BOB].map(|id| users::id.eq(id)).to_vec())
+        .execute(conn)
+        .expect("Failed to seed users");
+    diesel::insert_into(notes_owned::table)
+        .values(
+            SEEDED_OWNED_NOTES
+                .map(|(id, owner)| (notes_owned::id.eq(id), notes_owned::owner_id.eq(owner)))
+                .to_vec(),
+        )
+        .execute(conn)
+        .expect("Failed to seed notes");
+}
+
+/// Whether `app_user` acting as `user_id` sees the `notes` row `note_id`.
+/// `locking` adds `FOR UPDATE`, which also applies the `UPDATE` policies.
+fn postgres_returns_note(
+    conn: &mut PgConnection,
+    user_id: &str,
+    note_id: &str,
+    locking: bool,
+) -> bool {
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let rows = notes_owned::table
+            .filter(notes_owned::id.eq(note_id))
+            .select(notes_owned::id);
+        // A locking clause bars an aggregate, so count the rows returned.
+        let returned: Vec<String> = if locking {
+            rows.for_update().load(conn)?
+        } else {
+            rows.load(conn)?
+        };
+        Ok(returned.len() == 1)
+    })
+    .expect("reading notes under row level security should not error")
+}
+
+/// Whether `app_user` acting as `user_id` may write the `notes` row `note` back
+/// unchanged. The write is never kept.
+fn postgres_updates_note(conn: &mut PgConnection, user_id: &str, note: (&str, &str)) -> bool {
+    let (note_id, owner_id) = note;
+    let mut changed = 0usize;
+    let outcome = conn.transaction::<(), AttemptError, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        // Writing the row's own owner back keeps whatever a WITH CHECK admits.
+        changed = diesel::update(notes_owned::table.filter(notes_owned::id.eq(note_id)))
+            .set(notes_owned::owner_id.eq(owner_id))
+            .execute(conn)?;
+        Err(AttemptError::Rollback)
+    });
+
+    match outcome {
+        Err(AttemptError::Rollback) => changed == 1,
+        Err(AttemptError::Rejected(error)) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("row-level security"),
+                "updating {note_id} as {user_id} failed for a reason other than RLS: {rendered}"
+            );
+            false
+        }
+        Ok(()) => unreachable!("the transaction body always rolls back"),
+    }
+}
+
+/// A locking read applies the `UPDATE` policies' `USING` clause on top of the
+/// `SELECT` policies, so `can_select` answers for rows `SELECT ... FOR UPDATE`
+/// never returns. `can_select_for_update` is what answers for that statement.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn locking_read_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("locking_read");
+    let (classified, db, registry) = support::load_fixture_classified("locking_read");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the locking_read schema on PostgreSQL 18");
+    // A locking read needs the UPDATE privilege as well as SELECT.
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+    seed_owned_notes(&mut conn);
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "locking-read-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut separated = 0usize;
+    for user_id in [USER_ALICE, USER_BOB] {
+        for (note_id, _) in SEEDED_OWNED_NOTES {
+            let plain = postgres_returns_note(&mut conn, user_id, note_id, false);
+            let locking = postgres_returns_note(&mut conn, user_id, note_id, true);
+            if plain && !locking {
+                separated += 1;
+            }
+
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+            for (relation, expected) in [("can_select", plain), ("can_select_for_update", locking)]
+            {
+                let actual =
+                    support::openfga::check_allowed(&client, &user, relation, &object).await;
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} {relation} {object}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        separated > 0,
+        "no row separates a plain read from a locking read, so the comparison proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA locking read parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// An `UPDATE` policy that stores no `USING` clause leaves `PostgreSQL` without a
+/// permissive qual for the row being changed, so nothing is updatable even where
+/// the `WITH CHECK` would admit the new row.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn absent_clause_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("clause_absent");
+    let (classified, db, registry) = support::load_fixture_classified("clause_absent");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the clause_absent schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+    seed_owned_notes(&mut conn);
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "absent-clause-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut readable_but_frozen = 0usize;
+    for user_id in [USER_ALICE, USER_BOB] {
+        for note in SEEDED_OWNED_NOTES {
+            let readable = postgres_returns_note(&mut conn, user_id, note.0, false);
+            let updatable = postgres_updates_note(&mut conn, user_id, note);
+            if readable && !updatable {
+                readable_but_frozen += 1;
+            }
+
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{}", note.0);
+            for (relation, expected) in [("can_select", readable), ("can_update", updatable)] {
+                let actual =
+                    support::openfga::check_allowed(&client, &user, relation, &object).await;
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} {relation} {object}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        readable_but_frozen > 0,
+        "no row is readable yet unwritable, so the comparison proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA absent clause parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

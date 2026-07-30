@@ -203,6 +203,15 @@ fn action_relations_and_their_commands_are_paired_once() {
         strays, 0,
         "mapping a relation to a command by match duplicates that table, found {strays}"
     );
+
+    let update_needs = definition_count(
+        &modules,
+        "ActionTarget::UpdateUsing, ActionTarget::UpdateCheck",
+    );
+    assert_eq!(
+        update_needs, 1,
+        "one place says which clause targets a command needs, found {update_needs}"
+    );
 }
 
 #[test]
@@ -258,6 +267,7 @@ fn well_known_names_have_a_single_source_of_truth() {
         "can_update_check",
         "can_insert_returning",
         "can_upsert",
+        "can_select_for_update",
     ] {
         let literals = definition_count(&modules, &format!("\"{name}\""));
         assert_eq!(

@@ -46,6 +46,8 @@ pub fn classify_policies_with_registry(
             let table_name = policy.table_name.to_string();
             let command = derive_policy_command(policy.command.as_ref());
 
+            // An absent clause is not `TRUE`: PostgreSQL stores no qual for it, and
+            // with no permissive qual the command falls closed.
             let using_classification = policy
                 .using
                 .as_ref()
@@ -55,20 +57,6 @@ pub fn classify_policies_with_registry(
                 .with_check
                 .as_ref()
                 .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
-
-            // PostgreSQL semantics: a bare `CREATE POLICY p ON t` with no
-            // USING or WITH CHECK clause defaults to USING (TRUE), granting
-            // unrestricted access.  Synthesize P10ConstantBool{true} so the
-            // policy is not silently dropped by the confidence filter.
-            let using_classification =
-                if using_classification.is_none() && with_check_classification.is_none() {
-                    Some(ClassifiedExpr {
-                        pattern: PatternClass::P10ConstantBool { value: true },
-                        confidence: ConfidenceLevel::A,
-                    })
-                } else {
-                    using_classification
-                };
 
             ClassifiedPolicy {
                 policy: policy.clone(),
@@ -1156,7 +1144,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
     }
 
     #[test]
-    fn classify_bare_policy_synthesizes_p10_true() {
+    fn classify_bare_policy_leaves_both_clauses_unclassified() {
         let db = parse_schema(
             r"
 CREATE TABLE docs (id UUID PRIMARY KEY, owner_id UUID);
@@ -1171,15 +1159,10 @@ CREATE POLICY docs_open ON docs;
         assert_eq!(classified.len(), 1);
 
         let policy = &classified[0];
-        assert_eq!(
-            policy.using_classification.as_ref().map(|c| &c.pattern),
-            Some(&PatternClass::P10ConstantBool { value: true }),
-            "bare policy with no USING/WITH CHECK should synthesize P10 true as USING"
-        );
-        assert_eq!(
-            policy.using_classification.as_ref().map(|c| c.confidence),
-            Some(ConfidenceLevel::A),
-            "synthesized implicit TRUE should have confidence A"
+        assert!(
+            policy.using_classification.is_none(),
+            "a policy storing no USING must not classify one, got {:?}",
+            policy.using_classification
         );
         assert!(
             policy.with_check_classification.is_none(),

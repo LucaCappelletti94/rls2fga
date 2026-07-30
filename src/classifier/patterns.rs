@@ -235,9 +235,11 @@ pub fn derive_policy_mode(policy: &sqlparser::ast::CreatePolicy) -> PolicyMode {
         .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
 }
 
-/// Whether a policy can grant reads: permissive and covering `SELECT`.
+/// Whether a policy can grant reads: permissive, covering `SELECT`, and storing
+/// the `USING` clause a read is filtered by.
 pub fn policy_grants_select(policy: &sqlparser::ast::CreatePolicy) -> bool {
     derive_policy_mode(policy) == PolicyMode::Permissive
+        && policy.using.is_some()
         && matches!(
             derive_policy_command(policy.command.as_ref()),
             PolicyCommand::Select | PolicyCommand::All

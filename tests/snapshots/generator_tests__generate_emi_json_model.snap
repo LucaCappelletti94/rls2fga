@@ -26,6 +26,11 @@ expression: model
             "relation": "role_viewer"
           }
         },
+        "can_select_for_update": {
+          "computedUserset": {
+            "relation": "can_update"
+          }
+        },
         "can_update": {
           "computedUserset": {
             "relation": "role_editor"
