@@ -204,6 +204,51 @@ fn render_tuple_source_inner(
             None,
         )),
 
+        TupleSource::ArrayMembership {
+            table,
+            pk_col,
+            array_col,
+            relation,
+        } => {
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let array_col_sql = quote_sql_identifier(array_col);
+            Some(TupleQuery {
+                comment: format!("-- Array membership (elements of {array_col} reference users)"),
+                sql: format!(
+                    "SELECT '{owner_type}:' || {pk_col_sql} AS object, '{relation}' AS relation, \
+                     '{USER_TYPE}:' || member AS subject\n\
+                     FROM {table_sql}\n\
+                     CROSS JOIN UNNEST({array_col_sql}) AS member\n\
+                     WHERE member IS NOT NULL;"
+                ),
+            })
+        }
+
+        TupleSource::JsonbFieldOwnership {
+            table,
+            pk_col,
+            column,
+            path,
+            relation,
+        } => {
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let field_sql = render_jsonb_path(&quote_sql_identifier(column), path)?;
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Jsonb field ownership ({column} -> {} references users)",
+                    path.join(" -> ")
+                ),
+                sql: format!(
+                    "SELECT '{owner_type}:' || {pk_col_sql} AS object, '{relation}' AS relation, \
+                     '{USER_TYPE}:' || ({field_sql}) AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE ({field_sql}) IS NOT NULL;"
+                ),
+            })
+        }
+
         TupleSource::RoleOwnerUser {
             table,
             pk_col,
@@ -611,6 +656,28 @@ fn quote_sql_identifier_part(part: &str) -> String {
     // Always double-quote the identifier: this is semantically equivalent to unquoted
     // lowercase identifiers and avoids the need for an ever-growing reserved-keyword list.
     format!("\"{}\"", raw.replace('"', "\"\""))
+}
+
+/// Quote `value` as a SQL string literal.
+///
+/// With `standard_conforming_strings` on, which `PostgreSQL` has defaulted to since 9.1,
+/// a backslash is an ordinary character and doubling the quote is the whole escape.
+fn quote_sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Render a jsonb key chain as an extraction expression on `column_sql`, the last hop
+/// as `->>` so the result is text rather than a quoted JSON string.
+fn render_jsonb_path(column_sql: &str, path: &[String]) -> Option<String> {
+    let (last, leading) = path.split_last()?;
+    let mut out = column_sql.to_string();
+    for key in leading {
+        out.push_str(" -> ");
+        out.push_str(&quote_sql_string_literal(key));
+    }
+    out.push_str(" ->> ");
+    out.push_str(&quote_sql_string_literal(last));
+    Some(out)
 }
 
 #[cfg(test)]

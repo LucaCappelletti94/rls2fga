@@ -24,7 +24,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # Optional
 reqwest = { version = "0.13", features = ["json"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
-diesel = { version = "2", features = ["postgres"], optional = true }
+diesel = { version = "2", features = ["postgres", "serde_json"], optional = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

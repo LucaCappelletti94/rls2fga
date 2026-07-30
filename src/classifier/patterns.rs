@@ -155,6 +155,23 @@ pub enum PatternClass {
         /// The constant.
         value: bool,
     },
+    /// P11: The caller is an element of an array column: `current_user = ANY (editors)`.
+    ///
+    /// Exact, not a widening: `UNNEST` enumerates precisely the rows `= ANY` admits.
+    P11ArrayMembership {
+        /// Array column holding the admitted principals.
+        column: String,
+    },
+    /// P12: The caller is named by a jsonb field: `data ->> 'owner' = current_user`.
+    ///
+    /// Exact: `->>` yields NULL for a missing key, a null value and a null column, and
+    /// the comparison then filters, which is what dropping the NULLs reproduces.
+    P12JsonbFieldOwnership {
+        /// Column holding the document.
+        column: String,
+        /// Key chain to the field, the last hop extracted as text.
+        path: Vec<String>,
+    },
     /// No known pattern matched.
     Unknown {
         /// The expression as written.

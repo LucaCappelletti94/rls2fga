@@ -310,3 +310,53 @@ fn identifier_folding_has_a_single_source_of_truth() {
         );
     }
 }
+
+#[test]
+fn blaming_an_unrecognized_clause_has_a_single_source_of_truth() {
+    let modules = [
+        "src/parser",
+        "src/classifier",
+        "src/classifier/recognizers",
+        "src/generator",
+        "src/generator/model_generator",
+    ];
+
+    for needle in [
+        "fn called_function_names(",
+        "fn unrecognized_operators(",
+        "fn describe_unrecognized_function(",
+        // One recognizer decides which array spellings name the caller, and one reads a
+        // jsonb key chain. A second copy would let the classifier and the renderer
+        // disagree about what the clause says.
+        "fn array_membership_column(",
+        "fn jsonb_text_path(",
+        "fn quote_sql_string_literal(",
+    ] {
+        let definitions = definition_count(&modules, needle);
+        assert_eq!(
+            definitions, 1,
+            "expected one '{needle}', found {definitions}"
+        );
+    }
+
+    // The operator reads these, so a second spelling would drift from the first.
+    for fragment in [
+        "not in registry and body not available",
+        "did not match any recognized translation pattern",
+        "is registered as Unknown",
+    ] {
+        let uses = definition_count(&modules, fragment);
+        assert_eq!(
+            uses, 1,
+            "'{fragment}' must come from describe_unrecognized_function alone, found {uses}"
+        );
+    }
+
+    // Array membership and jsonb ownership are exact only because one place expands the
+    // array and one place renders the key chain. A second renderer would drift from the
+    // semantics both were verified against.
+    for needle in ["UNNEST(", "fn render_jsonb_path("] {
+        let uses = definition_count(&modules, needle);
+        assert_eq!(uses, 1, "'{needle}' must have one source, found {uses}");
+    }
+}

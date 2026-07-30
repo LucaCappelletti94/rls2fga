@@ -1123,6 +1123,32 @@ CREATE POLICY docs_tenant ON docs FOR SELECT USING (tenant = current_setting('ap
     );
 }
 
+/// The report is where an operator learns why a policy vanished, so "no known
+/// pattern" sends them re-reading a clause the translator could have named.
+#[test]
+fn report_names_the_function_call_that_defeated_recognition() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, status TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant_of(owner_id) = 'acme');
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let classified = translator.classify(&db);
+    let model = translator.generate_model(&db);
+
+    let report = build_report(&model, &classified, ConfidenceLevel::B);
+    assert!(
+        report.contains("tenant_of"),
+        "the call the operator has to go read must be named:\n{report}"
+    );
+    assert!(
+        !report.contains("does not match any known pattern"),
+        "a named call replaces the generic reason rather than joining it:\n{report}"
+    );
+}
+
 /// A dropped clause appears in neither the model nor the tuples, so the report is
 /// the only place its loss is visible.
 #[test]
@@ -3675,5 +3701,232 @@ CREATE POLICY docs_bare ON "docs" FOR SELECT;
             .contains("'docs_bare' names SELECT without a USING clause")),
         "the clauseless policy belongs to the same table however it spells it: {:#?}",
         model.todos
+    );
+}
+
+/// `PostgreSQL` 18, role alice, rows carrying `ARRAY['alice']`, `ARRAY['alice','bob']`,
+/// `ARRAY[]`, `NULL`, `ARRAY[NULL]`, `ARRAY['alice',NULL]` and `ARRAY['bob']`: a
+/// policy `USING (current_user = ANY (editors))` returns exactly the three rows
+/// holding 'alice', and `SELECT id, unnest(editors)` filtered to 'alice' returns
+/// the same three. The translation is exact, not a widening, so it earns a
+/// relation rather than a refusal.
+#[test]
+fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
+    for clause in [
+        "current_user = ANY (editors)",
+        "editors @> ARRAY[current_user]",
+        "ARRAY[current_user] <@ editors",
+        "ARRAY[current_user] && editors",
+    ] {
+        let db = db_of(&format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, editors TEXT[]);
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+             CREATE POLICY docs_editors ON docs FOR SELECT USING ({clause});"
+        ));
+        let translator = translator(ConfidenceLevel::B);
+        let dsl = translator.generate_model(&db).dsl;
+        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+        let can_select = relation_definition(&dsl, "docs", "can_select")
+            .unwrap_or_else(|| panic!("`{clause}`: docs must define can_select:\n{dsl}"));
+        assert_ne!(
+            can_select, "no_access",
+            "`{clause}`: RLS grants three rows, so the model must not deny:\n{dsl}"
+        );
+
+        let relation = can_select.trim().to_string();
+        let body = relation_definition(&dsl, "docs", &relation).unwrap_or_else(|| {
+            panic!("`{clause}`: can_select points at '{relation}' which is undefined:\n{dsl}")
+        });
+        assert!(
+            body.contains("user"),
+            "`{clause}`: '{relation}' must admit users, got '{body}':\n{dsl}"
+        );
+
+        // Without the unnesting scan the relation exists but can never be populated,
+        // which denies exactly the rows PostgreSQL grants.
+        assert!(
+            rendered.to_lowercase().contains("unnest"),
+            "`{clause}`: the array column has to be expanded to produce tuples:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#""editors""#),
+            "`{clause}`: the tuple query must read the array column:\n{rendered}"
+        );
+    }
+}
+
+/// An array column and a subquery both sit to the right of `= ANY`, and only the
+/// column can be expanded. Treating a subquery as one emitted
+/// `UNNEST("(SELECT user_id FROM doc_members WHERE doc_id = docs"."id)")`, which
+/// splits on the dot and names two columns that do not exist, under a relation named
+/// after the same text. The caller has to sit on the left for the array recognizer to
+/// look at the right at all, so that is the shape this pins.
+#[test]
+fn any_over_a_subquery_is_never_expanded_as_an_array_column() {
+    const MEMBERS: &str = "
+CREATE TABLE docs(id UUID PRIMARY KEY, editors TEXT[]);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+";
+
+    for clause in [
+        "current_user = ANY (SELECT user_id FROM doc_members WHERE doc_id = docs.id)",
+        "current_user = ANY (SELECT user_id FROM doc_members)",
+    ] {
+        let db = db_of(&format!(
+            "{MEMBERS}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
+        ));
+        let translator = translator(ConfidenceLevel::B);
+        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+        assert!(
+            !rendered.to_lowercase().contains("unnest"),
+            "`{clause}`: a subquery is not an array to expand:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("SELECT user_id"),
+            "`{clause}`: the subquery text must not reach the generated SQL:\n{rendered}"
+        );
+    }
+
+    // The object-key spelling is real membership and must keep its P4 translation.
+    let db = db_of(&format!(
+        "{MEMBERS}CREATE POLICY docs_members ON docs FOR SELECT
+           USING (id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user));"
+    ));
+    let translator = translator(ConfidenceLevel::B);
+    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    assert!(
+        rendered.contains(r#"FROM "doc_members""#),
+        "membership through the join table still produces its tuples:\n{rendered}"
+    );
+}
+
+/// `PostgreSQL` 18, role alice, rows carrying `{"owner":"alice"}`, `{"owner":"bob"}`,
+/// `{"owner":null}`, `{}`, a NULL column and `{"owner":"carol"}`: a policy
+/// `USING (data ->> 'owner' = current_user)` returns exactly the rows whose extracted
+/// text equals the caller, since `->>` yields NULL for a missing key, a null value and
+/// a null column, and the comparison then filters. `SELECT id, data ->> 'owner'` with
+/// the NULLs dropped enumerates the same pairs, so this is exact too.
+#[test]
+fn caller_named_in_a_jsonb_field_is_ownership_not_a_refusal() {
+    for clause in [
+        "data ->> 'owner' = current_user",
+        "current_user = data ->> 'owner'",
+        "(data ->> 'owner')::text = current_user",
+    ] {
+        let db = db_of(&format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, data JSONB);
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+             CREATE POLICY docs_json ON docs FOR SELECT USING ({clause});"
+        ));
+        let translator = translator(ConfidenceLevel::B);
+        let dsl = translator.generate_model(&db).dsl;
+        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+        let can_select = relation_definition(&dsl, "docs", "can_select")
+            .unwrap_or_else(|| panic!("`{clause}`: docs must define can_select:\n{dsl}"));
+        assert_ne!(
+            can_select, "no_access",
+            "`{clause}`: RLS grants the matching rows, so the model must not deny:\n{dsl}"
+        );
+
+        assert!(
+            rendered.contains(r#""data" ->> 'owner'"#),
+            "`{clause}`: the tuple query must extract the field:\n{rendered}"
+        );
+    }
+}
+
+/// A JSON key is a SQL string literal, and a quote inside it would close that literal
+/// and let the rest execute. The identifier path is already guarded by
+/// `quote_sql_identifier`, so the key is the remaining injection point.
+#[test]
+fn a_quote_in_a_jsonb_key_cannot_break_out_of_its_literal() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, data JSONB);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_json ON docs FOR SELECT
+  USING (data ->> 'ow''ner' = current_user);
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+
+    if rendered.contains("->>") {
+        assert!(
+            rendered.contains("'ow''ner'"),
+            "the quote must stay doubled inside the literal:\n{rendered}"
+        );
+    }
+}
+
+/// A jsonb or array comparison against a literal is an attribute guard, exactly as
+/// `status = 'published'` is. Leaving it unrecognized made the same policy shape behave
+/// differently depending on whether the attribute lived in a column or a document: the
+/// plain spelling reached P7 and kept its relationship half, the jsonb one collapsed the
+/// whole `AND` to `no_access`.
+#[test]
+fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
+    const PLAIN: &str = "status = 'published'";
+    let plain_db = db_of(&format!(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, data JSONB, tags TEXT[], status TEXT);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY docs_hybrid ON docs FOR SELECT
+           USING (owner_id = current_user AND {PLAIN});"
+    ));
+    let expected = relation_definition(
+        &translator(ConfidenceLevel::C).generate_model(&plain_db).dsl,
+        "docs",
+        "can_select",
+    )
+    .expect("the plain spelling defines can_select");
+    assert_eq!(
+        expected, "owner",
+        "guard precondition: the plain attribute guard keeps its relationship half"
+    );
+
+    for guard in [
+        "data ->> 'status' = 'published'",
+        "data @> '{\"public\": true}'",
+        "tags && ARRAY['x', 'y']",
+        "tags @> ARRAY['x']",
+    ] {
+        let db = db_of(&format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, data JSONB, tags TEXT[], status TEXT);
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+             CREATE POLICY docs_hybrid ON docs FOR SELECT
+               USING (owner_id = current_user AND {guard});"
+        ));
+        let dsl = translator(ConfidenceLevel::C).generate_model(&db).dsl;
+        let can_select = relation_definition(&dsl, "docs", "can_select")
+            .unwrap_or_else(|| panic!("`{guard}`: docs must define can_select:\n{dsl}"));
+        assert_eq!(
+            can_select, expected,
+            "`{guard}`: must behave like `{PLAIN}`, which yields '{expected}':\n{dsl}"
+        );
+    }
+}
+
+/// A dropped attribute guard is a widening, so the operator has to be told which guard
+/// they are now enforcing themselves.
+#[test]
+fn a_dropped_jsonb_attribute_guard_names_the_field_it_stopped_checking() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, data JSONB);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_hybrid ON docs FOR SELECT
+  USING (owner_id = current_user AND data ->> 'status' = 'published');
+",
+    );
+    let model = translator(ConfidenceLevel::C).generate_model(&db);
+    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("status")),
+        "the field no longer being checked must be named: {messages:#?}"
     );
 }

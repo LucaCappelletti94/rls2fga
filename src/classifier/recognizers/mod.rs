@@ -371,64 +371,163 @@ pub fn recognize_p3(
     })
 }
 
-/// Recognise array membership (`current_user = ANY(col)`) and overlap (`col1 && col2`)
-/// as P9, so they surface as a structured TODO instead of a parse failure.
+/// Recognise "the caller is an element of an array column" in each spelling
+/// `PostgreSQL` accepts: `caller = ANY (col)`, `col @> ARRAY[caller]`,
+/// `ARRAY[caller] <@ col` and `ARRAY[caller] && col`.
+///
+/// Verified on `PostgreSQL` 18: the four agree on every row except an array holding
+/// only NULL, where `= ANY` yields NULL and the others false. Both filter the row
+/// out, so all four admit the same rows and translate alike.
 pub fn recognize_array_patterns(
     expr: &Expr,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    // Case 1: `current_user = ANY(array_col)`, direct array membership.
-    if let Expr::AnyOp {
-        left,
-        compare_op: BinaryOperator::Eq,
-        right,
-        ..
-    } = expr
-    {
-        let array_expr = if is_current_user_expr(left, registry) {
-            // current_user = ANY(right)
-            right.as_ref()
-        } else if is_current_user_expr(right, registry) {
-            // In the reversed form `ANY(left) = current_user` sqlparser would
-            // not produce AnyOp; guard here for future parser versions.
-            left.as_ref()
-        } else {
-            return None;
-        };
+    let column = array_membership_column(expr, registry)?;
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P11ArrayMembership { column },
+        confidence: ConfidenceLevel::A,
+    })
+}
 
-        let array_col = extract_column_name(array_expr).unwrap_or_else(|| array_expr.to_string());
-        return Some(ClassifiedExpr {
-            pattern: PatternClass::P9AttributeCondition {
-                column: array_col.clone(),
-                value_description: format!(
-                    "current_user ∈ array column '{array_col}' \
-                     (expand with UNNEST for static tuple generation)"
-                ),
-            },
-            confidence: ConfidenceLevel::B,
-        });
+/// The array column whose elements the caller is tested against, if `expr` is one
+/// of the four membership spellings.
+///
+/// The array side must resolve to a column: `= ANY (SELECT ...)` is membership
+/// through a table, handled by the P4 recognizers, and treating its subquery as a
+/// column would emit SQL naming a column that does not exist.
+fn array_membership_column(expr: &Expr, registry: &FunctionRegistry) -> Option<String> {
+    /// How the caller is written on its side of the operator.
+    enum CallerForm {
+        /// `= ANY` compares the caller itself.
+        Direct,
+        /// The containment and overlap spellings wrap it in a one-element array.
+        Singleton,
     }
 
-    // Case 2: `col1 && col2`, array overlap operator.
-    if let Expr::BinaryOp {
-        op: BinaryOperator::PGOverlap,
-        left,
-        right,
-    } = expr
-    {
-        let col = extract_column_name(left)
-            .or_else(|| extract_column_name(right))
-            .unwrap_or_else(|| expr.to_string());
-        return Some(ClassifiedExpr {
-            pattern: PatternClass::P9AttributeCondition {
-                column: col,
-                value_description: "array overlap (&&); requires runtime filtering".to_string(),
-            },
-            confidence: ConfidenceLevel::C,
-        });
+    let (form, caller_side, array_side) = match expr {
+        Expr::AnyOp {
+            left,
+            compare_op: BinaryOperator::Eq,
+            right,
+            ..
+        } => (CallerForm::Direct, left.as_ref(), right.as_ref()),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::AtArrow,
+            right,
+        } => (CallerForm::Singleton, right.as_ref(), left.as_ref()),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::ArrowAt,
+            right,
+        } => (CallerForm::Singleton, left.as_ref(), right.as_ref()),
+        // `&&` is symmetric, so either side may hold the singleton.
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::PGOverlap,
+            right,
+        } => {
+            if is_singleton_caller_element(left, registry) {
+                (CallerForm::Singleton, left.as_ref(), right.as_ref())
+            } else {
+                (CallerForm::Singleton, right.as_ref(), left.as_ref())
+            }
+        }
+        _ => return None,
+    };
+
+    let names_the_caller = match form {
+        CallerForm::Direct => is_current_user_expr(caller_side, registry),
+        CallerForm::Singleton => is_singleton_caller_element(caller_side, registry),
+    };
+    if !names_the_caller {
+        return None;
     }
 
-    None
+    extract_column_name(unwrap_cast_or_nested(array_side))
+}
+
+/// Whether `expr` is a one-element array literal holding the caller.
+fn is_singleton_caller_element(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    let Expr::Array(array) = unwrap_cast_or_nested(expr) else {
+        return false;
+    };
+    let [only] = array.elem.as_slice() else {
+        return false;
+    };
+    is_current_user_expr(only, registry)
+}
+
+/// Recognise `data ->> 'owner' = caller`, the caller's identity stored in a jsonb
+/// field, in either operand order and through casts.
+///
+/// Only a `->>` last hop qualifies: `->` yields `jsonb`, so `data -> 'owner'` compares
+/// a JSON string (quotes included) rather than the text the caller is spelled with.
+pub fn recognize_jsonb_field_ownership(
+    expr: &Expr,
+    registry: &FunctionRegistry,
+) -> Option<ClassifiedExpr> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    else {
+        return None;
+    };
+
+    let (column, path) = if is_current_user_expr(right, registry) {
+        jsonb_text_path(left)?
+    } else if is_current_user_expr(left, registry) {
+        jsonb_text_path(right)?
+    } else {
+        return None;
+    };
+
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P12JsonbFieldOwnership { column, path },
+        confidence: ConfidenceLevel::A,
+    })
+}
+
+/// The `(column, key chain)` of a jsonb text extraction, or `None` if `expr` is not one.
+fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::LongArrow,
+        right,
+    } = unwrap_cast_or_nested(expr)
+    else {
+        return None;
+    };
+
+    let mut path = vec![json_literal_key(right)?];
+    let mut node = unwrap_cast_or_nested(left);
+    // Walk the `->` hops leading up to the `->>`, innermost key last.
+    while let Expr::BinaryOp {
+        left: inner,
+        op: BinaryOperator::Arrow,
+        right: key,
+    } = node
+    {
+        path.push(json_literal_key(key)?);
+        node = unwrap_cast_or_nested(inner);
+    }
+    path.reverse();
+
+    Some((extract_column_name(node)?, path))
+}
+
+/// A jsonb key written as a string literal. An integer index addresses an array
+/// element, which names no field, and a non-literal key is not static.
+fn json_literal_key(expr: &Expr) -> Option<String> {
+    match unwrap_cast_or_nested(expr) {
+        Expr::Value(value) => match &value.value {
+            Value::SingleQuotedString(key) => Some(key.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Constant boolean policy.
@@ -485,6 +584,7 @@ pub fn recognize_p6(
                 });
             }
         }
+
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
             let col_name = extract_column_name(expr)?;
             if is_public_flag_column_name(&col_name) {
@@ -565,6 +665,68 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
         Expr::Nested(inner) => extract_function_name(inner),
         _ => None,
     }
+}
+
+/// Normalized names of every function `expr` calls that does not identify the caller,
+/// in source order, deduplicated.
+///
+/// Unlike [`extract_function_name`] this descends into operands and subqueries, so
+/// it answers for diagnosis rather than recognition. Widening `extract_function_name`
+/// instead would let P1 and P2 match a role function buried under an unrelated call.
+/// The skip runs on the node so `is_current_user_expr` stays the only predicate that
+/// decides what identifies the caller, keyword shape included.
+pub(crate) fn called_function_names(expr: &Expr, registry: &FunctionRegistry) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_expressions(expr, |node| {
+        if let Expr::Function(func) = node {
+            if !is_current_user_expr(node, registry) {
+                let name = normalized_function_name(func);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    names
+}
+
+/// Spellings of every operator in `expr` that no recognizer knows how to translate,
+/// in source order, deduplicated.
+///
+/// A jsonb or array operator carries no function to blame, so without this the reason
+/// names nothing at all. Comparison and boolean operators are omitted: a clause that
+/// translates uses them too, so naming them would point at the wrong half.
+pub(crate) fn unrecognized_operators(expr: &Expr) -> Vec<String> {
+    let mut ops: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_expressions(expr, |node| {
+        if let Expr::BinaryOp { op, .. } = node {
+            if !operator_is_ordinary(op) {
+                let spelling = op.to_string();
+                if !ops.contains(&spelling) {
+                    ops.push(spelling);
+                }
+            }
+        }
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    ops
+}
+
+/// Whether `op` is a comparison or boolean connective, which says nothing about why a
+/// clause failed to translate.
+fn operator_is_ordinary(op: &BinaryOperator) -> bool {
+    matches!(
+        op,
+        BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Gt
+            | BinaryOperator::GtEq
+            | BinaryOperator::Lt
+            | BinaryOperator::LtEq
+            | BinaryOperator::And
+            | BinaryOperator::Or
+    )
 }
 
 /// to a current-user expression.

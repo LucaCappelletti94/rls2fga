@@ -165,6 +165,10 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
             format!("P2 (roles: {})", role_names.join(", "))
         }
         PatternClass::P3DirectOwnership { column } => format!("P3 ({column} = user)"),
+        PatternClass::P11ArrayMembership { column } => format!("P11 (user in {column})"),
+        PatternClass::P12JsonbFieldOwnership { column, path } => {
+            format!("P12 ({column} ->> {} = user)", path.join(" -> "))
+        }
         PatternClass::P4ExistsMembership { join_table, .. } => {
             format!("P4 (EXISTS {join_table})")
         }

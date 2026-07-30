@@ -34,6 +34,26 @@ pub(crate) enum TupleSource {
         relation: String,
     },
 
+    /// P11 array membership. Produces `(type:pk, relation, user:element)` by
+    /// expanding `array_col`, which drops a NULL or empty array exactly as
+    /// `= ANY` refuses it.
+    ArrayMembership {
+        table: String,
+        pk_col: String,
+        array_col: String,
+        relation: String,
+    },
+
+    /// P12 jsonb field ownership. Produces `(type:pk, relation, user:field)` by
+    /// extracting `path` as text, dropping the NULL a missing key yields.
+    JsonbFieldOwnership {
+        table: String,
+        pk_col: String,
+        column: String,
+        path: Vec<String>,
+        relation: String,
+    },
+
     /// P1/P2 user-side ownership. Produces `(type:pk, owner_user, user:owner_col)`
     /// filtered to the user principal table.
     RoleOwnerUser {
@@ -145,6 +165,8 @@ impl TupleSource {
     pub(crate) fn emits_owner_type_objects(&self) -> bool {
         match self {
             Self::DirectOwnership { .. }
+            | Self::ArrayMembership { .. }
+            | Self::JsonbFieldOwnership { .. }
             | Self::RoleOwnerUser { .. }
             | Self::RoleOwnerTeam { .. }
             | Self::ExplicitGrants { .. }
@@ -163,9 +185,10 @@ impl TupleSource {
     pub(crate) fn feeds(&self, owner_type: &str) -> Vec<(String, String)> {
         let own = |relation: &str| vec![(owner_type.to_string(), relation.to_string())];
         match self {
-            Self::DirectOwnership { relation, .. } | Self::ParentBridge { relation, .. } => {
-                own(relation)
-            }
+            Self::DirectOwnership { relation, .. }
+            | Self::ArrayMembership { relation, .. }
+            | Self::JsonbFieldOwnership { relation, .. }
+            | Self::ParentBridge { relation, .. } => own(relation),
             Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
             Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
             Self::ExplicitGrants { role_cases, .. } => role_cases
@@ -197,6 +220,26 @@ impl TupleSource {
                 relation,
             } => {
                 format!("p3:{table}:{pk_col}:{owner_col}:{relation}")
+            }
+            Self::ArrayMembership {
+                table,
+                pk_col,
+                array_col,
+                relation,
+            } => {
+                format!("p11:{table}:{pk_col}:{array_col}:{relation}")
+            }
+            Self::JsonbFieldOwnership {
+                table,
+                pk_col,
+                column,
+                path,
+                relation,
+            } => {
+                format!(
+                    "p12:{table}:{pk_col}:{column}:{}:{relation}",
+                    path.join(".")
+                )
             }
             Self::RoleOwnerUser {
                 table,

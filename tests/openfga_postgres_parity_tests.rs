@@ -1478,3 +1478,193 @@ async fn absent_clause_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+/// Typed schema for the `array_jsonb_membership` fixture. `editors` is nullable and its
+/// elements are nullable, because the rows that matter carry `NULL`, `ARRAY[]` and
+/// `ARRAY[NULL]`.
+mod array_jsonb_schema {
+    diesel::table! {
+        notes (id) {
+            id -> diesel::sql_types::Text,
+            editors -> diesel::sql_types::Nullable<
+                diesel::sql_types::Array<diesel::sql_types::Nullable<diesel::sql_types::Text>>,
+            >,
+            meta -> diesel::sql_types::Nullable<diesel::sql_types::Jsonb>,
+        }
+    }
+}
+
+/// One seeded row: `(id, editors, the owner_id the jsonb names)`.
+///
+/// `None` editors is a NULL column, an empty slice is `ARRAY[]`, and a `None` element is
+/// `ARRAY[NULL]`. `None` for the owner means the key is absent. `PostgreSQL` 18 admits a
+/// row only where the caller is an element or the extracted text equals the caller, so
+/// every shape below is denied to everyone except where it names one of them.
+type SeededDocumentRow = (
+    &'static str,
+    Option<&'static [Option<&'static str>]>,
+    Option<&'static str>,
+);
+const SEEDED_DOCUMENT_ROWS: [SeededDocumentRow; 8] = [
+    ("aj-editor-only", Some(&[Some(USER_ALICE)]), Some(USER_BOB)),
+    ("aj-meta-only", Some(&[Some(USER_BOB)]), Some(USER_ALICE)),
+    ("aj-both", Some(&[Some(USER_ALICE)]), Some(USER_ALICE)),
+    ("aj-neither", Some(&[Some(USER_BOB)]), Some(USER_BOB)),
+    ("aj-empty-array", Some(&[]), Some(USER_ALICE)),
+    ("aj-null-array", None, Some(USER_ALICE)),
+    ("aj-null-element", Some(&[None]), None),
+    ("aj-missing-key", Some(&[Some(USER_ALICE)]), None),
+];
+
+fn seed_document_notes(conn: &mut PgConnection) {
+    use array_jsonb_schema::notes as aj_notes;
+
+    diesel::insert_into(users::table)
+        .values([USER_ALICE, USER_BOB].map(|id| users::id.eq(id)).to_vec())
+        .execute(conn)
+        .expect("Failed to seed users");
+
+    for (id, editors, owner) in SEEDED_DOCUMENT_ROWS {
+        let meta = owner.map_or_else(
+            || serde_json::json!({}),
+            |owner| serde_json::json!({ "owner_id": owner }),
+        );
+        diesel::insert_into(aj_notes::table)
+            .values((
+                aj_notes::id.eq(id),
+                aj_notes::editors.eq(editors.map(<[Option<&str>]>::to_vec)),
+                aj_notes::meta.eq(Some(meta)),
+            ))
+            .execute(conn)
+            .expect("Failed to seed a document note");
+    }
+}
+
+/// Ids `user_id` can read through the fixture's two `SELECT` policies.
+fn postgres_readable_document_notes(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use array_jsonb_schema::notes as aj_notes;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = aj_notes::table.select(aj_notes::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the document notes")
+}
+
+/// The caller as an array element and the caller named by a jsonb field are both exact,
+/// so `can_select` must agree with a real read row for row.
+///
+/// Both policies are permissive and each admits rows the other refuses, so a model that
+/// kept only one of them fails, and rows nobody may read stop it passing by granting
+/// everything. Pointing `can_select` at either relation alone makes it fail.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("array_jsonb_membership");
+    let (classified, db, registry) = support::load_fixture_classified("array_jsonb_membership");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the array_jsonb_membership schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+    seed_document_notes(&mut conn);
+
+    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_queries =
+        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "array-jsonb-membership-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut denied = 0usize;
+    let mut only_editors = 0usize;
+    let mut only_meta = 0usize;
+
+    for user_id in [USER_ALICE, USER_BOB] {
+        let readable = postgres_readable_document_notes(&mut conn, user_id);
+        for (note_id, editors, owner) in SEEDED_DOCUMENT_ROWS {
+            let expected = readable.contains(note_id);
+            let listed = editors.is_some_and(|e| e.contains(&Some(user_id)));
+            let named = owner == Some(user_id);
+            if !expected {
+                denied += 1;
+            }
+            if expected && listed && !named {
+                only_editors += 1;
+            }
+            if expected && named && !listed {
+                only_meta += 1;
+            }
+
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        only_editors > 0,
+        "no row is readable through the array alone, so dropping the array relation would still pass"
+    );
+    assert!(
+        only_meta > 0,
+        "no row is readable through the jsonb field alone, so dropping it would still pass"
+    );
+    assert!(
+        denied > 0,
+        "every row is readable, so the comparison cannot catch an over-grant"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA array and jsonb membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

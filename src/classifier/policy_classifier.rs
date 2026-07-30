@@ -384,6 +384,11 @@ fn classify_expr_inner(
         return classified;
     }
 
+    // Try P12: the caller's identity held in a jsonb field.
+    if let Some(classified) = recognizers::recognize_jsonb_field_ownership(expr, registry) {
+        return classified;
+    }
+
     // Try P5: parent inheritance via correlated EXISTS
     if let Some(classified) = recognizers::recognize_p5(expr, db, registry, table, command) {
         return classified;
@@ -446,27 +451,31 @@ fn classify_expr_inner(
         };
     }
 
-    if let Some(func_name) = recognizers::extract_function_name(expr) {
-        if !registry.is_current_user_accessor(&func_name) {
-            let reason = match registry.get(&func_name) {
-                Some(FunctionSemantic::Unknown { reason }) => {
-                    format!("Function '{func_name}' is registered as Unknown: {reason}")
-                }
-                None => {
-                    format!("Function '{func_name}' not in registry and body not available")
-                }
-                _ => {
-                    format!(
-                        "Function '{func_name}' did not match any recognized translation pattern"
-                    )
-                }
-            };
-            return unknown_d(expr, reason);
-        }
+    let mut blamed: Vec<String> = recognizers::called_function_names(expr, registry)
+        .into_iter()
+        .map(|name| describe_unrecognized_function(&name, registry))
+        .collect();
+    blamed.extend(
+        recognizers::unrecognized_operators(expr)
+            .into_iter()
+            .map(|op| format!("Operator '{op}' has no translation")),
+    );
+    if !blamed.is_empty() {
+        return unknown_d(expr, blamed.join(". "));
     }
 
-    // Fallback: Unknown
     unknown_d(expr, "Expression does not match any known pattern")
+}
+
+/// Why naming `func_name` does not tell the translator how to translate the call.
+fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) -> String {
+    match registry.get(func_name) {
+        Some(FunctionSemantic::Unknown { reason }) => {
+            format!("Function '{func_name}' is registered as Unknown: {reason}")
+        }
+        None => format!("Function '{func_name}' not in registry and body not available"),
+        _ => format!("Function '{func_name}' did not match any recognized translation pattern"),
+    }
 }
 
 /// Extract a human-readable description of the comparison value in a binary expression.
@@ -498,6 +507,8 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P8Composite { .. } => "composite check",
         PatternClass::P9AttributeCondition { .. } => "attribute-condition check",
         PatternClass::P10ConstantBool { .. } => "constant-boolean check",
+        PatternClass::P11ArrayMembership { .. } => "array-membership check",
+        PatternClass::P12JsonbFieldOwnership { .. } => "jsonb-field-ownership check",
         PatternClass::Unknown { .. } => "unrecognized expression",
     }
 }
@@ -507,6 +518,10 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         PatternClass::P1NumericThreshold { .. }
         | PatternClass::P2RoleNameInList { .. }
         | PatternClass::P3DirectOwnership { .. }
+        // The caller is an element of the array column, or named by the jsonb field, so
+        // both are user-resource relationships exactly as ownership is.
+        | PatternClass::P11ArrayMembership { .. }
+        | PatternClass::P12JsonbFieldOwnership { .. }
         | PatternClass::P4ExistsMembership { .. }
         | PatternClass::P5ParentInheritance { .. } => true,
         // P6 (boolean public flag) is a resource-attribute check, not a user-resource
@@ -966,6 +981,128 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             classified.pattern
         );
         assert_eq!(classified.confidence, ConfidenceLevel::D);
+    }
+
+    #[test]
+    fn classify_names_a_function_call_sitting_under_an_operator() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        // A call at the root of the clause was already named. These shapes bury it
+        // under an operator, a quantifier or a subquery.
+        let cases = [
+            "mystery_auth(owner_id) = 'x'",
+            "'x' = mystery_auth(owner_id)",
+            "mystery_auth(owner_id) > 3",
+            "mystery_auth(owner_id) IS TRUE",
+            "mystery_auth(owner_id) IN ('a', 'b')",
+            "owner_id = mystery_auth(id)",
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = mystery_auth(docs.id))",
+        ];
+
+        for expr_sql in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            assert!(
+                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                    if reason.contains("mystery_auth")),
+                "`{expr_sql}`: the reason must name the call, got: {:?}",
+                classified.pattern
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+        }
+    }
+
+    #[test]
+    fn classify_names_every_unrecognized_call_but_never_a_known_accessor() {
+        let db = docs_db();
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+}"#,
+            )
+            .expect("registry json should parse");
+
+        let expr = parse_expr("outer_guard(inner_guard(auth_current_user_id())) = 'x'");
+        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got: {:?}", classified.pattern);
+        };
+        assert!(
+            reason.contains("outer_guard") && reason.contains("inner_guard"),
+            "the classifier cannot tell which wrapper blocked it, so both are named: {reason}"
+        );
+        assert!(
+            !reason.contains("auth_current_user_id"),
+            "a call the registry resolves is not at fault: {reason}"
+        );
+
+        // One call spelled twice is one thing to go read.
+        let repeated = parse_expr("tenant_of(owner_id) = tenant_of(id)");
+        let classified = classify_expr(&repeated, &db, &registry, "docs", &PolicyCommand::Select);
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got: {:?}", classified.pattern);
+        };
+        assert_eq!(
+            reason.matches("tenant_of").count(),
+            1,
+            "a repeated call is named once: {reason}"
+        );
+    }
+
+    /// `current_user` parses as a function call but is a SQL keyword nobody wrote,
+    /// so blaming it sends the operator hunting for a function that does not exist.
+    #[test]
+    fn classify_never_blames_a_sql_current_user_keyword() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        for expr_sql in [
+            "data ->> 'owner_id' = current_user",
+            "current_user = data ->> 'owner_id'",
+            "current_role = data ->> 'owner_id'",
+        ] {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+                continue;
+            };
+            assert!(
+                !reason.contains("current_user") && !reason.contains("current_role"),
+                "`{expr_sql}`: a SQL keyword is not a missing function: {reason}"
+            );
+        }
+    }
+
+    /// Lead 3 named the unrecognized call. An operator carries no function to name, so
+    /// these shapes kept the generic reason and sent the operator reading the whole
+    /// clause to find which piece defeated recognition.
+    #[test]
+    fn classify_names_the_operator_that_defeated_recognition() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        for (expr_sql, expected) in [
+            ("archived -> 'k' = status", "->"),
+            ("archived #> '{a}' = status", "#>"),
+            ("priority << 2 = status", "<<"),
+        ] {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+                panic!(
+                    "`{expr_sql}`: expected Unknown, got {:?}",
+                    classified.pattern
+                );
+            };
+            assert!(
+                reason.contains(expected),
+                "`{expr_sql}`: the reason must name the '{expected}' operator: {reason}"
+            );
+        }
     }
 
     #[test]

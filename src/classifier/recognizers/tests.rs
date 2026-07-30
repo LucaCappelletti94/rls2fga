@@ -239,47 +239,55 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
 }
 
 #[test]
-fn recognize_array_patterns_any_and_overlap() {
+fn recognize_array_patterns_matches_the_caller_in_every_spelling() {
     let registry = FunctionRegistry::new();
 
-    // `current_user = ANY(allowed_users)` → P9 at confidence B.
-    let any_expr = parse_expr("current_user = ANY(allowed_users)");
-    let c_any = recognize_array_patterns(&any_expr, &registry)
-        .expect("expected array pattern match for = ANY");
-    assert!(
-        matches!(
-            &c_any.pattern,
-            PatternClass::P9AttributeCondition { column, .. } if column == "allowed_users"
-        ),
-        "= ANY should produce P9 on array column, got: {:?}",
-        c_any.pattern
-    );
-    assert_eq!(
-        c_any.confidence,
-        ConfidenceLevel::B,
-        "= ANY should be confidence B"
-    );
+    // The caller as an element is an exact relationship, verified on PostgreSQL 18
+    // against an UNNEST enumeration, so it is P11 at confidence A.
+    for spelling in [
+        "current_user = ANY(allowed_users)",
+        "allowed_users @> ARRAY[current_user]",
+        "ARRAY[current_user] <@ allowed_users",
+        "ARRAY[current_user] && allowed_users",
+        "allowed_users && ARRAY[current_user]",
+    ] {
+        let expr = parse_expr(spelling);
+        let classified = recognize_array_patterns(&expr, &registry)
+            .unwrap_or_else(|| panic!("`{spelling}` should match array membership"));
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::P11ArrayMembership { column } if column == "allowed_users"
+            ),
+            "`{spelling}` should name the array column, got: {:?}",
+            classified.pattern
+        );
+        assert_eq!(
+            classified.confidence,
+            ConfidenceLevel::A,
+            "`{spelling}` is exact"
+        );
+    }
 
-    // `col1 && col2` array overlap → P9 at confidence C.
+    // A literal array is a value, not the caller, so it stays an attribute guard.
     let overlap_expr = parse_expr("allowed_roles && ARRAY['admin', 'editor']");
-    let c_overlap = recognize_array_patterns(&overlap_expr, &registry)
-        .expect("expected array pattern match for &&");
     assert!(
-        matches!(
-            &c_overlap.pattern,
-            PatternClass::P9AttributeCondition { .. }
-        ),
-        "array && should produce P9, got: {:?}",
-        c_overlap.pattern
+        recognize_array_patterns(&overlap_expr, &registry).is_none(),
+        "a literal array names no principal to relate"
     );
     assert_eq!(
-        c_overlap.confidence,
-        ConfidenceLevel::C,
-        "&& should be confidence C"
+        is_attribute_check(&overlap_expr).as_deref(),
+        Some("allowed_roles"),
+        "overlap against a literal is an attribute guard"
     );
 
     let non_array = parse_expr("owner_id = current_user");
     assert!(recognize_array_patterns(&non_array, &registry).is_none());
+
+    // A subquery is membership through a table, and expanding it would name a column
+    // that does not exist.
+    let subquery = parse_expr("current_user = ANY(SELECT user_id FROM doc_members)");
+    assert!(recognize_array_patterns(&subquery, &registry).is_none());
 }
 
 #[test]

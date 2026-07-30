@@ -159,14 +159,17 @@ impl TypePlan {
         }
     }
 
-    /// Relation carrying the subjects of ownership column `column`, derived from it
-    /// (`owner_id` → `owner`) and disambiguated on collision.
-    fn ownership_relation(&mut self, column: &str) -> String {
-        if let Some(existing) = self.ownership_relations.get(column) {
+    /// Relation carrying the subjects of an ownership source, named after
+    /// `name_source` (`owner_id` → `owner`) and disambiguated on collision.
+    ///
+    /// `memo_key` namespaces the reuse: a jsonb path and a column spelled alike must
+    /// not share a relation, or their two tuple sources union their principals.
+    fn ownership_relation(&mut self, memo_key: &str, name_source: &str) -> String {
+        if let Some(existing) = self.ownership_relations.get(memo_key) {
             return existing.clone();
         }
 
-        let base = canonical_fga_type_name(column.strip_suffix("_id").unwrap_or(column));
+        let base = canonical_fga_type_name(name_source.strip_suffix("_id").unwrap_or(name_source));
         let taken = |name: &str, plan: &Self| {
             reserved_relation_subjects(name).is_some()
                 || generator_defines(name)
@@ -174,9 +177,9 @@ impl TypePlan {
                 || plan.computed_relations.contains_key(name)
         };
         let relation = clamp_relation_name(if base.is_empty() || taken(&base, self) {
-            let fallback = format!("owner_{}", canonical_fga_type_name(column));
+            let fallback = format!("owner_{}", canonical_fga_type_name(name_source));
             if taken(&fallback, self) {
-                format!("{fallback}_{}", stable_hex_suffix(column))
+                format!("{fallback}_{}", stable_hex_suffix(memo_key))
             } else {
                 fallback
             }
@@ -185,7 +188,7 @@ impl TypePlan {
         });
 
         self.ownership_relations
-            .insert(column.to_string(), relation.clone());
+            .insert(memo_key.to_string(), relation.clone());
         relation
     }
 
@@ -1824,7 +1827,7 @@ fn translate_pattern(
             }
         }
         PatternClass::P3DirectOwnership { column } => {
-            let relation = table_plan.ownership_relation(column);
+            let relation = table_plan.ownership_relation(column, column);
             table_plan.ensure_direct(
                 relation.clone(),
                 vec![DirectSubject::Type(USER_TYPE.to_string())],
@@ -1841,6 +1844,55 @@ fn translate_pattern(
                     table_plan,
                     source_table,
                     "ownership tuples",
+                    db,
+                );
+            }
+            UsersetExpr::Computed(relation)
+        }
+        PatternClass::P11ArrayMembership { column } => {
+            let relation = table_plan.ownership_relation(column, column);
+            table_plan.ensure_direct(
+                relation.clone(),
+                vec![DirectSubject::Type(USER_TYPE.to_string())],
+            );
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::ArrayMembership {
+                    table: source_table.to_string(),
+                    pk_col,
+                    array_col: column.clone(),
+                    relation: relation.clone(),
+                });
+            } else {
+                add_missing_object_identifier_todo(
+                    table_plan,
+                    source_table,
+                    "array membership tuples",
+                    db,
+                );
+            }
+            UsersetExpr::Computed(relation)
+        }
+        PatternClass::P12JsonbFieldOwnership { column, path } => {
+            let field = path.join("_");
+            let relation = table_plan
+                .ownership_relation(&format!("jsonb:{column}:{}", path.join(".")), &field);
+            table_plan.ensure_direct(
+                relation.clone(),
+                vec![DirectSubject::Type(USER_TYPE.to_string())],
+            );
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::JsonbFieldOwnership {
+                    table: source_table.to_string(),
+                    pk_col,
+                    column: column.clone(),
+                    path: path.clone(),
+                    relation: relation.clone(),
+                });
+            } else {
+                add_missing_object_identifier_todo(
+                    table_plan,
+                    source_table,
+                    "jsonb field ownership tuples",
                     db,
                 );
             }

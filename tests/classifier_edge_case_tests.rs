@@ -213,8 +213,11 @@ CREATE POLICY p ON docs FOR SELECT
     );
 }
 
+/// Was P9 at confidence B, an attribute the model then denied. `PostgreSQL` 18 grants
+/// exactly the rows holding the caller, and an UNNEST enumeration reproduces them, so it
+/// is a relationship at confidence A.
 #[test]
-fn array_any_membership_classified_as_p9() {
+fn array_any_membership_classified_as_array_membership() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, allowed_users TEXT[]);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -226,16 +229,19 @@ CREATE POLICY p ON docs FOR SELECT USING (current_user = ANY(allowed_users));
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P9AttributeCondition { column, .. } if column == "allowed_users"
+            PatternClass::P11ArrayMembership { column } if column == "allowed_users"
         ),
-        "Expected P9 for = ANY(...), got: {:?}",
+        "Expected P11 for = ANY(...), got: {:?}",
         c.pattern
     );
-    assert_eq!(c.confidence, ConfidenceLevel::B);
+    assert_eq!(c.confidence, ConfidenceLevel::A);
 }
 
+/// Two array columns overlapping name no principal, so this stays an attribute guard the
+/// application has to enforce. Only the spelling that puts the caller on one side became
+/// a relationship.
 #[test]
-fn array_overlap_classified_as_p9() {
+fn array_overlap_of_two_columns_stays_an_attribute_condition() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, tags TEXT[], user_tags TEXT[]);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;

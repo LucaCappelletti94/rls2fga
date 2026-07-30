@@ -114,6 +114,8 @@ fn role_threshold_functions_and_resource_params(
                 }
             }
             PatternClass::P3DirectOwnership { .. }
+            | PatternClass::P11ArrayMembership { .. }
+            | PatternClass::P12JsonbFieldOwnership { .. }
             | PatternClass::P4ExistsMembership { .. }
             | PatternClass::P6BooleanFlag { .. }
             | PatternClass::P9AttributeCondition { .. }
