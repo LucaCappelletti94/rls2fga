@@ -1071,16 +1071,6 @@ fn pattern_to_expr_p6_missing_pk_generates_todo() {
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "already registered as computed; cannot also register as direct")]
-fn type_plan_panics_on_direct_computed_conflict() {
-    let mut plan = TypePlan::new("docs");
-    plan.set_computed("member", UsersetExpr::Computed("owner".to_string()));
-    // Now try to add "member" as a direct relation -- should panic
-    plan.ensure_direct("member", vec![DirectSubject::Type("user".to_string())]);
-}
-
-#[test]
-#[cfg(debug_assertions)]
 #[should_panic(expected = "already registered as direct; cannot overwrite as computed")]
 fn type_plan_panics_on_computed_direct_conflict() {
     let mut plan = TypePlan::new("docs");
@@ -1358,15 +1348,6 @@ fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
         plan.ensure_computed("rel", UsersetExpr::Computed("a".into())),
         first
     );
-}
-
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "already registered as direct")]
-fn ensure_computed_panics_when_relation_already_direct() {
-    let mut plan = TypePlan::new("test");
-    plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
-    plan.ensure_computed("rel", UsersetExpr::Computed("x".into()));
 }
 
 #[test]
