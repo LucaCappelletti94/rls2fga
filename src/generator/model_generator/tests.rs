@@ -266,6 +266,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     let p9 = PatternClass::P9AttributeCondition {
         column: "status".to_string(),
         value_description: "'published'".to_string(),
+        predicate: None,
     };
     let p8_and_attr_true = PatternClass::P8Composite {
         op: BoolOp::And,
@@ -1488,6 +1489,7 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_todo() {
         pattern: PatternClass::P9AttributeCondition {
             column: "status".to_string(),
             value_description: "'active'".to_string(),
+            predicate: None,
         },
         confidence: ConfidenceLevel::C,
     };

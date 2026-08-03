@@ -4725,3 +4725,123 @@ CREATE POLICY tasks_inherit ON tasks FOR SELECT USING (EXISTS (
     schemas.extend(exclusion_emitting_schemas());
     schemas
 }
+
+/// A column compared against a literal constant is decided by the row, exactly as a
+/// boolean flag is, so it earns the same wildcard rather than falling closed. The
+/// tuple query then qualifies rows the way the flag's query already does.
+#[test]
+fn an_attribute_guard_over_a_literal_grants_the_rows_it_admits() {
+    let schema = |clause: &str| {
+        format!(
+            "CREATE TABLE articles(id UUID PRIMARY KEY, status TEXT, priority INT, \
+             is_public BOOLEAN NOT NULL DEFAULT FALSE);\n\
+             ALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY articles_sel ON articles FOR SELECT USING ({clause});\n"
+        )
+    };
+
+    // The boolean flag is the shape this generalises, so it is the reference.
+    let (flag_dsl, flag_tuples) = translation(&schema("is_public = TRUE"));
+    assert_eq!(
+        relation_definition(&flag_dsl, "articles", "can_select").as_deref(),
+        Some("public_viewer"),
+        "guard precondition: the boolean flag must grant the wildcard:\n{flag_dsl}"
+    );
+
+    for (clause, expected_sql) in [
+        ("status = 'published'", "AND \"status\" = 'published';"),
+        ("priority >= 3", "AND \"priority\" >= 3;"),
+        ("status <> 'draft'", "AND \"status\" <> 'draft';"),
+        // The column may sit on the right, and the operator reads column-first.
+        ("3 <= priority", "AND \"priority\" >= 3;"),
+    ] {
+        let (dsl, tuples) = translation(&schema(clause));
+        assert_eq!(
+            relation_definition(&dsl, "articles", "can_select").as_deref(),
+            Some("public_viewer"),
+            "`{clause}` is decided by the row, so it grants like the flag:\n{dsl}"
+        );
+        assert_eq!(
+            dsl, flag_dsl,
+            "`{clause}` must produce the same model as the flag it generalises"
+        );
+        assert!(
+            tuples.contains(expected_sql),
+            "`{clause}` must qualify rows in SQL, got:\n{tuples}"
+        );
+        // The flag's own query is the shape being copied, so the rest must match.
+        assert_eq!(
+            tuples.lines().count(),
+            flag_tuples.lines().count(),
+            "`{clause}` must emit one query, like the flag:\n{tuples}"
+        );
+    }
+}
+
+/// The wildcard is only correct because the compared value is a literal constant. A
+/// value the caller supplies would grant everyone access to rows scoped to one
+/// caller, and one the clock supplies would outlive the row it was computed from, so
+/// neither may reach that emission.
+#[test]
+fn only_a_literal_constant_earns_the_attribute_wildcard() {
+    use rls2fga::classifier::recognizers::attribute_literal_predicate;
+
+    let schema = |clause: &str| {
+        format!(
+            "CREATE TABLE articles(id UUID PRIMARY KEY, status TEXT, owner_id TEXT, \
+             expires_at TIMESTAMP);\n\
+             ALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY articles_sel ON articles FOR SELECT USING ({clause});\n"
+        )
+    };
+
+    for clause in [
+        // The clock decides these, not the row, so a tuple computed once would keep
+        // granting after the value passed.
+        "expires_at > now()",
+        "expires_at <= current_timestamp",
+        "expires_at > CURRENT_DATE",
+    ] {
+        let (dsl, tuples) = translation(&schema(clause));
+        assert_eq!(
+            relation_definition(&dsl, "articles", "can_select").as_deref(),
+            Some("no_access"),
+            "`{clause}` is not decided by the row, so it must not grant:\n{dsl}"
+        );
+        assert!(
+            !tuples.contains("public_viewer"),
+            "`{clause}` must emit no wildcard tuple:\n{tuples}"
+        );
+    }
+
+    // And the recognizer itself refuses anything that is not a literal, which is what
+    // the emission depends on.
+    for clause in [
+        "status = current_user",
+        "status > now()",
+        "status = owner_id",
+        "status = upper('a')",
+    ] {
+        let expr = parse_using_expr(&schema(clause));
+        assert!(
+            attribute_literal_predicate(&expr).is_none(),
+            "`{clause}` compares against something the row does not fix, so it must \
+             carry no predicate"
+        );
+    }
+}
+
+/// The `USING` expression of the one policy `schema` declares.
+fn parse_using_expr(schema: &str) -> sqlparser::ast::Expr {
+    use rls2fga::parser::sql_parser::{DatabaseLike, PolicyLike};
+
+    let db = db_of(schema);
+    let expr = db
+        .policies()
+        .next()
+        .expect("the schema declares one policy")
+        .using_expression(&db)
+        .expect("the policy stores a USING clause")
+        .clone();
+    expr
+}

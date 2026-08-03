@@ -322,6 +322,25 @@ pub(crate) fn describe_tuple_source(
             vec![Guard::NotNull(pk_col.clone())],
         )),
 
+        // The guard reaches the description as structure, so the evaluator applies
+        // the same comparison the query puts in its WHERE.
+        TupleSource::AttributeGate {
+            table,
+            pk_col,
+            predicate,
+        } => Some(from_row(
+            table,
+            owner_type,
+            ValueSource::Column(pk_col.clone()),
+            PUBLIC_RELATION,
+            USER_TYPE,
+            ValueSource::Literal("*".to_string()),
+            vec![
+                Guard::NotNull(pk_col.clone()),
+                Guard::Compare(predicate.clone()),
+            ],
+        )),
+
         TupleSource::Todo { .. } => None,
     }
 }

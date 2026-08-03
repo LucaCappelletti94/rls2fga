@@ -2241,7 +2241,32 @@ fn translate_pattern(
                 }
             }
         }
-        PatternClass::P9AttributeCondition { column, .. } => {
+        PatternClass::P9AttributeCondition {
+            column, predicate, ..
+        } => {
+            // A literal constant is decided by the row, so the guard generalises the
+            // boolean flag: emit the wildcard and let the tuple query qualify rows.
+            // The wildcard is only correct because the compared value is a literal.
+            // A caller-derived one would grant everyone access to rows scoped to one
+            // caller, and a temporal one would outlive the clock, so both arrive here
+            // as `None` and keep falling closed.
+            if let Some(predicate) = predicate {
+                if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                    table_plan.add_source(TupleSource::AttributeGate {
+                        table: source_table.to_string(),
+                        pk_col,
+                        predicate: predicate.clone(),
+                    });
+                } else {
+                    add_missing_object_identifier_todo(
+                        table_plan,
+                        source_table,
+                        "attribute-gate tuples",
+                        db,
+                    );
+                }
+                return public_expr(table_plan);
+            }
             todos.push(TodoItem {
                 level: ConfidenceLevel::C,
                 policy_name: policy_name.to_string(),
@@ -2255,7 +2280,7 @@ fn translate_pattern(
                     "-- TODO [Level D]: skipped tuple generation for {source_table} (unsupported pattern P9)"
                 ),
                 sql: format!(
-                    "-- Tuple query not emitted; attribute condition on '{column}' requires runtime filtering; no static tuple mapping."
+                    "-- Tuple query not emitted; attribute condition on '{column}' is not decided by the row, so no static tuple mapping."
                 ),
             });
             deny_expr(table_plan)

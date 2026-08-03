@@ -386,6 +386,8 @@ CREATE TABLE notes (
     owner_id TEXT,
     editors TEXT[],
     meta JSONB,
+    status TEXT,
+    priority INT,
     is_public BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE TABLE note_members (note_id TEXT REFERENCES notes(id), user_id TEXT);
@@ -428,6 +430,10 @@ CREATE POLICY notes_reviewers ON notes FOR SELECT
         WHERE note_reviewers.note_id = notes.id
           AND note_reviewers.user_id = auth_current_user_id()
           AND note_reviewers.role = 'editor'));
+-- P9 attribute guards over literal constants, which the row decides just as the
+-- boolean flag does.
+CREATE POLICY notes_published ON notes FOR SELECT USING (status = 'published');
+CREATE POLICY notes_priority ON notes FOR SELECT USING (priority >= 3);
 -- P10 constant TRUE.
 CREATE POLICY announcements_all ON announcements FOR SELECT USING (TRUE);
 -- A role-scoped policy, which mints the pg_role scope.
@@ -441,18 +447,21 @@ INSERT INTO folders (id, owner_id) VALUES
     ('f1', 'alice'),
     ('f2', NULL);
 
-INSERT INTO notes (id, folder_id, owner_id, editors, meta, is_public) VALUES
-    ('n-owned',        'f1',  'alice', NULL,                    NULL,                          FALSE),
-    ('n-null-owner',   'f1',  NULL,    NULL,                    NULL,                          FALSE),
-    ('n-null-list',    'f2',  'bob',   NULL,                    NULL,                          FALSE),
-    ('n-empty-list',   NULL,  'bob',   '{}',                    NULL,                          FALSE),
-    ('n-only-null',    NULL,  'bob',   '{NULL}',                NULL,                          FALSE),
-    ('n-null-beside',  NULL,  'bob',   '{NULL,carol}',          NULL,                          FALSE),
-    ('n-two-editors',  'f1',  'bob',   '{alice,carol}',         NULL,                          FALSE),
-    ('n-meta-owner',   NULL,  'bob',   NULL,                    '{\"owner_id\": \"carol\"}',   FALSE),
-    ('n-meta-absent',  NULL,  'bob',   NULL,                    '{\"other\": \"carol\"}',      FALSE),
-    ('n-meta-null',    NULL,  'bob',   NULL,                    '{\"owner_id\": null}',        FALSE),
-    ('n-public',       NULL,  'bob',   NULL,                    NULL,                          TRUE);
+-- `status` and `priority` cover what an attribute guard turns on: the value it
+-- admits, one it refuses, NULL (which fails every comparison including `<>`), and
+-- both sides of a numeric boundary.
+INSERT INTO notes (id, folder_id, owner_id, editors, meta, status, priority, is_public) VALUES
+    ('n-owned',        'f1',  'alice', NULL,                    NULL,                          'published', 5,    FALSE),
+    ('n-null-owner',   'f1',  NULL,    NULL,                    NULL,                          'draft',     1,    FALSE),
+    ('n-null-list',    'f2',  'bob',   NULL,                    NULL,                          NULL,        NULL, FALSE),
+    ('n-empty-list',   NULL,  'bob',   '{}',                    NULL,                          'draft',     3,    FALSE),
+    ('n-only-null',    NULL,  'bob',   '{NULL}',                NULL,                          'published', 2,    FALSE),
+    ('n-null-beside',  NULL,  'bob',   '{NULL,carol}',          NULL,                          NULL,        4,    FALSE),
+    ('n-two-editors',  'f1',  'bob',   '{alice,carol}',         NULL,                          'archived',  10,   FALSE),
+    ('n-meta-owner',   NULL,  'bob',   NULL,                    '{\"owner_id\": \"carol\"}',   'published', NULL, FALSE),
+    ('n-meta-absent',  NULL,  'bob',   NULL,                    '{\"other\": \"carol\"}',      'draft',     0,    FALSE),
+    ('n-meta-null',    NULL,  'bob',   NULL,                    '{\"owner_id\": null}',        NULL,        3,    FALSE),
+    ('n-public',       NULL,  'bob',   NULL,                    NULL,                          'archived',  -1,   TRUE);
 
 INSERT INTO note_members (note_id, user_id) VALUES
     ('n-owned', 'bob'),
@@ -499,7 +508,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
     // Non-vacuous: the schema really does exercise the fast path, and the rows
     // really do produce records on both sides.
     assert!(
-        pure >= 8,
+        pure >= 10,
         "the schema must exercise every row-decidable shape, saw {pure}"
     );
     // The residual predicate is the one shape here a row cannot decide, and its

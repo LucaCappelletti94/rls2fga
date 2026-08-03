@@ -10,6 +10,8 @@
 use crate::no_std_prelude::*;
 use alloc::borrow::Cow;
 
+use crate::classifier::patterns::{AttributeLiteral, AttributeOperator, AttributePredicate};
+
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
 /// SQL renders it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,6 +55,9 @@ pub enum Guard {
     NotNull(String),
     /// The boolean column is true.
     IsTrue(String),
+    /// The column compares as stated against a literal constant. A NULL column
+    /// fails every comparison, exactly as SQL's three-valued logic filters it.
+    Compare(AttributePredicate),
 }
 
 /// How the object, relation and subject of a record compose.
@@ -234,6 +239,52 @@ fn guard_holds<R: RowValues + ?Sized>(guard: &Guard, row: &R) -> bool {
     match guard {
         Guard::NotNull(column) => row.text(column).is_some(),
         Guard::IsTrue(column) => row.boolean(column) == Some(true),
+        Guard::Compare(predicate) => compare_holds(predicate, row),
+    }
+}
+
+/// A column against a literal, ordered numerically when both sides are numbers and
+/// lexically otherwise, which is what the column's own type decides in SQL.
+///
+/// A NULL or absent column fails every comparison, `<>` included, mirroring the way
+/// three-valued logic filters the row rather than admitting it.
+fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R) -> bool {
+    let ordering = match &predicate.value {
+        AttributeLiteral::Boolean(flag) => {
+            let Some(actual) = row.boolean(&predicate.column) else {
+                return false;
+            };
+            actual.cmp(flag)
+        }
+        AttributeLiteral::Number(number) => {
+            let Some(actual) = row.text(&predicate.column) else {
+                return false;
+            };
+            // A number the row or the policy spells unparseably cannot be ordered, so
+            // the guard refuses rather than falling back to text.
+            let (Ok(left), Ok(right)) = (actual.parse::<f64>(), number.parse::<f64>()) else {
+                return false;
+            };
+            let Some(ordering) = left.partial_cmp(&right) else {
+                return false;
+            };
+            ordering
+        }
+        AttributeLiteral::Text(text) => {
+            let Some(actual) = row.text(&predicate.column) else {
+                return false;
+            };
+            actual.as_ref().cmp(text.as_str())
+        }
+    };
+
+    match predicate.operator {
+        AttributeOperator::Eq => ordering.is_eq(),
+        AttributeOperator::NotEq => ordering.is_ne(),
+        AttributeOperator::Gt => ordering.is_gt(),
+        AttributeOperator::GtEq => ordering.is_ge(),
+        AttributeOperator::Lt => ordering.is_lt(),
+        AttributeOperator::LtEq => ordering.is_le(),
     }
 }
 

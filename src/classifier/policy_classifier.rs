@@ -446,15 +446,24 @@ fn classify_expr_inner(
         return classified;
     }
 
-    // Try P9: standalone attribute condition (fallback at confidence C)
+    // Try P9: standalone attribute condition. A literal constant is decided by the
+    // row, so it grades with the boolean flag it generalises. Anything else, a
+    // temporal function among them, keeps falling closed at C.
     if let Some(col) = recognizers::is_attribute_check(expr) {
         let value_desc = describe_comparison_value(expr);
+        let predicate = recognizers::attribute_literal_predicate(expr);
+        let confidence = if predicate.is_some() {
+            ConfidenceLevel::B
+        } else {
+            ConfidenceLevel::C
+        };
         return ClassifiedExpr {
             pattern: PatternClass::P9AttributeCondition {
                 column: col,
                 value_description: value_desc,
+                predicate,
             },
-            confidence: ConfidenceLevel::C,
+            confidence,
         };
     }
 
@@ -659,7 +668,9 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                 parts
             } if parts.len() == 2
         ));
-        assert_eq!(classified.confidence, ConfidenceLevel::C);
+        // The attribute half now grades B, and a composite takes the weaker of its
+        // parts, so the whole is B rather than the old C.
+        assert_eq!(classified.confidence, ConfidenceLevel::B);
     }
 
     #[test]
@@ -713,10 +724,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                 &classified.pattern,
                 PatternClass::P9AttributeCondition {
                     column,
-                    value_description
+                    value_description,
+                    predicate: Some(_),
                 } if column == expected_col && value_description == expected_value
             ));
-            assert_eq!(classified.confidence, ConfidenceLevel::C);
+            // A literal constant is decided by the row, so it grades with the boolean
+            // flag rather than falling to the review tier.
+            assert_eq!(classified.confidence, ConfidenceLevel::B);
         }
     }
 
@@ -1475,6 +1489,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 PatternClass::P9AttributeCondition {
                     column: "c".into(),
                     value_description: "v".into(),
+                    predicate: None,
                 },
                 "attribute-condition check",
             ),
@@ -1547,6 +1562,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             &PatternClass::P9AttributeCondition {
                 column: "c".into(),
                 value_description: "v".into(),
+                predicate: None,
             }
         ));
         assert!(!is_relationship_pattern_for_p7(

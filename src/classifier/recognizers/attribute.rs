@@ -1,5 +1,79 @@
 use super::*;
 
+/// The guard as structure, but only when the compared value is a literal constant.
+///
+/// [`is_attribute_check`] deliberately also accepts a well-known temporal function,
+/// so `expires_at > now()` is an attribute guard too. That one is not decided by the
+/// row: a tuple emitted for the rows qualifying today still grants access tomorrow.
+/// So this returns `None` for it, and only a literal constant reaches the emission
+/// that turns a guard into tuples.
+pub fn attribute_literal_predicate(expr: &Expr) -> Option<AttributePredicate> {
+    let Expr::BinaryOp { left, op, right } = unparenthesize(expr) else {
+        return None;
+    };
+    let operator = attribute_operator(op)?;
+    // The column may sit on either side, and the operator flips with it so the
+    // predicate always reads column-first.
+    if let Some(column) = extract_column_name(left) {
+        if let Some(value) = attribute_literal(right) {
+            if !is_user_related_column_name(&column) {
+                return Some(AttributePredicate {
+                    column,
+                    operator,
+                    value,
+                });
+            }
+        }
+    }
+    let column = extract_column_name(right)?;
+    let value = attribute_literal(left)?;
+    if is_user_related_column_name(&column) {
+        return None;
+    }
+    Some(AttributePredicate {
+        column,
+        operator: mirrored(operator),
+        value,
+    })
+}
+
+fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
+    match op {
+        BinaryOperator::Eq => Some(AttributeOperator::Eq),
+        BinaryOperator::NotEq => Some(AttributeOperator::NotEq),
+        BinaryOperator::Gt => Some(AttributeOperator::Gt),
+        BinaryOperator::GtEq => Some(AttributeOperator::GtEq),
+        BinaryOperator::Lt => Some(AttributeOperator::Lt),
+        BinaryOperator::LtEq => Some(AttributeOperator::LtEq),
+        _ => None,
+    }
+}
+
+/// The operator reading the other way round, for `3 <= priority`.
+fn mirrored(operator: AttributeOperator) -> AttributeOperator {
+    match operator {
+        AttributeOperator::Eq => AttributeOperator::Eq,
+        AttributeOperator::NotEq => AttributeOperator::NotEq,
+        AttributeOperator::Gt => AttributeOperator::Lt,
+        AttributeOperator::GtEq => AttributeOperator::LtEq,
+        AttributeOperator::Lt => AttributeOperator::Gt,
+        AttributeOperator::LtEq => AttributeOperator::GtEq,
+    }
+}
+
+/// A literal constant, and nothing a function or the clock supplies.
+fn attribute_literal(expr: &Expr) -> Option<AttributeLiteral> {
+    let Expr::Value(value) = unwrap_cast_or_nested(expr) else {
+        return None;
+    };
+    match &value.value {
+        Value::SingleQuotedString(text) => Some(AttributeLiteral::Text(text.clone())),
+        Value::Number(number, _) => Some(AttributeLiteral::Number(number.clone())),
+        Value::Boolean(flag) => Some(AttributeLiteral::Boolean(*flag)),
+        _ => None,
+    }
+}
+
 /// Column name compared in a non-user attribute guard, if `expr` is one.
 pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     if let Expr::BinaryOp { left, op, right } = expr {

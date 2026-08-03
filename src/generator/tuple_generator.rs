@@ -1,5 +1,7 @@
 use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+use crate::classifier::patterns::{
+    AttributeLiteral, AttributeOperator, ClassifiedPolicy, ConfidenceLevel,
+};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
@@ -531,6 +533,33 @@ fn render_tuple_source_inner(
             })
         }
 
+        TupleSource::AttributeGate {
+            table,
+            pk_col,
+            predicate,
+        } => {
+            let table_type = owner_type;
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let column_sql = quote_sql_identifier(&predicate.column);
+            let operator = render_attribute_operator(predicate.operator);
+            let value_sql = render_attribute_literal(&predicate.value);
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Attribute gate ({} {operator} {value_sql})",
+                    predicate.column
+                ),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, 'public_viewer' AS relation, \
+                     'user:*' AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {pk_col_sql} IS NOT NULL\n\
+                     AND {column_sql} {operator} {value_sql};"
+                ),
+                description: None,
+            })
+        }
+
         TupleSource::ConstantTrue { table, pk_col } => {
             let table_type = owner_type;
             let table_sql = quote_sql_identifier(table);
@@ -693,6 +722,36 @@ fn quote_sql_identifier_part(part: &str) -> String {
 /// a backslash is an ordinary character and doubling the quote is the whole escape.
 fn quote_sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+/// SQL spelling of an attribute guard's comparison.
+fn render_attribute_operator(operator: AttributeOperator) -> &'static str {
+    match operator {
+        AttributeOperator::Eq => "=",
+        AttributeOperator::NotEq => "<>",
+        AttributeOperator::Gt => ">",
+        AttributeOperator::GtEq => ">=",
+        AttributeOperator::Lt => "<",
+        AttributeOperator::LtEq => "<=",
+    }
+}
+
+/// SQL spelling of the literal an attribute guard compares against.
+///
+/// A number keeps its source spelling, so `priority >= 3` compares against `3` rather
+/// than a reformatted value, and the column's own type decides the comparison.
+fn render_attribute_literal(value: &AttributeLiteral) -> String {
+    match value {
+        AttributeLiteral::Text(text) => quote_sql_string_literal(text),
+        AttributeLiteral::Number(number) => number.clone(),
+        AttributeLiteral::Boolean(flag) => {
+            if *flag {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
+    }
 }
 
 /// Render a jsonb key chain as an extraction expression on `column_sql`, the last hop

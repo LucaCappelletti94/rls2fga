@@ -16,11 +16,16 @@ fn multi_policy_table_combines_patterns_for_select() {
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
     let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
 
-    // `author_id` yields an `author` relation, and the unconvertible status check
-    // contributes `no_access`.
+    // `author_id` yields an `author` relation, and the status check compares a column
+    // against a literal constant, which the row decides, so it contributes the same
+    // wildcard a boolean flag would rather than `no_access`.
     assert!(
-        model.dsl.contains("define can_select: author or no_access")
-            || model.dsl.contains("define can_select: no_access or author"),
+        model
+            .dsl
+            .contains("define can_select: author or public_viewer")
+            || model
+                .dsl
+                .contains("define can_select: public_viewer or author"),
         "expected composed select permission, got:\n{}",
         model.dsl
     );

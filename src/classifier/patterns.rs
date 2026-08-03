@@ -78,6 +78,52 @@ pub enum BoolOp {
     Or,
 }
 
+/// Comparison an attribute guard applies.
+///
+/// `#[non_exhaustive]`: a recognizer widening to another operator adds a variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttributeOperator {
+    /// `=`
+    Eq,
+    /// `<>`
+    NotEq,
+    /// `>`
+    Gt,
+    /// `>=`
+    GtEq,
+    /// `<`
+    Lt,
+    /// `<=`
+    LtEq,
+}
+
+/// A literal constant an attribute guard compares against.
+///
+/// A number keeps its source spelling, so the generated SQL reproduces the literal
+/// the policy wrote rather than a reformatted one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttributeLiteral {
+    /// A string literal.
+    Text(String),
+    /// A numeric literal, unparsed.
+    Number(String),
+    /// `TRUE` or `FALSE`.
+    Boolean(bool),
+}
+
+/// A column compared against a literal constant, which the row alone decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributePredicate {
+    /// Column the guard reads, folded to its stored name.
+    pub column: String,
+    /// Comparison applied, oriented with the column on the left.
+    pub operator: AttributeOperator,
+    /// The literal the column is compared against.
+    pub value: AttributeLiteral,
+}
+
 /// Classified pattern for an expression.
 ///
 /// `#[non_exhaustive]`: a new recognizer adds a variant, so matching this outside the
@@ -153,6 +199,11 @@ pub enum PatternClass {
         column: String,
         /// Human-readable form of the compared value.
         value_description: String,
+        /// The guard as structure, when the compared value is a literal constant and
+        /// so is decided by the row alone. `None` for a comparison against anything
+        /// else, `now()` among them, which no static tuple can express: such a tuple
+        /// would be computed once and then outlive the clock.
+        predicate: Option<AttributePredicate>,
     },
     /// P10: Constant `TRUE` or `FALSE` policy.
     P10ConstantBool {

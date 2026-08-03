@@ -4,7 +4,7 @@
 //! produced once during pattern translation, so the model and the tuple queries
 //! cannot drift apart.
 
-use crate::classifier::patterns::ConfidenceLevel;
+use crate::classifier::patterns::{AttributePredicate, ConfidenceLevel};
 use crate::generator::well_known::{
     MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PUBLIC_RELATION, TEAM_TYPE,
 };
@@ -133,6 +133,14 @@ pub(crate) enum TupleSource {
         flag_col: String,
     },
 
+    /// P9 attribute guard over a literal constant. Produces
+    /// `(type:pk, public_viewer, user:*)` for the rows the guard admits.
+    AttributeGate {
+        table: String,
+        pk_col: String,
+        predicate: AttributePredicate,
+    },
+
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
     ConstantTrue { table: String, pk_col: String },
 
@@ -172,6 +180,7 @@ impl TupleSource {
             | Self::ExplicitGrants { .. }
             | Self::ParentBridge { .. }
             | Self::PublicFlag { .. }
+            | Self::AttributeGate { .. }
             | Self::ConstantTrue { .. }
             | Self::PolicyScope { .. } => true,
             Self::TeamMembership { .. } | Self::ExistsMembership { .. } | Self::Todo { .. } => {
@@ -201,7 +210,9 @@ impl TupleSource {
             Self::ExistsMembership { parent_type, .. } => {
                 vec![(parent_type.clone(), MEMBER_RELATION.to_string())]
             }
-            Self::PublicFlag { .. } | Self::ConstantTrue { .. } => own(PUBLIC_RELATION),
+            Self::PublicFlag { .. } | Self::AttributeGate { .. } | Self::ConstantTrue { .. } => {
+                own(PUBLIC_RELATION)
+            }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
             Self::Todo { .. } => Vec::new(),
         }
@@ -310,6 +321,16 @@ impl TupleSource {
                 flag_col,
             } => {
                 format!("p6:{table}:{pk_col}:{flag_col}")
+            }
+            Self::AttributeGate {
+                table,
+                pk_col,
+                predicate,
+            } => {
+                format!(
+                    "p9:{table}:{pk_col}:{}:{:?}:{:?}",
+                    predicate.column, predicate.operator, predicate.value
+                )
             }
             Self::ConstantTrue { table, pk_col } => {
                 format!("p10_true:{table}:{pk_col}")

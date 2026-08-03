@@ -301,12 +301,17 @@ fn multi_policy_table_classification() {
     let pub_class = published.using_classification.as_ref().unwrap();
 
     match &pub_class.pattern {
-        PatternClass::P9AttributeCondition { column, .. } => {
+        PatternClass::P9AttributeCondition {
+            column,
+            predicate: Some(_),
+            ..
+        } => {
             assert_eq!(column, "status");
-            assert_eq!(pub_class.confidence, ConfidenceLevel::C);
+            // A literal constant is row data, so it grades with the boolean flag.
+            assert_eq!(pub_class.confidence, ConfidenceLevel::B);
         }
         other => {
-            panic!("Expected P9 for status column, got: {other:?}");
+            panic!("Expected P9 with a literal predicate for status, got: {other:?}");
         }
     }
 

@@ -185,6 +185,7 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         PatternClass::P9AttributeCondition {
             column,
             value_description,
+            ..
         } => {
             format!("P9 ({column} = {value_description})")
         }
@@ -318,6 +319,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
                 PatternClass::P9AttributeCondition {
                     column: "status".to_string(),
                     value_description: "'published'".to_string(),
+                    predicate: None,
                 },
                 "P9 (status = 'published')",
             ),
@@ -397,6 +399,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
                 Some(PatternClass::P9AttributeCondition {
                     column: "status".to_string(),
                     value_description: "'published'".to_string(),
+                    predicate: None,
                 }),
             ),
             classified_policy("docs_noop", None, None),
