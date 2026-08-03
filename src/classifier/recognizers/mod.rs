@@ -770,17 +770,19 @@ fn extract_integer_value(expr: &Expr) -> Option<i32> {
     }
 }
 
+/// Split a conjunction into its leaves, seeing through the parentheses `pg_dump`
+/// writes around every conjunct it deparses.
 fn flatten_and_predicates<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
-    if let Expr::BinaryOp {
-        left,
-        op: BinaryOperator::And,
-        right,
-    } = expr
-    {
-        flatten_and_predicates(left, out);
-        flatten_and_predicates(right, out);
-    } else {
-        out.push(expr);
+    match unparenthesize(expr) {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            flatten_and_predicates(left, out);
+            flatten_and_predicates(right, out);
+        }
+        leaf => out.push(leaf),
     }
 }
 
@@ -863,6 +865,16 @@ fn is_bare_identifier_expr(expr: &Expr) -> bool {
         unwrap_cast_or_nested(expr),
         Expr::Identifier(_) | Expr::CompoundIdentifier(_)
     )
+}
+
+/// Peel parentheses, which the parse has already resolved into tree shape and which
+/// therefore say nothing about what an expression means. A cast is left in place: it
+/// changes the value, and a leaf that reaches generated SQL has to keep it.
+pub(crate) fn unparenthesize(mut expr: &Expr) -> &Expr {
+    while let Expr::Nested(inner) = expr {
+        expr = inner.as_ref();
+    }
+    expr
 }
 
 fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {

@@ -4037,3 +4037,119 @@ fn a_row_limited_membership_subquery_is_refused() {
         );
     }
 }
+
+/// `pg_dump` parenthesises every conjunct it deparses, so `WHERE ((a = b) AND (c = d))`
+/// is the spelling any policy read back from `PostgreSQL` carries. Parsing has already
+/// fixed precedence, so those parentheses cannot change what the policy means.
+#[test]
+fn a_membership_policy_translates_the_same_however_it_is_parenthesised() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members \
+         WHERE doc_members.doc_id = docs.id AND doc_members.user_id = current_user)",
+    );
+    assert_eq!(
+        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
+        Some("member from docs"),
+        "guard precondition: the unparenthesised spelling must translate:\n{expected_dsl}"
+    );
+
+    for clause in [
+        "(EXISTS ( SELECT 1 FROM doc_members \
+          WHERE ((doc_members.doc_id = docs.id) AND (doc_members.user_id = current_user))))",
+        "EXISTS (SELECT 1 FROM doc_members \
+         WHERE ((doc_members.doc_id = docs.id) AND (doc_members.user_id = current_user)))",
+        "EXISTS (SELECT 1 FROM doc_members \
+         WHERE (doc_members.doc_id = docs.id) AND (doc_members.user_id = current_user))",
+    ] {
+        let (dsl, tuples) = membership_translation(clause);
+        assert_eq!(
+            dsl, expected_dsl,
+            "`{clause}` differs from the unparenthesised spelling only in parentheses"
+        );
+        assert_eq!(
+            tuples, expected_tuples,
+            "`{clause}` must yield the same tuples as the unparenthesised spelling"
+        );
+    }
+}
+
+/// The same for the `IN` spelling, whose subquery `pg_dump` parenthesises too.
+#[test]
+fn the_in_membership_spelling_translates_the_same_however_it_is_parenthesised() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
+    );
+    assert_eq!(
+        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
+        Some("member from docs"),
+        "guard precondition: the unparenthesised spelling must translate:\n{expected_dsl}"
+    );
+
+    let (dsl, tuples) = membership_translation(
+        "(id IN ( SELECT doc_members.doc_id FROM doc_members \
+         WHERE ((doc_members.user_id = current_user))))",
+    );
+    assert_eq!(
+        dsl, expected_dsl,
+        "the parenthesised IN subquery must translate like the flat one"
+    );
+    assert_eq!(
+        tuples, expected_tuples,
+        "the parenthesised IN subquery must yield the same tuples"
+    );
+}
+
+/// Parent inheritance reads the same subquery `WHERE`, so it loses the parent link to
+/// the same parentheses.
+#[test]
+fn parent_inheritance_translates_the_same_however_it_is_parenthesised() {
+    const PARENT_SCHEMA: &str = "
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user);
+";
+    let inherited = |clause: &str| {
+        let db = db_of(&format!(
+            "{PARENT_SCHEMA}CREATE POLICY tasks_sel ON tasks FOR SELECT USING ({clause});"
+        ));
+        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+        relation_definition(&dsl, "tasks", "can_select")
+    };
+
+    assert_eq!(
+        inherited(
+            "EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id \
+             AND p.owner_id = current_user)"
+        )
+        .as_deref(),
+        Some("owner from projects"),
+        "guard precondition: the unparenthesised spelling must inherit"
+    );
+    assert_eq!(
+        inherited(
+            "(EXISTS ( SELECT 1 FROM projects p WHERE ((p.id = tasks.project_id) \
+             AND (p.owner_id = current_user))))"
+        )
+        .as_deref(),
+        Some("owner from projects"),
+        "pg_dump's parentheses must not cost the parent link"
+    );
+}
+
+/// An extra membership predicate is spliced into a conjunction of NULL guards, so one
+/// that is itself a disjunction has to keep its parentheses or it breaks out of the
+/// `AND` and the query emits tuples for rows the policy refuses.
+#[test]
+fn a_disjunctive_membership_predicate_stays_parenthesised_in_the_tuple_query() {
+    let (_, tuples) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id \
+         AND doc_members.user_id = current_user \
+         AND (doc_members.role = 'editor' OR doc_members.role = 'admin'))",
+    );
+    assert!(
+        tuples.contains("AND (role = 'editor' OR role = 'admin')"),
+        "the disjunction must stay inside its own parentheses:\n{tuples}"
+    );
+}

@@ -388,3 +388,36 @@ fn blaming_an_unrecognized_clause_has_a_single_source_of_truth() {
         assert_eq!(uses, 1, "'{needle}' must have one source, found {uses}");
     }
 }
+
+/// One place decides that a parenthesis carries no meaning, and one place splits a
+/// conjunction. A second peel would let one analyzer see through `pg_dump`'s
+/// parentheses while another still refuses them.
+#[test]
+fn parenthesis_peeling_has_a_single_source_of_truth() {
+    let modules = [
+        "src/parser",
+        "src/classifier",
+        "src/classifier/recognizers",
+        "src/generator",
+        "src/generator/model_generator",
+    ];
+
+    for needle in [
+        "fn unparenthesize(",
+        "fn unwrap_cast_or_nested(",
+        "fn flatten_and_predicates<",
+    ] {
+        let definitions = definition_count(&modules, needle);
+        assert_eq!(
+            definitions, 1,
+            "expected one '{needle}', found {definitions}"
+        );
+    }
+
+    // An extra membership predicate joins a conjunction, so exactly one place wraps it.
+    let wraps = definition_count(&modules, "AND ({e})");
+    assert_eq!(
+        wraps, 1,
+        "one place parenthesises the extra membership predicate, found {wraps}"
+    );
+}

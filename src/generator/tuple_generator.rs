@@ -440,12 +440,12 @@ fn render_tuple_source_inner(
             let join_table_sql = quote_sql_identifier(join_table);
             let fk_col_sql = quote_sql_identifier(fk_col);
             let user_col_sql = quote_sql_identifier(user_col);
-            // Build the WHERE clause: always include NULL guards; append any
-            // extra membership-table predicate (e.g. `role = 'admin'`).
+            // The extra predicate joins a conjunction of NULL guards, so it is
+            // parenthesised: a disjunction would otherwise break out of the AND.
             let null_guards = format!("{fk_col_sql} IS NOT NULL AND {user_col_sql} IS NOT NULL");
             let where_clause = extra_predicate_sql.as_ref().map_or_else(
                 || format!("\nWHERE {null_guards}"),
-                |e| format!("\nWHERE {null_guards}\nAND {e}"),
+                |e| format!("\nWHERE {null_guards}\nAND ({e})"),
             );
             Some(TupleQuery {
                 comment: format!("-- {parent_type} membership from {join_table}"),
