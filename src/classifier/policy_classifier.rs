@@ -220,13 +220,7 @@ fn classify_expr_inner(
                 let right_class =
                     classify_expr_depth(right, db, registry, table, command, depth + 1);
 
-                // Confidence: B if all sub-patterns are A; escalates to highest otherwise
-                let min_conf = core::cmp::min(left_class.confidence, right_class.confidence);
-                let confidence = if min_conf == ConfidenceLevel::A {
-                    ConfidenceLevel::B
-                } else {
-                    min_conf
-                };
+                let confidence = composite_confidence([&left_class, &right_class]);
 
                 return ClassifiedExpr {
                     pattern: PatternClass::P8Composite {
@@ -268,13 +262,7 @@ fn classify_expr_inner(
                     }
                 }
 
-                // Both relationship-based → intersection (Level B)
-                let min_conf = core::cmp::min(left_class.confidence, right_class.confidence);
-                let confidence = if min_conf >= ConfidenceLevel::B {
-                    ConfidenceLevel::B
-                } else {
-                    min_conf
-                };
+                let confidence = composite_confidence([&left_class, &right_class]);
 
                 return ClassifiedExpr {
                     pattern: PatternClass::P8Composite {
@@ -452,7 +440,10 @@ fn classify_expr_inner(
     if let Some(col) = recognizers::is_attribute_check(expr) {
         let value_desc = describe_comparison_value(expr);
         let predicate = recognizers::attribute_literal_predicate(expr);
-        let confidence = if predicate.is_some() {
+        let request_predicate = recognizers::attribute_request_predicate(expr);
+        // A literal is row data and a request value becomes a condition the service
+        // evaluates, so both translate. Anything else still falls closed at C.
+        let confidence = if predicate.is_some() || request_predicate.is_some() {
             ConfidenceLevel::B
         } else {
             ConfidenceLevel::C
@@ -462,6 +453,7 @@ fn classify_expr_inner(
                 column: col,
                 value_description: value_desc,
                 predicate,
+                request_predicate,
             },
             confidence,
         };
@@ -726,6 +718,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                     column,
                     value_description,
                     predicate: Some(_),
+                    ..
                 } if column == expected_col && value_description == expected_value
             ));
             // A literal constant is decided by the row, so it grades with the boolean
@@ -1490,6 +1483,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                     column: "c".into(),
                     value_description: "v".into(),
                     predicate: None,
+                    request_predicate: None,
                 },
                 "attribute-condition check",
             ),
@@ -1563,6 +1557,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 column: "c".into(),
                 value_description: "v".into(),
                 predicate: None,
+                request_predicate: None,
             }
         ));
         assert!(!is_relationship_pattern_for_p7(

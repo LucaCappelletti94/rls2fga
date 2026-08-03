@@ -6,6 +6,7 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser;
@@ -108,7 +109,13 @@ fn compound_or_owner_or_public() {
     }
 
     // Verify model contains the composite relation
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     assert!(
         model.dsl.contains("owner or public_viewer"),
         "Model should contain 'owner or public_viewer', got:\n{}",
@@ -116,8 +123,13 @@ fn compound_or_owner_or_public() {
     );
 
     // Verify tuple generation
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
@@ -217,6 +229,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
     let tuples_lower = tuples.to_ascii_lowercase();
     assert!(
@@ -328,7 +341,13 @@ fn multi_policy_table_classification() {
     );
 
     // Check that the model generates something reasonable
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -363,7 +382,13 @@ fn role_in_list_classification() {
     }
 
     // Verify model generation produces role threshold output
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
     assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
@@ -390,13 +415,19 @@ fn pipeline_summary_all_common_patterns() {
         );
 
         let classified = policy_classifier::classify_policies(&db, &registry);
-        let model =
-            model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+        let model = model_generator::generate_model(
+            &classified,
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        );
         let tuples = tuple_generator::generate_tuple_queries(
             &classified,
             &db,
             &registry,
             ConfidenceLevel::D,
+            &GeneratorSettings::default(),
         );
 
         let all_a = classified.iter().all(|cp| {

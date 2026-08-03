@@ -267,6 +267,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         column: "status".to_string(),
         value_description: "'published'".to_string(),
         predicate: None,
+        request_predicate: None,
     };
     let p8_and_attr_true = PatternClass::P8Composite {
         op: BoolOp::And,
@@ -412,7 +413,7 @@ fn build_schema_plan_adds_todos_for_non_public_to_and_empty_translation() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     assert!(plan
         .todos
@@ -442,7 +443,7 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     let docs = plan
         .types
@@ -486,7 +487,7 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
         }),
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     let docs = plan
         .types
@@ -702,7 +703,7 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
     }
 
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&policies, &db, &registry);
+    let plan = build_schema_plan(&policies, &db, &registry, &GeneratorSettings::default());
     assert!(
         plan.types.iter().any(|t| t.type_name == "rls_docs"),
         "RLS-enabled table should be translated"
@@ -722,7 +723,7 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     let classified = classified_from_policy(policy, None, None);
     let registry = FunctionRegistry::new();
 
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
     let docs = plan
         .types
         .iter()
@@ -768,7 +769,7 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     assert!(
         plan.types.iter().any(|t| t.type_name == "docs"),
@@ -794,7 +795,7 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     let docs = plan
         .types
@@ -934,7 +935,12 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
 
     // Build a schema plan from the filtered policy.
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(std::slice::from_ref(filtered_cp), &db, &registry);
+    let plan = build_schema_plan(
+        std::slice::from_ref(filtered_cp),
+        &db,
+        &registry,
+        &GeneratorSettings::default(),
+    );
     let docs = plan
         .types
         .iter()
@@ -957,7 +963,7 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
     classified.with_check_classification = None; // never present
     classified.with_check_was_filtered = false;
-    let plan2 = build_schema_plan(&[classified], &db, &registry);
+    let plan2 = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
     let docs2 = plan2
         .types
         .iter()
@@ -1068,16 +1074,6 @@ fn pattern_to_expr_p6_missing_pk_generates_todo() {
     // The table "items" doesn't exist in the empty DB, so PK can't be resolved.
     // The public_expr is still returned but a TODO is added about missing object identifier.
     // Check that no panic occurred -- the function should handle gracefully.
-}
-
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "already registered as direct; cannot overwrite as computed")]
-fn type_plan_panics_on_computed_direct_conflict() {
-    let mut plan = TypePlan::new("docs");
-    plan.ensure_direct("owner", vec![DirectSubject::Type("user".to_string())]);
-    // Now try to add "owner" as a computed relation -- should panic
-    plan.set_computed("owner", UsersetExpr::Computed("member".to_string()));
 }
 
 #[test]
@@ -1351,13 +1347,35 @@ fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
     );
 }
 
+/// `set_computed` overwrites a computed rule by design, but a name a direct relation
+/// already holds yields instead, the same way its two siblings do. It used to assert in
+/// debug builds and do nothing in release, which is a guard where it cannot fire.
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "already registered as direct")]
-fn set_computed_panics_when_relation_already_direct() {
+fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
     let mut plan = TypePlan::new("test");
     plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
-    plan.set_computed("rel", UsersetExpr::Computed("x".into()));
+
+    let name = plan.set_computed("rel", UsersetExpr::Computed("x".into()));
+
+    assert_ne!(name, "rel", "the direct relation still holds 'rel'");
+    assert!(
+        plan.direct_relations.contains_key("rel"),
+        "the direct relation is untouched"
+    );
+    assert!(
+        plan.computed_relations.contains_key(&name),
+        "the computed rule lands under the yielded name"
+    );
+
+    // Overwriting an existing computed rule is still what the function is for.
+    let first = plan.set_computed("other", UsersetExpr::Computed("a".into()));
+    let second = plan.set_computed("other", UsersetExpr::Computed("b".into()));
+    assert_eq!(first, second, "a computed name is overwritten, not yielded");
+    assert_eq!(
+        plan.computed_relations.get(&second),
+        Some(&UsersetExpr::Computed("b".into())),
+        "the later rule wins"
+    );
 }
 
 // canonical name collision, two tables → same canonical name
@@ -1396,7 +1414,12 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
     let registry = FunctionRegistry::new();
     let classified_policies: Vec<ClassifiedPolicy> =
         policies.into_iter().map(|(_, cp)| cp).collect();
-    let plan = build_schema_plan(&classified_policies, &db, &registry);
+    let plan = build_schema_plan(
+        &classified_policies,
+        &db,
+        &registry,
+        &GeneratorSettings::default(),
+    );
 
     // One of the two types should be disambiguated
     let type_names: Vec<&str> = plan.types.iter().map(|t| t.type_name.as_str()).collect();
@@ -1449,7 +1472,7 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
         with_check_was_filtered: false,
     };
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry);
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     // The role-scope code should emit a TODO about missing PK for policy scope tuples
     let has_pk_todo = plan
@@ -1490,6 +1513,7 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_todo() {
             column: "status".to_string(),
             value_description: "'active'".to_string(),
             predicate: None,
+            request_predicate: None,
         },
         confidence: ConfidenceLevel::C,
     };

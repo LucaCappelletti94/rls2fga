@@ -212,6 +212,17 @@ pub fn role_limited_relation_name(policy_name: &str) -> String {
     scope_relation_name("limit", policy_name)
 }
 
+/// Derive a stable relation name for a guard the authorization service evaluates per
+/// check rather than one the tuples decide.
+pub fn conditional_gate_relation_name(policy_name: &str) -> String {
+    scope_relation_name("gate", policy_name)
+}
+
+/// Derive the condition name that guard's relation reference points at.
+pub fn gate_condition_name(policy_name: &str) -> String {
+    scope_relation_name("when", policy_name)
+}
+
 fn scope_relation_name(prefix: &str, key: &str) -> String {
     let base = canonical_fga_type_name(key);
     let suffix = stable_hex_suffix(key);

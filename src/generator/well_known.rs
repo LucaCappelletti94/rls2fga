@@ -16,6 +16,15 @@ pub(crate) const DENY_RELATION: &str = "no_access";
 /// Relation that grants everyone, used wherever a policy is unconditionally open.
 pub(crate) const PUBLIC_RELATION: &str = "public_viewer";
 
+/// Condition parameter the request supplies for a guard against statement time.
+///
+/// A choice, not a convention `OpenFGA` imposes, so the operator has to pass it in the
+/// check context under exactly this name.
+pub(crate) const REQUEST_TIME_PARAMETER: &str = "request_time";
+
+/// `OpenFGA` name for a timestamp condition parameter.
+pub(crate) const TIMESTAMP_PARAMETER_TYPE: &str = "TYPE_NAME_TIMESTAMP";
+
 /// Relation holding the users a membership row attaches to its parent object.
 pub(crate) const MEMBER_RELATION: &str = "member";
 

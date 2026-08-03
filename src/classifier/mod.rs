@@ -1,5 +1,8 @@
 /// Maps SQL function names to their known semantics (role-threshold, current-user accessor, etc.).
 pub mod function_registry;
+// `oracle` documents itself in the file. A second doc here would merge with it and
+// resolve its intra-doc links in this file's scope.
+pub mod oracle;
 /// Pattern enums, confidence levels, and classified expression/policy types.
 pub mod patterns;
 /// Top-level policy classification: walks each policy's USING/WITH CHECK expression tree.

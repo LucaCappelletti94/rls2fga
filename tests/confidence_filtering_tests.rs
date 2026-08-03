@@ -1,6 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 
 mod support;
@@ -13,7 +14,13 @@ fn json_model_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let json = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::A);
+    let json = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::A,
+        &GeneratorSettings::default(),
+    );
 
     let posts = json
         .type_definitions
@@ -39,7 +46,13 @@ fn model_generation_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::A);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::A,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         !model.dsl.contains("public_viewer"),
@@ -74,6 +87,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &db,
         &registry,
         ConfidenceLevel::A,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -86,6 +100,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -107,6 +122,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(

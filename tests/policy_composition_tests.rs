@@ -1,6 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::output::report;
 
@@ -14,7 +15,13 @@ fn multi_policy_table_combines_patterns_for_select() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     // `author_id` yields an `author` relation, and the status check compares a column
     // against a literal constant, which the row decides, so it contributes the same
@@ -54,7 +61,13 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         model
@@ -100,7 +113,13 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
     let reg_json = support::read_fixture_registry_json("earth_metabolome");
 
     let (classified, db, registry) = support::classify_sql(sql, Some(&reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         model.dsl.contains("define can_update_using:"),
@@ -158,6 +177,7 @@ CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -190,7 +210,13 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert!(
@@ -216,7 +242,13 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 ";
 
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         !model.dsl.contains("TODO [Level D]"),
@@ -238,8 +270,21 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let dsl = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D).dsl;
-    let json = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let dsl = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    )
+    .dsl;
+    let json = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(dsl.contains("type documents"), "dsl missing documents type");
     let doc_type = json
@@ -284,7 +329,13 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
     let report_md = report::build_report(&model, &classified, ConfidenceLevel::D);
 
     assert!(

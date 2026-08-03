@@ -124,6 +124,26 @@ pub struct AttributePredicate {
     pub value: AttributeLiteral,
 }
 
+/// A column compared against a value only the request knows, which no static tuple
+/// can decide. The row supplies the column, the caller supplies the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeRequestPredicate {
+    /// Column the guard reads, folded to its stored name.
+    pub column: String,
+    /// Comparison applied, oriented with the column on the left.
+    pub operator: AttributeOperator,
+    /// What the request supplies.
+    pub request_value: RequestValue,
+}
+
+/// A value the request supplies rather than the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RequestValue {
+    /// The moment the statement runs, from `now()` and its spellings.
+    StatementTimestamp,
+}
+
 /// Classified pattern for an expression.
 ///
 /// `#[non_exhaustive]`: a new recognizer adds a variant, so matching this outside the
@@ -200,10 +220,12 @@ pub enum PatternClass {
         /// Human-readable form of the compared value.
         value_description: String,
         /// The guard as structure, when the compared value is a literal constant and
-        /// so is decided by the row alone. `None` for a comparison against anything
-        /// else, `now()` among them, which no static tuple can express: such a tuple
-        /// would be computed once and then outlive the clock.
+        /// so is decided by the row alone.
         predicate: Option<AttributePredicate>,
+        /// The guard as structure, when the compared value is one only the request
+        /// knows. Such a guard becomes a condition rather than a tuple, since a tuple
+        /// computed once would outlive the value it was computed against.
+        request_predicate: Option<AttributeRequestPredicate>,
     },
     /// P10: Constant `TRUE` or `FALSE` policy.
     P10ConstantBool {
@@ -280,6 +302,26 @@ pub struct ClassifiedExpr {
     pub pattern: PatternClass,
     /// How confident the classifier is in this match.
     pub confidence: ConfidenceLevel,
+}
+
+/// Grade a pattern built out of `parts`.
+///
+/// The lowest part decides, capped at `B`: combining separately recognized halves is
+/// never as certain as recognizing one shape whole. Both `AND` and `OR` used this rule
+/// already, spelled differently, and an oracle substituting a part has to regrade the
+/// same way or the composite keeps the grade its refused part dragged it to.
+#[must_use]
+pub fn composite_confidence<'a, I>(parts: I) -> ConfidenceLevel
+where
+    I: IntoIterator<Item = &'a ClassifiedExpr>,
+{
+    parts
+        .into_iter()
+        .map(|part| part.confidence)
+        .min()
+        .map_or(ConfidenceLevel::D, |lowest| {
+            core::cmp::min(lowest, ConfidenceLevel::B)
+        })
 }
 
 impl From<CreatePolicyCommand> for PolicyCommand {

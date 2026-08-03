@@ -16,7 +16,7 @@ use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{
-    build_filtered_schema_plan, SchemaPlan, TypePlan, UsersetExpr,
+    build_filtered_schema_plan, GeneratorSettings, SchemaPlan, TypePlan, UsersetExpr,
 };
 use crate::generator::records::{RecordDerivation, ValueSource};
 use crate::generator::well_known::USER_TYPE;
@@ -43,7 +43,14 @@ pub fn decidable_relations(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
 ) -> Vec<RelationDecidability> {
-    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence);
+    // The analysis reads structure rather than names, so the defaults suffice.
+    let plan = build_filtered_schema_plan(
+        policies,
+        db,
+        registry,
+        min_confidence,
+        &GeneratorSettings::default(),
+    );
     let sources = index_sources(&plan);
 
     let mut out = Vec::new();

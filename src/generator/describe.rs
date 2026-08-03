@@ -341,6 +341,26 @@ pub(crate) fn describe_tuple_source(
             ],
         )),
 
+        // The records depend on the request as well as the row, so no row decides
+        // them and the flag downstream has to say so.
+        TupleSource::ConditionalAttributeGate {
+            table,
+            column,
+            condition,
+            ..
+        } => Some(RecordDescription {
+            tables: tables(&[table]),
+            derivation: RecordDerivation::Joined {
+                queries: bind(sql, table, column, &format!("\"{column}\" = $1"))
+                    .into_iter()
+                    .collect(),
+                reason: format!(
+                    "the guard on {column} is evaluated by condition {condition} at check \
+                     time, so the row alone does not decide the grant"
+                ),
+            },
+        }),
+
         TupleSource::Todo { .. } => None,
     }
 }

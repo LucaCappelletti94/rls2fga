@@ -1,5 +1,34 @@
 use super::*;
 
+/// The guard as structure when the compared value is one only the request knows.
+///
+/// `expires_at > now()` is decided by the row and the clock together, so it becomes a
+/// condition the authorization service evaluates per check rather than a tuple.
+pub fn attribute_request_predicate(expr: &Expr) -> Option<AttributeRequestPredicate> {
+    let Expr::BinaryOp { left, op, right } = unparenthesize(expr) else {
+        return None;
+    };
+    let operator = attribute_operator(op)?;
+    if let Some(column) = extract_column_name(left) {
+        if is_well_known_temporal_function(right) && !is_user_related_column_name(&column) {
+            return Some(AttributeRequestPredicate {
+                column,
+                operator,
+                request_value: RequestValue::StatementTimestamp,
+            });
+        }
+    }
+    let column = extract_column_name(right)?;
+    if !is_well_known_temporal_function(left) || is_user_related_column_name(&column) {
+        return None;
+    }
+    Some(AttributeRequestPredicate {
+        column,
+        operator: mirrored(operator),
+        request_value: RequestValue::StatementTimestamp,
+    })
+}
+
 /// The guard as structure, but only when the compared value is a literal constant.
 ///
 /// [`is_attribute_check`] deliberately also accepts a well-known temporal function,

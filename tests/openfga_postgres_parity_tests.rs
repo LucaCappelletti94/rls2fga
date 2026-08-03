@@ -17,6 +17,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::{self, TupleQuery};
 
 mod support;
@@ -173,9 +174,20 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),
@@ -407,9 +419,20 @@ async fn insert_readback_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_notes_data(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -597,9 +620,20 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -771,9 +805,20 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -957,9 +1002,20 @@ async fn upsert_parity_postgres18_and_openfga() {
         .execute(&mut conn)
         .expect("Failed to seed notes");
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1141,9 +1197,20 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),
@@ -1323,9 +1390,20 @@ async fn locking_read_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_owned_notes(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1416,9 +1494,20 @@ async fn absent_clause_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_owned_notes(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1589,9 +1678,20 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_document_notes(&mut conn);
 
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuple_queries =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1667,4 +1767,268 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
         "PostgreSQL/OpenFGA array and jsonb membership parity mismatches:\n{}",
         failures.join("\n")
     );
+}
+
+/// Rows whose grant depends on the clock, plus one the guard can never admit.
+const SEEDED_EXPIRING_DOCS: [(&str, &str); 4] = [
+    ("d-live", "2099-01-01T00:00:00+00:00"),
+    ("d-stale", "2000-01-01T00:00:00+00:00"),
+    ("d-soon", "2027-01-01T00:00:00+00:00"),
+    ("d-null", "NULL"),
+];
+
+/// A guard against `now()` cannot become tuples: a tuple computed once would keep
+/// granting after the value passed. It becomes an `OpenFGA` condition instead, and this
+/// case proves the service evaluates it as the policy means, at two instants, against
+/// what `PostgreSQL` itself answers.
+#[tokio::test]
+#[ignore = "requires Docker: starts PostgreSQL 18 and OpenFGA containers"]
+async fn request_time_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the expiring-docs schema");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON docs TO app_user;")
+        .expect("Failed to create the querying role");
+
+    let values: Vec<String> = SEEDED_EXPIRING_DOCS
+        .iter()
+        .map(|(id, expires)| {
+            if *expires == "NULL" {
+                format!("('{id}', NULL)")
+            } else {
+                format!("('{id}', '{expires}')")
+            }
+        })
+        .collect();
+    conn.batch_execute(&format!(
+        "INSERT INTO docs (id, expires_at) VALUES {};",
+        values.join(", ")
+    ))
+    .expect("Failed to seed the expiring docs");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuple_queries = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+
+    // The condition-bearing query names its condition rather than making a loader
+    // parse the SQL to find it.
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some())
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        1,
+        "the guard must emit exactly one conditional query, got {} queries",
+        tuple_queries.len()
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    assert_eq!(
+        conditional_rows.len(),
+        3,
+        "every row with a value carries a tuple and the NULL row carries none"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "request-time-parity").await;
+    // A model whose condition is malformed is rejected outright, so this write is
+    // itself an assertion about the generated model.
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    // Two instants: the moment PostgreSQL is at, and a year later. The first compares
+    // against a real RLS read, the second against the policy's own predicate evaluated
+    // at that instant, since PostgreSQL cannot be asked about the future.
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+
+    let mut failures = Vec::new();
+    let mut expired_between = 0usize;
+    for (instant, label) in [(now.as_str(), "now"), (later.as_str(), "a year on")] {
+        for (doc_id, _) in SEEDED_EXPIRING_DOCS {
+            let readable_now = postgres_reads_doc_as_app_user(&mut conn, doc_id);
+            let expected = if label == "now" {
+                readable_now
+            } else {
+                postgres_doc_unexpired_at(&mut conn, doc_id, instant)
+            };
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                "user:alice",
+                "can_select",
+                &format!("docs:{doc_id}"),
+                serde_json::json!({ "request_time": instant }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "docs:{doc_id} at {label}: postgres={expected}, openfga={actual}"
+                ));
+            }
+            if label == "a year on" && readable_now && !expected {
+                expired_between += 1;
+            }
+        }
+    }
+
+    // Without a row the clock takes away, the case would pass against a model that
+    // ignored the condition entirely.
+    assert!(
+        expired_between > 0,
+        "no row loses its grant between the two instants, so the condition proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA request-time condition parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// One row of a conditional tuple query, which yields five columns rather than three.
+#[derive(QueryableByName)]
+struct ConditionalTupleRow {
+    #[diesel(sql_type = Text)]
+    object: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    subject: String,
+    #[diesel(sql_type = Text)]
+    condition: String,
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    context: serde_json::Value,
+}
+
+/// Run a conditional tuple query. The generated SQL is text the crate produced, so it
+/// cannot go through the typed DSL, and the row type binds each column's SQL type.
+fn execute_conditional_tuple_query(
+    conn: &mut PgConnection,
+    query: &TupleQuery,
+) -> Vec<ConditionalTupleRow> {
+    diesel::sql_query(&query.sql)
+        .load(conn)
+        .unwrap_or_else(|error| {
+            panic!(
+                "Conditional tuple SQL failed in PostgreSQL 18: {}\n{}\nError: {error}",
+                query.comment, query.sql
+            )
+        })
+}
+
+#[derive(QueryableByName)]
+struct InstantRow {
+    #[diesel(sql_type = Text)]
+    instant: String,
+}
+
+/// The moment `PostgreSQL` is at, formatted the way a condition parameter expects.
+fn postgres_now(conn: &mut PgConnection) -> String {
+    let rows: Vec<InstantRow> =
+        diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
+            .load(conn)
+            .expect("reading now() should succeed");
+    rows.into_iter()
+        .next()
+        .expect("now() returns a row")
+        .instant
+}
+
+/// A year on from that moment.
+fn postgres_a_year_on(conn: &mut PgConnection) -> String {
+    let rows: Vec<InstantRow> = diesel::sql_query(
+        "SELECT to_char(now() + interval '1 year', 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant",
+    )
+    .load(conn)
+    .expect("reading a future instant should succeed");
+    rows.into_iter()
+        .next()
+        .expect("the expression returns a row")
+        .instant
+}
+
+/// Whether the policy admits the row to a real read, as the plain login role.
+fn postgres_reads_doc_as_app_user(conn: &mut PgConnection, doc_id: &str) -> bool {
+    let mut visible = false;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_user")?;
+        let rows: Vec<InstantRow> =
+            diesel::sql_query("SELECT id AS instant FROM docs WHERE id = $1")
+                .bind::<Text, _>(doc_id)
+                .load(conn)?;
+        visible = !rows.is_empty();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    visible
+}
+
+/// The policy's own predicate evaluated at `instant`, which is what a read would
+/// return then. `PostgreSQL` cannot be asked about the future, so the predicate stands
+/// in for it.
+fn postgres_doc_unexpired_at(conn: &mut PgConnection, doc_id: &str, instant: &str) -> bool {
+    let rows: Vec<InstantRow> = diesel::sql_query(
+        "SELECT id AS instant FROM docs WHERE id = $1 AND expires_at > $2::timestamptz",
+    )
+    .bind::<Text, _>(doc_id)
+    .bind::<Text, _>(instant)
+    .load(conn)
+    .expect("evaluating the predicate should succeed");
+    !rows.is_empty()
 }

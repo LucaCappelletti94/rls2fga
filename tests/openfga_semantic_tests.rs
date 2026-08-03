@@ -10,6 +10,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
+use rls2fga::generator::model_generator::GeneratorSettings;
 
 mod support;
 
@@ -259,8 +260,13 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
 
     // 3. Generate and upload JSON model
     let (classified, db, registry) = support::try_load_fixture_classified(scenario.fixture);
-    let model =
-        json_model::generate_json_model(&classified, &db, &registry, scenario.min_confidence);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        scenario.min_confidence,
+        &GeneratorSettings::default(),
+    );
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 

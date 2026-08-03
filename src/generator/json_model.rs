@@ -7,7 +7,8 @@ use serde::Serialize;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::generator::model_generator::{
-    build_filtered_schema_plan, DirectSubject, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
+    build_filtered_schema_plan, DirectSubject, GeneratorSettings, TypePlan, UsersetExpr,
+    OPENFGA_SCHEMA_VERSION,
 };
 use crate::parser::sql_parser::ParserDB;
 
@@ -18,6 +19,31 @@ pub struct AuthorizationModel {
     pub schema_version: String,
     /// Types in emission order.
     pub type_definitions: Vec<TypeDefinition>,
+    /// Conditions a relation reference may name, keyed by condition name. Omitted
+    /// when the schema needs none, since `OpenFGA` accepts a model without the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<BTreeMap<String, Condition>>,
+}
+
+/// A `CEL` expression `OpenFGA` evaluates when a tuple naming it is consulted.
+///
+/// The parameters come from two places that merge at check time: the tuple carries
+/// what the row knows, the request carries what only it knows.
+#[derive(Debug, Clone, Serialize)]
+pub struct Condition {
+    /// Condition name, repeated inside the value as the API expects.
+    pub name: String,
+    /// The `CEL` expression, in terms of the parameter names.
+    pub expression: String,
+    /// Parameter name to its type.
+    pub parameters: BTreeMap<String, ConditionParamType>,
+}
+
+/// A condition parameter's type, spelled the way the API names it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConditionParamType {
+    /// For example `TYPE_NAME_TIMESTAMP`.
+    pub type_name: String,
 }
 
 /// One type and its relations.
@@ -57,6 +83,9 @@ pub struct RelationReference {
     /// If `Some`, this reference represents the public wildcard (`type:*`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wildcard: Option<EmptyObject>,
+    /// Condition every tuple through this reference must satisfy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
 }
 
 /// Marker struct serialized as `{}` for `OpenFGA`'s `this` and `wildcard` fields.
@@ -147,8 +176,9 @@ pub fn generate_json_model(
     db: &ParserDB,
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
+    settings: &GeneratorSettings,
 ) -> AuthorizationModel {
-    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence);
+    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence, settings);
 
     let type_definitions = plan
         .types
@@ -156,9 +186,37 @@ pub fn generate_json_model(
         .map(type_plan_to_definition)
         .collect();
 
+    let conditions = (!plan.conditions.is_empty()).then(|| {
+        plan.conditions
+            .iter()
+            .map(|(name, spec)| {
+                (
+                    name.clone(),
+                    Condition {
+                        name: name.clone(),
+                        expression: spec.expression.clone(),
+                        parameters: spec
+                            .parameters
+                            .iter()
+                            .map(|(parameter, type_name)| {
+                                (
+                                    parameter.clone(),
+                                    ConditionParamType {
+                                        type_name: type_name.clone(),
+                                    },
+                                )
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect()
+    });
+
     AuthorizationModel {
         schema_version: OPENFGA_SCHEMA_VERSION.to_string(),
         type_definitions,
+        conditions,
     }
 }
 
@@ -188,10 +246,20 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
                 DirectSubject::Type(t) => RelationReference {
                     type_name: t,
                     wildcard: None,
+                    condition: None,
                 },
                 DirectSubject::Wildcard(t) => RelationReference {
                     type_name: t,
                     wildcard: Some(EmptyObject {}),
+                    condition: None,
+                },
+                DirectSubject::ConditionalWildcard {
+                    type_name,
+                    condition,
+                } => RelationReference {
+                    type_name,
+                    wildcard: Some(EmptyObject {}),
+                    condition: Some(condition),
                 },
             })
             .collect::<Vec<_>>();

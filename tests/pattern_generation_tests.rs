@@ -1,5 +1,6 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 
 mod support;
@@ -33,12 +34,19 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
     let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
         &classified,
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -92,6 +100,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -152,6 +161,7 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -213,7 +223,13 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         using.pattern
     );
 
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
     assert!(
         model.dsl.contains("type tasks"),
         "expected tasks type in model, got:\n{}",
@@ -231,6 +247,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
     assert!(
         tuples.contains("'projects' AS relation"),
@@ -264,6 +281,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -302,6 +320,7 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
         &db,
         &registry,
         ConfidenceLevel::D,
+        &GeneratorSettings::default(),
     ));
 
     assert!(
@@ -363,7 +382,13 @@ fn p2_role_in_list_generates_action_permissions() {
     let reg_json = support::read_fixture_registry_json("role_in_list");
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(&reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         model.dsl.contains("define can_select:"),
@@ -403,7 +428,13 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         model.dsl.contains("define can_select: role_admin"),
@@ -443,7 +474,13 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::D);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    );
 
     assert!(
         !model.dsl.contains("define can_select: role_viewer"),

@@ -7,6 +7,7 @@ use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
 use crate::generator::json_model::{generate_json_model, AuthorizationModel};
+use crate::generator::model_generator::GeneratorSettings;
 use crate::generator::model_generator::{generate_model, GeneratedModel};
 use crate::generator::tuple_generator::{generate_tuple_queries, TupleQuery};
 #[cfg(feature = "std")]
@@ -20,6 +21,7 @@ pub struct TranslatorBuilder {
     registry: FunctionRegistry,
     settings: AccessorInferenceSettings,
     min_confidence: ConfidenceLevel,
+    generator: GeneratorSettings,
 }
 
 impl TranslatorBuilder {
@@ -27,6 +29,14 @@ impl TranslatorBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Name the condition parameter a caller supplies for a guard against statement
+    /// time, which every check context then has to use. Defaults to `request_time`.
+    #[must_use]
+    pub fn with_request_time_parameter(mut self, name: impl Into<String>) -> Self {
+        self.generator.request_time_parameter = name.into();
+        self
     }
 
     /// Replace the base function registry.
@@ -66,6 +76,7 @@ impl TranslatorBuilder {
             registry: self.registry,
             settings: self.settings,
             min_confidence: self.min_confidence,
+            generator: self.generator,
         }
     }
 }
@@ -75,6 +86,7 @@ impl Default for TranslatorBuilder {
         Self {
             registry: FunctionRegistry::new(),
             settings: AccessorInferenceSettings::default(),
+            generator: GeneratorSettings::default(),
             min_confidence: ConfidenceLevel::B,
         }
     }
@@ -86,6 +98,7 @@ pub struct Translator {
     registry: FunctionRegistry,
     settings: AccessorInferenceSettings,
     min_confidence: ConfidenceLevel,
+    generator: GeneratorSettings,
 }
 
 impl Translator {
@@ -105,28 +118,57 @@ impl Translator {
     /// Generate an `OpenFGA` DSL model from the configured pipeline.
     pub fn generate_model(&self, db: &ParserDB) -> GeneratedModel {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_model(&classified, db, &effective_registry, self.min_confidence)
+        generate_model(
+            &classified,
+            db,
+            &effective_registry,
+            self.min_confidence,
+            &self.generator,
+        )
     }
 
     /// Generate an `OpenFGA` JSON authorization model from the configured pipeline.
     pub fn generate_json_model(&self, db: &ParserDB) -> AuthorizationModel {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_json_model(&classified, db, &effective_registry, self.min_confidence)
+        generate_json_model(
+            &classified,
+            db,
+            &effective_registry,
+            self.min_confidence,
+            &self.generator,
+        )
     }
 
     /// Generate tuple SQL queries from the configured pipeline.
     pub fn generate_tuple_queries(&self, db: &ParserDB) -> Vec<TupleQuery> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_tuple_queries(&classified, db, &effective_registry, self.min_confidence)
+        generate_tuple_queries(
+            &classified,
+            db,
+            &effective_registry,
+            self.min_confidence,
+            &self.generator,
+        )
     }
 
     #[cfg(feature = "std")]
     /// Run classification + generation and write artifacts to disk.
     pub fn write_output(&self, db: &ParserDB, output_dir: &Path, name: &str) -> Result<(), String> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        let model = generate_model(&classified, db, &effective_registry, self.min_confidence);
-        let tuples =
-            generate_tuple_queries(&classified, db, &effective_registry, self.min_confidence);
+        let model = generate_model(
+            &classified,
+            db,
+            &effective_registry,
+            self.min_confidence,
+            &self.generator,
+        );
+        let tuples = generate_tuple_queries(
+            &classified,
+            db,
+            &effective_registry,
+            self.min_confidence,
+            &self.generator,
+        );
         write_output(
             output_dir,
             name,

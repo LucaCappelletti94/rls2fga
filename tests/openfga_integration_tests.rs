@@ -8,6 +8,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model;
+use rls2fga::generator::model_generator::GeneratorSettings;
 
 mod support;
 
@@ -32,7 +33,13 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
 
     // 3. Write authorization model
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
-    let model = json_model::generate_json_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = json_model::generate_json_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 

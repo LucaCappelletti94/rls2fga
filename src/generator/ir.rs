@@ -141,6 +141,19 @@ pub(crate) enum TupleSource {
         predicate: AttributePredicate,
     },
 
+    /// P9 guard the service evaluates per check. Produces
+    /// `(type:pk, relation, user:*, condition, context)` where the context carries the
+    /// row's own value for the parameter the request cannot supply.
+    ConditionalAttributeGate {
+        table: String,
+        pk_col: String,
+        relation: String,
+        condition: String,
+        /// Condition parameter the row supplies, and the column it reads.
+        row_parameter: String,
+        column: String,
+    },
+
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
     ConstantTrue { table: String, pk_col: String },
 
@@ -181,6 +194,7 @@ impl TupleSource {
             | Self::ParentBridge { .. }
             | Self::PublicFlag { .. }
             | Self::AttributeGate { .. }
+            | Self::ConditionalAttributeGate { .. }
             | Self::ConstantTrue { .. }
             | Self::PolicyScope { .. } => true,
             Self::TeamMembership { .. } | Self::ExistsMembership { .. } | Self::Todo { .. } => {
@@ -197,7 +211,8 @@ impl TupleSource {
             Self::DirectOwnership { relation, .. }
             | Self::ArrayMembership { relation, .. }
             | Self::JsonbFieldOwnership { relation, .. }
-            | Self::ParentBridge { relation, .. } => own(relation),
+            | Self::ParentBridge { relation, .. }
+            | Self::ConditionalAttributeGate { relation, .. } => own(relation),
             Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
             Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
             Self::ExplicitGrants { role_cases, .. } => role_cases
@@ -331,6 +346,16 @@ impl TupleSource {
                     "p9:{table}:{pk_col}:{}:{:?}:{:?}",
                     predicate.column, predicate.operator, predicate.value
                 )
+            }
+            Self::ConditionalAttributeGate {
+                table,
+                pk_col,
+                relation,
+                condition,
+                row_parameter,
+                column,
+            } => {
+                format!("p9c:{table}:{pk_col}:{relation}:{condition}:{row_parameter}:{column}")
             }
             Self::ConstantTrue { table, pk_col } => {
                 format!("p10_true:{table}:{pk_col}")

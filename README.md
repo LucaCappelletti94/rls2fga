@@ -8,7 +8,7 @@ Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/curren
 
 `PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples, fine-grained, per-resource permissions evaluated at the application layer.
 
-`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of ten canonical patterns and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
+`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of twelve canonical patterns and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
 
 Policies that cannot be fully translated are flagged with a confidence level and emit `-- TODO` items for manual review.
 
@@ -16,7 +16,7 @@ Policies that cannot be fully translated are flagged with a confidence level and
 > The crate is not published yet on crates.io because we are waiting for the latest `sqlparser` version to be released.
 
 > [!WARNING]
-> ABAC support is partial and policies with an attribute guard (`AND col = value`) are only partially translated.
+> An attribute guard beside a relationship check (`owner_id = current_user AND status = 'published'`) translates only its relationship half. The attribute half becomes a `-- TODO` for your application to enforce. A guard standing on its own does translate.
 
 ## Cargo Features
 
@@ -40,7 +40,7 @@ The library is a four-stage pipeline: parse a SQL schema, classify its RLS polic
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier::classify_policies;
-use rls2fga::generator::model_generator::generate_model;
+use rls2fga::generator::model_generator::{generate_model, GeneratorSettings};
 use rls2fga::generator::tuple_generator::{format_tuples, generate_tuple_queries};
 use rls2fga::parser::sql_parser::parse_schema;
 
@@ -61,16 +61,17 @@ let sql = "
 // Stage 1: Parse the SQL schema
 let db = parse_schema(sql).expect("parse error");
 
-// Stage 2: Classify RLS policies into patterns P1–P10
+// Stage 2: Classify RLS policies into patterns P1-P10
 let registry = FunctionRegistry::default();
 let policies = classify_policies(&db, &registry);
 
 // Stage 3: Generate the OpenFGA DSL authorization model
-let model = generate_model(&policies, &db, &registry, ConfidenceLevel::B);
+let settings = GeneratorSettings::default();
+let model = generate_model(&policies, &db, &registry, ConfidenceLevel::B, &settings);
 println!("{}", model.dsl);
 
 // Stage 4: Generate SQL that populates OpenFGA relationship tuples
-let tuples = generate_tuple_queries(&policies, &db, &registry, ConfidenceLevel::B);
+let tuples = generate_tuple_queries(&policies, &db, &registry, ConfidenceLevel::B, &settings);
 println!("{}", format_tuples(&tuples));
 
 // Review translation gaps
@@ -84,11 +85,11 @@ The `min_confidence` parameter controls which policies appear in the output:
 | Level | Meaning |
 | ------- | --------- |
 | `A` | Fully translated, no manual review needed |
-| `B` | Composite patterns where all sub-expressions are A-level |
-| `C` | Partial translation, ABAC crossovers or attribute guards present |
-| `D` | Unrecognised expression, always emits a TODO item |
+| `B` | A composed pattern, or an attribute guard the row alone decides. A composed pattern is graded by its weakest part and never rises above `B` |
+| `C` | Partial translation, an ABAC crossover where the relationship half translates and the attribute half does not |
+| `D` | Unrecognised expression. Denied, and emits a TODO item, unless an oracle classifies it |
 
-Dropping is not silent: `output::report::build_report` lists every clause below the threshold. A dropped `PERMISSIVE` clause grants nothing, so the model is narrower than the policy. A `RESTRICTIVE` clause instead becomes `no_access`, since RLS is `(permissive OR ...) AND restrictive AND ...`.
+Dropping is not silent: `output::report::build_report` lists every clause below the threshold. A dropped `PERMISSIVE` clause grants nothing, so the model is narrower than the policy. A `RESTRICTIVE` clause instead becomes `no_access`, since RLS is `(permissive OR ...) AND restrictive AND ...`, and so does a `SELECT` policy reading its own table, which `PostgreSQL` rejects with `infinite recursion detected in policy for relation`.
 
 ### Generated model (example)
 
@@ -107,6 +108,7 @@ type documents
     define can_delete: no_access
     define can_insert: no_access
     define can_select: owner
+    define can_select_for_update: can_update
     define can_update: no_access
 ```
 
@@ -127,7 +129,7 @@ FROM "documents"
 WHERE "owner_id" IS NOT NULL;
 ```
 
-Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`.
+Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`. Only relations a permission can reach get a query, so a table that denies everything yields nothing to load.
 
 ## Supported RLS Patterns
 
@@ -137,19 +139,37 @@ Run this query against your database, convert the rows to `OpenFGA` tuple object
 | P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One direct relation per allowed role name |
 | P3 | `DirectOwnership` | `owner_id = current_user_id()` | `define owner: [user]` direct relation |
 | P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members WHERE ...)`, `id IN (SELECT ...)`, `id = ANY (SELECT ...)` | Group membership via a `member` relation |
-| P5 | `ParentInheritance` | FK join carrying a parent-side rule | Tuple-to-userset onto that rule (`owner from parent`) |
+| P5 | `ParentInheritance` | FK join carrying a parent-side rule | Tuple-to-userset onto that rule (`owner from parent`), gated by the parent's own `can_select` |
 | P6 | `BooleanFlag` | `is_public = TRUE` | Wildcard `[user:*]` public access |
-| P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship part translated; attribute guard emitted as `-- TODO [Level C]` |
+| P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship part translated, attribute guard emitted as `-- TODO [Level C]` |
 | P8 | `Composite` | `expr1 OR expr2` / `expr1 AND expr2` | `union` / `intersection` of sub-expressions |
-| P9 | `AttributeCondition` | `status = 'published'`, `priority >= 3` | Not directly translatable; emitted as `-- TODO [Level C]` |
+| P9 | `AttributeCondition` | `status = 'published'`, `expires_at > now()` | A value the row alone decides becomes a wildcard whose tuple query carries the guard in its `WHERE`, so only matching rows get one. A value the clock decides becomes an `OpenFGA` condition instead, since a tuple written once would outlive it |
 | P10 | `ConstantBool` | `TRUE` / `FALSE` | Open (`[user:*]`) or closed (no access) |
-| - | `Unknown` | Unrecognised expression | Always emitted as `-- TODO [Level D]` |
+| P11 | `ArrayMembership` | `current_user = ANY (editors)` | Direct relation named after the column, one tuple per array element |
+| P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `define owner: [user]` direct relation, read from the jsonb field |
+| - | `Unknown` | Unrecognised expression | Denied, and emitted as `-- TODO [Level D]`, unless an oracle classifies it |
+
+## Classifying What This Crate Refuses
+
+An expression `rls2fga` does not recognise is denied rather than guessed at, which is safe but narrower than the policy. When you know what your own expression means, implement `PolicyOracle` and call `consult_oracle` on the classified policies before generating anything. The oracle is offered each refused expression as written, along with the reason it was refused, and returns a classification or declines. What it returns is emitted exactly as a pattern the crate recognised itself, and the grade it claims still faces your confidence threshold, so an oracle cannot push a guess past a gate you set.
+
+Reach for it rather than walking the classification yourself. A refusal nests inside a parent join and inside a composite, so a walk that misses one leaves the model quietly denying, and every pattern enclosing a refusal has to be regraded or the clause is dropped for a refusal that is no longer there. `rls2fga::classifier::oracle` documents both traps and carries a worked example.
+
+## Reads Gate The Other Commands
+
+Naming the row to change requires reading it, so `can_update` and `can_delete` are intersected with `can_select`. Plain `INSERT` reads nothing, so `can_insert` stays ungated, but returning a table column and naming an `ON CONFLICT` target both read the new row back, so `PostgreSQL` checks it against the `SELECT` policies as well. `can_insert_returning` is that intersection, omitted where the insert rule already implies the read. Check it against the tuples the new row would produce, the same contextual tuples `can_insert` needs. `INSERT ... ON CONFLICT ... DO UPDATE` takes the update path on a conflict, so the `UPDATE` policies apply to the conflicting row as well, which `can_upsert` intersects. A locking read (`FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR KEY SHARE`) is filtered by the `UPDATE` policies' `USING` clause on top of the `SELECT` policies, so `can_select` overstates what it returns and `can_select_for_update` is the relation to check. A policy expression also reads any table it names, filtered by that table's own policies: an inherited parent rule is intersected with the parent's `can_select`, and a membership table that grants no reads denies the command outright. Which membership rows a user sees is otherwise up to that table's policies, which no relation can express, so load tuples only for the rows it exposes.
 
 ## Policy Role Scope (`TO <role>`)
 
 When a `PostgreSQL` policy targets a specific role, for example `CREATE POLICY ... TO analyst USING (...)`, `rls2fga` preserves that scope. It adds role-scope relations in the generated model, adds a `pg_role` type with a `member` relation, and emits tuples that tie protected rows to `pg_role:<role>`.
 
 Required runtime data: you must load `pg_role#member` tuples that map users to `PostgreSQL` roles in your `OpenFGA` store. Without them, role-scoped policies will not match any user.
+
+## Policies That Depend On The Clock
+
+A guard comparing a column against statement time, such as `expires_at > now()`, cannot become a tuple: whatever the comparison decided when the tuple was written stays decided, and the grant outlives the moment it was true for. `rls2fga` emits an `OpenFGA` condition instead. The row's own value travels with the tuple, and the time comes from the caller at check time, so the same tuple stops granting once the clock passes it.
+
+Required runtime data: every `Check` against such a relation must supply the time in its context, under the parameter name `request_time`. Nothing computes it for you, which is the point, since a server clock reading would put the decision back where it cannot be audited. `TranslatorBuilder::with_request_time_parameter` renames it when your service already has a convention.
 
 ## License
 

@@ -2,6 +2,7 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::output::formatter;
 use rls2fga::parser::sql_parser::parse_schema;
@@ -88,7 +89,13 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
 
     let grant_count = model
         .dsl
@@ -137,8 +144,13 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(
@@ -157,8 +169,13 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(
@@ -184,8 +201,13 @@ CREATE POLICY p ON tasks FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(!formatted.is_empty(), "Should produce some tuple queries");
@@ -222,8 +244,13 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -266,8 +293,13 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -292,9 +324,20 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
 
     let dir = unique_temp_dir("rls2fga_short_names");
     formatter::write_output(
@@ -319,13 +362,24 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
 #[test]
 fn multi_policy_table_generates_combined_model() {
     let (classified, db, registry) = support::try_load_fixture_classified("multi_policy_table");
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     assert!(
         !model.dsl.is_empty(),
         "Multi-policy table should produce DSL output"
     );
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
     assert!(
         !formatted.is_empty(),
@@ -351,7 +405,13 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
 
     let has_no_access_or_todo = model.dsl.contains("no_access")
         || model
@@ -377,8 +437,13 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
 
     let _ = formatted;
@@ -399,9 +464,20 @@ CREATE POLICY p ON docs FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let _ = model;
     let _ = tuples;
 }
@@ -437,8 +513,13 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(

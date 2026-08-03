@@ -2,6 +2,7 @@
 //! from `PostgreSQL` RLS semantics.
 
 use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
 use rls2fga::output::report::build_report;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
@@ -4547,12 +4548,14 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
             &db,
             &registry,
             ConfidenceLevel::B,
+            &GeneratorSettings::default(),
         );
         let queries = rls2fga::generator::tuple_generator::generate_tuple_queries(
             &classified,
             &db,
             &registry,
             ConfidenceLevel::B,
+            &GeneratorSettings::default(),
         );
 
         for row in decidable_relations(&classified, &db, &registry, ConfidenceLevel::B) {
@@ -4796,21 +4799,42 @@ fn only_a_literal_constant_earns_the_attribute_wildcard() {
     };
 
     for clause in [
-        // The clock decides these, not the row, so a tuple computed once would keep
-        // granting after the value passed.
+        // The clock decides these, not the row, so a static tuple computed once would
+        // keep granting after the value passed. They earn a condition instead, which
+        // the service re-evaluates on every check.
         "expires_at > now()",
         "expires_at <= current_timestamp",
         "expires_at > CURRENT_DATE",
     ] {
         let (dsl, tuples) = translation(&schema(clause));
-        assert_eq!(
-            relation_definition(&dsl, "articles", "can_select").as_deref(),
-            Some("no_access"),
-            "`{clause}` is not decided by the row, so it must not grant:\n{dsl}"
+        let select = relation_definition(&dsl, "articles", "can_select")
+            .expect("articles defines can_select");
+        assert_ne!(
+            select, "public_viewer",
+            "`{clause}` must not earn the unconditional wildcard:\n{dsl}"
         );
         assert!(
-            !tuples.contains("public_viewer"),
-            "`{clause}` must emit no wildcard tuple:\n{tuples}"
+            select.starts_with("gate_"),
+            "`{clause}` must resolve through a conditional gate, got `{select}`:\n{dsl}"
+        );
+        // The gate's wildcard is admitted only through a condition, and the model
+        // declares that condition.
+        assert!(
+            dsl.contains(":* with when_"),
+            "the gate's wildcard must carry its condition:\n{dsl}"
+        );
+        assert!(
+            dsl.contains("condition when_"),
+            "the model must declare the condition it names:\n{dsl}"
+        );
+        // And the tuple carries the row's own value, since the request cannot know it.
+        assert!(
+            tuples.contains("jsonb_build_object('expires_at', \"expires_at\")"),
+            "the tuple must carry the row's value as context:\n{tuples}"
+        );
+        assert!(
+            !tuples.contains("'public_viewer' AS relation"),
+            "`{clause}` must emit no unconditional wildcard tuple:\n{tuples}"
         );
     }
 
@@ -4844,4 +4868,90 @@ fn parse_using_expr(schema: &str) -> sqlparser::ast::Expr {
         .expect("the policy stores a USING clause")
         .clone();
     expr
+}
+
+/// Two condition parameters cannot share one name. A column named exactly like the
+/// parameter the request supplies collapsed them into one, and the expression compared
+/// the value against itself.
+#[test]
+fn a_column_named_after_the_request_parameter_keeps_its_own_condition_parameter() {
+    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, request_time TIMESTAMP);\n\
+                  ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY jobs_sel ON jobs FOR SELECT USING (request_time > now());\n";
+
+    let (dsl, tuples) = translation(schema);
+
+    let condition = dsl
+        .lines()
+        .find(|line| line.trim_start().starts_with("condition when_"))
+        .expect("the model declares its condition");
+    let expression = dsl
+        .lines()
+        .find(|line| line.contains(" > "))
+        .expect("the condition compares the row against the request")
+        .trim()
+        .to_string();
+
+    // The comparison must have two distinct sides, whatever the row's parameter ends
+    // up being called.
+    let (left, right) = expression
+        .split_once(" > ")
+        .expect("the expression is a comparison");
+    assert_ne!(
+        left.trim(),
+        right.trim(),
+        "the row and the request must be separate parameters:\n{dsl}"
+    );
+    assert!(
+        condition.matches("timestamp").count() == 2,
+        "both parameters must survive in the signature, got `{condition}`"
+    );
+    // The context supplies the row's parameter, so the key has to be the renamed
+    // parameter while the value still reads the real column.
+    let row_parameter = left.trim();
+    assert!(
+        tuples.contains(&format!(
+            "jsonb_build_object('{row_parameter}', \"request_time\")"
+        )),
+        "the context key must be the row's parameter `{row_parameter}`:\n{tuples}"
+    );
+    assert!(
+        condition.contains(&format!("{row_parameter}: timestamp")),
+        "the signature must declare that parameter, got `{condition}`"
+    );
+}
+
+/// The name is a contract with the caller, who has to pass exactly that key at check
+/// time, so a deployment with its own convention configures it.
+#[test]
+fn the_request_time_parameter_name_is_configurable() {
+    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, expires_at TIMESTAMP);\n\
+                  ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY jobs_sel ON jobs FOR SELECT USING (expires_at > now());\n";
+    let db = db_of(schema);
+
+    let default_dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    assert!(
+        default_dsl.contains("request_time: timestamp"),
+        "the default name is request_time:\n{default_dsl}"
+    );
+
+    let configured = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_request_time_parameter("as_of")
+        .build();
+    let dsl = configured.generate_model(&db).dsl;
+
+    assert!(
+        dsl.contains("as_of: timestamp"),
+        "the configured name reaches the signature:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("expires_at > as_of"),
+        "the configured name reaches the expression:\n{dsl}"
+    );
+    assert!(
+        !dsl.contains("request_time"),
+        "the default must not survive alongside it:\n{dsl}"
+    );
 }

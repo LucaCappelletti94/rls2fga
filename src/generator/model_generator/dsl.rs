@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) fn render_dsl(types: &[TypePlan]) -> String {
+pub(super) fn render_dsl(
+    types: &[TypePlan],
+    conditions: &BTreeMap<String, ConditionSpec>,
+) -> String {
     let mut dsl = String::new();
     let _ = writeln!(dsl, "model");
     let _ = writeln!(dsl, "  schema {OPENFGA_SCHEMA_VERSION}");
@@ -22,7 +25,30 @@ pub(super) fn render_dsl(types: &[TypePlan]) -> String {
         }
     }
 
+    // Conditions follow the types, which is the order the DSL grammar accepts.
+    for (name, spec) in conditions {
+        let parameters = spec
+            .parameters
+            .iter()
+            .map(|(parameter, type_name)| format!("{parameter}: {}", dsl_parameter_type(type_name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(dsl);
+        let _ = writeln!(dsl, "condition {name}({parameters}) {{");
+        let _ = writeln!(dsl, "  {}", spec.expression);
+        let _ = writeln!(dsl, "}}");
+    }
+
     dsl
+}
+
+/// The DSL spells a parameter type in lower case, where the JSON names it
+/// `TYPE_NAME_TIMESTAMP`.
+fn dsl_parameter_type(type_name: &str) -> String {
+    type_name
+        .strip_prefix("TYPE_NAME_")
+        .unwrap_or(type_name)
+        .to_lowercase()
 }
 
 fn format_subjects(subjects: &[DirectSubject]) -> String {
@@ -31,6 +57,10 @@ fn format_subjects(subjects: &[DirectSubject]) -> String {
         .map(|s| match s {
             DirectSubject::Type(t) => t.clone(),
             DirectSubject::Wildcard(t) => format!("{t}:*"),
+            DirectSubject::ConditionalWildcard {
+                type_name,
+                condition,
+            } => format!("{type_name}:* with {condition}"),
         })
         .collect::<Vec<_>>();
     format!("[{}]", parts.join(", "))

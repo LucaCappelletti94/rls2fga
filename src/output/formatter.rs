@@ -185,6 +185,7 @@ mod tests {
             comment: "-- tuple".to_string(),
             sql: "SELECT 1;".to_string(),
             description: None,
+            condition: None,
         }];
 
         write_output(

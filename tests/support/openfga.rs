@@ -81,6 +81,54 @@ pub(crate) fn make_tuple(object: &str, relation: &str, user: &str) -> TupleKey {
     }
 }
 
+/// A tuple carrying the condition its relation reference names, plus the context the
+/// row supplies. The request supplies the rest at check time.
+pub(crate) fn make_conditional_tuple(
+    object: &str,
+    relation: &str,
+    user: &str,
+    condition: &str,
+    context: serde_json::Value,
+) -> TupleKey {
+    TupleKey {
+        user: user.to_string(),
+        relation: relation.to_string(),
+        object: object.to_string(),
+        condition: Some(openfga_client::client::RelationshipCondition {
+            name: condition.to_string(),
+            context: Some(to_struct(context)),
+        }),
+    }
+}
+
+/// Check with a request context, which is where a condition's remaining parameters
+/// come from.
+pub(crate) async fn check_allowed_with_context(
+    client: &OpenFgaClient<Channel>,
+    user: &str,
+    relation: &str,
+    object: &str,
+    context: serde_json::Value,
+) -> bool {
+    client
+        .check(
+            TupleKeyWithoutCondition {
+                user: user.to_string(),
+                relation: relation.to_string(),
+                object: object.to_string(),
+            },
+            None,
+            to_struct(context),
+            false,
+        )
+        .await
+        .expect("check request should succeed")
+}
+
+fn to_struct(value: serde_json::Value) -> openfga_client::prost_wkt_types::Struct {
+    serde_json::from_value(value).expect("a JSON object converts to a protobuf struct")
+}
+
 pub(crate) async fn read_authorization_model(
     client: &mut GrpcClient,
     store_id: &str,

@@ -15,17 +15,18 @@ use crate::generator::well_known::{
     CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
     CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPSERT_RELATION, DENY_RELATION,
     MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION,
-    TEAM_TYPE, USER_TYPE,
+    REQUEST_TIME_PARAMETER, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::reads_relation;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    canonical_fga_type_name, clamp_relation_name, is_owner_like_column_name, lookup_table,
+    canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
+    gate_condition_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
     parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
-    stable_hex_suffix,
+    same_identifier, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
@@ -67,6 +68,25 @@ pub struct TodoItem {
 pub(crate) enum DirectSubject {
     Type(String),
     Wildcard(String),
+    /// A wildcard every tuple of which carries a condition, so the grant holds only
+    /// while the condition evaluates true at check time.
+    ConditionalWildcard {
+        type_name: String,
+        condition: String,
+    },
+}
+
+/// A condition the model declares and a relation reference names.
+///
+/// One `CEL` expression over parameters that arrive from two places: the tuple
+/// carries what the row knows, the request carries what only it knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConditionSpec {
+    pub expression: String,
+    /// Parameter name to its `OpenFGA` type name, sorted so emission is stable.
+    pub parameters: BTreeMap<String, String>,
+    /// The parameter each tuple supplies from its own row, and the column it reads.
+    pub row_parameter: (String, String),
 }
 
 /// Structural identity of a subject list, stable against `Debug` formatting.
@@ -76,6 +96,10 @@ fn subject_key(subjects: &[DirectSubject]) -> String {
         .map(|subject| match subject {
             DirectSubject::Type(name) => format!("t:{name}"),
             DirectSubject::Wildcard(name) => format!("w:{name}"),
+            DirectSubject::ConditionalWildcard {
+                type_name,
+                condition,
+            } => format!("wc:{type_name}:{condition}"),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -128,6 +152,10 @@ pub(crate) struct TypePlan {
     pub table_tuple_sources: Vec<TupleSource>,
     /// Ownership column → its relation. Sharing one would union distinct principals.
     ownership_relations: BTreeMap<String, String>,
+    /// Conditions this type's own relation references name, keyed by condition name.
+    /// They live here rather than threaded through translation so a condition stays
+    /// beside the relation that needs it.
+    pub conditions: BTreeMap<String, ConditionSpec>,
 }
 
 /// Subjects the generator's own structural relations hold, or `None` when the
@@ -240,12 +268,15 @@ impl TypePlan {
     }
 
     fn set_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
-        let relation = clamp_relation_name(relation.into());
-        // Guard: if this relation was already registered as direct, that is a programming error.
-        debug_assert!(
-            !self.direct_relations.contains_key(&relation),
-            "relation '{relation}' already registered as direct; cannot overwrite as computed"
-        );
+        let mut relation = clamp_relation_name(relation.into());
+        // A name a direct relation already holds yields, exactly as `ensure_direct` and
+        // `ensure_computed` do. Overwriting a computed rule is this function's whole
+        // job, so only the direct case is a clash.
+        if self.direct_relations.contains_key(&relation) {
+            let key = userset_key(&expr);
+            relation =
+                clamp_relation_name(format!("{relation}_{}", stable_hex_suffix(key.as_str())));
+        }
         self.computed_relations.insert(relation.clone(), expr);
         relation
     }
@@ -255,11 +286,32 @@ impl TypePlan {
     }
 }
 
+/// Choices a deployment makes about the emitted model.
+///
+/// One struct rather than a growing parameter list, so the next setting costs a field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratorSettings {
+    /// Condition parameter the caller supplies for a guard against statement time. It
+    /// is the name every check context must use, so a deployment with its own
+    /// convention sets it here.
+    pub request_time_parameter: String,
+}
+
+impl Default for GeneratorSettings {
+    fn default() -> Self {
+        Self {
+            request_time_parameter: REQUEST_TIME_PARAMETER.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaPlan {
     pub types: Vec<TypePlan>,
     pub todos: Vec<TodoItem>,
     pub confidence_summary: Vec<(String, ConfidenceLevel)>,
+    /// Conditions any relation reference names, keyed by name.
+    pub conditions: BTreeMap<String, ConditionSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -305,9 +357,10 @@ pub fn generate_model(
     db: &ParserDB,
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
+    settings: &GeneratorSettings,
 ) -> GeneratedModel {
-    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence);
-    let dsl = render_dsl(&plan.types);
+    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence, settings);
+    let dsl = render_dsl(&plan.types, &plan.conditions);
 
     GeneratedModel {
         dsl,
@@ -321,15 +374,17 @@ pub(crate) fn build_filtered_schema_plan(
     db: &ParserDB,
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
+    settings: &GeneratorSettings,
 ) -> SchemaPlan {
     let filtered = filter_policies_for_output(policies, min_confidence);
-    build_schema_plan(&filtered, db, registry)
+    build_schema_plan(&filtered, db, registry, settings)
 }
 
 pub(crate) fn build_schema_plan(
     policies: &[ClassifiedPolicy],
     db: &ParserDB,
     registry: &FunctionRegistry,
+    settings: &GeneratorSettings,
 ) -> SchemaPlan {
     // Pre-compute resource column hints for P1/P2 role-threshold patterns.
     // This walks the raw policy Expr AST once up-front so that
@@ -497,6 +552,7 @@ pub(crate) fn build_schema_plan(
                     db,
                     &table_types,
                     &source_table_name,
+                    settings,
                 );
                 // A restrictive clause is a barrier, so a dropped conjunct must still deny.
                 let guards = dropped_attribute_guards(&classified.pattern);
@@ -689,15 +745,34 @@ pub(crate) fn build_schema_plan(
         type_names.insert(0, user);
     }
 
-    let types = type_names
+    let types: Vec<TypePlan> = type_names
         .into_iter()
         .filter_map(|name| all_types.remove(&name))
+        .collect();
+
+    // Only the conditions a surviving reference still names are declared, so a policy
+    // dropped by confidence filtering cannot leave a condition behind.
+    let named: BTreeSet<&str> = types
+        .iter()
+        .flat_map(|plan| plan.direct_relations.values())
+        .flatten()
+        .filter_map(|subject| match subject {
+            DirectSubject::ConditionalWildcard { condition, .. } => Some(condition.as_str()),
+            DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
+        })
+        .collect();
+    let conditions: BTreeMap<String, ConditionSpec> = types
+        .iter()
+        .flat_map(|plan| plan.conditions.iter())
+        .filter(|(name, _)| named.contains(name.as_str()))
+        .map(|(name, spec)| (name.clone(), spec.clone()))
         .collect();
 
     SchemaPlan {
         types,
         todos,
         confidence_summary,
+        conditions,
     }
 }
 
@@ -854,7 +929,7 @@ fn repoint_inlined_aliases(
                 .flatten()
                 .filter_map(|subject| match subject {
                     DirectSubject::Type(name) => aliases.get(name.as_str()),
-                    DirectSubject::Wildcard(_) => None,
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
                 })
                 .find_map(|dropped| dropped.get(computed.as_str()));
             if let Some(replacement) = replacement {
@@ -945,7 +1020,7 @@ fn reach_userset(
                 .flatten()
                 .filter_map(|subject| match subject {
                     DirectSubject::Type(name) => by_name.get(name.as_str()),
-                    DirectSubject::Wildcard(_) => None,
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
                 })
             {
                 if !reached.insert((target.type_name.clone(), computed.clone())) {
@@ -1680,6 +1755,93 @@ fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     UsersetExpr::Computed(PUBLIC_RELATION.to_string())
 }
 
+/// Mint the relation, the condition and the tuple source a request-time guard needs.
+///
+/// Returns `None` when the row cannot be identified or the column's type has no
+/// condition parameter type, so the caller falls back to closing the policy.
+fn conditional_gate_expr(
+    request: &AttributeRequestPredicate,
+    policy_name: &str,
+    source_table: &str,
+    table_plan: &mut TypePlan,
+    db: &ParserDB,
+    request_time_parameter: &str,
+) -> Option<UsersetExpr> {
+    let pk_col = resolve_pk_column(source_table, db)?;
+    let parameter_type = condition_parameter_type(source_table, &request.column, db)?;
+
+    let condition = gate_condition_name(policy_name);
+    // A column named like the request's parameter yields, since two parameters cannot
+    // share one name.
+    let request_parameter = request_time_parameter.to_string();
+    let mut row_parameter = normalize_relation_name(&request.column);
+    if row_parameter == request_parameter {
+        row_parameter = format!("{row_parameter}_{}", stable_hex_suffix(&request.column));
+    }
+    let operator = condition_operator(request.operator);
+
+    table_plan.conditions.insert(
+        condition.clone(),
+        ConditionSpec {
+            expression: format!("{row_parameter} {operator} {request_parameter}"),
+            parameters: [
+                (row_parameter.clone(), parameter_type.to_string()),
+                (request_parameter, TIMESTAMP_PARAMETER_TYPE.to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            row_parameter: (row_parameter.clone(), request.column.clone()),
+        },
+    );
+
+    let relation = table_plan.ensure_direct(
+        conditional_gate_relation_name(policy_name),
+        vec![DirectSubject::ConditionalWildcard {
+            type_name: USER_TYPE.to_string(),
+            condition: condition.clone(),
+        }],
+    );
+    table_plan.add_source(TupleSource::ConditionalAttributeGate {
+        table: source_table.to_string(),
+        pk_col,
+        relation: relation.clone(),
+        condition,
+        row_parameter,
+        column: request.column.clone(),
+    });
+    Some(UsersetExpr::Computed(relation))
+}
+
+/// `CEL` spelling of the comparison, which matches SQL for the operators reaching here.
+fn condition_operator(operator: AttributeOperator) -> &'static str {
+    match operator {
+        AttributeOperator::Eq => "==",
+        AttributeOperator::NotEq => "!=",
+        AttributeOperator::Gt => ">",
+        AttributeOperator::GtEq => ">=",
+        AttributeOperator::Lt => "<",
+        AttributeOperator::LtEq => "<=",
+    }
+}
+
+/// The condition parameter type for a column, or `None` when the schema does not say
+/// or the type has no `OpenFGA` counterpart.
+fn condition_parameter_type(table: &str, column: &str, db: &ParserDB) -> Option<&'static str> {
+    let meta = lookup_table(db, table)?;
+    let declared = meta
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .find(|candidate| same_identifier(&candidate.stored_column_name(), column))?;
+    let data_type = declared.data_type(db).to_lowercase();
+    // Only a temporal guard reaches here, so only a temporal column has a counterpart.
+    if data_type.starts_with("timestamp") || data_type.starts_with("date") {
+        Some(TIMESTAMP_PARAMETER_TYPE)
+    } else {
+        None
+    }
+}
+
 fn combine_exprs(
     mut exprs: Vec<UsersetExpr>,
     wrapper: fn(Vec<UsersetExpr>) -> UsersetExpr,
@@ -1721,6 +1883,7 @@ fn pattern_to_expr(
         &db,
         &TableTypes::default(),
         "test_table",
+        &GeneratorSettings::default(),
     )
 }
 
@@ -1741,6 +1904,7 @@ fn translate_pattern(
     db: &ParserDB,
     table_types: &TableTypes,
     source_table: &str,
+    settings: &GeneratorSettings,
 ) -> UsersetExpr {
     match pattern {
         PatternClass::P1NumericThreshold {
@@ -2077,6 +2241,7 @@ fn translate_pattern(
                     db,
                     table_types,
                     parent_table,
+                    settings,
                 )
             } else {
                 let parent_plan = all_types
@@ -2095,6 +2260,7 @@ fn translate_pattern(
                     db,
                     table_types,
                     parent_table,
+                    settings,
                 );
                 *all_types
                     .entry(parent_type.clone())
@@ -2206,6 +2372,7 @@ fn translate_pattern(
                 db,
                 table_types,
                 source_table,
+                settings,
             );
             table_plan.add_source(TupleSource::Todo {
                 level: ConfidenceLevel::C,
@@ -2232,6 +2399,7 @@ fn translate_pattern(
                     db,
                     table_types,
                     source_table,
+                    settings,
                 ));
             }
             match op {
@@ -2242,14 +2410,31 @@ fn translate_pattern(
             }
         }
         PatternClass::P9AttributeCondition {
-            column, predicate, ..
+            column,
+            predicate,
+            request_predicate,
+            ..
         } => {
+            // A value only the request knows cannot be decided by a tuple, so the
+            // guard becomes a condition the service evaluates per check, and the tuple
+            // carries the row's own value as its context.
+            if let Some(request) = request_predicate {
+                if let Some(expr) = conditional_gate_expr(
+                    request,
+                    policy_name,
+                    source_table,
+                    table_plan,
+                    db,
+                    &settings.request_time_parameter,
+                ) {
+                    return expr;
+                }
+            }
             // A literal constant is decided by the row, so the guard generalises the
             // boolean flag: emit the wildcard and let the tuple query qualify rows.
             // The wildcard is only correct because the compared value is a literal.
             // A caller-derived one would grant everyone access to rows scoped to one
-            // caller, and a temporal one would outlive the clock, so both arrive here
-            // as `None` and keep falling closed.
+            // caller, so it arrives here as `None` and keeps falling closed.
             if let Some(predicate) = predicate {
                 if let Some(pk_col) = resolve_pk_column(source_table, db) {
                     table_plan.add_source(TupleSource::AttributeGate {

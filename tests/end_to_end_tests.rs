@@ -1,6 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator;
+use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 
 mod support;
@@ -17,12 +18,23 @@ fn end_to_end_earth_metabolome() {
     assert_eq!(classified.len(), 4, "Should classify all 4 policies");
 
     // Stage 5: Generate model
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     insta::assert_snapshot!("emi_model", model.dsl.trim());
 
     // Stage 6: Generate tuples
-    let tuples =
-        tuple_generator::generate_tuple_queries(&classified, &db, &registry, ConfidenceLevel::B);
+    let tuples = tuple_generator::generate_tuple_queries(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(&tuples));
 
     // Verify no TODOs for Level A/B output
@@ -36,7 +48,13 @@ fn end_to_end_earth_metabolome() {
 fn end_to_end_emi_role_hierarchy_needs_no_read_gate() {
     let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(&classified, &db, &registry, ConfidenceLevel::B);
+    let model = model_generator::generate_model(
+        &classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
 
     for line in model.dsl.lines().map(str::trim) {
         let Some(body) = line

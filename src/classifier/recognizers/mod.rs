@@ -21,7 +21,7 @@ mod attribute;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
-pub use attribute::{attribute_literal_predicate, is_attribute_check};
+pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };
