@@ -1,6 +1,8 @@
 /// Shared schema lookup helpers used by model/tuple generation.
 pub(crate) mod db_lookup;
-/// Deriving per-row record descriptions from the tuple-source IR.
+// `describe` and `records` carry their own `//!` docs, so no outer doc here: a
+// module with both resolves its intra-doc links in this file's scope instead of
+// its own, and the type names it talks about live there.
 pub(crate) mod describe;
 /// Shared authorization intermediate representation (`TupleSource` and friends).
 pub(crate) mod ir;
@@ -8,7 +10,6 @@ pub(crate) mod ir;
 pub mod json_model;
 /// `OpenFGA` DSL text model generation.
 pub mod model_generator;
-/// Per-row descriptions of the records a tuple query produces.
 pub mod records;
 /// Shared helpers for stable and valid role-based relation naming.
 pub(crate) mod role_relations;
