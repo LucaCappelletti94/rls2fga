@@ -107,7 +107,6 @@ mod tests {
             kind: sqlparser::ast::CastKind::Cast,
             expr: Box::new(Expr::Identifier(Ident::new("owner_id"))),
             data_type: sqlparser::ast::DataType::Uuid,
-            array: false,
             format: None,
         };
 

@@ -27,4 +27,4 @@ bench = false
 # not carry over. Mirror it here so sql-traits and sqlparser stay on the single
 # compatible revision (see the parent Cargo.toml for the rationale).
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }

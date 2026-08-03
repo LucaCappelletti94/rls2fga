@@ -65,6 +65,10 @@ fn unapplied_alter_policy(sql: &str) -> Option<String> {
 /// (`sql-traits` panics on an orphaned reference), so validating here keeps the
 /// whole translation pipeline total on untrusted input.
 ///
+/// Grants are read under [`GrantResolution::OpenWorld`]. rls2fga models policies
+/// rather than privileges, and roles are cluster objects a schema dump does not
+/// emit, so a grant naming one must not refuse the schema.
+///
 /// # Errors
 ///
 /// Returns [`SchemaError::UnappliedAlterPolicy`] when a policy expression is
@@ -74,7 +78,9 @@ pub fn parse_schema(sql: &str) -> Result<ParserDB, SchemaError> {
     if let Some(policy) = unapplied_alter_policy(sql) {
         return Err(SchemaError::UnappliedAlterPolicy(policy));
     }
-    let db = ParserDB::parse::<PostgreSqlDialect>(sql)?;
+    let db = ParseOptions::default()
+        .with_grant_resolution(GrantResolution::OpenWorld)
+        .parse::<PostgreSqlDialect>(sql)?;
     db.validate_foreign_key_targets()?;
     Ok(db)
 }

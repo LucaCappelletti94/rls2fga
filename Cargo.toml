@@ -17,7 +17,7 @@ db = ["std", "diesel"]
 
 [dependencies]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
-sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "6637ea40c0c32e34e79d0d27415efba3d91b9233", default-features = false }
+sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "afcb6af6d152d47c5b4a365162f86e38cd8762e0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
@@ -90,4 +90,4 @@ wildcard_imports = "allow"
 # published on crates.io (git deps are forbidden) until sqlparser ships a release above
 # 0.62.0 carrying the no_std fixes.
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }

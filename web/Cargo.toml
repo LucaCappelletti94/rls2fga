@@ -65,4 +65,4 @@ opt-level = 1
 # hygiene. The wasm build is no_std (default-features = false), so this patch
 # is load-bearing here and must match the parent crate's pin exactly.
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "bef86dd6826ea0d87143f59403b12aa3a588bd4f" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }

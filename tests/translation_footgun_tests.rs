@@ -4153,3 +4153,127 @@ fn a_disjunctive_membership_predicate_stays_parenthesised_in_the_tuple_query() {
         "the disjunction must stay inside its own parentheses:\n{tuples}"
     );
 }
+
+/// Model and tuples for `sql` at the default threshold.
+fn translation(sql: &str) -> (String, String) {
+    let db = db_of(sql);
+    let translator = translator(ConfidenceLevel::B);
+    (
+        translator.generate_model(&db).dsl,
+        format_tuples(&translator.generate_tuple_queries(&db)),
+    )
+}
+
+/// `pg_dump` never declares a key inline: it emits `ALTER TABLE ONLY t ADD CONSTRAINT`
+/// as a separate statement. Without the primary key nothing identifies a row, so the
+/// table gets no tuple query at all and the operator has a model they cannot populate.
+#[test]
+fn a_primary_key_declared_by_alter_table_identifies_rows() {
+    let schema = |key: &str, constraint: &str| {
+        format!(
+            "CREATE TABLE users (id UUID PRIMARY KEY);\n\
+             CREATE TABLE docs (id UUID {key}, owner_id UUID NOT NULL REFERENCES users(id));\n\
+             {constraint}\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);\n"
+        )
+    };
+    let (inline_dsl, inline_tuples) = translation(&schema("PRIMARY KEY", ""));
+    assert!(
+        inline_tuples.contains("FROM \"docs\""),
+        "guard precondition: the inline spelling must emit an ownership query:\n{inline_tuples}"
+    );
+
+    let (dsl, tuples) = translation(&schema(
+        "NOT NULL",
+        "ALTER TABLE ONLY docs ADD CONSTRAINT docs_pkey PRIMARY KEY (id);\n",
+    ));
+    assert_eq!(
+        dsl, inline_dsl,
+        "a key declared by ALTER TABLE is the same key"
+    );
+    assert_eq!(
+        tuples, inline_tuples,
+        "a key declared by ALTER TABLE still identifies the object"
+    );
+}
+
+/// The `id` fallback needs the column to be unique and `NOT NULL` before it will name a
+/// row, and `pg_dump` declares uniqueness the same separate way.
+#[test]
+fn a_unique_constraint_declared_by_alter_table_identifies_rows() {
+    let schema = |unique: &str, constraint: &str| {
+        format!(
+            "CREATE TABLE users (id UUID PRIMARY KEY);\n\
+             CREATE TABLE docs (id UUID NOT NULL {unique}, \
+             owner_id UUID NOT NULL REFERENCES users(id));\n\
+             {constraint}\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);\n"
+        )
+    };
+    let (inline_dsl, inline_tuples) = translation(&schema("UNIQUE", ""));
+    assert!(
+        inline_tuples.contains("FROM \"docs\""),
+        "guard precondition: the inline spelling must emit an ownership query:\n{inline_tuples}"
+    );
+
+    let (dsl, tuples) = translation(&schema(
+        "",
+        "ALTER TABLE ONLY docs ADD CONSTRAINT docs_id_key UNIQUE (id);\n",
+    ));
+    assert_eq!(
+        dsl, inline_dsl,
+        "a unique constraint declared by ALTER TABLE is the same constraint"
+    );
+    assert_eq!(
+        tuples, inline_tuples,
+        "a unique NOT NULL id still identifies the object"
+    );
+}
+
+/// A foreign key declared by `ALTER TABLE` is what resolves a membership column to the
+/// table it points at. Without it the column name alone is consulted, which mints a
+/// singular type no table backs and leaves the real one unreferenced.
+#[test]
+fn a_foreign_key_declared_by_alter_table_resolves_the_parent_type() {
+    let schema = |references: &str, constraint: &str| {
+        format!(
+            "CREATE TABLE users (id UUID PRIMARY KEY);\n\
+             CREATE TABLE teams (id UUID PRIMARY KEY);\n\
+             CREATE TABLE team_members (team_id UUID NOT NULL {references}, \
+             user_id UUID NOT NULL);\n\
+             CREATE TABLE docs (id UUID PRIMARY KEY, team_id UUID NOT NULL);\n\
+             {constraint}\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_team ON docs FOR SELECT USING (EXISTS (\n\
+               SELECT 1 FROM team_members\n\
+               WHERE team_members.team_id = docs.team_id \
+               AND team_members.user_id = current_user));\n"
+        )
+    };
+    let (inline_dsl, inline_tuples) = translation(&schema("REFERENCES teams(id)", ""));
+    assert_eq!(
+        relation_definition(&inline_dsl, "docs", "can_select").as_deref(),
+        Some("member from teams"),
+        "guard precondition: the inline spelling must reach the teams type:\n{inline_dsl}"
+    );
+
+    let (dsl, tuples) = translation(&schema(
+        "",
+        "ALTER TABLE ONLY team_members ADD CONSTRAINT tm_team_fkey \
+         FOREIGN KEY (team_id) REFERENCES teams(id);\n",
+    ));
+    assert!(
+        !type_names(&dsl).contains(&"team".to_string()),
+        "the schema declares 'teams', so no 'team' type may be invented:\n{dsl}"
+    );
+    assert_eq!(
+        dsl, inline_dsl,
+        "a foreign key declared by ALTER TABLE is the same key"
+    );
+    assert_eq!(
+        tuples, inline_tuples,
+        "the membership query must read the table the key points at"
+    );
+}

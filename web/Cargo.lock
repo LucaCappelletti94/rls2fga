@@ -2863,7 +2863,7 @@ checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 [[package]]
 name = "sql-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/sql-traits?rev=c315d2cfd7df00f62a64b49ee42858871eeaf505#c315d2cfd7df00f62a64b49ee42858871eeaf505"
+source = "git+https://github.com/earth-metabolome-initiative/sql-traits?rev=afcb6af6d152d47c5b4a365162f86e38cd8762e0#afcb6af6d152d47c5b4a365162f86e38cd8762e0"
 dependencies = [
  "geometric-traits",
  "sha2",
@@ -2884,7 +2884,7 @@ dependencies = [
 [[package]]
 name = "sqlparser"
 version = "0.62.0"
-source = "git+https://github.com/apache/datafusion-sqlparser-rs?rev=bef86dd6826ea0d87143f59403b12aa3a588bd4f#bef86dd6826ea0d87143f59403b12aa3a588bd4f"
+source = "git+https://github.com/apache/datafusion-sqlparser-rs?rev=2f3b5b824c24304720f1e8e504f54b9910e63bad#2f3b5b824c24304720f1e8e504f54b9910e63bad"
 dependencies = [
  "log",
  "serde",
@@ -2894,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "sqlparser_derive"
 version = "0.5.0"
-source = "git+https://github.com/apache/datafusion-sqlparser-rs?rev=bef86dd6826ea0d87143f59403b12aa3a588bd4f#bef86dd6826ea0d87143f59403b12aa3a588bd4f"
+source = "git+https://github.com/apache/datafusion-sqlparser-rs?rev=2f3b5b824c24304720f1e8e504f54b9910e63bad#2f3b5b824c24304720f1e8e504f54b9910e63bad"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -155,6 +155,28 @@ ALTER POLICY docs_sel ON docs RENAME TO docs_select;
     parse_schema(sql).expect("a rename does not change the expression");
 }
 
+/// Roles are cluster objects that `pg_dump` never emits, so a dumped schema grants to
+/// roles it does not create. rls2fga models policies rather than privileges, so a
+/// statement it would ignore must not refuse the schema.
+#[test]
+fn a_grant_naming_a_role_the_schema_does_not_create_is_accepted() {
+    const SCHEMA: &str = "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+";
+    for dcl in [
+        "GRANT SELECT ON docs TO app;",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON docs TO app;",
+        "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app;",
+        "GRANT USAGE ON SCHEMA public TO app;",
+        "REVOKE ALL ON docs FROM app;",
+    ] {
+        parse_schema(&format!("{SCHEMA}{dcl}\n"))
+            .unwrap_or_else(|error| panic!("`{dcl}` must not refuse the schema: {error}"));
+    }
+}
+
 /// Every schema accessor rls2fga calls is fallible upstream, and rls2fga reads an error
 /// as "the schema does not say" so the decision falls closed. That is only safe because
 /// the error cannot occur: every object is fetched from the same database it is then
