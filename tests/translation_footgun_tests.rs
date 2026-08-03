@@ -4277,3 +4277,203 @@ fn a_foreign_key_declared_by_alter_table_resolves_the_parent_type() {
         "the membership query must read the table the key points at"
     );
 }
+
+/// Relations an exclusion subtracts, on the object's own type.
+///
+/// A `TupleToUserset` contributes its tupleset, which is a relation on the object,
+/// and not its computed side, which resolves on whatever type the tupleset reaches.
+fn subtracted_relations_on_the_object(
+    userset: &rls2fga::generator::json_model::Userset,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    use rls2fga::generator::json_model::Userset;
+    match userset {
+        Userset::This { .. } => {}
+        Userset::ComputedUserset { computed_userset } => {
+            out.insert(computed_userset.relation.clone());
+        }
+        Userset::TupleToUserset { tuple_to_userset } => {
+            out.insert(tuple_to_userset.tupleset.relation.clone());
+        }
+        Userset::Union { union } => {
+            for child in &union.child {
+                subtracted_relations_on_the_object(child, out);
+            }
+        }
+        Userset::Intersection { intersection } => {
+            for child in &intersection.child {
+                subtracted_relations_on_the_object(child, out);
+            }
+        }
+        Userset::Difference { difference } => {
+            subtracted_relations_on_the_object(&difference.base, out);
+            subtracted_relations_on_the_object(&difference.subtract, out);
+        }
+    }
+}
+
+/// Walk every `Difference` in the model, yielding `(type, subtracted relation)`.
+fn subtractions(
+    json: &rls2fga::generator::json_model::AuthorizationModel,
+) -> Vec<(String, String)> {
+    use rls2fga::generator::json_model::Userset;
+
+    fn walk(userset: &Userset, type_name: &str, out: &mut Vec<(String, String)>) {
+        match userset {
+            Userset::Difference { difference } => {
+                let mut subtracted = std::collections::BTreeSet::new();
+                subtracted_relations_on_the_object(&difference.subtract, &mut subtracted);
+                out.extend(
+                    subtracted
+                        .into_iter()
+                        .map(|relation| (type_name.to_string(), relation)),
+                );
+                walk(&difference.base, type_name, out);
+                walk(&difference.subtract, type_name, out);
+            }
+            Userset::Union { union } => {
+                for child in &union.child {
+                    walk(child, type_name, out);
+                }
+            }
+            Userset::Intersection { intersection } => {
+                for child in &intersection.child {
+                    walk(child, type_name, out);
+                }
+            }
+            Userset::This { .. }
+            | Userset::ComputedUserset { .. }
+            | Userset::TupleToUserset { .. } => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    for definition in &json.type_definitions {
+        for (name, userset) in definition.relations.iter().flatten() {
+            let _ = name;
+            walk(userset, &definition.type_name, &mut out);
+        }
+    }
+    out
+}
+
+/// On reconnect the consumer replays from an earlier point and reconstructs what a
+/// row used to imply by supplying the previous version's records as extra context.
+/// That is exact only while adding a record cannot revoke access. Union and
+/// intersection preserve it, exclusion does not, so nothing an exclusion subtracts
+/// may depend on the object's own column values.
+///
+/// Holds today: the one exclusion the generator emits subtracts `member` reached
+/// through a role scope, whose tuple names a literal role and exists for every row
+/// of the table regardless of its values.
+#[test]
+fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
+    use rls2fga::generator::records::{Guard, RecordDerivation, ValueSource};
+
+    let mut checked = 0;
+    for schema in exclusion_emitting_schemas() {
+        let db = db_of(&schema);
+        let translator = translator(ConfidenceLevel::B);
+        let json = translator.generate_json_model(&db);
+        let queries = translator.generate_tuple_queries(&db);
+
+        for (type_name, relation) in subtractions(&json) {
+            checked += 1;
+            for query in &queries {
+                let Some(description) = &query.description else {
+                    continue;
+                };
+                let RecordDerivation::FromRow {
+                    template, guards, ..
+                } = &description.derivation
+                else {
+                    // A joining source reads a second table, so a change there could
+                    // withdraw the subtraction without the row changing at all.
+                    assert!(
+                        !feeds(description, &type_name, &relation),
+                        "{type_name}#{relation} is subtracted yet fed by a joining source: {}",
+                        query.comment
+                    );
+                    continue;
+                };
+                if template.object_type != type_name || template.relation != relation {
+                    continue;
+                }
+
+                assert!(
+                    matches!(template.subject_key, ValueSource::Literal(_)),
+                    "{type_name}#{relation} is subtracted, so its subject may not come \
+                     from the row: {:?} in {}",
+                    template.subject_key,
+                    query.comment
+                );
+                let identity = match &template.object_key {
+                    ValueSource::Column(column) => column.clone(),
+                    other => panic!("an object key is a column, got {other:?}"),
+                };
+                for guard in guards {
+                    assert!(
+                        matches!(guard, Guard::NotNull(column) if *column == identity),
+                        "{type_name}#{relation} is subtracted, so no row value may decide \
+                         whether its tuple exists: {guard:?} in {}",
+                        query.comment
+                    );
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked >= 2,
+        "the corpus must actually emit exclusions, checked {checked}"
+    );
+}
+
+/// True when `description` populates `relation` on `type_name`.
+fn feeds(
+    description: &rls2fga::generator::records::RecordDescription,
+    type_name: &str,
+    relation: &str,
+) -> bool {
+    match &description.derivation {
+        rls2fga::generator::records::RecordDerivation::FromRow { template, .. } => {
+            template.object_type == type_name && template.relation == relation
+        }
+        // A joining description names no template, so it cannot be attributed to a
+        // relation from here and is reported as not feeding it.
+        _ => false,
+    }
+}
+
+/// Schemas whose emitted model contains an exclusion. A RESTRICTIVE policy bound to
+/// a role is the only shape that produces one today.
+///
+/// The fixture corpus emits none at the default threshold: `role_scoped_restrictive`
+/// carries a RESTRICTIVE policy that falls below it and so falls closed instead,
+/// which is why these are written here rather than read from a fixture.
+fn exclusion_emitting_schemas() -> Vec<String> {
+    vec![
+        "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN NOT NULL DEFAULT FALSE);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_public ON docs FOR SELECT USING (is_public = TRUE);
+CREATE POLICY docs_barrier ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (owner_id = current_user);
+"
+        .to_string(),
+        // Two barriers, so the outer exclusion subtracts a scope while its base
+        // already contains one.
+        "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, is_public BOOLEAN NOT NULL DEFAULT FALSE);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_public ON docs FOR SELECT USING (is_public = TRUE);
+CREATE POLICY docs_contractor ON docs AS RESTRICTIVE FOR SELECT TO contractor
+  USING (owner_id = current_user);
+CREATE POLICY docs_auditor ON docs AS RESTRICTIVE FOR SELECT TO auditor
+  USING (owner_id = current_user);
+"
+        .to_string(),
+    ]
+}
