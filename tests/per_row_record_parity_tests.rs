@@ -25,7 +25,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::records::{
-    records_from_row, Record, RecordDerivation, RecordDescription, RowValues,
+    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
 };
 use rls2fga::generator::tuple_generator::{self, TupleQuery};
 
@@ -55,6 +55,13 @@ struct TupleRow {
 struct JsonRow {
     #[diesel(sql_type = Jsonb)]
     row: serde_json::Value,
+}
+
+/// One key value a bound query is replayed for.
+#[derive(QueryableByName)]
+struct KeyRow {
+    #[diesel(sql_type = Text)]
+    value: String,
 }
 
 /// `serde_json` view of one row, adapting it to the crate's row interface.
@@ -180,6 +187,118 @@ fn records_from_descriptions(
         .collect()
 }
 
+/// Distinct non-null values of `column` in `table`, as text.
+fn distinct_keys(conn: &mut PgConnection, table: &str, column: &str) -> Vec<String> {
+    // Both names come from the description at runtime, so the typed DSL cannot
+    // name them.
+    let sql = format!(
+        "SELECT DISTINCT \"{column}\"::text AS value FROM \"{table}\" \
+         WHERE \"{column}\" IS NOT NULL ORDER BY value"
+    );
+    let rows: Vec<KeyRow> = diesel::sql_query(&sql)
+        .load(conn)
+        .unwrap_or_else(|error| panic!("failed to read keys of {table}.{column}: {error}"));
+    rows.into_iter().map(|row| row.value).collect()
+}
+
+/// Run a bound query for one key.
+///
+/// The key is substituted as a literal rather than bound as a parameter, because
+/// a literal carries `unknown` type and coerces to whatever the column is, while
+/// a text-typed parameter against a `uuid` column raises `operator does not
+/// exist`. What is under test is the SQL the description carries, not the wire
+/// form of the placeholder.
+fn records_from_bound_query(
+    conn: &mut PgConnection,
+    bound: &BoundQuery,
+    key: &str,
+) -> BTreeSet<Record> {
+    let literal = format!("'{}'", key.replace('\'', "''"));
+    let sql = bound.sql.replace("$1", &literal);
+    let rows: Vec<TupleRow> = diesel::sql_query(&sql).load(conn).unwrap_or_else(|error| {
+        panic!(
+            "a bound query failed on PostgreSQL 18 for {}.{} = {literal}\n{sql}\nError: {error}",
+            bound.table, bound.key_column
+        )
+    });
+    rows.into_iter()
+        .map(|row| Record {
+            object: row.object,
+            relation: row.relation,
+            subject: row.subject,
+        })
+        .collect()
+}
+
+/// A joining shape answers a change by querying, so every bound query has to run,
+/// return only records the whole-table query returns, and between them account for
+/// all of them. Replaying every changed row is how the consumer stays complete.
+fn assert_bound_queries_account_for_every_record(
+    conn: &mut PgConnection,
+    query: &TupleQuery,
+    bound_queries: &[BoundQuery],
+    label: &str,
+) {
+    let whole = records_from_sql(conn, query);
+    assert!(
+        !whole.is_empty(),
+        "{label}: nothing to compare, the seed produces no records for {}",
+        query.comment
+    );
+
+    for bound in bound_queries {
+        let keys = distinct_keys(conn, &bound.table, &bound.key_column);
+        assert!(
+            !keys.is_empty(),
+            "{label}: no key values in {}.{}, so the bound query is untested for {}",
+            bound.table,
+            bound.key_column,
+            query.comment
+        );
+
+        let mut union = BTreeSet::new();
+        let mut narrowed = false;
+        for key in &keys {
+            let bound_records = records_from_bound_query(conn, bound, key);
+            let invented: Vec<_> = bound_records.difference(&whole).collect();
+            assert!(
+                invented.is_empty(),
+                "{label}: the bound query on {}.{} = {key} returned records the \
+                 whole-table query does not: {invented:?}\n{}",
+                bound.table,
+                bound.key_column,
+                bound.sql
+            );
+            narrowed |= bound_records.len() < whole.len();
+            union.extend(bound_records);
+        }
+
+        assert_eq!(
+            union,
+            whole,
+            "{label}: replaying every key of {}.{} must reproduce the whole table for {}\n{}\n\
+             missing: {:?}",
+            bound.table,
+            bound.key_column,
+            query.comment,
+            bound.sql,
+            whole.difference(&union).collect::<Vec<_>>(),
+        );
+
+        // A query ignoring its key would pass both checks above, so require that
+        // at least one key answered with less than everything.
+        assert!(
+            narrowed || keys.len() == 1,
+            "{label}: the bound query on {}.{} returned every record for every one of \
+             its {} keys, so it does not bind:\n{}",
+            bound.table,
+            bound.key_column,
+            keys.len(),
+            bound.sql
+        );
+    }
+}
+
 /// Compare both sides for every query the schema emits, and report what was covered.
 fn assert_descriptions_match_their_sql(
     conn: &mut PgConnection,
@@ -208,6 +327,18 @@ fn assert_descriptions_match_their_sql(
                     "{label}: a joining description must carry a bound query per side it reads: {}",
                     query.comment
                 );
+                // Requirement 7: the consumer refuses to start by name, so every
+                // table a bound query reads has to appear in the list.
+                for query_side in bound {
+                    assert!(
+                        description.tables.contains(&query_side.table),
+                        "{label}: {} is bound but absent from the table list {:?}: {}",
+                        query_side.table,
+                        description.tables,
+                        query.comment
+                    );
+                }
+                assert_bound_queries_account_for_every_record(conn, query, bound, label);
                 continue;
             }
             RecordDerivation::FromRow { table, .. } => {
@@ -258,6 +389,7 @@ CREATE TABLE notes (
     is_public BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE TABLE note_members (note_id TEXT REFERENCES notes(id), user_id TEXT);
+CREATE TABLE note_reviewers (note_id TEXT REFERENCES notes(id), user_id TEXT, role TEXT);
 CREATE TABLE announcements (id TEXT PRIMARY KEY, body TEXT);
 CREATE TABLE audits (id TEXT PRIMARY KEY, body TEXT);
 
@@ -288,6 +420,14 @@ CREATE POLICY notes_members ON notes FOR SELECT
         SELECT 1 FROM note_members
         WHERE note_members.note_id = notes.id
           AND note_members.user_id = auth_current_user_id()));
+-- The same membership with a residual predicate, which reaches the query as SQL
+-- text no evaluator here can read, so the shape has to be answered by querying.
+CREATE POLICY notes_reviewers ON notes FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM note_reviewers
+        WHERE note_reviewers.note_id = notes.id
+          AND note_reviewers.user_id = auth_current_user_id()
+          AND note_reviewers.role = 'editor'));
 -- P10 constant TRUE.
 CREATE POLICY announcements_all ON announcements FOR SELECT USING (TRUE);
 -- A role-scoped policy, which mints the pg_role scope.
@@ -318,6 +458,15 @@ INSERT INTO note_members (note_id, user_id) VALUES
     ('n-owned', 'bob'),
     ('n-owned', NULL),
     ('n-public', 'carol');
+
+-- Rows the residual predicate keeps and rows it drops, over more than one note so
+-- the bound query has something to narrow.
+INSERT INTO note_reviewers (note_id, user_id, role) VALUES
+    ('n-owned',      'alice', 'editor'),
+    ('n-owned',      'bob',   'viewer'),
+    ('n-public',     'carol', 'editor'),
+    ('n-null-list',  'alice', 'editor'),
+    ('n-null-list',  NULL,    'editor');
 
 INSERT INTO announcements (id, body) VALUES ('a1', 'hello'), ('a2', 'world');
 INSERT INTO audits (id, body) VALUES ('au1', 'secret');
@@ -353,7 +502,12 @@ async fn every_row_shape_description_matches_its_own_sql() {
         pure >= 8,
         "the schema must exercise every row-decidable shape, saw {pure}"
     );
-    assert_eq!(joined, 0, "no shape here reads a second table");
+    // The residual predicate is the one shape here a row cannot decide, and its
+    // bound query is executed by the same comparison.
+    assert_eq!(
+        joined, 1,
+        "only the residual predicate membership reads more than the row"
+    );
     assert!(
         records > 20,
         "the seed must produce records to compare, saw {records}"
@@ -372,19 +526,29 @@ async fn role_ownership_and_grant_shapes_are_marked_joining() {
         "
 INSERT INTO users (id) VALUES
     ('00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000a2'),
     ('00000000-0000-0000-0000-0000000000a3');
-INSERT INTO teams (id) VALUES ('00000000-0000-0000-0000-0000000000b1');
+INSERT INTO teams (id) VALUES
+    ('00000000-0000-0000-0000-0000000000b1'),
+    ('00000000-0000-0000-0000-0000000000b2');
 INSERT INTO team_members (team_id, user_id) VALUES
-    ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000a1');
+    ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000a2');
 INSERT INTO ownables (id, owner_id) VALUES
     ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000a2'),
+    -- Team owned, which is the only way the team-ownership shape produces a record.
+    ('00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-0000000000b1'),
+    ('00000000-0000-0000-0000-0000000000d4', '00000000-0000-0000-0000-0000000000b2'),
     -- Owned by nobody the schema records. `owner_id` carries no foreign key, so
     -- this row is legal, and it is what separates a row-derived record from the
     -- principal-table filter the query applies. Marking the shape row-derived
     -- claims a record here that the query refuses.
     ('00000000-0000-0000-0000-0000000000d9', '00000000-0000-0000-0000-0000000000ff');
 INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
-    ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000a1', 3);
+    ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000a1', 3),
+    ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2', 2),
+    ('00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b1', 4);
 ",
     )
     .expect("failed to seed the earth_metabolome schema");
