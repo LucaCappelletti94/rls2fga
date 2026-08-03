@@ -8,6 +8,7 @@ use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::SchemaPlan;
+use crate::generator::records::RecordDescription;
 use crate::generator::well_known::{
     OWNER_TEAM_RELATION, OWNER_USER_RELATION, TEAM_TYPE, USER_TYPE,
 };
@@ -24,6 +25,10 @@ pub struct TupleQuery {
     pub comment: String,
     /// SELECT statement that produces (object, relation, subject) triples.
     pub sql: String,
+    /// The same records as structure, so a caller holding one row's values
+    /// reaches them without a database. `None` where the query produces no
+    /// records, which is the `TODO` placeholder alone.
+    pub description: Option<RecordDescription>,
 }
 
 /// Format a list of tuple queries into a single SQL string.
@@ -124,6 +129,7 @@ fn render_ownership_tuple_source(
              FROM {table_sql}\n\
              {where_clause}"
         ),
+        description: None,
     }
 }
 
@@ -177,7 +183,12 @@ fn render_tuple_source(
     owner_type: &str,
     db: &ParserDB,
 ) -> Option<TupleQuery> {
-    render_tuple_source_inner(source, owner_type, db).map(sanitize_tuple_query)
+    let mut query = sanitize_tuple_query(render_tuple_source_inner(source, owner_type, db)?);
+    // Every query passes through here, so a new variant reaches the describer
+    // rather than silently shipping without a description.
+    query.description =
+        crate::generator::describe::describe_tuple_source(source, owner_type, db, &query.sql);
+    Some(query)
 }
 
 fn render_tuple_source_inner(
@@ -222,6 +233,7 @@ fn render_tuple_source_inner(
                      CROSS JOIN UNNEST({array_col_sql}) AS member\n\
                      WHERE member IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
@@ -246,6 +258,7 @@ fn render_tuple_source_inner(
                      FROM {table_sql}\n\
                      WHERE ({field_sql}) IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
@@ -374,6 +387,7 @@ fn render_tuple_source_inner(
                              Review the grant table schema and register the principal tables."
                         ),
                         sql: format!("-- Unresolved: SELECT ... FROM {grant_table_sql} og ...;"),
+                        description: None,
                     });
                 }
             };
@@ -407,6 +421,7 @@ fn render_tuple_source_inner(
                      WHERE {};",
                     where_predicates.join("\nAND ")
                 ),
+                description: None,
             })
         }
 
@@ -427,6 +442,7 @@ fn render_tuple_source_inner(
                      WHERE {team_col_sql} IS NOT NULL\n\
                      AND {user_col_sql} IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
@@ -454,6 +470,7 @@ fn render_tuple_source_inner(
                      'user:' || {user_col_sql} AS subject\n\
                      FROM {join_table_sql}{where_clause};"
                 ),
+                description: None,
             })
         }
 
@@ -472,6 +489,7 @@ fn render_tuple_source_inner(
                          (missing column '{fk_col}')"
                     ),
                     sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
+                    description: None,
                 });
             };
             let table_sql = quote_sql_identifier(table);
@@ -487,6 +505,7 @@ fn render_tuple_source_inner(
                      WHERE {object_col_sql} IS NOT NULL\n\
                      AND {parent_ref_col_sql} IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
@@ -508,6 +527,7 @@ fn render_tuple_source_inner(
                      WHERE {pk_col_sql} IS NOT NULL\n\
                      AND {flag_col_sql} = TRUE;"
                 ),
+                description: None,
             })
         }
 
@@ -523,6 +543,7 @@ fn render_tuple_source_inner(
                      FROM {table_sql}\n\
                      WHERE {pk_col_sql} IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
@@ -547,12 +568,14 @@ fn render_tuple_source_inner(
                      FROM {table_sql}\n\
                      WHERE {pk_col_sql} IS NOT NULL;"
                 ),
+                description: None,
             })
         }
 
         TupleSource::Todo { comment, sql, .. } => Some(TupleQuery {
             comment: comment.clone(),
             sql: sql.clone(),
+            description: None,
         }),
     }
 }
@@ -573,7 +596,11 @@ pub fn generate_tuple_queries(
     generate_tuple_queries_from_plan(&plan, db)
 }
 
-fn resolve_bridge_columns(table: &str, fk_column: &str, db: &ParserDB) -> Option<(String, String)> {
+pub(crate) fn resolve_bridge_columns(
+    table: &str,
+    fk_column: &str,
+    db: &ParserDB,
+) -> Option<(String, String)> {
     let table_info = lookup_table(db, table)?;
     let cols: Vec<String> = table_info
         .columns(db)
@@ -694,10 +721,12 @@ mod tests {
             TupleQuery {
                 comment: "-- one".to_string(),
                 sql: "SELECT 1;".to_string(),
+                description: None,
             },
             TupleQuery {
                 comment: "-- two".to_string(),
                 sql: "SELECT 2;".to_string(),
+                description: None,
             },
         ];
         let formatted = format_tuples(&tuples);

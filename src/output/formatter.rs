@@ -184,6 +184,7 @@ mod tests {
         let tuples = vec![TupleQuery {
             comment: "-- tuple".to_string(),
             sql: "SELECT 1;".to_string(),
+            description: None,
         }];
 
         write_output(
