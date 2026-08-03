@@ -1,5 +1,7 @@
 /// Shared schema lookup helpers used by model/tuple generation.
 pub(crate) mod db_lookup;
+/// Whether a relation's records follow from one row.
+pub mod decidable;
 // `describe` and `records` carry their own `//!` docs, so no outer doc here: a
 // module with both resolves its intra-doc links in this file's scope instead of
 // its own, and the type names it talks about live there.

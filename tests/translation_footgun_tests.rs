@@ -4477,3 +4477,251 @@ CREATE POLICY docs_auditor ON docs AS RESTRICTIVE FOR SELECT TO auditor
         .to_string(),
     ]
 }
+
+/// Does `relation`'s transitive expansion on `type_name` cross a type boundary or
+/// subtract anything? Both make a relation undecidable from one row, and both are
+/// visible in the emitted model without consulting the analysis under test.
+fn expansion_leaves_the_row(
+    json: &rls2fga::generator::json_model::AuthorizationModel,
+    type_name: &str,
+    relation: &str,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    use rls2fga::generator::json_model::Userset;
+
+    fn walk(
+        json: &rls2fga::generator::json_model::AuthorizationModel,
+        type_name: &str,
+        userset: &Userset,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
+        match userset {
+            Userset::This { .. } => false,
+            Userset::ComputedUserset { computed_userset } => {
+                expansion_leaves_the_row(json, type_name, &computed_userset.relation, seen)
+            }
+            Userset::TupleToUserset { .. } | Userset::Difference { .. } => true,
+            Userset::Union { union } => union
+                .child
+                .iter()
+                .any(|child| walk(json, type_name, child, seen)),
+            Userset::Intersection { intersection } => intersection
+                .child
+                .iter()
+                .any(|child| walk(json, type_name, child, seen)),
+        }
+    }
+
+    if !seen.insert(format!("{type_name}#{relation}")) {
+        // A cycle is not a boundary crossing by itself.
+        return false;
+    }
+    json.type_definitions
+        .iter()
+        .filter(|definition| definition.type_name == type_name)
+        .filter_map(|definition| definition.relations.as_ref())
+        .filter_map(|relations| relations.get(relation))
+        .any(|userset| walk(json, type_name, userset, seen))
+}
+
+/// A wrongly true flag grants access no policy granted, so the test asserts that
+/// direction: nothing flagged decidable may cross a type boundary, subtract, or take
+/// its records from a table other than the one keying the object.
+#[test]
+fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
+    use rls2fga::generator::decidable::decidable_relations;
+    use rls2fga::generator::records::{RecordDerivation, ValueSource};
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#;
+    let (mut trues, mut falses) = (0, 0);
+
+    for schema in decidability_schemas() {
+        let (classified, db, registry) = support_classify(&schema, registry_json);
+        // The same classification the analysis reads, or the test inspects a model
+        // the analysis never saw. Building it through a registry-less translator was
+        // exactly that mistake: the analysis saw `member from docs` while the model
+        // said `no_access`, and a wrongly true flag passed unnoticed.
+        let json = rls2fga::generator::json_model::generate_json_model(
+            &classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+        );
+        let queries = rls2fga::generator::tuple_generator::generate_tuple_queries(
+            &classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+        );
+
+        for row in decidable_relations(&classified, &db, &registry, ConfidenceLevel::B) {
+            if !row.from_one_row {
+                falses += 1;
+                continue;
+            }
+            trues += 1;
+
+            let mut seen = std::collections::BTreeSet::new();
+            assert!(
+                !expansion_leaves_the_row(&json, &row.type_name, &row.relation, &mut seen),
+                "{}#{} is flagged decidable yet its expansion crosses a type boundary \
+                 or subtracts",
+                row.type_name,
+                row.relation
+            );
+
+            // Every source feeding it must read one table, key the object by that
+            // table's own primary key, and name a user from the row. A record keyed
+            // by a foreign column describes a different object, which a change to
+            // this row does not own.
+            let mut tables = std::collections::BTreeSet::new();
+            for query in &queries {
+                let Some(description) = &query.description else {
+                    continue;
+                };
+                let RecordDerivation::FromRow {
+                    table, template, ..
+                } = &description.derivation
+                else {
+                    continue;
+                };
+                if template.object_type != row.type_name || template.relation != row.relation {
+                    continue;
+                }
+                tables.insert(table.clone());
+                assert!(
+                    !matches!(template.subject_key, ValueSource::Literal(_)),
+                    "{}#{} is flagged decidable yet its subject is a literal: {}",
+                    row.type_name,
+                    row.relation,
+                    query.comment
+                );
+                let ValueSource::Column(object_column) = &template.object_key else {
+                    panic!("an object key is a column, got {:?}", template.object_key);
+                };
+                assert_eq!(
+                    Some(object_column.as_str()),
+                    primary_key_of(&db, table).as_deref(),
+                    "{}#{} is flagged decidable yet its object is keyed by a column that \
+                     is not {table}'s primary key: {}",
+                    row.type_name,
+                    row.relation,
+                    query.comment
+                );
+            }
+            assert!(
+                tables.len() <= 1,
+                "{}#{} is flagged decidable yet its records come from {tables:?}",
+                row.type_name,
+                row.relation
+            );
+        }
+    }
+    assert!(
+        trues >= 4,
+        "the corpus must contain decidable relations or the direction is untested, saw {trues}"
+    );
+    assert!(
+        falses >= 4,
+        "and undecidable ones, or the analysis is answering true for everything, saw {falses}"
+    );
+}
+
+/// The single-column primary key of `table`, through the public schema accessors.
+fn primary_key_of(db: &ParserDB, table: &str) -> Option<String> {
+    use rls2fga::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
+
+    db.tables()
+        .find(|candidate| candidate.table_name() == table)?
+        .primary_key_column(db)
+        .ok()
+        .flatten()
+        .map(|column| column.column_name().to_string())
+}
+
+/// Classify `sql` with a registry, mirroring what the container tests do.
+fn support_classify(
+    sql: &str,
+    registry_json: &str,
+) -> (
+    Vec<rls2fga::classifier::patterns::ClassifiedPolicy>,
+    ParserDB,
+    rls2fga::classifier::function_registry::FunctionRegistry,
+) {
+    let db = db_of(sql);
+    let mut registry = rls2fga::classifier::function_registry::FunctionRegistry::new();
+    registry
+        .load_from_json(registry_json)
+        .expect("the registry parses");
+    let classified = rls2fga::classifier::policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}
+
+/// Schemas covering both answers: ownership and list membership resolve from the row
+/// to a user, while a flag, a membership table, a parent link and a role scope do not.
+///
+/// The last two matter for the direction that counts. In the first schema every
+/// action relation also unions the wildcard, which makes it undecidable whatever the
+/// analysis says about the other children, so a rule wrongly reporting a type
+/// boundary as decidable would stay invisible. A table whose only policy is a
+/// membership subquery, and one whose only policy inherits from a parent, each give
+/// an action relation that is nothing but a tuple-to-userset.
+fn decidability_schemas() -> Vec<String> {
+    let mut schemas = vec![
+        "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE folders (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE notes (id TEXT PRIMARY KEY, folder_id TEXT REFERENCES folders(id), owner_id TEXT,
+                    editors TEXT[], meta JSONB, is_public BOOLEAN NOT NULL DEFAULT FALSE);
+CREATE TABLE note_members (note_id TEXT REFERENCES notes(id), user_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE folders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY folders_owner ON folders FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY notes_owner ON notes FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY notes_editors ON notes FOR SELECT USING (auth_current_user_id() = ANY (editors));
+CREATE POLICY notes_meta ON notes FOR SELECT
+    USING (meta ->> 'owner_id' = auth_current_user_id());
+CREATE POLICY notes_public ON notes FOR SELECT USING (is_public = TRUE);
+CREATE POLICY notes_members ON notes FOR SELECT USING (EXISTS (
+    SELECT 1 FROM note_members WHERE note_members.note_id = notes.id
+      AND note_members.user_id = auth_current_user_id()));
+"
+        .to_string(),
+        // Membership alone: `can_select` is exactly `member from notes`.
+        "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+-- A primary key of its own, so nothing but the object key being a foreign
+-- column can decide this shape is undecidable.
+CREATE TABLE doc_members (id TEXT PRIMARY KEY, doc_id TEXT REFERENCES docs(id), user_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT USING (EXISTS (
+    SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id
+      AND doc_members.user_id = auth_current_user_id()));
+"
+        .to_string(),
+        // Parent inheritance alone: `can_select` is exactly `owner from projects`.
+        "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE projects (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id));
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_own ON projects FOR SELECT
+    USING (owner_id = auth_current_user_id());
+CREATE POLICY tasks_inherit ON tasks FOR SELECT USING (EXISTS (
+    SELECT 1 FROM projects p WHERE p.id = tasks.project_id
+      AND p.owner_id = auth_current_user_id()));
+"
+        .to_string(),
+    ];
+    schemas.extend(exclusion_emitting_schemas());
+    schemas
+}
