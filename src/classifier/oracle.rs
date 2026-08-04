@@ -13,8 +13,13 @@
 //! `filter_policies_for_output` drops the whole clause even after the leaf is answered.
 //! This module owns both problems.
 //!
+//! An oracle answers in one of three ways. [`OracleAnswer::Classified`] supplies a
+//! translation, [`OracleAnswer::Denied`] says the expression grants nobody, and
+//! [`OracleAnswer::Bailed`] leaves the refusal in place to be reported. Only the last is
+//! a gap, and it is the default, so an oracle implementing nothing changes nothing.
+//!
 //! ```
-//! use rls2fga::classifier::oracle::{consult_oracle, PolicyOracle, RefusedExpr};
+//! use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
 //! use rls2fga::classifier::patterns::{ClassifiedExpr, ConfidenceLevel, PatternClass};
 //! use rls2fga::parser::sql_parser::parse_schema;
 //! use rls2fga::translator::TranslatorBuilder;
@@ -22,13 +27,17 @@
 //! struct BitFlagIsPublic;
 //!
 //! impl PolicyOracle for BitFlagIsPublic {
-//!     fn classify(&self, refused: &RefusedExpr<'_>) -> Option<ClassifiedExpr> {
+//!     fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
 //!         // `&` has no translation in this crate, but the deployment knows bit 4 marks
 //!         // a row readable by anyone.
-//!         refused.sql_text().contains("flags & 4").then_some(ClassifiedExpr {
-//!             pattern: PatternClass::P10ConstantBool { value: true },
-//!             confidence: ConfidenceLevel::A,
-//!         })
+//!         if refused.sql_text().contains("flags & 4") {
+//!             OracleAnswer::Classified(ClassifiedExpr {
+//!                 pattern: PatternClass::P10ConstantBool { value: true },
+//!                 confidence: ConfidenceLevel::A,
+//!             })
+//!         } else {
+//!             OracleAnswer::Bailed
+//!         }
 //!     }
 //! }
 //!
@@ -112,12 +121,30 @@ impl<'a> RefusedExpr<'a> {
     }
 }
 
+/// What an oracle answers for a refused expression.
+///
+/// The three states are distinct on purpose. `Option` conflated the first two, so an
+/// informed denial was reported as a translation gap.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum OracleAnswer {
+    /// The oracle does not know this expression. The refusal stands and stays reported.
+    Bailed,
+    /// The oracle knows it and it grants nobody. A decision, not a gap.
+    Denied,
+    /// The oracle's own classification, whose grade still faces `min_confidence`.
+    Classified(ClassifiedExpr),
+}
+
 /// Supplies a classification for an expression this crate refused.
 ///
-/// Return `None` to leave the refusal in place, which keeps the closed default.
+/// The default bails on everything, so an oracle implementing nothing leaves the crate's
+/// closed default exactly as it is.
 pub trait PolicyOracle {
-    /// Classify `refused`, or decline it.
-    fn classify(&self, refused: &RefusedExpr<'_>) -> Option<ClassifiedExpr>;
+    /// Classify the refused expression, deny it deliberately, or bail.
+    fn classify(&self, _refused: &RefusedExpr<'_>) -> OracleAnswer {
+        OracleAnswer::Bailed
+    }
 }
 
 /// What an oracle answered, so a report can attribute the classification to it.
@@ -210,8 +237,15 @@ where
             sql_text,
             reason,
         };
-        let Some(supplied) = oracle.classify(&refused) else {
-            return false;
+        let supplied = match oracle.classify(&refused) {
+            OracleAnswer::Bailed => return false,
+            // A denial nobody doubts, so it passes any threshold and composes as the
+            // false branch of whatever encloses it.
+            OracleAnswer::Denied => ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: false },
+                confidence: ConfidenceLevel::A,
+            },
+            OracleAnswer::Classified(supplied) => supplied,
         };
         answered.push(OracleSubstitution {
             policy_name: policy_name.to_string(),
@@ -250,6 +284,7 @@ where
         | PatternClass::P10ConstantBool { .. }
         | PatternClass::P11ArrayMembership { .. }
         | PatternClass::P12JsonbFieldOwnership { .. }
+        | PatternClass::P13UncorrelatedMembership { .. }
         | PatternClass::Unknown { .. } => false,
     };
 

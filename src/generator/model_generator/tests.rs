@@ -155,7 +155,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     let empty_registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     let p1 = PatternClass::P1NumericThreshold {
         function_name: "missing_fn".to_string(),
@@ -174,7 +174,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
         &mut table_plan,
         &mut all_types,
         &empty_registry,
-        &mut todos,
+        &mut notes,
     );
     let p2_expr = pattern_to_expr(
         &p2,
@@ -182,7 +182,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
         &mut table_plan,
         &mut all_types,
         &empty_registry,
-        &mut todos,
+        &mut notes,
     );
 
     assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
@@ -194,10 +194,10 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     );
     // P1 emits a TODO about missing semantic metadata; P2 emits a TODO
     // about the role gate (and possibly missing object identifier).
-    assert!(todos[0].message.contains("missing semantic metadata"));
+    assert!(notes[0].message().contains("missing semantic metadata"));
     assert!(
-        todos.iter().any(|t| t.message.contains("Role gate")),
-        "expected role-gate TODO: {todos:?}"
+        notes.iter().any(|t| t.message().contains("Role gate")),
+        "expected role-gate TODO: {notes:?}"
     );
 }
 
@@ -206,7 +206,7 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
     let registry = role_registry("{}", false);
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     let p2_non_numeric = PatternClass::P2RoleNameInList {
         function_name: "role_level".to_string(),
@@ -223,7 +223,7 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let second = pattern_to_expr(
         &p2_numeric_without_levels,
@@ -231,7 +231,7 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
 
     assert_eq!(first, UsersetExpr::Computed("no_access".to_string()));
@@ -243,7 +243,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     let registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     let relationship = ClassifiedExpr {
         pattern: PatternClass::P3DirectOwnership {
@@ -299,7 +299,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p8_or_expr = pattern_to_expr(
         &p8_or_empty,
@@ -307,7 +307,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p8_and_expr = pattern_to_expr(
         &p8_and_empty,
@@ -315,7 +315,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p10_expr = pattern_to_expr(
         &p10_false,
@@ -323,7 +323,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p9_expr = pattern_to_expr(
         &p9,
@@ -331,7 +331,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p8_and_attr_true_expr = pattern_to_expr(
         &p8_and_attr_true,
@@ -339,7 +339,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p5_expr = pattern_to_expr(
         &p5,
@@ -347,7 +347,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let unknown_expr = pattern_to_expr(
         &unknown,
@@ -355,7 +355,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
 
     assert_eq!(p7_expr, UsersetExpr::Computed("owner".to_string()));
@@ -387,19 +387,19 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     );
     assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
     assert!(table_plan.direct_relations.contains_key("projects"));
-    assert!(todos
+    assert!(notes
         .iter()
-        .any(|t| t.message.contains("still requires runtime enforcement")));
-    assert!(todos
+        .any(|t| t.message().contains("still requires runtime enforcement")));
+    assert!(notes
         .iter()
-        .any(|t| t.message.contains("mapped to no_access for safety")));
-    assert!(todos
+        .any(|t| t.message().contains("mapped to no_access for safety")));
+    assert!(notes
         .iter()
-        .any(|t| t.message.contains("could not be safely translated")));
+        .any(|t| t.message().contains("could not be safely translated")));
 }
 
 #[test]
-fn build_schema_plan_adds_todos_for_non_public_to_and_empty_translation() {
+fn build_schema_plan_adds_notes_for_non_public_to_and_empty_translation() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (TRUE);",
     );
@@ -416,16 +416,16 @@ fn build_schema_plan_adds_todos_for_non_public_to_and_empty_translation() {
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     assert!(plan
-        .todos
+        .notes
         .iter()
-        .any(|t| t.message.contains("Policy role scope TO")));
-    assert!(plan.todos.iter().any(|t| t
-        .message
+        .any(|t| t.message().contains("Policy role scope TO")));
+    assert!(plan.notes.iter().any(|t| t
+        .message()
         .contains("Expression could not be safely translated")));
     assert!(plan
-        .todos
+        .notes
         .iter()
-        .any(|t| t.message.contains("not supported")));
+        .any(|t| t.message().contains("not supported")));
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
             "{relation} should deny when nothing translated"
         );
     }
-    let messages: Vec<&str> = plan.todos.iter().map(|t| t.message.as_str()).collect();
+    let messages: Vec<String> = plan.notes.iter().map(TranslationNote::message).collect();
     assert!(
         messages.iter().any(|message| message
             .contains("Every permissive policy on 'docs' covering SELECT fell below")),
@@ -753,6 +753,7 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
 fn build_schema_plan_canonicalizes_schema_qualified_table_names() {
     let db = parse_schema(
         r"
+CREATE SCHEMA app;
 CREATE TABLE app.docs(id uuid primary key, owner_id uuid);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user);
@@ -836,7 +837,7 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
     let registry = role_registry(r#"{"viewer": 1}"#, false);
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     let p1_unreachable = PatternClass::P1NumericThreshold {
         function_name: "role_level".to_string(),
@@ -855,7 +856,7 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     let p2_expr = pattern_to_expr(
         &p2_mixed_case,
@@ -863,7 +864,7 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
 
     assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
@@ -1022,7 +1023,7 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
     let registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("tasks");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     let unknown_inner = ClassifiedExpr {
         pattern: PatternClass::Unknown {
@@ -1043,20 +1044,20 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
-    assert!(todos
+    assert!(notes
         .iter()
-        .any(|t| t.message.contains("unknown inner rule")));
+        .any(|t| t.message().contains("unknown inner rule")));
 }
 
 #[test]
-fn pattern_to_expr_p6_missing_pk_generates_todo() {
+fn pattern_to_expr_p6_missing_pk_generates_note() {
     let registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("items");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     // items table has no PK in this context -- pattern_to_expr won't find one
     let p6 = PatternClass::P6BooleanFlag {
@@ -1069,7 +1070,7 @@ fn pattern_to_expr_p6_missing_pk_generates_todo() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
     // The table "items" doesn't exist in the empty DB, so PK can't be resolved.
     // The public_expr is still returned but a TODO is added about missing object identifier.
@@ -1077,7 +1078,7 @@ fn pattern_to_expr_p6_missing_pk_generates_todo() {
 }
 
 #[test]
-fn populate_role_threshold_sources_emits_todo_for_missing_user_principal() {
+fn populate_role_threshold_sources_emits_note_for_missing_user_principal() {
     // Schema with role-threshold table but NO users table
     let db = parse_schema(
         r"
@@ -1103,11 +1104,11 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     );
 
     // Should have a TODO about unresolved user principal
-    let has_todo = table_plan.table_tuple_sources.iter().any(|s| {
-            matches!(s, TupleSource::Todo { comment, .. } if comment.contains("unresolved user principal"))
+    let has_note = table_plan.table_tuple_sources.iter().any(|s| {
+            matches!(s, TupleSource::Skipped { reason } if reason.comment().contains("unresolved user principal"))
         });
     assert!(
-        has_todo,
+        has_note,
         "should emit TODO for missing user principal table"
     );
 }
@@ -1124,7 +1125,7 @@ fn resolve_principal_info_auto_resolves_pk_for_configured_table() {
 }
 
 #[test]
-fn populate_role_threshold_sources_emits_todo_for_missing_team_principal() {
+fn populate_role_threshold_sources_emits_note_for_missing_team_principal() {
     // Schema with team membership but no teams table
     let db = parse_schema(
         r"
@@ -1152,11 +1153,11 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     );
 
     // Should have a TODO about unresolved team principal
-    let has_team_todo = table_plan.table_tuple_sources.iter().any(|s| {
-            matches!(s, TupleSource::Todo { comment, .. } if comment.contains("unresolved team principal"))
+    let has_team_note = table_plan.table_tuple_sources.iter().any(|s| {
+            matches!(s, TupleSource::Skipped { reason } if reason.comment().contains("unresolved team principal"))
         });
     assert!(
-        has_team_todo,
+        has_team_note,
         "should emit TODO for missing team principal table; sources: {:?}",
         table_plan.table_tuple_sources
     );
@@ -1250,7 +1251,7 @@ CREATE TABLE widgets(name TEXT, value INT);
 
 // populate_role_threshold_sources, pk_col is None
 #[test]
-fn populate_role_threshold_sources_emits_todo_for_missing_pk_col() {
+fn populate_role_threshold_sources_emits_note_for_missing_pk_col() {
     // Table without a PK or `id` column → pk_col will be None → line 1792
     let db = parse_schema(
         r"
@@ -1281,11 +1282,11 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
         &mut all_types,
     );
 
-    let has_pk_todo = table_plan.table_tuple_sources.iter().any(|s| {
-            matches!(s, TupleSource::Todo { comment, .. } if comment.contains("missing object identifier"))
+    let has_pk_note = table_plan.table_tuple_sources.iter().any(|s| {
+            matches!(s, TupleSource::Skipped { reason } if reason.comment().contains("missing object identifier"))
         });
     assert!(
-        has_pk_todo,
+        has_pk_note,
         "should emit TODO for missing PK column; sources: {:?}",
         table_plan.table_tuple_sources
     );
@@ -1383,6 +1384,7 @@ fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
 fn build_schema_plan_disambiguates_canonical_name_collision() {
     let db = parse_schema(
         r"
+CREATE SCHEMA app;
 CREATE TABLE app.items(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE app.items ENABLE ROW LEVEL SECURITY;
 CREATE POLICY items_sel ON app.items FOR SELECT USING (owner_id = current_user);
@@ -1436,18 +1438,18 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
     // If collision was detected, a TODO should have been emitted
     if has_disambiguated {
         assert!(
-            plan.todos
+            plan.notes
                 .iter()
-                .any(|t| t.message.contains("Type name collision")),
-            "collision should produce a TODO; todos: {:?}",
-            plan.todos
+                .any(|t| t.message().contains("Type name collision")),
+            "collision should produce a TODO; notes: {:?}",
+            plan.notes
         );
     }
 }
 
 // scoped_roles missing PK → TODO
 #[test]
-fn build_schema_plan_emits_todo_for_scoped_roles_missing_pk() {
+fn build_schema_plan_emits_note_for_scoped_roles_missing_pk() {
     // Table with no PK and no `id` column
     let db = parse_schema(
         r"
@@ -1475,21 +1477,21 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     // The role-scope code should emit a TODO about missing PK for policy scope tuples
-    let has_pk_todo = plan
-        .todos
+    let has_pk_note = plan
+        .notes
         .iter()
-        .any(|t| t.message.contains("Policy role scope TO"));
+        .any(|t| t.message().contains("Policy role scope TO"));
     assert!(
-        has_pk_todo,
-        "scoped roles should produce a TODO; todos: {:?}",
-        plan.todos
+        has_pk_note,
+        "scoped roles should produce a TODO; notes: {:?}",
+        plan.notes
     );
 
     // Also check that table_tuple_sources contains a Todo about missing object identifier
     let things_type = plan.types.iter().find(|t| t.type_name == "things");
     if let Some(things) = things_type {
         let has_missing_pk_source = things.table_tuple_sources.iter().any(|s| {
-                matches!(s, TupleSource::Todo { comment, .. } if comment.contains("missing object identifier"))
+                matches!(s, TupleSource::Skipped { reason } if reason.comment().contains("missing object identifier"))
             });
         assert!(
             has_missing_pk_source,
@@ -1501,11 +1503,11 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
 
 // P5 inner pattern results in no_access → TODO
 #[test]
-fn pattern_to_expr_p5_with_inner_no_access_emits_todo() {
+fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
     let registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("tasks");
     let mut all_types = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
 
     // P5 with inner P9 (attribute-only) which produces no_access
     let inner = ClassifiedExpr {
@@ -1529,16 +1531,16 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_todo() {
         &mut table_plan,
         &mut all_types,
         &registry,
-        &mut todos,
+        &mut notes,
     );
 
     // P9 inside P5 produces no_access on the parent → TODO emitted
-    let has_inner_todo = todos.iter().any(|t| {
-        t.message.contains("could not be safely translated")
-            || t.message.contains("mapped to no_access")
+    let has_inner_note = notes.iter().any(|t| {
+        t.message().contains("could not be safely translated")
+            || t.message().contains("mapped to no_access")
     });
     assert!(
-        has_inner_todo,
-        "P5 with inner no_access should produce a TODO; todos: {todos:?}"
+        has_inner_note,
+        "P5 with inner no_access should produce a TODO; notes: {notes:?}"
     );
 }

@@ -1,8 +1,8 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -18,27 +18,40 @@ fn end_to_end_earth_metabolome() {
     assert_eq!(classified.len(), 4, "Should classify all 4 policies");
 
     // Stage 5: Generate model
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    insta::assert_snapshot!("emi_model", model.dsl.trim());
+    )
+    .outputs_accepting_gaps();
+    insta::assert_snapshot!("emi_model", model.model().trim());
 
     // Stage 6: Generate tuples
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(&tuples));
 
-    // Verify no TODOs for Level A/B output
-    assert!(model.todos.is_empty(), "EMI schema should produce no TODOs");
+    // Nothing about the translation itself falls short at Level A/B. Every RLS table
+    // still carries the owner-bypass note, which is a fact about the database rather
+    // than a shortfall, so it is excluded here by severity rather than by wording.
+    let shortfalls: Vec<&rls2fga::generator::notes::TranslationNote> = model
+        .notes()
+        .iter()
+        .filter(|note| note.severity().diverges_from_database())
+        .collect();
+    assert!(
+        shortfalls.is_empty(),
+        "EMI schema should translate fully, got {shortfalls:?}"
+    );
 }
 
 /// A role hierarchy already orders its levels, so `role_admin` implies the
@@ -48,15 +61,16 @@ fn end_to_end_earth_metabolome() {
 fn end_to_end_emi_role_hierarchy_needs_no_read_gate() {
     let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
-    for line in model.dsl.lines().map(str::trim) {
+    for line in model.model().lines().map(str::trim) {
         let Some(body) = line
             .strip_prefix("define can_delete:")
             .or_else(|| line.strip_prefix("define can_update:"))
@@ -66,7 +80,7 @@ fn end_to_end_emi_role_hierarchy_needs_no_read_gate() {
         assert!(
             !body.contains("can_select"),
             "'{line}' gates on a read the role level already implies:\n{}",
-            model.dsl
+            model.model()
         );
     }
 }

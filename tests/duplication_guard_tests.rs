@@ -82,16 +82,31 @@ fn function_arg_extraction_has_single_source_of_truth() {
     );
 }
 
+/// Note prose lives in one module and is rendered from the typed cause, so a note
+/// cannot say one thing while its kind says another, and no construction site can
+/// grow a second wording for the same gap.
 #[test]
-fn missing_object_identifier_todo_message_is_centralized() {
-    let source = read_module("src/generator/model_generator");
-    let count = source
+fn translation_note_prose_lives_only_in_the_notes_module() {
+    let notes = read_module("src/generator/notes.rs");
+    let centralized = notes
         .matches("table needs a single-column primary key or a NOT NULL UNIQUE `id` column")
         .count();
     assert_eq!(
-        count, 1,
-        "expected missing-object-id TODO SQL to be centralized in one helper, found {count}"
+        centralized, 1,
+        "expected the missing-object-id advice once in notes.rs, found {centralized}"
     );
+
+    for module in [
+        "src/generator/model_generator",
+        "src/generator/tuple_generator.rs",
+        "src/output/report.rs",
+    ] {
+        let stray = read_module(module).matches("-- TODO [Level").count();
+        assert_eq!(
+            stray, 0,
+            "{module} must carry no note prose, found {stray} skipped-tuple comments"
+        );
+    }
 }
 
 #[test]
@@ -414,10 +429,64 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
         );
     }
 
-    // An extra membership predicate joins a conjunction, so exactly one place wraps it.
-    let wraps = definition_count(&modules, "AND ({e})");
-    assert_eq!(
-        wraps, 1,
-        "one place parenthesises the extra membership predicate, found {wraps}"
+    // An extra membership predicate joins a conjunction of NULL guards, so every place
+    // that splices one has to parenthesise it: a disjunction would otherwise break out
+    // of the AND. Counting sites would break the moment a second one is added
+    // correctly, so this asserts the property instead.
+    let wrapped = definition_count(&modules, "AND ({e})");
+    let bare = definition_count(&modules, "AND {e}");
+    assert!(
+        wrapped > 0,
+        "the extra membership predicate must be spliced somewhere"
     );
+    assert_eq!(
+        bare, 0,
+        "every splice of an extra predicate must parenthesise it, found {bare} that do not"
+    );
+}
+
+/// The evaluator answers from one row, so it must not be able to reach a database.
+///
+/// This is structural on purpose. Calling the function can never show a handle to be
+/// absent, only that this particular call did not use one, so the property is stated as
+/// the module never naming a database type and never importing its way to one. The
+/// `no_std` gate row covers it transitively, since a handle needs the standard library,
+/// but that build says nothing about which module broke the rule.
+#[test]
+fn the_row_evaluator_holds_no_database_handle() {
+    let source = read_module("src/generator/records.rs");
+
+    for forbidden in [
+        "ParserDB",
+        "DatabaseLike",
+        "diesel",
+        "PgConnection",
+        "Connection",
+        "sql_query",
+        "execute",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "the row evaluator must not name `{forbidden}`"
+        );
+    }
+
+    // Its imports stay inside a cone that cannot reach a database. Listing the paths
+    // rather than whole lines keeps this robust to formatting, and widening the cone
+    // has to be a deliberate edit here.
+    let allowed = ["crate::no_std_prelude", "crate::classifier::patterns"];
+    for line in source
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("use crate::"))
+    {
+        let path = line
+            .trim_start_matches("use ")
+            .trim_end_matches(';')
+            .to_string();
+        assert!(
+            allowed.iter().any(|prefix| path.starts_with(prefix)),
+            "the row evaluator imports `{path}`, which is outside its pure cone"
+        );
+    }
 }

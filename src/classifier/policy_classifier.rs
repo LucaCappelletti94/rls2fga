@@ -517,6 +517,7 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P10ConstantBool { .. } => "constant-boolean check",
         PatternClass::P11ArrayMembership { .. } => "array-membership check",
         PatternClass::P12JsonbFieldOwnership { .. } => "jsonb-field-ownership check",
+        PatternClass::P13UncorrelatedMembership { .. } => "uncorrelated membership check",
         PatternClass::Unknown { .. } => "unrecognized expression",
     }
 }
@@ -531,6 +532,9 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         | PatternClass::P11ArrayMembership { .. }
         | PatternClass::P12JsonbFieldOwnership { .. }
         | PatternClass::P4ExistsMembership { .. }
+        // Membership of the holder is still a user-resource relationship, even though
+        // the holder stands for the whole table.
+        | PatternClass::P13UncorrelatedMembership { .. }
         | PatternClass::P5ParentInheritance { .. } => true,
         // P6 (boolean public flag) is a resource-attribute check, not a user-resource
         // relationship. Including it here would misclassify e.g.

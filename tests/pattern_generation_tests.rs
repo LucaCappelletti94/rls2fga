@@ -1,7 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -34,30 +34,36 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
     );
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
 
     assert!(
-        model.dsl.contains("define project: [project]") || model.dsl.contains("define projects:"),
+        model.model().contains("define project: [project]")
+            || model.model().contains("define projects:"),
         "expected parent relation based on project_id, got:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.dsl.contains("define can_update:"),
+        model.model().contains("define can_update:"),
         "membership policy on UPDATE should produce can_update action, got:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         tuples.contains("project_id"),
@@ -95,13 +101,17 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples.contains("'member' AS relation"),
@@ -156,13 +166,17 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples.contains("'docs:' || \"doc_id\""),
@@ -223,32 +237,39 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         using.pattern
     );
 
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
     assert!(
-        model.dsl.contains("type tasks"),
+        model.model().contains("type tasks"),
         "expected tasks type in model, got:\n{}",
-        model.dsl
+        model.model()
     );
     // The policy names ownership of the project, so that is what the task requires.
     assert!(
-        model.dsl.contains("define can_select: owner from projects"),
+        model
+            .model()
+            .contains("define can_select: owner from projects"),
         "expected task select permission to require project ownership, got:\n{}",
-        model.dsl
+        model.model()
     );
 
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
     assert!(
         tuples.contains("'projects' AS relation"),
         "expected tasks->projects bridge tuples for P5 inheritance, got:\n{tuples}"
@@ -276,13 +297,17 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples.contains("'owner' AS relation"),
@@ -315,13 +340,17 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples.contains("'docs:' || \"doc_uuid\" AS object"),
@@ -382,18 +411,19 @@ fn p2_role_in_list_generates_action_permissions() {
     let reg_json = support::read_fixture_registry_json("role_in_list");
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(&reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        model.dsl.contains("define can_select:"),
+        model.model().contains("define can_select:"),
         "P2 policy should generate command permission, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -428,18 +458,19 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        model.dsl.contains("define can_select: role_admin"),
+        model.model().contains("define can_select: role_admin"),
         "strict >2 with levels 1/2/3 should map to admin, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -474,17 +505,18 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        !model.dsl.contains("define can_select: role_viewer"),
+        !model.model().contains("define can_select: role_viewer"),
         "IN (2,4) should not collapse to >=2 threshold semantics, got:\n{}",
-        model.dsl
+        model.model()
     );
 }

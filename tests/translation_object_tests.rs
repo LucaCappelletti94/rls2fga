@@ -1,0 +1,146 @@
+//! Reaching the outputs, and what stops it.
+
+use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::generator::notes::NoteSeverity;
+use rls2fga::generator::tuple_generator::format_tuples;
+use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
+use rls2fga::translator::{Translator, TranslatorBuilder};
+
+fn db_of(sql: &str) -> ParserDB {
+    parse_schema(sql).expect("schema should parse")
+}
+
+fn translator(min_confidence: ConfidenceLevel) -> Translator {
+    TranslatorBuilder::new()
+        .with_min_confidence(min_confidence)
+        .build()
+}
+
+/// A schema every clause of which translates.
+const CLEAN: &str = "CREATE TABLE users(id UUID PRIMARY KEY);\n\
+                     CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id));\n\
+                     ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                     CREATE POLICY docs_all ON docs FOR ALL USING (owner_id = current_user) \
+                     WITH CHECK (owner_id = current_user);\n";
+
+/// A bit test this crate has no translation for.
+const REFUSED: &str = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, bits INT);\n\
+                       ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                       CREATE POLICY docs_sel ON docs FOR SELECT USING ((bits & 2) = 2);\n";
+
+/// An expression nobody classified means the model denies what the database grants, so
+/// the outputs are refused until the caller has seen it.
+#[test]
+fn an_unhandled_expression_refuses_the_outputs() {
+    let db = db_of(REFUSED);
+    let error = translator(ConfidenceLevel::D)
+        .translate(&db)
+        .outputs()
+        .expect_err("an unclassified expression must refuse");
+
+    assert_eq!(error.notes().len(), 1, "got {:?}", error.notes());
+    assert_eq!(error.notes()[0].severity(), NoteSeverity::Unhandled);
+    assert!(
+        error
+            .to_string()
+            .contains("denies what the database grants"),
+        "the refusal has to say what it costs, got: {error}"
+    );
+}
+
+/// Accepting the gaps is the same outputs, one visible line later.
+#[test]
+fn accepting_the_gaps_yields_the_same_outputs() {
+    let db = db_of(REFUSED);
+    let accepted = translator(ConfidenceLevel::D)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    assert!(
+        accepted.model().contains("define can_select: no_access"),
+        "the narrower model is still a model:\n{}",
+        accepted.model()
+    );
+
+    // The refusal names the unhandled notes only, while the accepted outputs carry
+    // every note, so nothing is lost by taking the other door.
+    let refused = translator(ConfidenceLevel::D)
+        .translate(&db)
+        .outputs()
+        .expect_err("still refused");
+    assert!(
+        refused
+            .notes()
+            .iter()
+            .all(|note| accepted.notes().contains(note)),
+        "every refused note is among the accepted ones: {:?} vs {:?}",
+        refused.notes(),
+        accepted.notes()
+    );
+    assert!(
+        accepted.notes().len() > refused.notes().len(),
+        "and the accepted side keeps the notes that are not gaps"
+    );
+}
+
+/// A schema that fully translates hands the outputs over without ceremony.
+#[test]
+fn a_translation_with_nothing_unhandled_answers() {
+    let db = db_of(CLEAN);
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs()
+        .expect("nothing went unhandled");
+
+    assert!(outputs.model().contains("type docs"));
+    assert!(!outputs.tuple_queries().is_empty());
+}
+
+/// The payoff of typing the notes. A clause the caller's own threshold dropped is their
+/// choice, not a limitation of this crate, so it must not refuse: the same schema that
+/// refuses at `D` has to answer at `B`.
+#[test]
+fn a_clause_the_callers_threshold_dropped_does_not_refuse() {
+    let db = db_of(REFUSED);
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs()
+        .expect("the caller's own threshold is not a gap in the translation");
+
+    assert!(
+        outputs
+            .notes()
+            .iter()
+            .any(|note| note.severity() == NoteSeverity::BelowThreshold),
+        "the loss is still reported: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        outputs
+            .report()
+            .contains("fell below the confidence threshold"),
+        "and the report still names it:\n{}",
+        outputs.report()
+    );
+}
+
+/// One plan, three outputs. Asking for each of them twice must not change any of them,
+/// which is what says the plan is held rather than rebuilt per call.
+#[test]
+fn every_output_renders_from_one_plan() {
+    let db = db_of(CLEAN);
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs()
+        .expect("nothing went unhandled");
+
+    assert_eq!(outputs.model(), outputs.model());
+    assert_eq!(
+        format_tuples(&outputs.tuple_queries()),
+        format_tuples(&outputs.tuple_queries())
+    );
+    assert_eq!(
+        serde_json::to_string(&outputs.json_model()).expect("serializes"),
+        serde_json::to_string(&outputs.json_model()).expect("serializes")
+    );
+}

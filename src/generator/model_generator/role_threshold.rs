@@ -116,6 +116,7 @@ fn role_threshold_functions_and_resource_params(
             PatternClass::P3DirectOwnership { .. }
             | PatternClass::P11ArrayMembership { .. }
             | PatternClass::P12JsonbFieldOwnership { .. }
+            | PatternClass::P13UncorrelatedMembership { .. }
             | PatternClass::P4ExistsMembership { .. }
             | PatternClass::P6BooleanFlag { .. }
             | PatternClass::P9AttributeCondition { .. }
@@ -231,12 +232,10 @@ pub(super) fn populate_role_threshold_sources(
                     user_pk_col: upi.pk_col,
                 });
             } else {
-                table_plan.add_source(TupleSource::Todo {
-                    level: ConfidenceLevel::D,
-                    comment: format!(
-                        "-- TODO [Level D]: skipped user ownership tuples for {source_table} (unresolved user principal table)"
-                    ),
-                    sql: "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string(),
+                table_plan.add_source(TupleSource::Skipped {
+                    reason: SkippedTuples::NoUserPrincipalTable {
+                        table: source_table.to_string(),
+                    },
                 });
             }
             if has_team {
@@ -249,23 +248,19 @@ pub(super) fn populate_role_threshold_sources(
                         team_pk_col: tpi.pk_col,
                     });
                 } else {
-                    table_plan.add_source(TupleSource::Todo {
-                        level: ConfidenceLevel::D,
-                        comment: format!(
-                            "-- TODO [Level D]: skipped team ownership tuples for {source_table} (unresolved team principal table)"
-                        ),
-                        sql: "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string(),
+                    table_plan.add_source(TupleSource::Skipped {
+                        reason: SkippedTuples::NoTeamPrincipalTable {
+                            table: source_table.to_string(),
+                        },
                     });
                 }
             }
         }
         _ => {
-            table_plan.add_source(TupleSource::Todo {
-                level: ConfidenceLevel::D,
-                comment: format!(
-                    "-- TODO [Level D]: skipped ownership tuples for {source_table} (no owner-like column/FK found)"
-                ),
-                sql: "-- Ownership tuples not emitted; review owner mapping.".to_string(),
+            table_plan.add_source(TupleSource::Skipped {
+                reason: SkippedTuples::NoOwnerColumn {
+                    table: source_table.to_string(),
+                },
             });
         }
     }
@@ -295,12 +290,11 @@ pub(super) fn populate_role_threshold_sources(
     // --- Explicit grants ---
     let hint_key = (source_table.to_string(), function_name.to_string());
     if hints.conflicts.contains(&hint_key) {
-        add_explicit_grants_todo(
-            table_plan,
-            source_table,
-            "conflicting resource join columns inferred from policies",
-            "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.",
-        );
+        table_plan.add_source(TupleSource::Skipped {
+            reason: SkippedTuples::ExplicitGrantsConflictingColumns {
+                table: source_table.to_string(),
+            },
+        });
         return;
     }
 
@@ -311,17 +305,16 @@ pub(super) fn populate_role_threshold_sources(
         .or(owner_col.as_deref());
 
     let Some(grant_join_col) = grant_join_col else {
-        add_explicit_grants_todo(
-            table_plan,
-            source_table,
-            "missing resource join column",
-            "-- Grant tuples not emitted; add function metadata or owner FK.",
-        );
+        table_plan.add_source(TupleSource::Skipped {
+            reason: SkippedTuples::ExplicitGrantsNoResourceColumn {
+                table: source_table.to_string(),
+            },
+        });
         return;
     };
 
     let Some(object_pk) = pk_col else {
-        add_missing_object_identifier_todo(table_plan, source_table, "explicit grant tuples", db);
+        add_missing_object_identifier_note(table_plan, source_table, "explicit grant tuples", db);
         return;
     };
 

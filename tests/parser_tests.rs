@@ -123,22 +123,26 @@ fn parse_emi_rls_enabled() {
     assert_eq!(rls_tables[0].table_name(), "ownables");
 }
 
-/// `ALTER POLICY ... USING` supersedes the expression the policy was created
-/// with. The parser keeps the original, so translating the schema would model a
-/// policy `PostgreSQL` no longer has.
+/// `ALTER POLICY ... USING` supersedes the expression the policy was created with, and
+/// the model has to follow it. Using the original instead is an over-grant whenever the
+/// alteration narrowed the policy, which is why the schema used to be refused outright.
 #[test]
-fn a_policy_expression_the_parser_cannot_apply_is_refused() {
+fn a_policy_expression_altered_after_creation_is_the_one_translated() {
     let sql = "
 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
-ALTER POLICY docs_sel ON docs USING (TRUE);
+ALTER POLICY docs_sel ON docs USING (FALSE);
 ";
-    let error = parse_schema(sql).expect_err("a superseded policy expression must be refused");
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("docs_sel"),
-        "the operator needs to know which policy was altered, got: {rendered}"
+    let db = parse_schema(sql).expect("an altered policy no longer refuses the schema");
+    let policy = db.policies().next().expect("the policy survives the alter");
+    assert_eq!(
+        policy
+            .using_expression(&db)
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("false"),
+        "the altered expression is what PostgreSQL enforces"
     );
 }
 

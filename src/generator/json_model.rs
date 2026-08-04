@@ -4,13 +4,9 @@ use alloc::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::generator::model_generator::{
-    build_filtered_schema_plan, DirectSubject, GeneratorSettings, TypePlan, UsersetExpr,
-    OPENFGA_SCHEMA_VERSION,
+    DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
-use crate::parser::sql_parser::ParserDB;
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -170,16 +166,8 @@ pub struct DifferenceDef {
     pub subtract: Box<Userset>,
 }
 
-/// Build a JSON-serializable `AuthorizationModel` from classified RLS policies.
-pub fn generate_json_model(
-    policies: &[ClassifiedPolicy],
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    min_confidence: ConfidenceLevel,
-    settings: &GeneratorSettings,
-) -> AuthorizationModel {
-    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence, settings);
-
+/// Render a JSON-serializable `AuthorizationModel` from a planned schema.
+pub(crate) fn json_model_from_plan(plan: SchemaPlan) -> AuthorizationModel {
     let type_definitions = plan
         .types
         .into_iter()

@@ -1,15 +1,15 @@
-/// Tests for the most common real-world RLS patterns.
-///
-/// Each test verifies that the translator correctly classifies and generates
-/// output for patterns commonly found in production `PostgreSQL` deployments.
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser;
+/// Tests for the most common real-world RLS patterns.
+///
+/// Each test verifies that the translator correctly classifies and generates
+/// output for patterns commonly found in production `PostgreSQL` deployments.
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -109,27 +109,30 @@ fn compound_or_owner_or_public() {
     }
 
     // Verify model contains the composite relation
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
     assert!(
-        model.dsl.contains("owner or public_viewer"),
+        model.model().contains("owner or public_viewer"),
         "Model should contain 'owner or public_viewer', got:\n{}",
-        model.dsl
+        model.model()
     );
 
     // Verify tuple generation
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
@@ -224,13 +227,17 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
         classification.pattern
     );
 
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
     let tuples_lower = tuples.to_ascii_lowercase();
     assert!(
         tuples_lower.contains("lower(role) = 'admin'"),
@@ -341,14 +348,18 @@ fn multi_policy_table_classification() {
     );
 
     // Check that the model generates something reasonable
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    assert!(
+        !model.model().is_empty(),
+        "Should generate a non-empty model"
     );
-    assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
 #[test]
@@ -382,14 +393,18 @@ fn role_in_list_classification() {
     }
 
     // Verify model generation produces role threshold output
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    assert!(
+        !model.model().is_empty(),
+        "Should generate a non-empty model"
     );
-    assert!(!model.dsl.is_empty(), "Should generate a non-empty model");
 }
 
 #[test]
@@ -415,20 +430,23 @@ fn pipeline_summary_all_common_patterns() {
         );
 
         let classified = policy_classifier::classify_policies(&db, &registry);
-        let model = model_generator::generate_model(
-            &classified,
+        let model = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
-        let tuples = tuple_generator::generate_tuple_queries(
-            &classified,
+        )
+        .outputs_accepting_gaps();
+        let tuples = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let all_a = classified.iter().all(|cp| {
             cp.using_classification
@@ -441,17 +459,19 @@ fn pipeline_summary_all_common_patterns() {
         });
 
         eprintln!(
-            "{description}: {} policies, {} tuples, all>=B: {all_a}, todos: {}",
+            "{description}: {} policies, {} tuples, all>=B: {all_a}, notes: {}",
             classified.len(),
             tuples.len(),
-            model.todos.len(),
+            model.notes().len(),
         );
 
-        if !model.todos.is_empty() {
-            for todo in &model.todos {
+        if !model.notes().is_empty() {
+            for note in model.notes() {
                 eprintln!(
-                    "  TODO [{}]: {} - {}",
-                    todo.level, todo.policy_name, todo.message
+                    "  note [{}] {}: {}",
+                    note.severity(),
+                    note.subject(),
+                    note.message()
                 );
             }
         }

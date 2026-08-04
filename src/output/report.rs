@@ -3,7 +3,7 @@ use crate::no_std_prelude::*;
 use core::fmt::Write;
 
 use crate::classifier::patterns::{ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel};
-use crate::generator::model_generator::GeneratedModel;
+use crate::generator::notes::TranslationNote;
 
 /// Escape a user-controlled string for safe embedding in a Markdown table cell.
 ///
@@ -16,13 +16,13 @@ fn md_escape(s: &str) -> String {
         .replace('|', r"\|")
 }
 
-/// Build a markdown report with confidence table and TODOs.
+/// Build a markdown report with the confidence table and the translation's notes.
 ///
-/// `policies` is the unfiltered classification output. Clauses below
-/// `min_confidence` are absent from the model and tuples, so the report is the
-/// only place their loss is visible.
-pub fn build_report(
-    model: &GeneratedModel,
+/// `policies` is the unfiltered classification output. Clauses below `min_confidence`
+/// are absent from the model and tuples, so the report is the only place their loss is
+/// visible.
+pub(crate) fn build_report(
+    notes: &[TranslationNote],
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
 ) -> String {
@@ -58,17 +58,18 @@ pub fn build_report(
 
     write_dropped_section(&mut report, policies, min_confidence);
 
-    // TODOs
-    if !model.todos.is_empty() {
+    if !notes.is_empty() {
         let _ = writeln!(report);
-        let _ = writeln!(report, "## TODOs");
+        let _ = writeln!(report, "## Notes");
         let _ = writeln!(report);
 
-        for todo in &model.todos {
+        for note in notes {
             let _ = writeln!(
                 report,
-                "- **[Level {}]** {}: {}",
-                todo.level, todo.policy_name, todo.message
+                "- **[{}]** {}: {}",
+                note.severity(),
+                note.subject(),
+                note
             );
         }
     }
@@ -172,6 +173,9 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         PatternClass::P4ExistsMembership { join_table, .. } => {
             format!("P4 (EXISTS {join_table})")
         }
+        PatternClass::P13UncorrelatedMembership { member_table, .. } => {
+            format!("P13 (member of {member_table}, any row)")
+        }
         PatternClass::P5ParentInheritance { parent_table, .. } => {
             format!("P5 (inherits from {parent_table})")
         }
@@ -211,7 +215,7 @@ fn format_notes(pattern: &crate::classifier::patterns::PatternClass) -> String {
 mod tests {
     use super::*;
     use crate::classifier::patterns::*;
-    use crate::generator::model_generator::TodoItem;
+    use crate::generator::notes::TranslationNote;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
 
     fn policy_with_name(name: &str) -> sqlparser::ast::CreatePolicy {
@@ -380,16 +384,10 @@ CREATE POLICY {name} ON docs USING (TRUE);
     }
 
     #[test]
-    fn build_report_renders_using_with_check_na_and_todos() {
-        let model = GeneratedModel {
-            dsl: "model".to_string(),
-            todos: vec![TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: "docs_select".to_string(),
-                message: "requires manual review".to_string(),
-            }],
-            confidence_summary: Vec::new(),
-        };
+    fn build_report_renders_using_with_check_na_and_notes() {
+        let notes = vec![TranslationNote::RestrictiveAttributeRefused {
+            policy: "docs_select".to_string(),
+        }];
 
         let policies = vec![
             classified_policy(
@@ -407,11 +405,14 @@ CREATE POLICY {name} ON docs USING (TRUE);
             classified_policy("docs_noop", None, None),
         ];
 
-        let report = build_report(&model, &policies, ConfidenceLevel::D);
+        let report = build_report(&notes, &policies, ConfidenceLevel::D);
         assert!(report.contains("docs_select (USING)"));
         assert!(report.contains("docs_select (WITH CHECK)"));
         assert!(report.contains("| docs_noop | N/A | N/A |  |"));
-        assert!(report.contains("## TODOs"));
-        assert!(report.contains("**[Level C]** docs_select: requires manual review"));
+        assert!(report.contains("## Notes"));
+        assert!(report.contains(
+            "**[Unhandled]** docs_select: RESTRICTIVE policy 'docs_select' guards on an \
+             attribute the model cannot express, so the command is denied"
+        ));
     }
 }

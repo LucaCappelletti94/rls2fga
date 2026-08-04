@@ -1,11 +1,11 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
-use rls2fga::output::formatter;
 use rls2fga::parser::sql_parser::parse_schema;
+use rls2fga::parser::sql_parser::ParserDB;
+use rls2fga::translator::{Outputs, Translation};
 
 mod support;
 
@@ -24,15 +24,27 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 
 // ── Output validation ────────────────────────────────────────────────────────
 
+/// A translation of the smallest schema there is, for tests about filenames rather
+/// than about models.
+fn any_outputs(db: &ParserDB) -> Outputs<'_> {
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(db, &registry);
+    Translation::plan(
+        classified,
+        db,
+        &registry,
+        ConfidenceLevel::D,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+}
+
 #[test]
 fn write_output_rejects_empty_name() {
     let dir = unique_temp_dir("rls2fga_empty_name");
-    let model = model_generator::GeneratedModel {
-        dsl: "model".to_string(),
-        todos: Vec::new(),
-        confidence_summary: Vec::new(),
-    };
-    let err = formatter::write_output(&dir, "", &model, &[], &[], ConfidenceLevel::D)
+    let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
+    let err = any_outputs(&db)
+        .write(&dir, "")
         .expect_err("empty name should be rejected");
     assert!(err.contains("empty"), "Error: {err}");
 }
@@ -40,12 +52,9 @@ fn write_output_rejects_empty_name() {
 #[test]
 fn write_output_rejects_absolute_path() {
     let dir = unique_temp_dir("rls2fga_abs_path");
-    let model = model_generator::GeneratedModel {
-        dsl: "model".to_string(),
-        todos: Vec::new(),
-        confidence_summary: Vec::new(),
-    };
-    let err = formatter::write_output(&dir, "/etc/passwd", &model, &[], &[], ConfidenceLevel::D)
+    let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
+    let err = any_outputs(&db)
+        .write(&dir, "/etc/passwd")
         .expect_err("absolute path should be rejected");
     assert!(
         err.contains("absolute") || err.contains("Invalid"),
@@ -89,23 +98,25 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     let grant_count = model
-        .dsl
+        .model()
         .lines()
         .filter(|l| l.trim().starts_with("define grant_role_a"))
         .count();
     assert_eq!(
-        grant_count, 3,
+        grant_count,
+        3,
         "Three colliding role names should produce 3 distinct grant relations; DSL:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -144,13 +155,15 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(
@@ -160,7 +173,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
 }
 
 #[test]
-fn p6_table_without_pk_generates_todo_in_tuples() {
+fn p6_table_without_pk_generates_note_in_tuples() {
     let sql = r"
 CREATE TABLE items(val TEXT, is_public BOOLEAN);
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
@@ -169,13 +182,15 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(
@@ -187,7 +202,7 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
 }
 
 #[test]
-fn parent_bridge_missing_fk_column_generates_todo_tuple() {
+fn parent_bridge_missing_fk_column_generates_note_tuple() {
     let sql = r"
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
 CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
@@ -201,13 +216,15 @@ CREATE POLICY p ON tasks FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(!formatted.is_empty(), "Should produce some tuple queries");
@@ -244,13 +261,15 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -293,13 +312,15 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -324,31 +345,17 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(
-        &classified,
+    let outputs = Translation::plan(
+        classified,
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     let dir = unique_temp_dir("rls2fga_short_names");
-    formatter::write_output(
-        &dir,
-        "docs",
-        &model,
-        &tuples,
-        &classified,
-        ConfidenceLevel::B,
-    )
-    .unwrap();
+    outputs.write(&dir, "docs").unwrap();
     let report = std::fs::read_to_string(dir.join("docs_report.md")).unwrap();
 
     assert!(
@@ -362,24 +369,27 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
 #[test]
 fn multi_policy_table_generates_combined_model() {
     let (classified, db, registry) = support::try_load_fixture_classified("multi_policy_table");
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
     assert!(
-        !model.dsl.is_empty(),
+        !model.model().is_empty(),
         "Multi-policy table should produce DSL output"
     );
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
     assert!(
         !formatted.is_empty(),
@@ -390,7 +400,7 @@ fn multi_policy_table_generates_combined_model() {
 // ── P5 generation edge cases ─────────────────────────────────────────────────
 
 #[test]
-fn p5_with_unknown_inner_generates_no_access_and_todo() {
+fn p5_with_unknown_inner_generates_no_access_and_note() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY, custom_check TEXT);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
@@ -405,24 +415,25 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
-    let has_no_access_or_todo = model.dsl.contains("no_access")
+    let has_no_access_or_note = model.model().contains("no_access")
         || model
-            .todos
+            .notes()
             .iter()
-            .any(|t| t.message.contains("no_access") || t.message.contains("unknown inner"));
-    let _ = has_no_access_or_todo;
+            .any(|t| t.message().contains("no_access") || t.message().contains("unknown inner"));
+    let _ = has_no_access_or_note;
 }
 
 #[test]
-fn p5_source_table_without_pk_generates_bridge_todo() {
+fn p5_source_table_without_pk_generates_bridge_note() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY, owner_id UUID);
 CREATE TABLE docs(org_id UUID REFERENCES orgs(id));
@@ -437,13 +448,15 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
 
     let _ = formatted;
@@ -464,20 +477,23 @@ CREATE POLICY p ON docs FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps();
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let _ = model;
     let _ = tuples;
 }
@@ -485,7 +501,7 @@ CREATE POLICY p ON docs FOR SELECT
 // ── P1 generation edge cases ─────────────────────────────────────────────────
 
 #[test]
-fn role_threshold_table_without_pk_generates_grant_todo() {
+fn role_threshold_table_without_pk_generates_grant_note() {
     let sql = r"
 CREATE TABLE users(id UUID PRIMARY KEY);
 CREATE TABLE items(val TEXT, owner_id UUID);
@@ -513,13 +529,15 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = tuple_generator::generate_tuple_queries(
-        &classified,
+    let tuples = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
 
     assert!(

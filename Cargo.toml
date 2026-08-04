@@ -17,7 +17,7 @@ db = ["std", "diesel"]
 
 [dependencies]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
-sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "afcb6af6d152d47c5b4a365162f86e38cd8762e0", default-features = false }
+sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", rev = "37a76a0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 diesel = { version = "2", features = ["postgres", "serde_json"], optional = true }
 
 [dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 insta = { version = "1", features = ["json"] }
 testcontainers = "0.27"
 tokio = { version = "1", features = ["full"] }
@@ -80,6 +81,10 @@ missing_panics_doc = "allow"
 struct_excessive_bools = "allow"
 too_many_lines = "allow"
 wildcard_imports = "allow"
+
+[[bench]]
+name = "records"
+harness = false
 
 # Pin sqlparser (and every dependent: sql-traits, sql_docs) to datafusion-sqlparser-rs
 # main. The published 0.62.0 release declares `#![no_std]` but its body still references

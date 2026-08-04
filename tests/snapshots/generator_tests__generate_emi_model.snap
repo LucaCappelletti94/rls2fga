@@ -1,6 +1,6 @@
 ---
 source: tests/generator_tests.rs
-expression: model.dsl.trim()
+expression: model.model().trim()
 ---
 model
   schema 1.1
@@ -19,6 +19,7 @@ type ownables
     define can_select: role_viewer
     define can_select_for_update: can_update
     define can_update: role_editor
+    define can_update_without_reading: role_editor
     define role_admin: owner_user or member from owner_team or grant_admin or member from grant_admin
     define role_editor: role_admin or grant_editor or member from grant_editor
     define role_viewer: role_editor or grant_viewer or member from grant_viewer

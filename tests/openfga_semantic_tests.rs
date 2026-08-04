@@ -9,8 +9,8 @@ use testcontainers::{
 };
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -96,9 +96,11 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:carol", "can_select", "ownables:res1", true),
                 ("user:dave", "can_select", "ownables:res1", true),
                 ("user:nobody", "can_select", "ownables:res1", false),
-                ("user:carol", "role_editor", "ownables:res1", false),
-                ("user:dave", "role_editor", "ownables:res1", true),
-                ("user:alice", "role_admin", "ownables:res1", true),
+                // `role_editor` and `role_admin` used to be checked here. The inliner
+                // folds the hierarchy into `can_select`, so no permission names those
+                // rungs and they are no longer declared. What they proved, that the
+                // hierarchy composes in the right order, is pinned by the
+                // `generate_role_in_list_model` snapshot instead.
             ],
         },
         // P3 — Direct ownership
@@ -186,14 +188,48 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("ownables:item1", "owner_team", "team:alpha"),
                 ("team:alpha", "member", "user:bob"),
                 ("ownables:item1", "grant_editor", "user:carol"),
-                ("ownables:item1", "grant_viewer", "user:dave"),
+                // Dave's viewer grant used to be written here. The policy needs the
+                // editor rung, so `grant_viewer` reaches no permission and is no longer
+                // declared. He stays the denied case with no grant at all.
             ],
             checks: vec![
-                ("user:alice", "can_update", "ownables:item1", true),
-                ("user:bob", "can_update", "ownables:item1", true),
-                ("user:carol", "can_update", "ownables:item1", true),
-                ("user:dave", "can_update", "ownables:item1", false),
-                ("user:nobody", "can_update", "ownables:item1", false),
+                // `abac_status` declares only an UPDATE policy, so no SELECT policy
+                // admits any row and `can_update` denies: naming a row to change means
+                // reading it. The statement this scenario means is a blanket update,
+                // which reads nothing, and that is what the second relation answers.
+                ("user:alice", "can_update", "ownables:item1", false),
+                ("user:bob", "can_update", "ownables:item1", false),
+                ("user:carol", "can_update", "ownables:item1", false),
+                (
+                    "user:alice",
+                    "can_update_without_reading",
+                    "ownables:item1",
+                    true,
+                ),
+                (
+                    "user:bob",
+                    "can_update_without_reading",
+                    "ownables:item1",
+                    true,
+                ),
+                (
+                    "user:carol",
+                    "can_update_without_reading",
+                    "ownables:item1",
+                    true,
+                ),
+                (
+                    "user:dave",
+                    "can_update_without_reading",
+                    "ownables:item1",
+                    false,
+                ),
+                (
+                    "user:nobody",
+                    "can_update_without_reading",
+                    "ownables:item1",
+                    false,
+                ),
             ],
         },
         // P8 — Compound OR (P3 owner + P6 public)
@@ -260,13 +296,15 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
 
     // 3. Generate and upload JSON model
     let (classified, db, registry) = support::try_load_fixture_classified(scenario.fixture);
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         scenario.min_confidence,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .json_model();
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 

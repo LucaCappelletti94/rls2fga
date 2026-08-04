@@ -18,6 +18,7 @@ use dioxus_free_icons::icons::fa_solid_icons::{
 use dioxus_free_icons::Icon;
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
@@ -79,50 +80,44 @@ impl Tab {
     }
 }
 
-/// A policy needing manual review. Mirrors the library's `TodoItem`, but with a
-/// `PartialEq` derive so it can live in component props.
+/// The full result of one translation run, one string per output view plus what the
+/// translation had to say about itself.
 #[derive(Clone, PartialEq)]
-struct TodoView {
-    level: ConfidenceLevel,
-    policy_name: String,
-    message: String,
-}
-
-/// The full result of one translation run, one string per output view plus the
-/// review metadata surfaced in the TODO panel.
-#[derive(Clone, PartialEq)]
-struct Translation {
+struct Rendered {
     dsl: String,
     tuple_sql: String,
     json: String,
-    todos: Vec<TodoView>,
+    notes: Vec<TranslationNote>,
+    diverging: Vec<TranslationNote>,
     confidence_summary: Vec<(String, ConfidenceLevel)>,
 }
 
-/// Run the parse, classify, generate pipeline over the combined SQL. Pure and
-/// synchronous: the whole pipeline is cheap enough to run inline on the main
-/// thread, so no worker is needed.
-fn translate(sql: &str, level: ConfidenceLevel) -> Result<Translation> {
+/// Run the parse, plan, render pipeline over the combined SQL. Pure and synchronous:
+/// the whole pipeline is cheap enough to run inline on the main thread, so no worker
+/// is needed.
+fn translate(sql: &str, level: ConfidenceLevel) -> Result<Rendered> {
     let db = parse_schema(sql).context("parsing the SQL schema")?;
     let translator = TranslatorBuilder::new().with_min_confidence(level).build();
-    let model = translator.generate_model(&db);
-    let tuple_sql = format_tuples(&translator.generate_tuple_queries(&db));
-    let json = serde_json::to_string_pretty(&translator.generate_json_model(&db))
-        .context("serializing the JSON authorization model")?;
-    Ok(Translation {
-        dsl: model.dsl,
-        tuple_sql,
-        json,
-        todos: model
-            .todos
-            .into_iter()
-            .map(|t| TodoView {
-                level: t.level,
-                policy_name: t.policy_name,
-                message: t.message,
-            })
-            .collect(),
-        confidence_summary: model.confidence_summary,
+    let translation = translator.translate(&db);
+    let diverging: Vec<TranslationNote> = translation
+        .notes()
+        .iter()
+        .filter(|note| note.severity().diverges_from_database())
+        .cloned()
+        .collect();
+    // Decision 10: browsing a partial result is the point of pasting a schema in, so
+    // the app accepts the gaps on the reader's behalf and says plainly where the model
+    // and the database disagree, above the outputs rather than behind a tab nobody
+    // opens.
+    let outputs = translation.outputs_accepting_gaps();
+    Ok(Rendered {
+        dsl: outputs.model(),
+        tuple_sql: format_tuples(&outputs.tuple_queries()),
+        json: serde_json::to_string_pretty(&outputs.json_model())
+            .context("serializing the JSON authorization model")?,
+        notes: outputs.notes().to_vec(),
+        diverging,
+        confidence_summary: outputs.confidence_summary().to_vec(),
     })
 }
 
@@ -132,7 +127,7 @@ fn translate(sql: &str, level: ConfidenceLevel) -> Result<Translation> {
 fn run_translation(
     sql: Signal<String>,
     min_confidence: Signal<ConfidenceLevel>,
-    mut result: Signal<Option<Translation>>,
+    mut result: Signal<Option<Rendered>>,
     mut parse_error: Signal<Option<String>>,
 ) {
     if sql.peek().trim().is_empty() {
@@ -159,7 +154,7 @@ fn load_files(
     mut sql: Signal<String>,
     mut files: Signal<Vec<(String, String)>>,
     min_confidence: Signal<ConfidenceLevel>,
-    result: Signal<Option<Translation>>,
+    result: Signal<Option<Rendered>>,
     parse_error: Signal<Option<String>>,
 ) {
     if by_path {
@@ -207,6 +202,18 @@ fn level_class(level: ConfidenceLevel) -> &'static str {
     }
 }
 
+/// CSS class for a note's severity badge, reusing the confidence palette.
+fn severity_class(severity: NoteSeverity) -> &'static str {
+    match severity {
+        NoteSeverity::Unhandled => "level-d",
+        NoteSeverity::BelowThreshold | NoteSeverity::Partial => "level-c",
+        NoteSeverity::ActionRequired => "level-b",
+        NoteSeverity::Faithful => "level-a",
+        // A severity this build does not know draws attention rather than blending in.
+        _ => "level-c",
+    }
+}
+
 /// Font Awesome glyph for an example pill.
 fn example_icon(icon: ExampleIcon) -> Element {
     match icon {
@@ -245,7 +252,7 @@ fn App() -> Element {
     let mut sql = use_signal(|| EXAMPLES[0].sql.to_string());
     let mut min_confidence = use_signal(|| ConfidenceLevel::B);
     let active_tab = use_signal(|| Tab::Dsl);
-    let result = use_signal::<Option<Translation>>(|| None);
+    let result = use_signal::<Option<Rendered>>(|| None);
     let parse_error = use_signal::<Option<String>>(|| None);
     // Ordered (name, content) list from uploads. Kept visible so the user can
     // reorder before translating; reordering rebuilds the editor contents.
@@ -495,7 +502,7 @@ fn InputPane(
 
 #[component]
 fn OutputPane(
-    result: Option<Translation>,
+    result: Option<Rendered>,
     active_tab: Signal<Tab>,
     copied_tab: Signal<Option<Tab>>,
 ) -> Element {
@@ -561,6 +568,24 @@ fn OutputPane(
                 }
             }
 
+            // Above the outputs, not behind a tab: a tab is easy never to open, which
+            // is exactly how a model that disagrees with the database ships unnoticed.
+            if !translation.diverging.is_empty() {
+                div { class: "refusal-banner",
+                    span { class: "refusal-title",
+                        Icon { width: 14, height: 14, icon: FaTriangleExclamation, class: "section-icon".to_string() }
+                        " The model below does not match the database for {translation.diverging.len()} clause(s)"
+                    }
+                    for note in translation.diverging.iter() {
+                        div { class: "refusal-item",
+                            span { class: "severity-badge {severity_class(note.severity())}", "{note.severity()}" }
+                            span { class: "refusal-policy", "{note.subject()}" }
+                            span { class: "refusal-message", "{note.message()}" }
+                        }
+                    }
+                }
+            }
+
             match tab {
                 Tab::Dsl => rsx! { pre { class: "output-pre", "{content}" } },
                 Tab::TupleSql => rsx! {
@@ -610,18 +635,18 @@ fn OutputPane(
                 }
             }
 
-            if !translation.todos.is_empty() {
-                div { class: "todo-panel",
+            if !translation.notes.is_empty() {
+                div { class: "note-panel",
                     span { class: "field-label",
                         Icon { width: 13, height: 13, icon: FaTriangleExclamation, class: "section-icon".to_string() }
-                        " Review ({translation.todos.len()})"
+                        " Review ({translation.notes.len()})"
                     }
-                    for todo in translation.todos.iter() {
-                        div { class: "todo-item {level_class(todo.level)}",
-                            span { class: "level-badge {level_class(todo.level)}", "{todo.level}" }
-                            div { class: "todo-body",
-                                div { class: "todo-policy", "{todo.policy_name}" }
-                                div { class: "todo-message", "{todo.message}" }
+                    for note in translation.notes.iter() {
+                        div { class: "note-item {severity_class(note.severity())}",
+                            span { class: "severity-badge {severity_class(note.severity())}", "{note.severity()}" }
+                            div { class: "note-body",
+                                div { class: "note-policy", "{note.subject()}" }
+                                div { class: "note-message", "{note.message()}" }
                             }
                         }
                     }

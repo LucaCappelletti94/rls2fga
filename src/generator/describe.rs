@@ -361,7 +361,10 @@ pub(crate) fn describe_tuple_source(
             },
         }),
 
-        TupleSource::Todo { .. } => None,
+        // A holder grants the whole table together, so no single row decides it.
+        TupleSource::HolderBridge { .. }
+        | TupleSource::HolderMembers { .. }
+        | TupleSource::Skipped { .. } => None,
     }
 }
 

@@ -1305,11 +1305,12 @@ CREATE TABLE odd_members(alpha text, beta text);
 }
 
 #[test]
-fn recognize_p4_exists_without_outer_row_correlation_fails_closed() {
-    // EXISTS (SELECT 1 FROM members WHERE user_id = current_user), no correlation
-    // predicate tying members to the outer resource row.  Should NOT classify as P4
-    // because the generated tuple would grant access to ALL resources the user belongs
-    // to, not just the one being queried.
+fn recognize_p4_exists_without_outer_row_correlation_is_not_per_row_membership() {
+    // EXISTS (SELECT 1 FROM members WHERE user_id = current_user), with no predicate
+    // tying members to the outer row. Reading it as P4 would key the membership by
+    // `doc_id` and grant every doc the user belongs to, which is the over-grant this
+    // test was written for. It is now translated through a holder instead, which grants
+    // every row of the guarded table together, exactly as PostgreSQL does.
     let db = parse_schema(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
@@ -1326,9 +1327,15 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
                WHERE doc_members.user_id = current_user
              )",
     );
+    let classified = recognize_p4(&uncorrelated, &db, &registry, "docs")
+        .expect("an uncorrelated membership check translates through a holder");
     assert!(
-        recognize_p4(&uncorrelated, &db, &registry, "docs").is_none(),
-        "EXISTS without outer-row correlation must fail closed to avoid over-permissive grants"
+        matches!(
+            classified.pattern,
+            PatternClass::P13UncorrelatedMembership { .. }
+        ),
+        "it must not become a per-row membership, got {:?}",
+        classified.pattern
     );
 }
 

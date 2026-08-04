@@ -16,9 +16,9 @@ use testcontainers::{
 };
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::json_model;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::tuple_generator::{self, TupleQuery};
+use rls2fga::generator::tuple_generator::TupleQuery;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -174,20 +174,24 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&mut conn);
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),
@@ -419,20 +423,24 @@ async fn insert_readback_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_notes_data(&mut conn);
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -620,20 +628,24 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -805,20 +817,24 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1002,20 +1018,24 @@ async fn upsert_parity_postgres18_and_openfga() {
         .execute(&mut conn)
         .expect("Failed to seed notes");
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1197,20 +1217,24 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         .expect("Failed to create a querying role");
     }
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
     assert!(
         !tuple_keys.is_empty(),
@@ -1390,20 +1414,24 @@ async fn locking_read_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_owned_notes(&mut conn);
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1494,20 +1522,24 @@ async fn absent_clause_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_owned_notes(&mut conn);
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1564,6 +1596,116 @@ async fn absent_clause_parity_postgres18_and_openfga() {
     assert!(
         failures.is_empty(),
         "PostgreSQL/OpenFGA absent clause parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// `ALTER POLICY` replaces the clause the policy was created with, so `PostgreSQL`
+/// enforces the narrowed rule. Translating the original instead would publish a model
+/// open to everyone, which is why the fixture widens on creation and narrows after.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn altered_policy_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("policy_altered");
+    let (classified, db, registry) = support::load_fixture_classified("policy_altered");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the policy_altered schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+    seed_owned_notes(&mut conn);
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "altered-policy-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut narrowed_away = 0usize;
+    for user_id in [USER_ALICE, USER_BOB] {
+        for (note_id, owner_id) in SEEDED_OWNED_NOTES {
+            let readable = postgres_returns_note(&mut conn, user_id, note_id, false);
+            // USING (TRUE) admitted every row, so a refusal is the alteration taking hold.
+            if user_id != owner_id {
+                assert!(
+                    !readable,
+                    "{user_id} still reads {note_id}, so PostgreSQL never applied the ALTER POLICY"
+                );
+                narrowed_away += 1;
+            }
+
+            let user = format!("user:{user_id}");
+            let object = format!("notes:{note_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if readable != actual {
+                failures.push(format!(
+                    "{user} can_select {object}: postgres={readable}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        narrowed_away > 0,
+        "no row is refused by the narrowed rule, so the comparison proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA altered policy parity mismatches:\n{}",
         failures.join("\n")
     );
 }
@@ -1678,20 +1820,24 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
         .expect("Failed to create the querying role");
     seed_document_notes(&mut conn);
 
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -1827,20 +1973,24 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
     .expect("Failed to seed the expiring docs");
 
     let (classified, db, registry) = support::classify_sql(schema_sql, None);
-    let model = json_model::generate_json_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
-    let tuple_queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
 
     // The condition-bearing query names its condition rather than making a loader
     // parse the SQL to find it.
@@ -2031,4 +2181,578 @@ fn postgres_doc_unexpired_at(conn: &mut PgConnection, doc_id: &str, instant: &st
     .load(conn)
     .expect("evaluating the predicate should succeed");
     !rows.is_empty()
+}
+
+/// Typed schema for the zoneless-guard case. Only `id` is declared, since nothing reads
+/// the temporal columns from Rust and this build carries no date type for them.
+mod zoneless_guard_schema {
+    diesel::table! {
+        zoned_docs (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        dated_docs (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// Ids the plain login role can read from a table its `SELECT` policy guards.
+fn postgres_readable_zoned_docs(conn: &mut PgConnection) -> BTreeSet<String> {
+    use zoneless_guard_schema::zoned_docs;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching has no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        let ids: Vec<String> = zoned_docs::table.select(zoned_docs::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the zoned docs")
+}
+
+fn postgres_readable_dated_docs(conn: &mut PgConnection) -> BTreeSet<String> {
+    use zoneless_guard_schema::dated_docs;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        let ids: Vec<String> = dated_docs::table.select(dated_docs::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the dated docs")
+}
+
+/// A tuple's context must be RFC 3339, and only a zoned column renders one: `DATE` gives
+/// `2099-01-01` and `TIMESTAMP` gives `2099-01-01T12:00:00`, both of which `OpenFGA`
+/// refuses at load. It accepts the **model** that names them, so the refusal surfaced
+/// only for whoever loaded the tuples, and a sibling policy granting the same row hid it
+/// even then. This case loads what the crate emits and fails if the service refuses any
+/// of it, so the guard cannot regrow a parameter type the store will not take.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn zoneless_temporal_guard_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE zoned_docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+CREATE TABLE dated_docs (id TEXT PRIMARY KEY, expires_on DATE);
+ALTER TABLE zoned_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dated_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY zoned_unexpired ON zoned_docs FOR SELECT USING (expires_at > now());
+CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the zoneless-guard schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; \
+         GRANT SELECT ON zoned_docs, dated_docs TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+    // Literal temporal values: no Rust date type is available to bind here.
+    conn.batch_execute(
+        "INSERT INTO zoned_docs (id, expires_at) VALUES \
+           ('z-live', TIMESTAMPTZ '2099-01-01 00:00:00+00'), \
+           ('z-stale', TIMESTAMPTZ '2000-01-01 00:00:00+00'); \
+         INSERT INTO dated_docs (id, expires_on) VALUES \
+           ('d-live', DATE '2099-01-01'), \
+           ('d-stale', DATE '2000-01-01');",
+    )
+    .expect("Failed to seed the guarded rows");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+
+    let mut conditional_rows = Vec::new();
+    for query in tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some())
+    {
+        conditional_rows.extend(execute_conditional_tuple_query(&mut conn, query));
+    }
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "zoneless-guard-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    assert!(!writes.is_empty(), "the zoned guard must still emit tuples");
+    // The assertion: every context the crate produced is one the service takes. A date
+    // or a zoneless timestamp fails here with "expected RFC 3339 formatted timestamp".
+    if let Err(error) = client.write(writes, None).await {
+        panic!("OpenFGA refused a context the crate emitted: {error}");
+    }
+
+    let now = postgres_now(&mut conn);
+    let readable = postgres_readable_zoned_docs(&mut conn);
+    let mut failures = Vec::new();
+    for doc_id in ["z-live", "z-stale"] {
+        let expected = readable.contains(doc_id);
+        let actual = support::openfga::check_allowed_with_context(
+            &client,
+            "user:alice",
+            "can_select",
+            &format!("zoned_docs:{doc_id}"),
+            serde_json::json!({ "request_time": now }),
+        )
+        .await;
+        if expected != actual {
+            failures.push(format!(
+                "zoned_docs:{doc_id}: postgres={expected}, openfga={actual}"
+            ));
+        }
+    }
+    assert!(
+        readable.len() == 1,
+        "one zoned row must be live and one expired, got {readable:?}"
+    );
+
+    // The cost of the refusal, stated rather than implied: PostgreSQL admits the live
+    // dated row and the model denies it, because no tuple can carry that value.
+    let dated_readable = postgres_readable_dated_docs(&mut conn);
+    assert!(
+        dated_readable.contains("d-live"),
+        "PostgreSQL must admit the live dated row, got {dated_readable:?}"
+    );
+    for doc_id in ["d-live", "d-stale"] {
+        let actual = support::openfga::check_allowed_with_context(
+            &client,
+            "user:alice",
+            "can_select",
+            &format!("dated_docs:{doc_id}"),
+            serde_json::json!({ "request_time": now }),
+        )
+        .await;
+        assert!(
+            !actual,
+            "the dated guard must fall closed, but dated_docs:{doc_id} was allowed"
+        );
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA zoned guard parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Typed schema for the blanket-update case. `body` is what both statements write, and
+/// reading it back as the owner of the database is how the case sees which rows a
+/// blanket update actually touched.
+mod blanket_update_schema {
+    diesel::table! {
+        notes (id) {
+            id -> diesel::sql_types::Text,
+            reader_user_id -> diesel::sql_types::Text,
+            writer_user_id -> diesel::sql_types::Text,
+            body -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// One seeded row: `(id, reader, writer)`. Alice reads what she is reader of and may
+/// change what she is writer of, and `bu-write-only` is the row where those differ.
+const SEEDED_BLANKET_ROWS: [(&str, &str, &str); 4] = [
+    ("bu-both", USER_ALICE, USER_ALICE),
+    ("bu-write-only", USER_BOB, USER_ALICE),
+    ("bu-read-only", USER_ALICE, USER_BOB),
+    ("bu-neither", USER_BOB, USER_BOB),
+];
+
+/// Ids a statement changed, read back as the database owner so RLS does not hide the
+/// rows the statement reached.
+fn postgres_rows_a_statement_changed(conn: &mut PgConnection, statement: &str) -> BTreeSet<String> {
+    use blanket_update_schema::notes as bu_notes;
+
+    let mut changed = BTreeSet::new();
+    conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(USER_ALICE)
+            .execute(conn)?;
+        diesel::sql_query(statement).execute(conn)?;
+        diesel::sql_query("RESET ROLE").execute(conn)?;
+        changed = bu_notes::table
+            .filter(bu_notes::body.eq("touched"))
+            .select(bu_notes::id)
+            .load::<String>(conn)?
+            .into_iter()
+            .collect();
+        Err(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    changed
+}
+
+/// `UPDATE t SET c = 1` reads no row to decide which to change, so `PostgreSQL` applies
+/// the `UPDATE` policies to it and not the `SELECT` policies. `can_update` intersects
+/// `can_select`, so it is the wrong relation for that one statement shape, and
+/// `can_update_without_reading` is the right one.
+///
+/// The case runs both statements for real and counts the rows where they disagree,
+/// failing when none do, so it cannot pass by treating the two alike.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn blanket_update_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE notes (id TEXT PRIMARY KEY, reader_user_id TEXT NOT NULL REFERENCES users(id), writer_user_id TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_read ON notes FOR SELECT USING (reader_user_id = auth_current_user_id());
+CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_current_user_id());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the blanket-update schema");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user;")
+        .expect("Failed to create the querying role");
+
+    {
+        use blanket_update_schema::notes as bu_notes;
+        diesel::insert_into(users::table)
+            .values([USER_ALICE, USER_BOB].map(|id| users::id.eq(id)).to_vec())
+            .execute(&mut conn)
+            .expect("Failed to seed users");
+        for (id, reader, writer) in SEEDED_BLANKET_ROWS {
+            diesel::insert_into(bu_notes::table)
+                .values((
+                    bu_notes::id.eq(id),
+                    bu_notes::reader_user_id.eq(reader),
+                    bu_notes::writer_user_id.eq(writer),
+                    bu_notes::body.eq("original"),
+                ))
+                .execute(&mut conn)
+                .expect("Failed to seed a note");
+        }
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "blanket-update-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    // Two statements over the same rows: one names a row, one does not.
+    let per_row = postgres_rows_a_statement_changed(
+        &mut conn,
+        "UPDATE notes SET body = 'touched' WHERE id IN \
+         ('bu-both', 'bu-write-only', 'bu-read-only', 'bu-neither')",
+    );
+    let blanket = postgres_rows_a_statement_changed(&mut conn, "UPDATE notes SET body = 'touched'");
+
+    let mut disagreements = 0usize;
+    let mut failures = Vec::new();
+    for (id, _, _) in SEEDED_BLANKET_ROWS {
+        if per_row.contains(id) != blanket.contains(id) {
+            disagreements += 1;
+        }
+        for (relation, expected) in [
+            ("can_update", per_row.contains(id)),
+            ("can_update_without_reading", blanket.contains(id)),
+        ] {
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{USER_ALICE}"),
+                relation,
+                &format!("notes:{id}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "notes:{id} {relation}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // Without a row the two statements treat differently, the case would pass against a
+    // model that pointed both relations at the same thing.
+    assert!(
+        disagreements > 0,
+        "the two statements changed the same rows, so nothing here separates them: \
+         per_row={per_row:?}, blanket={blanket:?}"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA blanket update parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Typed schema for the holder case.
+mod holder_schema {
+    diesel::table! {
+        staff (id) {
+            id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        #[sql_name = "docs"]
+        holder_docs (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// Ids the plain login role can read, with `app.current_user_id` set to `user_id`.
+fn postgres_readable_holder_docs(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use holder_schema::holder_docs;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = holder_docs::table.select(holder_docs::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the holder docs")
+}
+
+/// `EXISTS (SELECT 1 FROM staff WHERE user_id = caller)` never relates the check to the
+/// row, so `PostgreSQL` shows a member every row and a non-member none. The model says
+/// that through one holder object every row points at.
+///
+/// The case seeds three rows and two users, one in `staff` and one not, so it fails both
+/// on a model that denies the member (the old behaviour) and on one that grants the
+/// non-member. It also counts the tuples, because the whole reason for the holder is
+/// that they grow as rows plus members rather than rows times members.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn uncorrelated_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE staff (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_staff ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM staff WHERE staff.user_id = auth_current_user_id()));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the holder schema");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON docs, staff TO app_user;")
+        .expect("Failed to create the querying role");
+
+    {
+        use holder_schema::{holder_docs, staff};
+        // Two rows for one member, so a holder that wrote a tuple per membership row
+        // rather than per member would show up as a duplicate.
+        for (id, user) in [("s-1", USER_ALICE), ("s-2", USER_ALICE)] {
+            diesel::insert_into(staff::table)
+                .values((staff::id.eq(id), staff::user_id.eq(user)))
+                .execute(&mut conn)
+                .expect("Failed to seed staff");
+        }
+        for id in ["d-1", "d-2", "d-3"] {
+            diesel::insert_into(holder_docs::table)
+                .values(holder_docs::id.eq(id))
+                .execute(&mut conn)
+                .expect("Failed to seed docs");
+        }
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "holder-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    // Three rows plus one member, not three times one: the point of the holder.
+    assert_eq!(
+        rows.len(),
+        4,
+        "expected one tuple per row plus one per member, got {rows:#?}"
+    );
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for user in [USER_ALICE, USER_BOB] {
+        let readable = postgres_readable_holder_docs(&mut conn, user);
+        for doc in ["d-1", "d-2", "d-3"] {
+            let expected = readable.contains(doc);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("docs:{doc}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "docs:{doc} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // A model that denied everything, or granted everything, would pass a one-sided case.
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA uncorrelated membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
 }

@@ -3,8 +3,8 @@
 
 use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
-use rls2fga::output::report::build_report;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
 
@@ -95,6 +95,7 @@ fn tuples_reading_from(tuples: &[TupleQuery], from_clause: &str) -> Vec<String> 
 }
 
 const COLLIDING_SCHEMAS: &str = r"
+CREATE SCHEMA app;
 CREATE TABLE app.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY app_docs_sel ON app.docs FOR SELECT USING (owner_id = current_user);
@@ -110,14 +111,17 @@ CREATE POLICY public_docs_sel ON public.docs FOR SELECT USING (owner_id = curren
 fn disambiguated_type_receives_tuples_under_its_own_type_name() {
     let db = db_of(COLLIDING_SCHEMAS);
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     let renamed = type_names(&dsl)
         .into_iter()
         .find(|name| name != "docs" && name.starts_with("docs"))
         .expect("collision should produce a renamed second type");
 
-    let tuples = translator.generate_tuple_queries(&db);
+    let tuples = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     assert_eq!(
         tuples.len(),
         2,
@@ -144,8 +148,11 @@ fn disambiguated_type_receives_tuples_under_its_own_type_name() {
 fn disambiguated_type_is_not_left_without_tuples() {
     let db = db_of(COLLIDING_SCHEMAS);
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
-    let tuples = translator.generate_tuple_queries(&db);
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let tuples = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     let rendered = format_tuples(&tuples);
 
     for type_name in type_names(&dsl) {
@@ -166,6 +173,8 @@ fn disambiguated_type_is_not_left_without_tuples() {
 fn parent_inheritance_resolves_the_disambiguated_parent_type() {
     let db = db_of(
         r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE aaa.projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY aaa_sel ON aaa.projects FOR SELECT USING (owner_id = current_user);
@@ -180,7 +189,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     let renamed = type_names(&dsl)
         .into_iter()
@@ -194,7 +203,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "tasks inherits from zzz.projects, so can_select must reference '{renamed}', got 'define can_select: {can_select}'\n{dsl}"
     );
 
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         if !query.sql.contains(r#"FROM "zzz"."projects""#) {
             continue;
         }
@@ -212,6 +225,8 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 fn untyped_parent_does_not_borrow_another_tables_type() {
     let db = db_of(
         r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE aaa.projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY aaa_sel ON aaa.projects FOR SELECT USING (owner_id = current_user);
@@ -225,7 +240,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     let translator = translator(ConfidenceLevel::A);
 
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         assert!(
             !(query.sql.contains(r#"FROM "zzz"."projects""#) && query.sql.contains("'projects:'")),
             "zzz.projects has no RLS, so its rows must not be filed under aaa.projects' type:\n{}",
@@ -258,7 +277,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
           WHERE p.id = tasks.parent_id AND p.owner_id = current_user));
 "
         ));
-        let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+        let dsl = translator(ConfidenceLevel::A)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model();
 
         assert_ne!(
             relation_definition(&dsl, "tasks", reserved).as_deref(),
@@ -294,7 +316,10 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING ({reserved}_id = current_user)
   WITH CHECK (editor_id = current_user);
 "
         ));
-        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+        let dsl = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model();
 
         let defined = relation_definitions(&dsl, "docs");
         let mut names: Vec<&str> = defined.iter().map(|(name, _)| name.as_str()).collect();
@@ -323,7 +348,10 @@ fn quoted_dot_in_a_table_name_is_not_read_as_a_schema_separator() {
         "CREATE TABLE \"we.ird\"(id UUID PRIMARY KEY);\n\
          ALTER TABLE \"we.ird\" ENABLE ROW LEVEL SECURITY;\n",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     assert!(
         type_names(&dsl).iter().any(|name| name == "we_ird"),
@@ -351,8 +379,9 @@ fn a_quoted_parent_reference_still_inherits() {
     };
     let read_of = |parent_ref: &str| {
         let dsl = translator(ConfidenceLevel::A)
-            .generate_model(&db_of(&schema(parent_ref)))
-            .dsl;
+            .translate(&db_of(&schema(parent_ref)))
+            .outputs_accepting_gaps()
+            .model();
         relation_definition(&dsl, "docs", "can_select")
     };
 
@@ -384,8 +413,9 @@ fn policies_compose_however_each_one_spells_the_table() {
     };
     let read_of = |restrictive_on: &str| {
         let dsl = translator(ConfidenceLevel::A)
-            .generate_model(&db_of(&schema(restrictive_on)))
-            .dsl;
+            .translate(&db_of(&schema(restrictive_on)))
+            .outputs_accepting_gaps()
+            .model();
         relation_definition(&dsl, "docs", "can_select")
     };
 
@@ -408,13 +438,14 @@ fn policies_compose_however_each_one_spells_the_table() {
 fn a_policy_naming_its_table_without_the_schema_still_translates() {
     let db = db_of(
         r"
+CREATE SCHEMA app;
 CREATE TABLE app.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -422,7 +453,14 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
         "the policy names the table the search path resolves:\n{dsl}"
     );
     assert!(
-        !tuples_reading_from(&translator.generate_tuple_queries(&db), r#""docs""#).is_empty(),
+        !tuples_reading_from(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+            r#""docs""#
+        )
+        .is_empty(),
         "the ownership relation needs its rows"
     );
 }
@@ -434,6 +472,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 fn a_policy_naming_an_ambiguous_table_is_reported_rather_than_guessed() {
     let db = db_of(
         r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE aaa.docs ENABLE ROW LEVEL SECURITY;
 CREATE TABLE zzz.docs(id UUID PRIMARY KEY, owner_id UUID);
@@ -441,23 +481,28 @@ ALTER TABLE zzz.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    for type_name in type_names(&model.dsl).iter().filter(|name| *name != "user") {
+    for type_name in type_names(&model.model())
+        .iter()
+        .filter(|name| *name != "user")
+    {
         assert_eq!(
-            relation_definition(&model.dsl, type_name, "can_select").as_deref(),
+            relation_definition(&model.model(), type_name, "can_select").as_deref(),
             Some("no_access"),
             "'{type_name}' must not claim a policy naming an ambiguous table:\n{}",
-            model.dsl
+            model.model()
         );
     }
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.policy_name == "docs_sel" && todo.message.contains("docs")),
+            .any(|note| note.subject() == "docs_sel" && note.message().contains("docs")),
         "the untranslated policy must be named, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -468,27 +513,31 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 fn a_filtered_policy_named_without_its_schema_is_reported_as_filtered() {
     let db = db_of(
         r"
+CREATE SCHEMA app;
 CREATE TABLE app.docs(id UUID PRIMARY KEY, tenant TEXT);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant = current_setting('app.tenant'));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert!(
-        model.todos.iter().any(|todo| {
-            todo.message.contains("fell below the confidence threshold")
-                && todo.message.contains("SELECT")
+        model.notes().iter().any(|note| {
+            note.message()
+                .contains("fell below the confidence threshold")
+                && note.message().contains("SELECT")
         }),
         "the dropped SELECT policy must be reported as dropped, got {:#?}",
-        model.todos
+        model.notes()
     );
     assert!(
-        !model.todos.iter().any(|todo| {
-            todo.message.contains("No permissive policy") && todo.message.contains("SELECT")
+        !model.notes().iter().any(|note| {
+            note.message().contains("No permissive policy") && note.message().contains("SELECT")
         }),
         "a policy PostgreSQL applies must not be reported as absent, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -499,6 +548,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant = current_setting('app.t
 fn deny_only_table_does_not_take_the_name_of_a_table_with_policies() {
     let db = db_of(
         r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.docs(id UUID PRIMARY KEY);
 ALTER TABLE aaa.docs ENABLE ROW LEVEL SECURITY;
 CREATE TABLE zzz.docs(id UUID PRIMARY KEY, owner_id UUID);
@@ -507,7 +558,7 @@ CREATE POLICY zzz_sel ON zzz.docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -541,7 +592,10 @@ CREATE POLICY tasks_all ON tasks FOR ALL USING (
           WHERE p.id = tasks.project_id AND p.owner_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
@@ -564,7 +618,12 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         !rendered.contains(r#"'docs:' || "id""#),
@@ -588,7 +647,12 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         !rendered.contains(r#"'docs:' || "id""#),
@@ -612,7 +676,12 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         rendered.contains(r#"'docs:' || "id""#),
@@ -633,7 +702,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 #[test]
 fn reading_the_inserted_row_back_needs_select_as_well_as_insert() {
     let db = db_of(SPLIT_INSERT_AND_SELECT);
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let insert = relation_definition(&dsl, "docs", "can_insert")
         .expect("an INSERT policy defines can_insert");
@@ -659,7 +731,10 @@ CREATE POLICY docs_all ON docs FOR ALL USING (owner_id = current_user)
     WITH CHECK (owner_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     assert!(
         relation_definition(&dsl, "docs", "can_insert_returning").is_none(),
@@ -680,7 +755,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (owner_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_upsert").as_deref(),
@@ -705,7 +783,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_insert").as_deref(),
@@ -731,22 +812,24 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
   USING (tenant = current_setting('app.tenant'));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     assert!(
         can_select.contains("no_access"),
         "an untranslatable RESTRICTIVE policy must gate can_select, got 'define can_select: {can_select}'\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.policy_name == "docs_tenant"),
+            .any(|note| note.subject() == "docs_tenant"),
         "the dropped RESTRICTIVE policy must be reported, got: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -772,18 +855,24 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
   USING (reviewer_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
-    let scope = pg_role_relation(&model.dsl, "docs")
-        .unwrap_or_else(|| panic!("the contractor scope must reach the model:\n{}", model.dsl));
-    let limited = relation_definition(&model.dsl, "docs", "can_select")
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
+        panic!(
+            "the contractor scope must reach the model:\n{}",
+            model.model()
+        )
+    });
+    let limited = relation_definition(&model.model(), "docs", "can_select")
         .and_then(|can_select| {
-            relation_definition(&model.dsl, "docs", can_select.trim()).or(Some(can_select))
+            relation_definition(&model.model(), "docs", can_select.trim()).or(Some(can_select))
         })
         .expect("docs should define can_select");
     assert!(
         limited.contains(&format!("but not member from {scope}")),
         "a user outside the role must keep the grant, got '{limited}':\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -794,11 +883,18 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
 fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
     let db = db_of(ROLE_SCOPED_BARRIER);
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.generate_model(&db);
-    let scope = pg_role_relation(&model.dsl, "docs")
-        .unwrap_or_else(|| panic!("the contractor scope must reach the model:\n{}", model.dsl));
+    let model = translator.translate(&db).outputs_accepting_gaps();
+    let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
+        panic!(
+            "the contractor scope must reach the model:\n{}",
+            model.model()
+        )
+    });
 
-    let tuples = translator.generate_tuple_queries(&db);
+    let tuples = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     assert!(
         tuples.iter().any(|query| {
             query.sql.contains(&format!("'{scope}' AS relation"))
@@ -814,7 +910,10 @@ fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
 #[test]
 fn a_role_scoped_barrier_emits_a_consistent_json_model() {
     let db = db_of(ROLE_SCOPED_BARRIER);
-    let json = translator(ConfidenceLevel::B).generate_json_model(&db);
+    let json = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .json_model();
 
     assert_model_is_internally_consistent(&json);
     let serialized = serde_json::to_string(&json).expect("model should serialize");
@@ -839,10 +938,12 @@ CREATE POLICY docs_approve ON docs AS RESTRICTIVE FOR SELECT TO auditor
   USING (approver_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     let limits: Vec<String> = model
-        .dsl
+        .model()
         .lines()
         .filter_map(|line| line.trim().strip_prefix("define limit_"))
         .filter_map(|rest| rest.split_once(':'))
@@ -851,30 +952,30 @@ CREATE POLICY docs_approve ON docs AS RESTRICTIVE FOR SELECT TO auditor
     let [first, second] = limits.as_slice() else {
         panic!(
             "each barrier needs its own relation, got {limits:?}:\n{}",
-            model.dsl
+            model.model()
         );
     };
 
-    let outer = relation_definition(&model.dsl, "docs", "can_select")
+    let outer = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     let (outer, inner) = if outer.trim() == *second {
         (second, first)
     } else {
         (first, second)
     };
-    let outer_body = relation_definition(&model.dsl, "docs", outer)
-        .unwrap_or_else(|| panic!("{outer} should be defined:\n{}", model.dsl));
+    let outer_body = relation_definition(&model.model(), "docs", outer)
+        .unwrap_or_else(|| panic!("{outer} should be defined:\n{}", model.model()));
     assert_eq!(
         outer_body.matches(inner.as_str()).count(),
         2,
         "the outer barrier applies to both sides of the inner one, got '{outer_body}':\n{}",
-        model.dsl
+        model.model()
     );
     assert_eq!(
-        model.dsl.matches("but not").count(),
+        model.model().matches("but not").count(),
         2,
         "each barrier subtracts its own role:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -892,15 +993,17 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR ALL TO contractor
   USING (reviewer_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_update_using = relation_definition(&model.dsl, "docs", "can_update_using")
-        .or_else(|| relation_definition(&model.dsl, "docs", "can_update"))
+    let can_update_using = relation_definition(&model.model(), "docs", "can_update_using")
+        .or_else(|| relation_definition(&model.model(), "docs", "can_update"))
         .expect("docs should define the update phase");
     assert!(
         can_update_using.contains("can_select"),
         "an editor who cannot read the row cannot change it, got '{can_update_using}':\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -921,7 +1024,10 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
   USING (reviewer_id = current_user);
 ",
     );
-    let json = translator(ConfidenceLevel::B).generate_json_model(&db);
+    let json = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .json_model();
 
     assert_model_is_internally_consistent(&json);
 }
@@ -938,18 +1044,20 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT
   USING (reviewer_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert!(
-        !model.dsl.contains("but not"),
+        !model.model().contains("but not"),
         "a barrier every role is subject to needs no exclusion:\n{}",
-        model.dsl
+        model.model()
     );
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     assert!(
         can_select.contains(" and "),
         "the barrier stays a conjunct, got '{can_select}':\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -965,7 +1073,10 @@ fn generated_comments_cannot_escape_into_executable_sql() {
            SELECT 1 FROM \"doc_mem\nSELECT 1; --\" m\n\
            WHERE m.doc_id = docs.id AND m.user_id = current_user));\n",
     );
-    let tuples = translator(ConfidenceLevel::A).generate_tuple_queries(&db);
+    let tuples = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
     assert!(!tuples.is_empty(), "expected membership tuple queries");
     for query in &tuples {
@@ -1003,16 +1114,18 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert!(
-        type_names(&model.dsl).iter().any(|name| name == "docs"),
+        type_names(&model.model()).iter().any(|name| name == "docs"),
         "an RLS-enabled table must appear in the model:\n{}",
-        model.dsl
+        model.model()
     );
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
-        let definition = relation_definition(&model.dsl, "docs", relation)
-            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.dsl));
+        let definition = relation_definition(&model.model(), "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.model()));
         assert!(
             definition.contains("no_access"),
             "RLS with no policy denies {relation}, got 'define {relation}: {definition}'"
@@ -1030,17 +1143,19 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_insert").as_deref(),
+        relation_definition(&model.model(), "docs", "can_insert").as_deref(),
         Some("owner"),
         "the INSERT policy must still translate:\n{}",
-        model.dsl
+        model.model()
     );
     for relation in ["can_select", "can_update", "can_delete"] {
-        let definition = relation_definition(&model.dsl, "docs", relation)
-            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.dsl));
+        let definition = relation_definition(&model.model(), "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.model()));
         assert!(
             definition.contains("no_access"),
             "no policy covers {relation}, so RLS denies it, got 'define {relation}: {definition}'"
@@ -1058,10 +1173,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_tenant ON docs FOR ALL USING (tenant = current_setting('app.tenant'));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
-        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.dsl));
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.model()));
     assert!(
         can_select.contains("no_access"),
         "filtered-out policies leave the table denied, got 'define can_select: {can_select}'"
@@ -1080,8 +1197,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_pub ON docs FOR SELECT USING (is_public = TRUE);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert!(
         !messages
@@ -1110,10 +1229,10 @@ CREATE POLICY docs_tenant ON docs FOR SELECT USING (tenant = current_setting('ap
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let classified = translator.classify(&db);
-    let model = translator.generate_model(&db);
+    let _classified = translator.classify(&db);
+    let model = translator.translate(&db).outputs_accepting_gaps();
 
-    let report = build_report(&model, &classified, ConfidenceLevel::B);
+    let report = model.report();
     assert!(
         report.contains("docs_tenant"),
         "a dropped permissive policy must still be named:\n{report}"
@@ -1136,10 +1255,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant_of(owner_id) = 'acme');
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let classified = translator.classify(&db);
-    let model = translator.generate_model(&db);
+    let _classified = translator.classify(&db);
+    let model = translator.translate(&db).outputs_accepting_gaps();
 
-    let report = build_report(&model, &classified, ConfidenceLevel::B);
+    let report = model.report();
     assert!(
         report.contains("tenant_of"),
         "the call the operator has to go read must be named:\n{report}"
@@ -1164,10 +1283,10 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let classified = translator.classify(&db);
-    let model = translator.generate_model(&db);
+    let _classified = translator.classify(&db);
+    let model = translator.translate(&db).outputs_accepting_gaps();
 
-    let report = build_report(&model, &classified, ConfidenceLevel::B);
+    let report = model.report();
     assert!(
         report.contains("docs_owner"),
         "translated policies stay in the report:\n{report}"
@@ -1249,16 +1368,18 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT TO "billing admin" USING (owner_id = current_user);
 "#,
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("billing admin")
-                && todo.message.contains("billing_admin")),
+            .any(|note| note.message().contains("billing admin")
+                && note.message().contains("billing_admin")),
         "the role-name rewrite must name both the original and the OpenFGA identifier, got: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -1271,6 +1392,8 @@ fn json_model_declares_the_same_relations_as_the_dsl() {
     // union, and a table present only as a deny-all.
     let db = db_of(
         r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE aaa.projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY aaa_sel ON aaa.projects FOR SELECT USING (owner_id = current_user);
@@ -1288,8 +1411,11 @@ ALTER TABLE audit ENABLE ROW LEVEL SECURITY;
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.generate_model(&db).dsl;
-    let json = translator.generate_json_model(&db);
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let json = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .json_model();
 
     let mut from_dsl: Vec<String> = Vec::new();
     let mut current_type = String::new();
@@ -1343,7 +1469,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     let select =
         relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
@@ -1355,7 +1481,11 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
     );
 
     // Every ownership query must populate the relation its own column feeds.
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         // An action body may carry a trailing read gate.
         let leading = |body: &str| {
             body.split(" and ")
@@ -1405,7 +1535,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     assert!(
         !type_names(&dsl).iter().any(|name| name == "id"),
@@ -1425,7 +1555,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 
     // projects rows link to orgs by org_id only; keying that link on projects.id
     // would grant a project the permissions of the org with the same identifier.
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         if !query.sql.contains(r#"FROM "projects""#) || !query.sql.contains("'orgs:'") {
             continue;
         }
@@ -1455,25 +1589,25 @@ CREATE POLICY projects_sel ON projects FOR SELECT USING (
     );
     // Keep D-level classifications so the diagnostic itself is observable.
     let translator = translator(ConfidenceLevel::D);
-    let model = translator.generate_model(&db);
+    let model = translator.translate(&db).outputs_accepting_gaps();
 
     assert!(
-        !type_names(&model.dsl).iter().any(|name| name == "id"),
+        !type_names(&model.model()).iter().any(|name| name == "id"),
         "a join column must not become a type:\n{}",
-        model.dsl
+        model.model()
     );
     assert_eq!(
-        relation_definition(&model.dsl, "projects", "can_select").as_deref(),
+        relation_definition(&model.model(), "projects", "can_select").as_deref(),
         Some("no_access"),
         "an unconfirmable parent link must deny, not guess:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.todos.iter().any(|todo| {
-            todo.policy_name == "projects_sel" && todo.message.contains("own primary key")
+        model.notes().iter().any(|note| {
+            note.subject() == "projects_sel" && note.message().contains("own primary key")
         }),
         "the operator must be told why the subquery was refused, got: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -1491,17 +1625,24 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let model = translator.generate_model(&db);
+    let model = translator.translate(&db).outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     assert_ne!(
-        can_select, "no_access",
+        can_select,
+        "no_access",
         "a membership table keyed by its foreign key must still grant access:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        format_tuples(&translator.generate_tuple_queries(&db)).contains(r#"FROM "doc_owner""#),
+        format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries()
+        )
+        .contains(r#"FROM "doc_owner""#),
         "membership rows must be collected from doc_owner"
     );
 }
@@ -1516,6 +1657,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
 #[test]
 fn type_names_do_not_depend_on_the_confidence_threshold() {
     let sql = r"
+CREATE SCHEMA aaa;
+CREATE SCHEMA zzz;
 CREATE TABLE aaa.docs(id UUID PRIMARY KEY, tenant TEXT);
 ALTER TABLE aaa.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY aaa_sel ON aaa.docs FOR SELECT USING (tenant = current_setting('app.tenant'));
@@ -1524,8 +1667,18 @@ ALTER TABLE zzz.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY zzz_sel ON zzz.docs FOR SELECT USING (owner_id = current_user);
 ";
     let db = db_of(sql);
-    let at_b = type_names(&translator(ConfidenceLevel::B).generate_model(&db).dsl);
-    let at_d = type_names(&translator(ConfidenceLevel::D).generate_model(&db).dsl);
+    let at_b = type_names(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model(),
+    );
+    let at_d = type_names(
+        &translator(ConfidenceLevel::D)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model(),
+    );
 
     assert_eq!(
         at_b, at_d,
@@ -1560,7 +1713,10 @@ fn generated_names_respect_openfga_length_limits() {
            EXISTS (SELECT 1 FROM {long_parent} p\n\
                    WHERE p.id = {long_table}.parent_ref AND p.owner_id = current_user));\n"
     ));
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let mut relations = 0;
     let mut seen_types: Vec<&str> = Vec::new();
@@ -1626,7 +1782,10 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
   USING (reviewer_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let mut checked = 0;
     for line in dsl.lines() {
@@ -1672,7 +1831,10 @@ fn no_userset_references_an_undefined_relation() {
            EXISTS (SELECT 1 FROM {long_parent} p\n\
                    WHERE p.id = {long_table}.parent_ref AND p.owner_id = current_user));\n"
     ));
-    let json = translator(ConfidenceLevel::B).generate_json_model(&db);
+    let json = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .json_model();
 
     assert_model_is_internally_consistent(&json);
 }
@@ -1838,7 +2000,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     // Level B keeps the parent's public-flag policy, which is the whole point.
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let projects_select = relation_definition(&dsl, "projects", "can_select")
         .expect("projects should define can_select");
@@ -1870,21 +2035,23 @@ CREATE POLICY orders_sel ON orders FOR SELECT USING (
           WHERE up.user_id = current_user AND d.region = orders.region));
 ",
     );
-    let model = translator(ConfidenceLevel::D).generate_model(&db);
+    let model = translator(ConfidenceLevel::D)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        relation_definition(&model.dsl, "orders", "can_select").as_deref(),
+        relation_definition(&model.model(), "orders", "can_select").as_deref(),
         Some("no_access"),
         "a join the model cannot express must deny, not drop the condition:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.policy_name == "orders_sel"),
+            .any(|note| note.subject() == "orders_sel"),
         "the operator must be told the subquery was refused, got: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -1903,7 +2070,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
           WHERE d2.id = docs.id AND dm.user_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let can_delete =
         relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
@@ -1943,18 +2113,21 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user AND sta
 CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user AND status = 'live');
 ",
     );
-    let model = translator(ConfidenceLevel::D).generate_model(&db);
+    let model = translator(ConfidenceLevel::D)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     for policy in ["docs_sel", "docs_upd"] {
         let count = model
-            .todos
+            .notes()
             .iter()
-            .filter(|todo| todo.policy_name == policy && todo.message.contains("status"))
+            .filter(|note| note.subject() == policy && note.message().contains("status"))
             .count();
         assert_eq!(
-            count, 1,
+            count,
+            1,
             "{policy} should report its attribute guard once, got {count}: {:#?}",
-            model.todos
+            model.notes()
         );
     }
 }
@@ -1978,7 +2151,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
           AND (parent.owner_id = current_user OR parent.is_public = TRUE)));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let can_delete =
         relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
@@ -2018,7 +2194,7 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     let can_delete =
         relation_definition(&dsl, "tasks", "can_delete").expect("tasks should define can_delete");
@@ -2033,7 +2209,11 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
     );
 
     // Each generated query has to write a subject the relation accepts.
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         if !query.sql.contains(&format!("'{tupleset}' AS relation")) {
             continue;
         }
@@ -2043,7 +2223,12 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
             query.sql
         );
     }
-    assert_model_is_internally_consistent(&translator.generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// Wildcards, a role scope and two levels of indirection still satisfy every rule
@@ -2068,7 +2253,12 @@ CREATE POLICY notes_sel ON notes FOR SELECT USING (
           AND m.user_id = current_user));
 ",
     );
-    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// Two `define` lines for one relation make the DSL unparseable.
@@ -2096,7 +2286,10 @@ CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM teams t WHERE t.id = docs.team_ref AND t.owner_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let mut current = String::new();
     let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
@@ -2113,7 +2306,12 @@ CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
         }
     }
     assert!(seen.len() > 8, "expected a populated model, got:\n{dsl}");
-    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// A RESTRICTIVE clause is a barrier, so a conjunct the model cannot express has to
@@ -2131,8 +2329,11 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
     };
     let body = |restriction: &str| {
         // At a stricter threshold the policy is dropped and the deny-fill hides this.
-        let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(restriction)));
-        relation_definition(&model.dsl, "docs", "can_select")
+        let db = db_of(&schema(restriction));
+        let model = translator(ConfidenceLevel::C)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        relation_definition(&model.model(), "docs", "can_select")
             .unwrap_or_else(|| panic!("docs should define can_select for '{restriction}'"))
     };
 
@@ -2163,14 +2364,15 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
     );
 
     // A denied barrier must not also ask for runtime enforcement.
-    let model = translator(ConfidenceLevel::C).generate_model(&db_of(&schema(
-        "deleted_at IS NULL AND tenant_id = current_user",
-    )));
-    let notes: Vec<&str> = model
-        .todos
+    let db = db_of(&schema("deleted_at IS NULL AND tenant_id = current_user"));
+    let model = translator(ConfidenceLevel::C)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let notes: Vec<String> = model
+        .notes()
         .iter()
-        .filter(|todo| todo.policy_name == "docs_bar")
-        .map(|todo| todo.message.as_str())
+        .filter(|note| note.subject() == "docs_bar")
+        .map(TranslationNote::message)
         .collect();
     assert!(
         notes.iter().any(|note| note.contains("denied")),
@@ -2223,8 +2425,9 @@ fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
     };
 
     let dsl = translator(ConfidenceLevel::B)
-        .generate_model(&db_of(&schema("tasks_sel")))
-        .dsl;
+        .translate(&db_of(&schema("tasks_sel")))
+        .outputs_accepting_gaps()
+        .model();
     let inherited = inherited_relations(&dsl);
     assert_eq!(
         inherited.len(),
@@ -2234,8 +2437,9 @@ fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
 
     // Renaming a child policy must not rename a relation on the parent.
     let renamed = translator(ConfidenceLevel::B)
-        .generate_model(&db_of(&schema("tasks_select_v2")))
-        .dsl;
+        .translate(&db_of(&schema("tasks_select_v2")))
+        .outputs_accepting_gaps()
+        .model();
     assert_eq!(
         inherited_relations(&renamed),
         inherited,
@@ -2270,7 +2474,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
           AND (p.owner_id = current_user OR p.is_public = TRUE)));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let can_select =
         relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
@@ -2290,7 +2497,12 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "the inherited rule '{walked}' = '{parent_rule}' must be gated by the parent's own \
          can_select, or a public project nobody may select still grants its tasks:\n{dsl}"
     );
-    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// A parent without RLS is unfiltered, so gating there would deny rows `PostgreSQL`
@@ -2307,7 +2519,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
           AND (p.owner_id = current_user OR p.is_public = TRUE)));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     let can_select =
         relation_definition(&dsl, "tasks", "can_select").expect("tasks should define can_select");
     let (walked, _) = can_select
@@ -2337,7 +2552,10 @@ fn a_redundant_select_gate_is_left_out() {
                EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id\n\
                        AND p.owner_id = current_user));\n"
         ));
-        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+        let dsl = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model();
         let can_select = relation_definition(&dsl, "tasks", "can_select")
             .expect("tasks should define can_select");
         let (walked, _) = can_select
@@ -2398,20 +2616,22 @@ CREATE POLICY docs_tree ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("no_access"),
         "a recursive SELECT policy makes every read fail, so nothing is readable:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.policy_name == "docs_tree" && todo.message.contains("recursion")),
+            .any(|note| note.subject() == "docs_tree" && note.message().contains("recursion")),
         "the operator must be told the policy raises infinite recursion, got {:#?}",
-        model.todos
+        model.notes()
     );
 
     // The same shape through a join recurses identically.
@@ -2425,7 +2645,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
           WHERE d2.id = docs.id AND dm.user_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::A).generate_model(&joined).dsl;
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&joined)
+        .outputs_accepting_gaps()
+        .model();
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
         Some("no_access"),
@@ -2446,7 +2669,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
   EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     let can_delete =
         relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
     assert!(
@@ -2477,7 +2703,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
           AND (parent.owner_id = current_user OR parent.is_public = TRUE)));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     let can_delete =
         relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
     let Some((read, _)) = can_delete.split_once(" from ") else {
@@ -2506,7 +2735,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
 CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     for action in ["can_update", "can_delete"] {
         let body = relation_definition(&dsl, "docs", action)
@@ -2522,7 +2754,12 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
         !insert.contains("can_select"),
         "an INSERT reads nothing, so can_insert = '{insert}' must stay ungated:\n{dsl}"
     );
-    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// No `SELECT` policy means no row can be named for a per-row update or delete.
@@ -2535,7 +2772,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     let can_delete =
         relation_definition(&dsl, "docs", "can_delete").expect("docs should define can_delete");
     assert!(
@@ -2562,20 +2802,22 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
   EXISTS (SELECT 1 FROM t1 p WHERE p.id = t1.parent_id AND p.owner = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "t1", "can_select").as_deref(),
+        relation_definition(&model.model(), "t1", "can_select").as_deref(),
         Some("no_access"),
         "every read of t1 raises infinite recursion, so nothing is readable:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("recursion")),
+            .any(|note| note.message().contains("recursion")),
         "the operator must be told why, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2593,19 +2835,21 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("no_access"),
         "no membership row is readable, so the policy grants nothing:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.todos.iter().any(|todo| {
-            todo.message.contains("doc_members") && todo.message.contains("membership")
+        model.notes().iter().any(|note| {
+            note.message().contains("doc_members") && note.message().contains("membership")
         }),
         "the operator must be told which table hides the rows, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2624,20 +2868,22 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     assert!(
         can_select.contains(" from "),
         "the membership grant stays, got '{can_select}':\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.todos.iter().any(|todo| {
-            todo.message.contains("doc_members") && todo.message.contains("membership")
+        model.notes().iter().any(|note| {
+            note.message().contains("doc_members") && note.message().contains("membership")
         }),
         "the operator must be told the join table filters memberships, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2653,13 +2899,15 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert!(
-        !model.todos.iter().any(|todo| {
-            todo.message.contains("doc_members") && todo.message.contains("membership")
+        !model.notes().iter().any(|note| {
+            note.message().contains("doc_members") && note.message().contains("membership")
         }),
         "an unprotected join table needs no note, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2679,22 +2927,25 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.generate_model(&db);
-    let scope = pg_role_relation(&model.dsl, "docs").unwrap_or_else(|| {
+    let model = translator.translate(&db).outputs_accepting_gaps();
+    let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
             "docs must scope the membership grant by role:\n{}",
-            model.dsl
+            model.model()
         )
     });
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
     assert!(
         can_select.contains(&format!("from {scope}")),
         "reading docs must require the role that can read doc_members, got '{can_select}':\n{}",
-        model.dsl
+        model.model()
     );
 
-    let tuples = translator.generate_tuple_queries(&db);
+    let tuples = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     assert!(
         tuples.iter().any(|q| {
             q.sql.contains("'docs:'")
@@ -2722,12 +2973,14 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        pg_role_relation(&model.dsl, "docs"),
+        pg_role_relation(&model.model(), "docs"),
         None,
         "an unscoped read policy leaves the membership grant open to every role:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -2747,14 +3000,17 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.generate_model(&db);
-    let scope = pg_role_relation(&model.dsl, "docs").unwrap_or_else(|| {
+    let model = translator.translate(&db).outputs_accepting_gaps();
+    let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
             "docs must scope the membership grant by role:\n{}",
-            model.dsl
+            model.model()
         )
     });
-    let tuples = translator.generate_tuple_queries(&db);
+    let tuples = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     for role in ["auditor", "support"] {
         assert!(
             tuples.iter().any(|q| {
@@ -2780,12 +3036,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("no_access"),
         "the definer's identity is not the caller's, so the row owner is not the caller:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -2806,21 +3064,22 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
         .expect("registry should parse")
         .with_min_confidence(ConfidenceLevel::B)
         .build()
-        .generate_model(&db);
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("owner"),
         "a declared accessor stays one:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         !model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("runs as its owner")),
+            .any(|note| note.message().contains("runs as its owner")),
         "the note only fires where the translation refused, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2836,14 +3095,16 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert!(
         model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("app_uid") && todo.message.contains("owner")),
+            .any(|note| note.message().contains("app_uid") && note.message().contains("owner")),
         "the operator must be told which function runs as its owner, got {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -2858,12 +3119,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("owner"),
         "an invoker accessor is per-caller ownership:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -2880,12 +3143,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("owner"),
         "a session setting is per-caller regardless of the security mode:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -2903,7 +3168,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
   EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     assert_eq!(
         relation_definition(&dsl, "projects", "can_select").as_deref(),
         Some("no_access"),
@@ -2920,7 +3188,12 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         rule.contains("can_select"),
         "the rule '{read}' = '{rule}' must be gated, which is what denies it here:\n{dsl}"
     );
-    assert_model_is_internally_consistent(&translator(ConfidenceLevel::B).generate_json_model(&db));
+    assert_model_is_internally_consistent(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model(),
+    );
 }
 
 /// A relation no permission can reach needs no tuple query.
@@ -2936,7 +3209,7 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
     // The recursive policy makes every read fail.
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
@@ -2946,7 +3219,11 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
         );
     }
 
-    for query in translator.generate_tuple_queries(&db) {
+    for query in translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+    {
         assert!(
             !query.sql.contains("AS relation"),
             "nothing can consult a t1 relation, so this query is dead:\n{}",
@@ -2968,7 +3245,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
         Some("no_access"),
@@ -2980,7 +3257,9 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 
     assert!(
         translator
-            .generate_tuple_queries(&db)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries()
             .iter()
             .any(|query| query.sql.contains(&format!("'{can_insert}' AS relation"))),
         "can_insert reads '{can_insert}', so its tuples are still needed:\n{dsl}"
@@ -3002,7 +3281,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let queries = translator.generate_tuple_queries(&db);
+    let queries = translator
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .tuple_queries();
     assert!(
         queries
             .iter()
@@ -3027,16 +3309,19 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
     let reports = model
-        .todos
+        .notes()
         .iter()
-        .filter(|todo| todo.message.contains("docs") && todo.message.contains("SELECT policy"))
+        .filter(|note| note.message().contains("docs") && note.message().contains("SELECT policy"))
         .count();
     assert_eq!(
-        reports, 1,
+        reports,
+        1,
         "the unreachable DELETE policy must be reported once, got {:#?}",
-        model.todos
+        model.notes()
     );
 
     // A table that grants reads has nothing to report.
@@ -3050,10 +3335,11 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
     );
     assert!(
         !translator(ConfidenceLevel::B)
-            .generate_model(&readable)
-            .todos
+            .translate(&readable)
+            .outputs_accepting_gaps()
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("SELECT policy")),
+            .any(|note| note.message().contains("SELECT policy")),
         "a readable table needs no such note"
     );
 
@@ -3067,10 +3353,11 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
     );
     assert!(
         !translator(ConfidenceLevel::B)
-            .generate_model(&insert_only)
-            .todos
+            .translate(&insert_only)
+            .outputs_accepting_gaps()
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("SELECT policy")),
+            .any(|note| note.message().contains("SELECT policy")),
         "an INSERT needs no read, so nothing is unreachable"
     );
 }
@@ -3087,7 +3374,12 @@ ALTER TABLE Docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
 ",
     );
-    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         rendered.contains(r#"FROM "docs""#),
@@ -3114,7 +3406,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING ("Owner_Id" = current_user);
 "#,
     );
-    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         rendered.contains(r#""Owner_Id""#),
@@ -3134,8 +3431,13 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (Owner_Id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.generate_model(&db).dsl;
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -3162,7 +3464,10 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 );
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     assert_ne!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -3183,8 +3488,9 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 ",
     );
     let policy_side_dsl = translator(ConfidenceLevel::B)
-        .generate_model(&policy_side)
-        .dsl;
+        .translate(&policy_side)
+        .outputs_accepting_gaps()
+        .model();
     assert_ne!(
         relation_definition(&policy_side_dsl, "docs", "can_select").as_deref(),
         Some("no_access"),
@@ -3207,7 +3513,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.generate_model(&db).dsl;
+    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
 
     assert_eq!(
         relation_definition(&dsl, "tasks", "can_select").as_deref(),
@@ -3215,8 +3521,13 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "the parent link resolves through the stored column name:\n{dsl}"
     );
     assert!(
-        format_tuples(&translator.generate_tuple_queries(&db))
-            .contains(r#"'projects:' || "project_id""#),
+        format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries()
+        )
+        .contains(r#"'projects:' || "project_id""#),
         "the bridge query reads the stored column name"
     );
 
@@ -3235,7 +3546,10 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     assert_eq!(
         relation_definition(
-            &translator.generate_model(&policy_side).dsl,
+            &translator
+                .translate(&policy_side)
+                .outputs_accepting_gaps()
+                .model(),
             "tasks",
             "can_select"
         )
@@ -3255,7 +3569,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
-    let rendered = format_tuples(&translator(ConfidenceLevel::B).generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     assert!(
         rendered.contains(r#"'docs:' || "id""#),
@@ -3276,11 +3595,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_bare ON docs;
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
-        let definition = relation_definition(&model.dsl, "docs", relation)
-            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.dsl));
+        let definition = relation_definition(&model.model(), "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.model()));
         assert!(
             definition.contains("no_access"),
             "a clauseless policy admits no row, so {relation} must deny, got \
@@ -3300,10 +3621,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT;
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
-        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.dsl));
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.model()));
     assert!(
         can_select.contains("no_access"),
         "a SELECT policy with no USING reads nothing, got 'define can_select: {can_select}'"
@@ -3324,10 +3647,12 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_update = relation_definition(&model.dsl, "docs", "can_update")
-        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.dsl));
+    let can_update = relation_definition(&model.model(), "docs", "can_update")
+        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.model()));
     assert!(
         can_update.contains("no_access"),
         "no USING clause admits the row to change, got 'define can_update: {can_update}'"
@@ -3347,8 +3672,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert!(
         messages.iter().any(|message| {
@@ -3380,10 +3707,12 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 );
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.dsl, "docs", "can_select")
-        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.dsl));
+    let can_select = relation_definition(&model.model(), "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.model()));
     assert!(
         can_select.contains("no_access"),
         "no membership row is visible, so the grant is empty, got \
@@ -3405,18 +3734,26 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
 CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user) WITH CHECK (TRUE);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
-    let locking = relation_definition(&model.dsl, "docs", "can_select_for_update")
-        .unwrap_or_else(|| panic!("docs should define can_select_for_update:\n{}", model.dsl));
+    let locking = relation_definition(&model.model(), "docs", "can_select_for_update")
+        .unwrap_or_else(|| {
+            panic!(
+                "docs should define can_select_for_update:\n{}",
+                model.model()
+            )
+        });
     assert_eq!(
-        locking, "can_update_using",
+        locking,
+        "can_update_using",
         "a locking read sees the rows an UPDATE may touch:\n{}",
-        model.dsl
+        model.model()
     );
     assert_ne!(
         Some(locking.as_str()),
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         "everyone reads this table, but only an owner may lock a row"
     );
 }
@@ -3433,16 +3770,18 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select_for_update").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select_for_update").as_deref(),
         Some("can_update"),
         "the locking read answers with the update rule:\n{}",
-        model.dsl
+        model.model()
     );
-    let can_update = relation_definition(&model.dsl, "docs", "can_update")
-        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.dsl));
+    let can_update = relation_definition(&model.model(), "docs", "can_update")
+        .unwrap_or_else(|| panic!("docs should define can_update:\n{}", model.model()));
     assert!(
         can_update.contains("no_access"),
         "and that rule denies, got 'define can_update: {can_update}'"
@@ -3461,18 +3800,20 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
 CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert!(
-        relation_definition(&model.dsl, "docs", "can_update_using").is_none(),
+        relation_definition(&model.model(), "docs", "can_update_using").is_none(),
         "one clause means one relation:\n{}",
-        model.dsl
+        model.model()
     );
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select_for_update").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select_for_update").as_deref(),
         Some("can_update"),
         "the locking read answers with the update rule:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -3488,8 +3829,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert!(
         messages
@@ -3516,8 +3859,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_bare ON docs;
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert!(
         messages.iter().any(|message| {
@@ -3545,14 +3890,16 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_bare ON docs FOR SELECT;
 ",
     );
-    let model = translator(ConfidenceLevel::A).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("owner"),
         "the working policy still grants reads:\n{}",
-        model.dsl
+        model.model()
     );
     let note = messages
         .iter()
@@ -3581,26 +3928,30 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR ALL TO auditor;
 ",
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        pg_role_relation(&model.dsl, "docs"),
+        pg_role_relation(&model.model(), "docs"),
         None,
         "the barrier stores no clause, so it binds nothing:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        !type_names(&model.dsl).iter().any(|name| name == "pg_role"),
+        !type_names(&model.model())
+            .iter()
+            .any(|name| name == "pg_role"),
         "no relation reads a role here:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         !model
-            .todos
+            .notes()
             .iter()
-            .any(|todo| todo.message.contains("memberships are loaded")),
+            .any(|note| note.message().contains("memberships are loaded")),
         "asking for tuples nothing consults is noise: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -3619,7 +3970,10 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user);
 CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE WITH CHECK (reviewer_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     let check = relation_definition(&dsl, "docs", "can_update_check")
         .unwrap_or_else(|| panic!("docs should define can_update_check:\n{dsl}"));
@@ -3657,7 +4011,10 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user)
 CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE USING (reviewer_id = current_user);
 ",
     );
-    let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
 
     for relation in ["can_update_using", "can_update_check"] {
         let definition = relation_definition(&dsl, "docs", relation)
@@ -3688,20 +4045,22 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_bare ON "docs" FOR SELECT;
 "#,
     );
-    let model = translator(ConfidenceLevel::B).generate_model(&db);
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
 
     assert_eq!(
-        relation_definition(&model.dsl, "docs", "can_select").as_deref(),
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some("owner"),
         "the policy that stores a clause still grants reads:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.todos.iter().any(|todo| todo
-            .message
+        model.notes().iter().any(|note| note
+            .message()
             .contains("'docs_bare' names SELECT without a USING clause")),
         "the clauseless policy belongs to the same table however it spells it: {:#?}",
-        model.todos
+        model.notes()
     );
 }
 
@@ -3725,8 +4084,13 @@ fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
              CREATE POLICY docs_editors ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let dsl = translator.generate_model(&db).dsl;
-        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+        let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+        let rendered = format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+        );
 
         let can_select = relation_definition(&dsl, "docs", "can_select")
             .unwrap_or_else(|| panic!("`{clause}`: docs must define can_select:\n{dsl}"));
@@ -3779,7 +4143,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             "{MEMBERS}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+        let rendered = format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+        );
 
         assert!(
             !rendered.to_lowercase().contains("unnest"),
@@ -3797,7 +4166,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
            USING (id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user));"
     ));
     let translator = translator(ConfidenceLevel::B);
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
     assert!(
         rendered.contains(r#"FROM "doc_members""#),
         "membership through the join table still produces its tuples:\n{rendered}"
@@ -3823,8 +4197,13 @@ fn caller_named_in_a_jsonb_field_is_ownership_not_a_refusal() {
              CREATE POLICY docs_json ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let dsl = translator.generate_model(&db).dsl;
-        let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+        let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+        let rendered = format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+        );
 
         let can_select = relation_definition(&dsl, "docs", "can_select")
             .unwrap_or_else(|| panic!("`{clause}`: docs must define can_select:\n{dsl}"));
@@ -3854,7 +4233,12 @@ CREATE POLICY docs_json ON docs FOR SELECT
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let rendered = format_tuples(&translator.generate_tuple_queries(&db));
+    let rendered = format_tuples(
+        &translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
 
     if rendered.contains("->>") {
         assert!(
@@ -3879,7 +4263,10 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
            USING (owner_id = current_user AND {PLAIN});"
     ));
     let expected = relation_definition(
-        &translator(ConfidenceLevel::C).generate_model(&plain_db).dsl,
+        &translator(ConfidenceLevel::C)
+            .translate(&plain_db)
+            .outputs_accepting_gaps()
+            .model(),
         "docs",
         "can_select",
     )
@@ -3901,7 +4288,10 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
              CREATE POLICY docs_hybrid ON docs FOR SELECT
                USING (owner_id = current_user AND {guard});"
         ));
-        let dsl = translator(ConfidenceLevel::C).generate_model(&db).dsl;
+        let dsl = translator(ConfidenceLevel::C)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model();
         let can_select = relation_definition(&dsl, "docs", "can_select")
             .unwrap_or_else(|| panic!("`{guard}`: docs must define can_select:\n{dsl}"));
         assert_eq!(
@@ -3923,8 +4313,10 @@ CREATE POLICY docs_hybrid ON docs FOR SELECT
   USING (owner_id = current_user AND data ->> 'status' = 'published');
 ",
     );
-    let model = translator(ConfidenceLevel::C).generate_model(&db);
-    let messages: Vec<&str> = model.todos.iter().map(|t| t.message.as_str()).collect();
+    let model = translator(ConfidenceLevel::C)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
     assert!(
         messages.iter().any(|m| m.contains("status")),
@@ -3945,8 +4337,13 @@ fn membership_translation(clause: &str) -> (String, String) {
     ));
     let translator = translator(ConfidenceLevel::B);
     (
-        translator.generate_model(&db).dsl,
-        format_tuples(&translator.generate_tuple_queries(&db)),
+        translator.translate(&db).outputs_accepting_gaps().model(),
+        format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+        ),
     )
 }
 
@@ -4002,20 +4399,21 @@ fn a_residual_predicate_survives_the_caller_in_subquery_rewrite() {
 }
 
 /// Without a correlation to the outer table the predicate is row independent: it admits
-/// every row once the caller is a member of anything. Translating it as per-row membership
-/// would answer a different question, so it stays refused, exactly as the uncorrelated
-/// `EXISTS` already is.
+/// every row once the caller is a member of anything. Translating it as per-row
+/// membership would answer a different question, so all three spellings go through the
+/// holder, which grants the rows together.
 #[test]
-fn an_uncorrelated_membership_subquery_is_still_refused() {
+fn an_uncorrelated_membership_subquery_translates_through_a_holder() {
     for clause in [
         "EXISTS (SELECT 1 FROM doc_members WHERE user_id = current_user)",
         "current_user IN (SELECT user_id FROM doc_members)",
         "current_user = ANY (SELECT user_id FROM doc_members)",
     ] {
         let (dsl, _) = membership_translation(clause);
-        assert!(
-            relation_definition(&dsl, "docs", "can_select").as_deref() == Some("no_access"),
-            "`{clause}` names no row, so it must not become per-row membership:\n{dsl}"
+        assert_eq!(
+            relation_definition(&dsl, "docs", "can_select").as_deref(),
+            Some("member from doc_members_holder"),
+            "`{clause}` names no row, so it grants them together:\n{dsl}"
         );
     }
 }
@@ -4115,7 +4513,10 @@ CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user
         let db = db_of(&format!(
             "{PARENT_SCHEMA}CREATE POLICY tasks_sel ON tasks FOR SELECT USING ({clause});"
         ));
-        let dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+        let dsl = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model();
         relation_definition(&dsl, "tasks", "can_select")
     };
 
@@ -4160,8 +4561,13 @@ fn translation(sql: &str) -> (String, String) {
     let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     (
-        translator.generate_model(&db).dsl,
-        format_tuples(&translator.generate_tuple_queries(&db)),
+        translator.translate(&db).outputs_accepting_gaps().model(),
+        format_tuples(
+            &translator
+                .translate(&db)
+                .outputs_accepting_gaps()
+                .tuple_queries(),
+        ),
     )
 }
 
@@ -4375,8 +4781,14 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
     for schema in exclusion_emitting_schemas() {
         let db = db_of(&schema);
         let translator = translator(ConfidenceLevel::B);
-        let json = translator.generate_json_model(&db);
-        let queries = translator.generate_tuple_queries(&db);
+        let json = translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .json_model();
+        let queries = translator
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries();
 
         for (type_name, relation) in subtractions(&json) {
             checked += 1;
@@ -4543,20 +4955,24 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
         // the analysis never saw. Building it through a registry-less translator was
         // exactly that mistake: the analysis saw `member from docs` while the model
         // said `no_access`, and a wrongly true flag passed unnoticed.
-        let json = rls2fga::generator::json_model::generate_json_model(
-            &classified,
+        let json = rls2fga::translator::Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
-        );
-        let queries = rls2fga::generator::tuple_generator::generate_tuple_queries(
-            &classified,
+        )
+        .outputs_accepting_gaps()
+        .json_model();
+        let queries = rls2fga::translator::Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         for row in decidable_relations(&classified, &db, &registry, ConfidenceLevel::B) {
             if !row.from_one_row {
@@ -4792,7 +5208,7 @@ fn only_a_literal_constant_earns_the_attribute_wildcard() {
     let schema = |clause: &str| {
         format!(
             "CREATE TABLE articles(id UUID PRIMARY KEY, status TEXT, owner_id TEXT, \
-             expires_at TIMESTAMP);\n\
+             expires_at TIMESTAMPTZ);\n\
              ALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY articles_sel ON articles FOR SELECT USING ({clause});\n"
         )
@@ -4875,7 +5291,7 @@ fn parse_using_expr(schema: &str) -> sqlparser::ast::Expr {
 /// the value against itself.
 #[test]
 fn a_column_named_after_the_request_parameter_keeps_its_own_condition_parameter() {
-    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, request_time TIMESTAMP);\n\
+    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, request_time TIMESTAMPTZ);\n\
                   ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY jobs_sel ON jobs FOR SELECT USING (request_time > now());\n";
 
@@ -4925,12 +5341,15 @@ fn a_column_named_after_the_request_parameter_keeps_its_own_condition_parameter(
 /// time, so a deployment with its own convention configures it.
 #[test]
 fn the_request_time_parameter_name_is_configurable() {
-    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, expires_at TIMESTAMP);\n\
+    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
                   ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY jobs_sel ON jobs FOR SELECT USING (expires_at > now());\n";
     let db = db_of(schema);
 
-    let default_dsl = translator(ConfidenceLevel::B).generate_model(&db).dsl;
+    let default_dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
     assert!(
         default_dsl.contains("request_time: timestamp"),
         "the default name is request_time:\n{default_dsl}"
@@ -4940,7 +5359,7 @@ fn the_request_time_parameter_name_is_configurable() {
         .with_min_confidence(ConfidenceLevel::B)
         .with_request_time_parameter("as_of")
         .build();
-    let dsl = configured.generate_model(&db).dsl;
+    let dsl = configured.translate(&db).outputs_accepting_gaps().model();
 
     assert!(
         dsl.contains("as_of: timestamp"),
@@ -4953,5 +5372,516 @@ fn the_request_time_parameter_name_is_configurable() {
     assert!(
         !dsl.contains("request_time"),
         "the default must not survive alongside it:\n{dsl}"
+    );
+}
+
+/// A tuple's context must be RFC 3339. `DATE` renders as `2099-01-01` and `TIMESTAMP`
+/// as `2099-01-01T12:00:00`, and `OpenFGA` v1.11.6 refuses both at load while accepting
+/// the model that named them, so the guard shipped a relation whose tuples could never
+/// arrive. Rendering an instant instead would not save either: resolving one needs a
+/// time zone, and the loader's session decides it while the reader's differs.
+#[test]
+fn only_a_zoned_timestamp_column_earns_a_condition_parameter() {
+    let schema = |column_type: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at {column_type});\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > now());\n"
+        )
+    };
+
+    for zoneless in ["DATE", "TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE"] {
+        let (dsl, tuples) = translation(&schema(zoneless));
+        assert!(
+            !dsl.contains("condition when_"),
+            "{zoneless} must declare no condition:\n{dsl}"
+        );
+        assert!(
+            !tuples.contains("jsonb_build_object"),
+            "{zoneless} must emit no context OpenFGA would refuse:\n{tuples}"
+        );
+        // The refusal has to precede every mint, or the type keeps a gate relation
+        // nothing defines a condition for.
+        assert!(
+            !dsl.contains("gate_"),
+            "{zoneless} must leave no gate relation behind:\n{dsl}"
+        );
+        assert!(
+            dsl.contains("define can_select: no_access"),
+            "{zoneless} must fall closed:\n{dsl}"
+        );
+    }
+
+    for zoned in ["TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE"] {
+        let (dsl, tuples) = translation(&schema(zoned));
+        assert!(
+            dsl.contains("expires_at > request_time"),
+            "{zoned} must keep its condition:\n{dsl}"
+        );
+        assert!(
+            tuples.contains("jsonb_build_object('expires_at', \"expires_at\")"),
+            "{zoned} must supply the row's value as context:\n{tuples}"
+        );
+    }
+}
+
+/// The three outcomes that shared one prose channel have to be separable by type,
+/// because only one of them is a failure. The sharpest case is the same schema at two
+/// thresholds: at `D` the crate could not classify the expression, at `B` the caller's
+/// own threshold dropped it, and a message-matching consumer cannot tell those apart.
+#[test]
+fn each_outcome_carries_its_own_severity() {
+    let refused = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, bits INT);\n\
+                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                   CREATE POLICY docs_sel ON docs FOR SELECT USING ((bits & 2) = 2);\n";
+    let db = db_of(refused);
+
+    let severities = |level: ConfidenceLevel| -> Vec<NoteSeverity> {
+        translator(level)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .map(TranslationNote::severity)
+            .collect()
+    };
+
+    assert!(
+        severities(ConfidenceLevel::D).contains(&NoteSeverity::Unhandled),
+        "nobody classified the expression, so it is a gap: {:?}",
+        severities(ConfidenceLevel::D)
+    );
+    assert!(
+        !severities(ConfidenceLevel::D).contains(&NoteSeverity::BelowThreshold),
+        "the threshold admitted it, so it did not drop it"
+    );
+    assert!(
+        severities(ConfidenceLevel::B).contains(&NoteSeverity::BelowThreshold),
+        "the caller's own threshold dropped it: {:?}",
+        severities(ConfidenceLevel::B)
+    );
+    assert!(
+        !severities(ConfidenceLevel::B).contains(&NoteSeverity::Unhandled),
+        "a clause the caller chose to drop is not an unhandled expression"
+    );
+
+    // A hybrid leaves its attribute half to the application, which is neither a gap
+    // nor complete.
+    let hybrid = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, status TEXT);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_sel ON docs FOR SELECT \
+                  USING (owner_id = current_user AND status = 'active');\n";
+    let hybrid_db = db_of(hybrid);
+    let hybrid_outputs = translator(ConfidenceLevel::C)
+        .translate(&hybrid_db)
+        .outputs_accepting_gaps();
+    let hybrid_notes = hybrid_outputs.notes();
+    assert!(
+        hybrid_notes
+            .iter()
+            .any(|note| note.severity() == NoteSeverity::Partial),
+        "the attribute half is a documented partial: {hybrid_notes:?}"
+    );
+
+    // And a command the database itself denies is not a failure of anything.
+    assert!(
+        hybrid_notes
+            .iter()
+            .any(|note| note.severity() == NoteSeverity::Faithful),
+        "no policy covers INSERT, which RLS denies too: {hybrid_notes:?}"
+    );
+    assert!(
+        !hybrid_notes
+            .iter()
+            .any(|note| note.severity() == NoteSeverity::Unhandled),
+        "nothing here went unclassified: {hybrid_notes:?}"
+    );
+}
+
+/// `UPDATE t SET c = 1` names no row, so it reads none, and `PostgreSQL` applies the
+/// `UPDATE` policies to it without the `SELECT` policies. `can_update` intersects
+/// `can_select`, so for that one statement shape it demands a permission the database
+/// does not, and no relation answered for it.
+#[test]
+fn a_blanket_update_answers_through_its_own_relation() {
+    let schema = "CREATE TABLE notes(id UUID PRIMARY KEY, reader_id TEXT, writer_id TEXT);\n\
+                  ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY notes_read ON notes FOR SELECT USING (reader_id = current_user);\n\
+                  CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_id = current_user);\n";
+    let (dsl, _) = translation(schema);
+
+    assert_eq!(
+        relation_definition(&dsl, "notes", "can_update").as_deref(),
+        Some("writer and can_select"),
+        "a per-row update still reads the row it names:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "notes", "can_update_without_reading").as_deref(),
+        Some("writer"),
+        "a blanket update reads nothing, so the read gate must not apply:\n{dsl}"
+    );
+}
+
+/// An action relation nobody defined reads as "the consumer decides", which is how a
+/// coverage gap becomes open access. Every table type carries the relation even where
+/// no rule admits an update.
+#[test]
+fn every_table_defines_the_blanket_update_relation() {
+    let schema = "CREATE TABLE notes(id UUID PRIMARY KEY, owner_id TEXT);\n\
+                  ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY notes_read ON notes FOR SELECT USING (owner_id = current_user);\n";
+    let (dsl, _) = translation(schema);
+
+    assert_eq!(
+        relation_definition(&dsl, "notes", "can_update_without_reading").as_deref(),
+        Some("can_update"),
+        "with no update rule it points at the denial rather than going missing:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "notes", "can_update").as_deref(),
+        Some("no_access"),
+        "and that denial is what it points at:\n{dsl}"
+    );
+}
+
+/// A relation nothing names is declared, receives no tuple query, and can never be
+/// granted, so the model advertises access it cannot give.
+///
+/// The plan asked for the pruned set to equal the set the tuple side skips. It cannot:
+/// the tuple side also skips a relation only a denying permission names, and dropping
+/// that one would leave the model referring to something it does not define. The
+/// property that does hold, and is the one worth keeping, is the other direction, so
+/// this asserts both that nothing unnamed survives and that nothing named was taken.
+#[test]
+fn no_type_declares_a_relation_no_permission_names() {
+    let mut cases: Vec<(String, Option<String>)> = decidability_schemas()
+        .into_iter()
+        .map(|schema| (schema, None))
+        .collect();
+    // The role hierarchy is the shape that produced orphans: `can_select` inlines it,
+    // and its own relations then name nothing.
+    cases.push((
+        std::fs::read_to_string("tests/fixtures/role_in_list/input.sql")
+            .expect("the role_in_list fixture should exist"),
+        Some(
+            std::fs::read_to_string("tests/fixtures/role_in_list/function_registry.json")
+                .expect("the role_in_list registry should exist"),
+        ),
+    ));
+
+    for (schema, registry_json) in &cases {
+        let db = db_of(schema);
+        let mut registry = rls2fga::classifier::function_registry::FunctionRegistry::new();
+        if let Some(json) = registry_json {
+            registry.load_from_json(json).expect("registry parses");
+        }
+        let classified = rls2fga::classifier::policy_classifier::classify_policies(&db, &registry);
+        let outputs = rls2fga::translator::Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        // Not `assert_model_is_internally_consistent` here: its tupleset-assignability
+        // rule is stricter than `OpenFGA` v1.11.6, which accepts this fixture's model
+        // in the `P2_role_in_list` container scenario. Pruning too much would show up
+        // there and in every parity case.
+        let named = relation_names_definitions_use(&dsl);
+        for relation in defined_relation_names(&dsl) {
+            assert!(
+                relation.starts_with("can_") || named.contains(&relation),
+                "`{relation}` is declared and no definition names it:\n{dsl}"
+            );
+        }
+    }
+}
+
+/// Every relation the DSL declares, across every type.
+fn defined_relation_names(dsl: &str) -> Vec<String> {
+    dsl.lines()
+        .filter_map(|line| line.trim().strip_prefix("define "))
+        .filter_map(|rest| rest.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+/// A role the database exempts from row level security holds more than the model says,
+/// and the model cannot say otherwise: it describes the rules, and the bypass is the
+/// absence of them. Reporting it is the only honest option, and staying silent is what
+/// makes an exempt service account look constrained.
+#[test]
+fn a_role_that_bypasses_row_level_security_is_reported() {
+    let schema = "CREATE ROLE reporting BYPASSRLS;\n\
+                  CREATE ROLE app_user LOGIN;\n\
+                  CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  ALTER TABLE docs FORCE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n";
+    let db = db_of(schema);
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let exempt: Vec<String> = outputs
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::Exempt)
+        .map(TranslationNote::message)
+        .collect();
+    assert_eq!(exempt.len(), 1, "one role bypasses, got {exempt:?}");
+    assert!(
+        exempt[0].contains("reporting"),
+        "the report has to name the role: {exempt:?}"
+    );
+    assert!(
+        !exempt[0].contains("app_user"),
+        "a plain role is not exempt: {exempt:?}"
+    );
+    // The model still describes only the rules that do apply.
+    assert!(
+        outputs.model().contains("define can_select: owner"),
+        "the policy still translates:\n{}",
+        outputs.model()
+    );
+}
+
+/// Without `FORCE ROW LEVEL SECURITY` the table's owner is exempt from every policy on
+/// it, so the model is stricter than the database for them. With it, nobody is.
+#[test]
+fn a_table_that_does_not_force_row_level_security_is_reported() {
+    let schema = |force: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             {force}\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n"
+        )
+    };
+    let exempt_notes = |sql: &str| -> Vec<String> {
+        let db = db_of(sql);
+        translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .filter(|note| note.severity() == NoteSeverity::Exempt)
+            .map(TranslationNote::message)
+            .collect()
+    };
+
+    let unforced = exempt_notes(&schema(""));
+    assert_eq!(
+        unforced.len(),
+        1,
+        "the owner bypass is a finding: {unforced:?}"
+    );
+    assert!(
+        unforced[0].contains("docs"),
+        "and it names the table: {unforced:?}"
+    );
+
+    let forced = exempt_notes(&schema("ALTER TABLE docs FORCE ROW LEVEL SECURITY;\n"));
+    assert!(
+        forced.is_empty(),
+        "FORCE removes the owner bypass, so there is nothing to report: {forced:?}"
+    );
+}
+
+/// Saying "the table's owner" sends the reader back to their schema to find out whether
+/// the exempt principal is the account their application connects as. Now that
+/// `sql-traits` keeps `ALTER TABLE ... OWNER TO`, the note can just say who.
+#[test]
+fn the_exempt_table_owner_is_named_when_the_schema_says_who_it_is() {
+    let owned = "CREATE ROLE app_owner;\n\
+                 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);\n\
+                 ALTER TABLE docs OWNER TO app_owner;\n\
+                 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n";
+    let unowned = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);\n\
+                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                   CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n";
+    let exempt_notes = |sql: &str| -> Vec<String> {
+        let db = db_of(sql);
+        translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .filter(|note| note.severity() == NoteSeverity::Exempt)
+            .map(TranslationNote::message)
+            .collect()
+    };
+
+    let named = exempt_notes(owned);
+    assert_eq!(named.len(), 1, "one table, one owner bypass: {named:?}");
+    assert!(
+        named[0].contains("app_owner"),
+        "the exempt role has a name, so the note uses it: {named:?}"
+    );
+
+    // A schema that never says who owns the table still has the bypass, and the note
+    // still has to report it without inventing a role.
+    let anonymous = exempt_notes(unowned);
+    assert_eq!(
+        anonymous.len(),
+        1,
+        "the bypass is there either way: {anonymous:?}"
+    );
+    assert!(
+        anonymous[0].contains("owner") && !anonymous[0].contains("app_owner"),
+        "with no owner recorded it stays generic: {anonymous:?}"
+    );
+}
+
+/// Every name a definition body mentions. Loose across types on purpose: a relation
+/// reached through a tuple-to-userset is named from the type that walks to it.
+fn relation_names_definitions_use(dsl: &str) -> std::collections::BTreeSet<String> {
+    dsl.lines()
+        .filter_map(|line| line.trim().strip_prefix("define "))
+        .filter_map(|rest| rest.split_once(':'))
+        .flat_map(|(_, body)| {
+            body.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+        .collect()
+}
+
+/// `EXISTS (SELECT 1 FROM m WHERE user_id = caller)` names no column of the guarded
+/// table, so it admits every row at once to whoever appears in `m`. Denying instead is
+/// safe but wrong, and pairing every row with every member is not loadable at any real
+/// size. One holder object per member source carries the members, and every row points
+/// at it, so the facts grow as rows plus members.
+#[test]
+fn an_uncorrelated_membership_check_translates_through_a_holder() {
+    let schema = "CREATE TABLE staff(id UUID PRIMARY KEY, user_id TEXT);\n\
+                  CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_sel ON docs FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
+    let (dsl, tuples) = translation(schema);
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("member from staff_holder"),
+        "the row's grant reads as membership of the holder:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("define staff_holder: [staff_holder]"),
+        "the row points at the holder:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("type staff_holder"),
+        "and the holder is a type of its own:\n{dsl}"
+    );
+    // Rows plus members, never rows times members.
+    assert!(
+        tuples.contains("'staff_holder:all' AS subject"),
+        "every row points at the one holder:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("SELECT DISTINCT 'staff_holder:all' AS object"),
+        "and the members attach to it once each:\n{tuples}"
+    );
+}
+
+/// Two policies reading different member tables must not pool their members, and two
+/// reading the same one may share. That is why the holder is per member source rather
+/// than per table or per policy.
+#[test]
+fn a_holder_is_shared_per_member_source_and_never_across_them() {
+    let schema = "CREATE TABLE staff(id UUID PRIMARY KEY, user_id TEXT);\n\
+                  CREATE TABLE auditors(id UUID PRIMARY KEY, user_id TEXT);\n\
+                  CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+                  CREATE TABLE notes(id UUID PRIMARY KEY);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_staff ON docs FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n\
+                  CREATE POLICY docs_audit ON docs FOR DELETE USING (\n\
+                    EXISTS (SELECT 1 FROM auditors WHERE auditors.user_id = current_user));\n\
+                  CREATE POLICY notes_staff ON notes FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
+    let (dsl, tuples) = translation(schema);
+
+    assert_eq!(
+        dsl.matches("type staff_holder").count(),
+        1,
+        "two policies reading staff share one holder:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("type auditors_holder"),
+        "and a different member table gets its own:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("member from staff_holder"),
+        "staff decides reads:\n{dsl}"
+    );
+    assert!(
+        relation_definition(&dsl, "docs", "can_delete")
+            .is_some_and(|rule| rule.contains("member from auditors_holder")),
+        "auditors decide deletes, and they are not pooled with staff:\n{dsl}"
+    );
+    // Each holder is fed only from its own table.
+    assert!(
+        tuples.contains("'staff_holder:all' AS object,")
+            && tuples.contains("'auditors_holder:all' AS object,"),
+        "each holder loads its own members:\n{tuples}"
+    );
+}
+
+/// A correlated check still has to translate as a per-row membership. The holder is for
+/// the shape that names no outer column, and reading it too widely would grant a whole
+/// table where only one row was meant.
+#[test]
+fn a_correlated_membership_check_does_not_become_a_holder() {
+    let schema = "CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+                  CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), \
+                  user_id TEXT);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_sel ON docs FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id \
+                    AND doc_members.user_id = current_user));\n";
+    let (dsl, _) = translation(schema);
+
+    assert!(
+        !dsl.contains("_holder"),
+        "a check naming the outer row is per row, not per table:\n{dsl}"
+    );
+}
+
+/// A policy is created once and then tuned, so a migration bundle carries the final
+/// rule in an `ALTER POLICY` rather than in the `CREATE POLICY`. Translating the
+/// original is an over-grant whenever the alteration narrowed the policy, which is the
+/// whole reason such a schema used to be refused outright.
+#[test]
+fn the_model_follows_a_policy_altered_after_creation() {
+    let created = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);\n\
+                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                   CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n";
+    let narrowed = format!("{created}ALTER POLICY docs_sel ON docs USING (FALSE);\n");
+
+    let (before, _) = translation(created);
+    assert_eq!(
+        relation_definition(&before, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the created policy grants the owner:\n{before}"
+    );
+
+    let (after, tuples) = translation(&narrowed);
+    assert_eq!(
+        relation_definition(&after, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "the altered policy grants nobody, and the model has to say so:\n{after}"
+    );
+    assert!(
+        !tuples.contains("'owner' AS relation"),
+        "and no tuple may still feed the superseded rule:\n{tuples}"
     );
 }

@@ -244,6 +244,18 @@ fn classify_membership_select(
             },
             confidence: ConfidenceLevel::A,
         }),
+        MembershipSelectAnalysis::Uncorrelated {
+            member_table,
+            user_column,
+            extra_predicate_sql,
+        } => Some(ClassifiedExpr {
+            pattern: PatternClass::P13UncorrelatedMembership {
+                member_table,
+                user_column,
+                extra_predicate_sql,
+            },
+            confidence: ConfidenceLevel::A,
+        }),
         MembershipSelectAnalysis::AmbiguousMultiple
         | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
         | MembershipSelectAnalysis::JoinsAnotherTable { .. }
@@ -270,6 +282,13 @@ enum MembershipSelectAnalysis {
     /// entities rather than membership rows.
     ScansEntityByOwnKey {
         join_table: String,
+    },
+    /// The subquery names no outer column at all, so it asks only whether the caller
+    /// is a member of anything. Every row of the guarded table then passes together.
+    Uncorrelated {
+        member_table: String,
+        user_column: String,
+        extra_predicate_sql: Option<String>,
     },
     NoMatch,
 }
@@ -333,10 +352,83 @@ fn analyze_membership_select(
             }
         }
         None if selection_references_current_user(select, registry) => {
-            MembershipSelectAnalysis::AmbiguousNoUniqueJoin
+            analyze_uncorrelated_membership(select, db, registry, outer_table)
+                .unwrap_or(MembershipSelectAnalysis::AmbiguousNoUniqueJoin)
         }
         None => MembershipSelectAnalysis::NoMatch,
     }
+}
+
+/// The subquery asks only whether the caller is a member of something, naming no column
+/// of the guarded table.
+///
+/// Every refusal here matters, because the translation grants the whole table at once:
+/// exactly one source with no joins, exactly one comparison against the caller, and
+/// nothing reaching outside that one table. Anything else stays refused.
+fn analyze_uncorrelated_membership(
+    select: &Select,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    outer_table: &str,
+) -> Option<MembershipSelectAnalysis> {
+    let sources = relation_sources(select);
+    let [source] = sources.as_slice() else {
+        return None;
+    };
+    if select.from.iter().any(|item| !item.joins.is_empty()) {
+        return None;
+    }
+    // Reading the guarded table itself is a self-reference, not a member source.
+    if same_identifier(&source.table_name, outer_table) {
+        return None;
+    }
+    let member = lookup_table(db, &source.table_name)?;
+    let columns: Vec<String> = member
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .map(|c| c.stored_column_name().into_owned())
+        .collect();
+
+    let selection = select.selection.as_ref()?;
+    let mut predicates = Vec::new();
+    flatten_and_predicates(selection, &mut predicates);
+
+    let mut user_column: Option<String> = None;
+    let mut extras: Vec<String> = Vec::new();
+    for predicate in predicates {
+        match analyze_membership_eq_predicate(
+            predicate,
+            &source.table_name,
+            source.alias.as_deref(),
+            &columns,
+            registry,
+        ) {
+            MembershipEqAnalysis::UserColumn(column) if user_column.is_none() => {
+                user_column = Some(column);
+                continue;
+            }
+            // A second caller comparison, a link to the outer row, or a join column
+            // all mean this is not the shape.
+            MembershipEqAnalysis::UserColumn(_)
+            | MembershipEqAnalysis::FkCandidate(_)
+            | MembershipEqAnalysis::OuterCorrelation => return None,
+            MembershipEqAnalysis::NotRelevant => {}
+        }
+        if predicate_references_other_table(predicate, &source.table_name, source.alias.as_deref())
+        {
+            return None;
+        }
+        let mut normalized = predicate.clone();
+        strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
+        extras.push(normalized.to_string());
+    }
+
+    Some(MembershipSelectAnalysis::Uncorrelated {
+        member_table: source.table_name.clone(),
+        user_column: user_column?,
+        extra_predicate_sql: (!extras.is_empty()).then(|| extras.join(" AND ")),
+    })
 }
 
 /// True when `column` is `table`'s own identity rather than a link to a parent:
@@ -398,7 +490,9 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
                  from the policy's table to '{join_table}' so the link translates as parent \
                  inheritance"
             )),
-            MembershipSelectAnalysis::Unique { .. } | MembershipSelectAnalysis::NoMatch => None,
+            MembershipSelectAnalysis::Unique { .. }
+            | MembershipSelectAnalysis::Uncorrelated { .. }
+            | MembershipSelectAnalysis::NoMatch => None,
         }
     }
 

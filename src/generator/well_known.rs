@@ -34,6 +34,9 @@ pub(crate) const OWNER_USER_RELATION: &str = "owner_user";
 /// Relation holding the owning team of a row.
 pub(crate) const OWNER_TEAM_RELATION: &str = "owner_team";
 
+/// Object id of every holder, since exactly one stands for each member source.
+pub(crate) const HOLDER_OBJECT_ID: &str = "all";
+
 /// Action relation answering for a SQL `SELECT`.
 pub(crate) const CAN_SELECT_RELATION: &str = "can_select";
 
@@ -51,6 +54,11 @@ pub(crate) const CAN_UPDATE_USING_RELATION: &str = "can_update_using";
 
 /// The `WITH CHECK` half of an `UPDATE`, which admits the new row.
 pub(crate) const CAN_UPDATE_CHECK_RELATION: &str = "can_update_check";
+
+/// Updating without naming a row, as `UPDATE t SET c = 1` does. `PostgreSQL` applies
+/// the `UPDATE` policies to it and not the `SELECT` policies, since the statement reads
+/// no row to decide which to change.
+pub(crate) const CAN_UPDATE_WITHOUT_READING_RELATION: &str = "can_update_without_reading";
 
 /// Inserting a row and reading it back, which returning a table column or naming
 /// an `ON CONFLICT` target both do, so the `SELECT` policies apply to the new row.

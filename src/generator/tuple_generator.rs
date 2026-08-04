@@ -1,7 +1,4 @@
-use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::{
-    AttributeLiteral, AttributeOperator, ClassifiedPolicy, ConfidenceLevel,
-};
+use crate::classifier::patterns::{AttributeLiteral, AttributeOperator};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
@@ -9,10 +6,11 @@ use crate::no_std_prelude::*;
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
-use crate::generator::model_generator::{GeneratorSettings, SchemaPlan};
+use crate::generator::model_generator::SchemaPlan;
+use crate::generator::notes::SkippedTuples;
 use crate::generator::records::RecordDescription;
 use crate::generator::well_known::{
-    OWNER_TEAM_RELATION, OWNER_USER_RELATION, TEAM_TYPE, USER_TYPE,
+    HOLDER_OBJECT_ID, OWNER_TEAM_RELATION, OWNER_USER_RELATION, TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::names::{
     lookup_table, split_qualified_identifier_parts, split_schema_and_relation,
@@ -389,16 +387,9 @@ fn render_tuple_source_inner(
                 }
                 (None, None) => {
                     // Fail closed: neither user nor team principal could be resolved.
-                    return Some(TupleQuery {
-                        comment: format!(
-                            "-- TODO [Level C]: ExplicitGrants on '{grant_table}' could not resolve \
-                             principal type (no user or team table identified). \
-                             Review the grant table schema and register the principal tables."
-                        ),
-                        sql: format!("-- Unresolved: SELECT ... FROM {grant_table_sql} og ...;"),
-                        description: None,
-                        condition: None,
-                    });
+                    return Some(skipped_query(&SkippedTuples::NoPrincipalTypeForGrants {
+                        grant_table: grant_table.clone(),
+                    }));
                 }
             };
 
@@ -487,6 +478,54 @@ fn render_tuple_source_inner(
             })
         }
 
+        TupleSource::HolderMembers {
+            holder_type,
+            member_table,
+            user_col,
+            extra_predicate_sql,
+        } => {
+            let member_table_sql = quote_sql_identifier(member_table);
+            let user_col_sql = quote_sql_identifier(user_col);
+            // DISTINCT because the holder is one object: two membership rows for the
+            // same user would otherwise write the same tuple twice.
+            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+                || format!("\nWHERE {user_col_sql} IS NOT NULL"),
+                |e| format!("\nWHERE {user_col_sql} IS NOT NULL\nAND ({e})"),
+            );
+            Some(TupleQuery {
+                comment: format!("-- Everyone listed in {member_table}, held by {holder_type}"),
+                sql: format!(
+                    "SELECT DISTINCT '{holder_type}:{HOLDER_OBJECT_ID}' AS object, \
+                     'member' AS relation, 'user:' || {user_col_sql} AS subject\n\
+                     FROM {member_table_sql}{where_clause};"
+                ),
+                description: None,
+                condition: None,
+            })
+        }
+
+        TupleSource::HolderBridge {
+            table,
+            pk_col,
+            relation,
+            holder_type,
+        } => {
+            let table_type = owner_type;
+            let table_sql = quote_sql_identifier(table);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            Some(TupleQuery {
+                comment: format!("-- Every {table} row points at the {holder_type} holder"),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, '{relation}' AS relation, \
+                     '{holder_type}:{HOLDER_OBJECT_ID}' AS subject\n\
+                     FROM {table_sql}\n\
+                     WHERE {pk_col_sql} IS NOT NULL;"
+                ),
+                description: None,
+                condition: None,
+            })
+        }
+
         TupleSource::ParentBridge {
             table,
             fk_col,
@@ -496,15 +535,11 @@ fn render_tuple_source_inner(
             let table_type = owner_type;
             let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
             else {
-                return Some(TupleQuery {
-                    comment: format!(
-                        "-- TODO [Level D]: skipped {table} to {parent_type} bridge \
-                         (missing column '{fk_col}')"
-                    ),
-                    sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
-                    description: None,
-                    condition: None,
-                });
+                return Some(skipped_query(&SkippedTuples::BridgeColumnMissing {
+                    table: table.clone(),
+                    parent_type: parent_type.clone(),
+                    fk_col: fk_col.clone(),
+                }));
             };
             let table_sql = quote_sql_identifier(table);
             let object_col_sql = quote_sql_identifier(&object_col);
@@ -651,31 +686,18 @@ fn render_tuple_source_inner(
             })
         }
 
-        TupleSource::Todo { comment, sql, .. } => Some(TupleQuery {
-            comment: comment.clone(),
-            sql: sql.clone(),
-            description: None,
-            condition: None,
-        }),
+        TupleSource::Skipped { reason } => Some(skipped_query(reason)),
     }
 }
 
-/// Generate tuple SQL queries from classified policies.
-pub fn generate_tuple_queries(
-    policies: &[ClassifiedPolicy],
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    min_confidence: ConfidenceLevel,
-    settings: &GeneratorSettings,
-) -> Vec<TupleQuery> {
-    let plan = crate::generator::model_generator::build_filtered_schema_plan(
-        policies,
-        db,
-        registry,
-        min_confidence,
-        settings,
-    );
-    generate_tuple_queries_from_plan(&plan, db)
+/// The two comment lines that stand where a tuple query could not be built.
+fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
+    TupleQuery {
+        comment: reason.comment(),
+        sql: reason.body(),
+        description: None,
+        condition: None,
+    }
 }
 
 pub(crate) fn resolve_bridge_columns(
@@ -824,8 +846,12 @@ fn render_jsonb_path(column_sql: &str, path: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classifier::function_registry::FunctionRegistry;
+    use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+    use crate::generator::model_generator::GeneratorSettings;
     use crate::parser::names::policy_scope_relation_name;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+    use crate::translator::Translation;
 
     #[test]
     fn format_tuples_ends_with_exactly_one_newline() {
@@ -927,13 +953,15 @@ CREATE POLICY docs_update ON docs FOR ALL
             with_check_was_filtered: false,
         };
 
-        let queries = generate_tuple_queries(
-            &[classified],
+        let queries = Translation::plan(
+            vec![classified],
             &db,
             &FunctionRegistry::new(),
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
         assert!(queries.iter().any(|q| q
             .comment
             .contains("User ownership (owner_id references users)")));
@@ -956,13 +984,15 @@ CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
 
         let classified =
             crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &FunctionRegistry::new(),
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
         let scope_relation = policy_scope_relation_name("docs_select");
 
         assert!(queries
@@ -1013,13 +1043,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let explicit_grants = queries
             .iter()
@@ -1072,13 +1104,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let explicit_grants = queries
             .iter()
@@ -1132,13 +1166,15 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         assert!(
             queries
@@ -1195,13 +1231,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
             .expect("registry json should parse");
 
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         assert!(
             queries
@@ -1239,13 +1277,15 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
 
         let registry = FunctionRegistry::new();
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let membership_query = queries
             .iter()
@@ -1278,6 +1318,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
     fn canonical_table_name_is_used_for_tuple_object_prefixes() {
         let db = parse_schema(
             r"
+CREATE SCHEMA app;
 CREATE TABLE app.docs(id uuid primary key, owner_id uuid);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
@@ -1287,13 +1328,15 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
 
         let classified =
             crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &FunctionRegistry::new(),
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let ownership_query = queries
             .iter()
@@ -1320,13 +1363,15 @@ CREATE POLICY docs_select ON "Doc Items" FOR SELECT
 
         let classified =
             crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &FunctionRegistry::new(),
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         let ownership_query = queries
             .iter()
@@ -1361,13 +1406,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
         let registry = FunctionRegistry::new();
         let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let queries = generate_tuple_queries(
-            &classified,
+        let queries = Translation::plan(
+            classified.clone(),
             &db,
             &registry,
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
-        );
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
 
         assert!(
             queries

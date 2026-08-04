@@ -4,7 +4,8 @@
 //! produced once during pattern translation, so the model and the tuple queries
 //! cannot drift apart.
 
-use crate::classifier::patterns::{AttributePredicate, ConfidenceLevel};
+use crate::classifier::patterns::AttributePredicate;
+use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
     MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PUBLIC_RELATION, TEAM_TYPE,
 };
@@ -165,15 +166,26 @@ pub(crate) enum TupleSource {
         pg_role: String,
     },
 
-    /// Not expressible as a static query. The renderer emits `comment` and `sql`
-    /// verbatim so the operator knows to enforce it at runtime.
-    Todo {
-        level: ConfidenceLevel,
-        /// Pre-rendered comment line.
-        comment: String,
-        /// Pre-rendered body line.
-        sql: String,
+    /// Every row of `table` pointing at the one holder object, so a member of the
+    /// holder reaches all of them.
+    HolderBridge {
+        table: String,
+        pk_col: String,
+        relation: String,
+        holder_type: String,
     },
+
+    /// Everyone listed in `member_table`, attached to the holder object.
+    HolderMembers {
+        holder_type: String,
+        member_table: String,
+        user_col: String,
+        extra_predicate_sql: Option<String>,
+    },
+
+    /// Why no tuple query stands here. Rendered as the two comment lines that take
+    /// its place in the loader's script.
+    Skipped { reason: SkippedTuples },
 }
 
 impl TupleSource {
@@ -196,10 +208,12 @@ impl TupleSource {
             | Self::AttributeGate { .. }
             | Self::ConditionalAttributeGate { .. }
             | Self::ConstantTrue { .. }
-            | Self::PolicyScope { .. } => true,
-            Self::TeamMembership { .. } | Self::ExistsMembership { .. } | Self::Todo { .. } => {
-                false
-            }
+            | Self::PolicyScope { .. }
+            | Self::HolderBridge { .. } => true,
+            Self::TeamMembership { .. }
+            | Self::ExistsMembership { .. }
+            | Self::HolderMembers { .. }
+            | Self::Skipped { .. } => false,
         }
     }
 
@@ -212,7 +226,8 @@ impl TupleSource {
             | Self::ArrayMembership { relation, .. }
             | Self::JsonbFieldOwnership { relation, .. }
             | Self::ParentBridge { relation, .. }
-            | Self::ConditionalAttributeGate { relation, .. } => own(relation),
+            | Self::ConditionalAttributeGate { relation, .. }
+            | Self::HolderBridge { relation, .. } => own(relation),
             Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
             Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
             Self::ExplicitGrants { role_cases, .. } => role_cases
@@ -225,11 +240,14 @@ impl TupleSource {
             Self::ExistsMembership { parent_type, .. } => {
                 vec![(parent_type.clone(), MEMBER_RELATION.to_string())]
             }
+            Self::HolderMembers { holder_type, .. } => {
+                vec![(holder_type.clone(), MEMBER_RELATION.to_string())]
+            }
             Self::PublicFlag { .. } | Self::AttributeGate { .. } | Self::ConstantTrue { .. } => {
                 own(PUBLIC_RELATION)
             }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
-            Self::Todo { .. } => Vec::new(),
+            Self::Skipped { .. } => Vec::new(),
         }
     }
 
@@ -368,12 +386,27 @@ impl TupleSource {
             } => {
                 format!("scope:{table}:{pk_col}:{scope_relation}:{pg_role}")
             }
-            Self::Todo {
-                level,
-                comment,
-                sql,
+            Self::HolderBridge {
+                table,
+                pk_col,
+                relation,
+                holder_type,
             } => {
-                format!("todo:{level}:{comment}:{sql}")
+                format!("holder:{table}:{pk_col}:{relation}:{holder_type}")
+            }
+            Self::HolderMembers {
+                holder_type,
+                member_table,
+                user_col,
+                extra_predicate_sql,
+            } => {
+                format!(
+                    "holdermembers:{holder_type}:{member_table}:{user_col}:{}",
+                    extra_predicate_sql.as_deref().unwrap_or("")
+                )
+            }
+            Self::Skipped { reason } => {
+                format!("skipped:{}:{}", reason.comment(), reason.body())
             }
         }
     }
@@ -382,7 +415,6 @@ impl TupleSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::patterns::ConfidenceLevel;
 
     #[test]
     fn dedup_key_differentiates_explicit_grants_across_tables() {
@@ -464,17 +496,19 @@ mod tests {
     }
 
     #[test]
-    fn dedup_key_differentiates_todo_by_sql_and_level() {
-        let todo_c = TupleSource::Todo {
-            level: ConfidenceLevel::C,
-            comment: "-- TODO".to_string(),
-            sql: "-- query not emitted".to_string(),
+    fn dedup_key_differentiates_skips_by_their_reason() {
+        let attribute = TupleSource::Skipped {
+            reason: SkippedTuples::AttributeRuntimeEnforcement {
+                table: "docs".to_string(),
+                attribute: "status = 'active'".to_string(),
+            },
         };
-        let todo_d_diff_sql = TupleSource::Todo {
-            level: ConfidenceLevel::D,
-            comment: "-- TODO".to_string(),
-            sql: "-- different".to_string(),
+        let unclassified = TupleSource::Skipped {
+            reason: SkippedTuples::UnclassifiedExpression {
+                table: "docs".to_string(),
+                reason: "no pattern".to_string(),
+            },
         };
-        assert_ne!(todo_c.dedup_key(), todo_d_diff_sql.dedup_key());
+        assert_ne!(attribute.dedup_key(), unclassified.dedup_key());
     }
 }

@@ -504,8 +504,8 @@ header .tagline a:focus {
     color: var(--r2f-muted);
 }
 
-/* TODO panel: per-policy review items surfaced from model.todos. */
-.todo-panel {
+/* Review panel: per-policy notes surfaced from the translation. */
+.note-panel {
     border-top: 1px solid var(--r2f-line);
     padding-top: 12px;
     display: flex;
@@ -513,7 +513,7 @@ header .tagline a:focus {
     gap: 8px;
 }
 
-.todo-item {
+.note-item {
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -537,9 +537,63 @@ header .tagline a:focus {
     background: var(--lvl);
 }
 
+/* A severity is a word, not a letter, so it sizes to its text. */
+.severity-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    color: #fff;
+    background: var(--lvl);
+}
+
+/* The refusal banner sits above the outputs, so it reads as a property of what is
+   shown rather than as an item in a list somewhere below it. */
+.refusal-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--r2f-warn);
+    border-left-width: 4px;
+    border-radius: 8px;
+    background: var(--r2f-glass);
+}
+
+.refusal-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: var(--r2f-warn);
+}
+
+.refusal-item {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    font-size: 0.82rem;
+}
+
+.refusal-policy {
+    flex: 0 0 auto;
+    font-family: var(--r2f-mono);
+    font-weight: 600;
+}
+
+.refusal-message {
+    color: var(--r2f-muted);
+}
+
 /* The level-* classes only carry a color (via --lvl). They add no fill on
    their own, so a minimum-confidence button wearing one stays white until it is
-   selected. The badge, active button, and chip/todo borders read --lvl. */
+   selected. The badge, active button, and chip and note borders read --lvl. */
 .level-a {
     --lvl: var(--r2f-ok);
 }
@@ -564,17 +618,17 @@ header .tagline a:focus {
     border-color: var(--lvl);
 }
 
-.todo-body {
+.note-body {
     min-width: 0;
 }
 
-.todo-policy {
+.note-policy {
     font-weight: 600;
     font-family: var(--r2f-mono);
     font-size: 0.85rem;
 }
 
-.todo-message {
+.note-message {
     color: var(--r2f-muted);
     font-size: 0.85rem;
 }

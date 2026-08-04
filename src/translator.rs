@@ -6,12 +6,15 @@ use std::path::Path;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
-use crate::generator::json_model::{generate_json_model, AuthorizationModel};
-use crate::generator::model_generator::GeneratorSettings;
-use crate::generator::model_generator::{generate_model, GeneratedModel};
-use crate::generator::tuple_generator::{generate_tuple_queries, TupleQuery};
+use crate::generator::json_model::{json_model_from_plan, AuthorizationModel};
+use crate::generator::model_generator::{
+    build_filtered_schema_plan, render_dsl_from_plan, GeneratorSettings, SchemaPlan,
+};
+use crate::generator::notes::{NoteSeverity, TranslationNote};
+use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, TupleQuery};
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
+use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
 use crate::parser::sql_parser::ParserDB;
 
@@ -115,67 +118,19 @@ impl Translator {
         classify_policies_with_effective_registry_and_settings(db, &self.registry, &self.settings)
     }
 
-    /// Generate an `OpenFGA` DSL model from the configured pipeline.
-    pub fn generate_model(&self, db: &ParserDB) -> GeneratedModel {
+    /// Plan a translation of `db`.
+    ///
+    /// The plan is built once here and each output is rendered from it on demand, so a
+    /// caller wanting the model, the JSON and the tuples classifies once rather than
+    /// three times.
+    pub fn translate<'a>(&self, db: &'a ParserDB) -> Translation<'a> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_model(
-            &classified,
+        Translation::plan(
+            classified,
             db,
             &effective_registry,
             self.min_confidence,
             &self.generator,
-        )
-    }
-
-    /// Generate an `OpenFGA` JSON authorization model from the configured pipeline.
-    pub fn generate_json_model(&self, db: &ParserDB) -> AuthorizationModel {
-        let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_json_model(
-            &classified,
-            db,
-            &effective_registry,
-            self.min_confidence,
-            &self.generator,
-        )
-    }
-
-    /// Generate tuple SQL queries from the configured pipeline.
-    pub fn generate_tuple_queries(&self, db: &ParserDB) -> Vec<TupleQuery> {
-        let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        generate_tuple_queries(
-            &classified,
-            db,
-            &effective_registry,
-            self.min_confidence,
-            &self.generator,
-        )
-    }
-
-    #[cfg(feature = "std")]
-    /// Run classification + generation and write artifacts to disk.
-    pub fn write_output(&self, db: &ParserDB, output_dir: &Path, name: &str) -> Result<(), String> {
-        let (classified, effective_registry) = self.classify_with_effective_registry(db);
-        let model = generate_model(
-            &classified,
-            db,
-            &effective_registry,
-            self.min_confidence,
-            &self.generator,
-        );
-        let tuples = generate_tuple_queries(
-            &classified,
-            db,
-            &effective_registry,
-            self.min_confidence,
-            &self.generator,
-        );
-        write_output(
-            output_dir,
-            name,
-            &model,
-            &tuples,
-            &classified,
-            self.min_confidence,
         )
     }
 
@@ -194,3 +149,170 @@ impl Translator {
         self.min_confidence
     }
 }
+
+/// A planned translation of one schema.
+///
+/// Holding the plan is what makes the outputs cheap, and it is also what makes them
+/// refusable: an expression nobody classified leaves the model denying what the
+/// database grants, and that has to be seen rather than discovered later.
+#[derive(Debug, Clone)]
+pub struct Translation<'a> {
+    db: &'a ParserDB,
+    plan: SchemaPlan,
+    policies: Vec<ClassifiedPolicy>,
+    min_confidence: ConfidenceLevel,
+}
+
+impl<'a> Translation<'a> {
+    /// Plan a translation from policies already classified, which is how an oracle's
+    /// answers reach the generators.
+    #[must_use]
+    pub fn plan(
+        policies: Vec<ClassifiedPolicy>,
+        db: &'a ParserDB,
+        registry: &FunctionRegistry,
+        min_confidence: ConfidenceLevel,
+        settings: &GeneratorSettings,
+    ) -> Self {
+        let plan = build_filtered_schema_plan(&policies, db, registry, min_confidence, settings);
+        Self {
+            db,
+            plan,
+            policies,
+            min_confidence,
+        }
+    }
+
+    /// Everything the translation has to say about itself.
+    #[must_use]
+    pub fn notes(&self) -> &[TranslationNote] {
+        &self.plan.notes
+    }
+
+    /// The expressions nobody classified. These are the only notes that make the model
+    /// narrower than the database through a limitation of this crate rather than a
+    /// choice the caller made.
+    pub fn unhandled(&self) -> impl Iterator<Item = &TranslationNote> {
+        self.notes()
+            .iter()
+            .filter(|note| note.severity() == NoteSeverity::Unhandled)
+    }
+
+    /// The outputs, refused while any expression went unhandled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unhandled expressions, which is what a caller has to look at before
+    /// trusting a model that denies what the database grants.
+    pub fn outputs(self) -> Result<Outputs<'a>, UnhandledExpressions> {
+        let unhandled: Vec<TranslationNote> = self.unhandled().cloned().collect();
+        if unhandled.is_empty() {
+            Ok(Outputs(self))
+        } else {
+            Err(UnhandledExpressions { notes: unhandled })
+        }
+    }
+
+    /// The outputs, gaps and all.
+    ///
+    /// Say this deliberately. For every expression [`Translation::unhandled`] names,
+    /// the model denies what the database grants.
+    #[must_use]
+    pub fn outputs_accepting_gaps(self) -> Outputs<'a> {
+        Outputs(self)
+    }
+}
+
+/// The outputs of a translation.
+///
+/// Reachable only through [`Translation::outputs`], which refuses while anything went
+/// unhandled, or [`Translation::outputs_accepting_gaps`], which is one visible line
+/// saying the caller took the narrower model on purpose.
+#[derive(Debug, Clone)]
+pub struct Outputs<'a>(Translation<'a>);
+
+impl Outputs<'_> {
+    /// The `OpenFGA` DSL model.
+    #[must_use]
+    pub fn model(&self) -> String {
+        render_dsl_from_plan(&self.0.plan)
+    }
+
+    /// The `OpenFGA` JSON authorization model.
+    #[must_use]
+    pub fn json_model(&self) -> AuthorizationModel {
+        json_model_from_plan(self.0.plan.clone())
+    }
+
+    /// SQL that populates the relationship tuples.
+    #[must_use]
+    pub fn tuple_queries(&self) -> Vec<TupleQuery> {
+        generate_tuple_queries_from_plan(&self.0.plan, self.0.db)
+    }
+
+    /// Everything the translation has to say about itself.
+    #[must_use]
+    pub fn notes(&self) -> &[TranslationNote] {
+        self.0.notes()
+    }
+
+    /// Per-policy confidence levels.
+    #[must_use]
+    pub fn confidence_summary(&self) -> &[(String, ConfidenceLevel)] {
+        &self.0.plan.confidence_summary
+    }
+
+    /// The markdown report, which is the only place a clause dropped by the threshold
+    /// is visible.
+    #[must_use]
+    pub fn report(&self) -> String {
+        build_report(self.notes(), &self.0.policies, self.0.min_confidence)
+    }
+
+    /// Write the model, the tuple SQL and the report into `output_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the name is unusable as a filename or a write fails.
+    #[cfg(feature = "std")]
+    pub fn write(&self, output_dir: &Path, name: &str) -> Result<(), String> {
+        write_output(
+            output_dir,
+            name,
+            &self.model(),
+            &self.tuple_queries(),
+            &self.report(),
+        )
+    }
+}
+
+/// Expressions nobody classified, which is what stops [`Translation::outputs`]
+/// answering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnhandledExpressions {
+    notes: Vec<TranslationNote>,
+}
+
+impl UnhandledExpressions {
+    /// The notes naming each expression and why it was refused.
+    #[must_use]
+    pub fn notes(&self) -> &[TranslationNote] {
+        &self.notes
+    }
+}
+
+impl core::fmt::Display for UnhandledExpressions {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} expression(s) went unhandled, so the model denies what the database grants",
+            self.notes.len()
+        )?;
+        for note in &self.notes {
+            write!(f, "\n  {}: {note}", note.subject())?;
+        }
+        Ok(())
+    }
+}
+
+impl core::error::Error for UnhandledExpressions {}

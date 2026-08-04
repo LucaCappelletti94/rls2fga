@@ -36,6 +36,11 @@ expression: model
             "relation": "role_editor"
           }
         },
+        "can_update_without_reading": {
+          "computedUserset": {
+            "relation": "role_editor"
+          }
+        },
         "grant_admin": {
           "this": {}
         },

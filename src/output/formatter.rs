@@ -1,39 +1,34 @@
 use std::path::{Component, Path};
 
-use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
-use crate::generator::model_generator::GeneratedModel;
 use crate::generator::tuple_generator::{self, TupleQuery};
-use crate::output::report;
 
-/// Write all output files to the specified directory.
-pub fn write_output(
+/// Write the model, the tuple SQL and the report into `output_dir`.
+///
+/// # Errors
+///
+/// Returns a message when `name` is unusable as a filename or a write fails.
+pub(crate) fn write_output(
     output_dir: &Path,
     name: &str,
-    model: &GeneratedModel,
+    dsl: &str,
     tuples: &[TupleQuery],
-    policies: &[ClassifiedPolicy],
-    min_confidence: ConfidenceLevel,
+    report: &str,
 ) -> Result<(), String> {
     validate_output_name(name)?;
 
     std::fs::create_dir_all(output_dir)
         .map_err(|e| format!("Failed to create output directory: {e}"))?;
 
-    // Write .fga model file
     let fga_path = output_dir.join(format!("{name}.fga"));
-    std::fs::write(&fga_path, &model.dsl)
+    std::fs::write(&fga_path, dsl)
         .map_err(|e| format!("Failed to write {}: {e}", fga_path.display()))?;
 
-    // Write _tuples.sql
     let tuples_path = output_dir.join(format!("{name}_tuples.sql"));
-    let tuples_content = tuple_generator::format_tuples(tuples);
-    std::fs::write(&tuples_path, &tuples_content)
+    std::fs::write(&tuples_path, tuple_generator::format_tuples(tuples))
         .map_err(|e| format!("Failed to write {}: {e}", tuples_path.display()))?;
 
-    // Write _report.md
     let report_path = output_dir.join(format!("{name}_report.md"));
-    let report_content = report::build_report(model, policies, min_confidence);
-    std::fs::write(&report_path, &report_content)
+    std::fs::write(&report_path, report)
         .map_err(|e| format!("Failed to write {}: {e}", report_path.display()))?;
 
     Ok(())
@@ -110,7 +105,7 @@ fn validate_output_name(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generator::model_generator::TodoItem;
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_path(prefix: &str) -> std::path::PathBuf {
@@ -121,32 +116,15 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{nanos}"))
     }
 
-    fn empty_model() -> GeneratedModel {
-        GeneratedModel {
-            dsl: "model".to_string(),
-            todos: vec![TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: "p".to_string(),
-                message: "todo".to_string(),
-            }],
-            confidence_summary: Vec::new(),
-        }
-    }
+    const REPORT: &str = "# rls2fga Translation Report\n";
 
     #[test]
     fn write_output_reports_directory_creation_errors() {
         let path = unique_path("rls2fga_formatter_file");
         std::fs::write(&path, "not a directory").expect("should create marker file");
 
-        let err = write_output(
-            &path,
-            "output",
-            &empty_model(),
-            &[],
-            &[],
-            ConfidenceLevel::D,
-        )
-        .expect_err("directory creation should fail");
+        let err = write_output(&path, "output", "model", &[], REPORT)
+            .expect_err("directory creation should fail");
         assert!(err.contains("Failed to create output directory"));
     }
 
@@ -155,26 +133,12 @@ mod tests {
         let dir = unique_path("rls2fga_formatter_dir");
         std::fs::create_dir_all(&dir).expect("should create temp directory");
 
-        let err = write_output(
-            &dir,
-            "nested/output",
-            &empty_model(),
-            &[],
-            &[],
-            ConfidenceLevel::D,
-        )
-        .expect_err("unsafe output name should fail validation");
+        let err = write_output(&dir, "nested/output", "model", &[], REPORT)
+            .expect_err("unsafe output name should fail validation");
         assert!(err.contains("Invalid output name"));
 
-        let err = write_output(
-            &dir,
-            "../escape",
-            &empty_model(),
-            &[],
-            &[],
-            ConfidenceLevel::D,
-        )
-        .expect_err("path traversal should fail validation");
+        let err = write_output(&dir, "../escape", "model", &[], REPORT)
+            .expect_err("path traversal should fail validation");
         assert!(err.contains("Invalid output name"));
     }
 
@@ -188,15 +152,7 @@ mod tests {
             condition: None,
         }];
 
-        write_output(
-            &dir,
-            "docs",
-            &empty_model(),
-            &tuples,
-            &[],
-            ConfidenceLevel::D,
-        )
-        .expect("write_output should succeed");
+        write_output(&dir, "docs", "model", &tuples, REPORT).expect("write_output should succeed");
 
         let fga = std::fs::read_to_string(dir.join("docs.fga")).expect("fga file should exist");
         let tuple_sql =

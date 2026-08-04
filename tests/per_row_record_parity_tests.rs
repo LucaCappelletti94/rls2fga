@@ -28,7 +28,8 @@ use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
     records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
 };
-use rls2fga::generator::tuple_generator::{self, TupleQuery};
+use rls2fga::generator::tuple_generator::TupleQuery;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -500,13 +501,15 @@ async fn every_row_shape_description_matches_its_own_sql() {
         ROW_SHAPES_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    let queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
 
     let (pure, joined, records) =
         assert_descriptions_match_their_sql(&mut conn, &queries, "row shapes");
@@ -569,13 +572,15 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .expect("failed to seed the earth_metabolome schema");
 
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
-    let queries = tuple_generator::generate_tuple_queries(
-        &classified,
+    let queries = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
 
     let (pure, joined, _) =
         assert_descriptions_match_their_sql(&mut conn, &queries, "earth_metabolome");

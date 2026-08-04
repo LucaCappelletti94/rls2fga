@@ -1,6 +1,8 @@
 //! The seam a consumer uses to classify what this crate refuses.
 
-use rls2fga::classifier::oracle::{consult_oracle, PolicyClause, PolicyOracle, RefusedExpr};
+use rls2fga::classifier::oracle::{
+    consult_oracle, OracleAnswer, PolicyClause, PolicyOracle, RefusedExpr,
+};
 use rls2fga::classifier::patterns::{
     ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, PatternClass,
 };
@@ -14,22 +16,35 @@ use rls2fga::translator::{Translator, TranslatorBuilder};
 struct BitFlagIsPublic;
 
 impl PolicyOracle for BitFlagIsPublic {
-    fn classify(&self, refused: &RefusedExpr<'_>) -> Option<ClassifiedExpr> {
-        refused.sql_text().contains('&').then_some(ClassifiedExpr {
-            pattern: PatternClass::P10ConstantBool { value: true },
-            confidence: ConfidenceLevel::A,
-        })
+    fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
+        if refused.sql_text().contains('&') {
+            OracleAnswer::Classified(ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: true },
+                confidence: ConfidenceLevel::A,
+            })
+        } else {
+            OracleAnswer::Bailed
+        }
     }
 }
 
-/// Declines everything, which is the closed default.
+/// Knows the same bit test, and knows it grants nobody.
+struct BitFlagGrantsNobody;
+
+impl PolicyOracle for BitFlagGrantsNobody {
+    fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
+        if refused.sql_text().contains('&') {
+            OracleAnswer::Denied
+        } else {
+            OracleAnswer::Bailed
+        }
+    }
+}
+
+/// Implements nothing, which is the closed default.
 struct Silent;
 
-impl PolicyOracle for Silent {
-    fn classify(&self, _refused: &RefusedExpr<'_>) -> Option<ClassifiedExpr> {
-        None
-    }
-}
+impl PolicyOracle for Silent {}
 
 fn translator() -> Translator {
     TranslatorBuilder::new()
@@ -38,25 +53,28 @@ fn translator() -> Translator {
 }
 
 fn dsl_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
-    rls2fga::generator::model_generator::generate_model(
-        classified,
+    rls2fga::translator::Translation::plan(
+        classified.to_vec(),
         db,
         translator().registry(),
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .dsl
+    .outputs_accepting_gaps()
+    .model()
 }
 
 fn tuples_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
     format_tuples(
-        &rls2fga::generator::tuple_generator::generate_tuple_queries(
-            classified,
+        &rls2fga::translator::Translation::plan(
+            classified.to_vec(),
             db,
             translator().registry(),
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
-        ),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
     )
 }
 
@@ -158,8 +176,8 @@ fn an_oracle_answer_below_the_threshold_is_still_dropped() {
     struct Unsure;
 
     impl PolicyOracle for Unsure {
-        fn classify(&self, _refused: &RefusedExpr<'_>) -> Option<ClassifiedExpr> {
-            Some(ClassifiedExpr {
+        fn classify(&self, _refused: &RefusedExpr<'_>) -> OracleAnswer {
+            OracleAnswer::Classified(ClassifiedExpr {
                 pattern: PatternClass::P10ConstantBool { value: true },
                 confidence: ConfidenceLevel::C,
             })
@@ -198,9 +216,10 @@ fn an_oracle_answer_below_the_threshold_is_still_dropped() {
     );
 }
 
-/// Declining is the closed default, and it must stay closed.
+/// Bailing is the closed default, it must stay closed, and it must keep reporting the
+/// gap, because nobody has said what the expression means.
 #[test]
-fn an_oracle_that_declines_changes_nothing() {
+fn an_oracle_that_bails_changes_nothing() {
     let schema = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, bits INT);\n\
                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY docs_sel ON docs FOR SELECT USING ((bits & 2) = 2);\n";
@@ -210,10 +229,10 @@ fn an_oracle_that_declines_changes_nothing() {
     let mut classified = translator().classify(&db);
     let answered = consult_oracle(&mut classified, &Silent);
 
-    assert!(answered.is_empty(), "a decline records nothing");
+    assert!(answered.is_empty(), "a bail records nothing");
     assert_eq!(
         classified[0].using_classification, untouched[0].using_classification,
-        "a decline leaves the classification exactly as it was"
+        "a bail leaves the classification exactly as it was"
     );
     let dsl = dsl_of(&db, &classified);
     assert_eq!(
@@ -221,6 +240,52 @@ fn an_oracle_that_declines_changes_nothing() {
         Some("no_access"),
         "the refusal still denies:\n{dsl}"
     );
+    assert!(
+        claims_the_model_is_narrower_than_rls(&db, &classified),
+        "a bail leaves the gap reported"
+    );
+}
+
+/// Denying deliberately is the other half of what `None` used to mean. It denies just
+/// as a bail does, and it is not a gap: someone looked at the expression and said it
+/// grants nobody, so reporting "the model denies what RLS grants" would be wrong.
+#[test]
+fn an_oracle_that_denies_deliberately_reports_no_gap() {
+    let schema = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, bits INT);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_sel ON docs FOR SELECT USING ((bits & 2) = 2);\n";
+    let db = parse_schema(schema).expect("schema parses");
+
+    let mut classified = translator().classify(&db);
+    let answered = consult_oracle(&mut classified, &BitFlagGrantsNobody);
+
+    assert_eq!(answered.len(), 1, "the oracle took responsibility for it");
+    let dsl = dsl_of(&db, &classified);
+    assert_eq!(
+        relation(&dsl, "can_select").as_deref(),
+        Some("no_access"),
+        "a deliberate denial denies:\n{dsl}"
+    );
+    assert!(
+        !claims_the_model_is_narrower_than_rls(&db, &classified),
+        "an answered expression is not a translation gap"
+    );
+}
+
+/// Whether the report still claims the model is narrower than the database, which is
+/// the sentence a deliberate denial makes untrue.
+fn claims_the_model_is_narrower_than_rls(db: &ParserDB, classified: &[ClassifiedPolicy]) -> bool {
+    rls2fga::translator::Translation::plan(
+        classified.to_vec(),
+        db,
+        translator().registry(),
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .notes()
+    .iter()
+    .any(|note| note.message().contains("the model denies what RLS grants"))
 }
 
 /// `WITH CHECK` is a second clause, and a refusal there is just as closed.

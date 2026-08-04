@@ -1,9 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::json_model;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
-use rls2fga::output::report;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -15,26 +13,27 @@ fn multi_policy_table_combines_patterns_for_select() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     // `author_id` yields an `author` relation, and the status check compares a column
     // against a literal constant, which the row decides, so it contributes the same
     // wildcard a boolean flag would rather than `no_access`.
     assert!(
         model
-            .dsl
+            .model()
             .contains("define can_select: author or public_viewer")
             || model
-                .dsl
+                .model()
                 .contains("define can_select: public_viewer or author"),
         "expected composed select permission, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -61,23 +60,24 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
         model
-            .dsl
+            .model()
             .contains("define can_select: owner and public_viewer")
             || model
-                .dsl
+                .model()
                 .contains("define can_select: public_viewer and owner"),
         "restrictive policy should intersect with permissive policy, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -113,30 +113,31 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
     let reg_json = support::read_fixture_registry_json("earth_metabolome");
 
     let (classified, db, registry) = support::classify_sql(sql, Some(&reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        model.dsl.contains("define can_update_using:"),
+        model.model().contains("define can_update_using:"),
         "expected separate UPDATE visibility relation, got:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.dsl.contains("define can_update_check:"),
+        model.model().contains("define can_update_check:"),
         "expected separate UPDATE check relation, got:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
         model
-            .dsl
+            .model()
             .contains("define can_update: can_update_using and can_update_check"),
         "expected combined UPDATE relation, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -172,13 +173,17 @@ CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples.contains("'owner' AS relation"),
@@ -210,25 +215,26 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert!(
-            model.dsl.contains(&format!("define {action}:")),
+            model.model().contains(&format!("define {action}:")),
             "FOR ALL should emit {action}, got:\n{}",
-            model.dsl
+            model.model()
         );
     }
     assert!(
-        !model.dsl.contains("define can_all:"),
+        !model.model().contains("define can_all:"),
         "FOR ALL should be expanded, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -242,23 +248,24 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 ";
 
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        !model.dsl.contains("TODO [Level D]"),
+        !model.model().contains("TODO [Level D]"),
         "constant policies should be recognized without Level D fallback, got:\n{}",
-        model.dsl
+        model.model()
     );
     assert!(
-        model.dsl.contains("define can_select:"),
+        model.model().contains("define can_select:"),
         "expected selectable relation output, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -270,21 +277,24 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let dsl = model_generator::generate_model(
-        &classified,
+    let dsl = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
-    .dsl;
-    let json = json_model::generate_json_model(
-        &classified,
+    .outputs_accepting_gaps()
+    .model();
+    let json = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .json_model();
 
     assert!(dsl.contains("type documents"), "dsl missing documents type");
     let doc_type = json
@@ -329,14 +339,15 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let outputs = Translation::plan(
+        classified,
         &db,
         &registry,
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
-    );
-    let report_md = report::build_report(&model, &classified, ConfidenceLevel::D);
+    )
+    .outputs_accepting_gaps();
+    let report_md = outputs.report();
 
     assert!(
         report_md.contains("p_upd (WITH CHECK)"),

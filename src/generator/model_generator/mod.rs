@@ -9,13 +9,15 @@ use crate::generator::db_lookup::{
     composite_primary_key_columns, resolve_pk_column, table_has_column,
 };
 use crate::generator::ir::{PrincipalInfo, TupleSource};
+use crate::generator::notes::{SkippedTuples, TranslationNote};
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::well_known::{
     CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION,
     CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
-    CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPSERT_RELATION, DENY_RELATION,
-    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION,
-    REQUEST_TIME_PARAMETER, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
+    CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPDATE_WITHOUT_READING_RELATION,
+    CAN_UPSERT_RELATION, DENY_RELATION, MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION,
+    PG_ROLE_TYPE, PUBLIC_RELATION, REQUEST_TIME_PARAMETER, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE,
+    USER_TYPE,
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
@@ -28,7 +30,9 @@ use crate::parser::names::{
     parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
     same_identifier, stable_hex_suffix,
 };
-use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
+use crate::parser::sql_parser::{
+    ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, RoleLike, TableLike,
+};
 use sqlparser::ast::{Expr, Function, FunctionArguments};
 
 /// `OpenFGA` DSL text rendering from the schema plan.
@@ -41,28 +45,6 @@ use role_threshold::{infer_role_threshold_resource_columns, populate_role_thresh
 
 /// `OpenFGA` authorization model schema version.
 pub(crate) const OPENFGA_SCHEMA_VERSION: &str = "1.1";
-
-/// Generated ``OpenFGA`` model output.
-#[derive(Debug, Clone)]
-pub struct GeneratedModel {
-    /// The complete `OpenFGA` DSL text.
-    pub dsl: String,
-    /// Action items for policies that need manual review.
-    pub todos: Vec<TodoItem>,
-    /// Per-policy confidence levels for the report.
-    pub confidence_summary: Vec<(String, ConfidenceLevel)>,
-}
-
-/// An action item generated when a policy cannot be fully translated.
-#[derive(Debug, Clone)]
-pub struct TodoItem {
-    /// Confidence level that triggered this item.
-    pub level: ConfidenceLevel,
-    /// Name of the policy that needs attention.
-    pub policy_name: String,
-    /// Human-readable description of what needs manual review.
-    pub message: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DirectSubject {
@@ -308,7 +290,7 @@ impl Default for GeneratorSettings {
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaPlan {
     pub types: Vec<TypePlan>,
-    pub todos: Vec<TodoItem>,
+    pub notes: Vec<TranslationNote>,
     pub confidence_summary: Vec<(String, ConfidenceLevel)>,
     /// Conditions any relation reference names, keyed by name.
     pub conditions: BTreeMap<String, ConditionSpec>,
@@ -351,22 +333,9 @@ pub(crate) struct RoleThresholdResourceHints {
     pub conflicts: BTreeSet<(String, String)>,
 }
 
-/// Generate an ``OpenFGA`` model from classified policies.
-pub fn generate_model(
-    policies: &[ClassifiedPolicy],
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    min_confidence: ConfidenceLevel,
-    settings: &GeneratorSettings,
-) -> GeneratedModel {
-    let plan = build_filtered_schema_plan(policies, db, registry, min_confidence, settings);
-    let dsl = render_dsl(&plan.types, &plan.conditions);
-
-    GeneratedModel {
-        dsl,
-        todos: plan.todos,
-        confidence_summary: plan.confidence_summary,
-    }
+/// Render the DSL text for a plan.
+pub(crate) fn render_dsl_from_plan(plan: &SchemaPlan) -> String {
+    render_dsl(&plan.types, &plan.conditions)
 }
 
 pub(crate) fn build_filtered_schema_plan(
@@ -392,19 +361,13 @@ pub(crate) fn build_schema_plan(
     let role_threshold_resource_hints = infer_role_threshold_resource_columns(policies, registry);
 
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
-    let mut todos = Vec::new();
+    let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
     let mut has_role_scopes = false;
 
     for function in registry.owner_bound_accessors() {
-        todos.push(TodoItem {
-            level: ConfidenceLevel::C,
-            policy_name: function.to_string(),
-            message: format!(
-                "Function '{function}' runs as its owner, so current_user inside it is the \
-                 owner's name for every caller and identifies nobody; policies calling it are \
-                 dropped"
-            ),
+        notes.push(TranslationNote::OwnerBoundFunction {
+            function: function.to_string(),
         });
     }
 
@@ -435,6 +398,8 @@ pub(crate) fn build_schema_plan(
         by_table.entry(qualified_table_name(table)).or_default();
     }
 
+    report_row_level_security_bypasses(db, &mut notes);
+
     // The schema's own permissive policies under the same key, since the filtered
     // set cannot say whether a policy exists at all. Splitting the two keys would
     // tell the operator RLS denies a command its own policy grants.
@@ -448,7 +413,7 @@ pub(crate) fn build_schema_plan(
         declared_permissive.entry(key).or_default().push(policy);
     }
 
-    let table_types = TableTypes::assign(db, &mut todos);
+    let table_types = TableTypes::assign(db, &mut notes);
 
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
@@ -456,15 +421,9 @@ pub(crate) fn build_schema_plan(
         let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
             if lookup_table(db, &source_table_name).is_none() {
                 for cp in &table_policies {
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: cp.name().to_string(),
-                        message: format!(
-                            "Policy '{}' names '{source_table_name}', which does not resolve to \
-                             one table in the schema, so qualify it with a schema to have the \
-                             policy translated",
-                            cp.name()
-                        ),
+                    notes.push(TranslationNote::UnresolvedPolicyTable {
+                        policy: cp.name().to_string(),
+                        named: source_table_name.clone(),
                     });
                 }
             }
@@ -516,12 +475,13 @@ pub(crate) fn build_schema_plan(
                     &relation,
                     &scoped_roles,
                     cp.name(),
-                    format!(
-                        "Policy role scope TO ({}) mapped to relation '{relation}'; ensure pg_role memberships are loaded",
-                        scoped_roles.join(", ")
-                    ),
+                    TranslationNote::PolicyRoleScope {
+                        policy: cp.name().to_string(),
+                        roles: scoped_roles.clone(),
+                        relation: relation.clone(),
+                    },
                     db,
-                    &mut todos,
+                    &mut notes,
                     "policy scope tuples",
                 );
                 Some(relation)
@@ -535,7 +495,7 @@ pub(crate) fn build_schema_plan(
 
             // A policy covering several phases is translated once per phase, so the
             // same clause reports the same item repeatedly. Keep one per policy.
-            let todos_before = todos.len();
+            let notes_before = notes.len();
             for_each_policy_target_expr(cp, |target, classified| {
                 if recurses && target == ActionTarget::Select {
                     // Nothing here can be evaluated, so translating it leaves dead relations.
@@ -547,7 +507,7 @@ pub(crate) fn build_schema_plan(
                     &mut table_plan,
                     &mut all_types,
                     registry,
-                    &mut todos,
+                    &mut notes,
                     &role_threshold_resource_hints,
                     db,
                     &table_types,
@@ -559,17 +519,14 @@ pub(crate) fn build_schema_plan(
                 let expr = if cp.mode() == PolicyMode::Restrictive && !guards.is_empty() {
                     // The denial supersedes any runtime-enforcement note for the guard.
                     for guard in guards {
-                        let note = attribute_runtime_note(guard);
-                        todos.retain(|todo| todo.policy_name != cp.name() || todo.message != note);
+                        let superseded = TranslationNote::AttributeNeedsRuntimeEnforcement {
+                            policy: cp.name().to_string(),
+                            attribute: guard.to_string(),
+                        };
+                        notes.retain(|note| *note != superseded);
                     }
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: cp.name().to_string(),
-                        message: format!(
-                            "RESTRICTIVE policy '{}' guards on an attribute the model cannot \
-                             express, so the command is denied",
-                            cp.name()
-                        ),
+                    notes.push(TranslationNote::RestrictiveAttributeRefused {
+                        policy: cp.name().to_string(),
                     });
                     UsersetExpr::Intersection(vec![expr, deny_expr(&mut table_plan)])
                 } else {
@@ -584,7 +541,7 @@ pub(crate) fn build_schema_plan(
                     scope_relation.as_deref(),
                 );
             });
-            dedup_todos_added_since(&mut todos, todos_before);
+            dedup_notes_added_since(&mut notes, notes_before);
         }
 
         let mut select_expr =
@@ -608,14 +565,9 @@ pub(crate) fn build_schema_plan(
 
         if let Some(policy_name) = recursive_select {
             select_expr = Some(deny_expr(&mut table_plan));
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: policy_name.clone(),
-                message: format!(
-                    "SELECT policy '{policy_name}' reads '{source_table_name}', the table it \
-                     guards, so PostgreSQL raises infinite recursion on every read. Reads are \
-                     denied to match."
-                ),
+            notes.push(TranslationNote::SelectPolicyRecurses {
+                policy: policy_name.clone(),
+                table: source_table_name.clone(),
             });
         }
 
@@ -640,6 +592,16 @@ pub(crate) fn build_schema_plan(
                 .take()
                 .flatten()
                 .unwrap_or_else(|| using_expr.clone());
+            // An update that names no row reads nothing, so `PostgreSQL` applies the
+            // UPDATE policies to it and not the SELECT policies. Check this relation
+            // only for `UPDATE t SET c = ...` with no WHERE: pick it for a statement
+            // that does name rows and the grant is wider than the database's.
+            let blanket = if using_expr == check_expr {
+                using_expr.clone()
+            } else {
+                UsersetExpr::Intersection(vec![using_expr.clone(), check_expr.clone()])
+            };
+            table_plan.set_computed(CAN_UPDATE_WITHOUT_READING_RELATION, blanket);
             if using_expr == check_expr {
                 table_plan.set_computed(CAN_UPDATE_RELATION, requires_read_access(using_expr));
             } else {
@@ -668,39 +630,24 @@ pub(crate) fn build_schema_plan(
                 .into_iter()
                 .partition(|command| covered_by_schema.contains(command));
             if !unpolicied.is_empty() {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: source_table_name.clone(),
-                    message: format!(
-                        "No permissive policy on '{source_table_name}' covers {}; RLS denies \
-                         {those} outright and the model mirrors that with no_access",
-                        unpolicied.join(", "),
-                        those = if unpolicied.len() == 1 { "it" } else { "them" }
-                    ),
+                notes.push(TranslationNote::NoPermissivePolicy {
+                    table: source_table_name.clone(),
+                    commands: unpolicied.iter().map(|c| (*c).to_string()).collect(),
                 });
             }
             if !dropped.is_empty() {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: source_table_name.clone(),
-                    message: format!(
-                        "Every permissive policy on '{source_table_name}' covering {} fell below \
-                         the confidence threshold, so the model denies what RLS grants",
-                        dropped.join(", ")
-                    ),
+                notes.push(TranslationNote::CoveringPoliciesBelowThreshold {
+                    table: source_table_name.clone(),
+                    commands: dropped.iter().map(|c| (*c).to_string()).collect(),
                 });
             }
         }
 
         for (policy_name, commands, clause) in policies_missing_a_clause(declared_here) {
-            let message = format!(
-                "Policy '{policy_name}' names {commands} without a {clause} clause, so \
-                 PostgreSQL admits no row through it"
-            );
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name,
-                message,
+            notes.push(TranslationNote::PolicyClauseAbsent {
+                policy: policy_name,
+                commands,
+                clause: clause.to_string(),
             });
         }
 
@@ -711,13 +658,8 @@ pub(crate) fn build_schema_plan(
                 .get(CAN_SELECT_RELATION)
                 .is_some_and(|expr| grants_nothing(expr, &table_plan, &mut BTreeSet::new()))
         {
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: source_table_name.clone(),
-                message: format!(
-                    "Reads of '{source_table_name}' are denied, so UPDATE and DELETE cannot \
-                     name a row either. Add a SELECT policy the model can translate."
-                ),
+            notes.push(TranslationNote::ReadsDeniedSoWritesCannotName {
+                table: source_table_name.clone(),
             });
         }
 
@@ -737,6 +679,8 @@ pub(crate) fn build_schema_plan(
     drop_implied_insert_readback(&mut all_types);
     define_upsert_relations(&mut all_types);
     define_locking_read_relations(&mut all_types);
+    define_blanket_update_relations(&mut all_types);
+    prune_unreferenced_relations(&mut all_types);
 
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
@@ -770,7 +714,7 @@ pub(crate) fn build_schema_plan(
 
     SchemaPlan {
         types,
-        todos,
+        notes,
         confidence_summary,
         conditions,
     }
@@ -826,6 +770,52 @@ fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
         expr,
         UsersetExpr::Computed(CAN_SELECT_RELATION.to_string()),
     ])
+}
+
+/// Report the principals row level security does not reach.
+///
+/// The model keeps describing the rules that do apply. Modelling a bypass as a
+/// permission would be the largest widening available here, and it misfires the moment
+/// a service account stops running as the exempt principal.
+///
+/// The table's owner is the third mechanism and is not reported by name: the upstream
+/// parser discards `ALTER TABLE ... OWNER TO`, so only the absence of `FORCE` is
+/// visible. See `docs/upstream/`.
+fn report_row_level_security_bypasses(db: &ParserDB, notes: &mut Vec<TranslationNote>) {
+    for role in db.roles() {
+        if role.can_bypass_rls() {
+            notes.push(TranslationNote::RoleBypassesPolicies {
+                role: role.name().to_string(),
+            });
+        }
+    }
+    for table in db.tables() {
+        // Fail closed on an unreadable answer in the direction that reports rather than
+        // hides: only a definite yes means the owner is subject to the policies.
+        if table.has_row_level_security(db) == Ok(true)
+            && table.has_forced_row_level_security(db) != Ok(true)
+        {
+            notes.push(TranslationNote::TableOwnerBypassesPolicies {
+                table: qualified_table_name(table),
+                // An unreadable answer is not a name, so the note stays generic.
+                owner: table.owner(db).ok().flatten().map(str::to_string),
+            });
+        }
+    }
+}
+
+/// The type standing for everyone listed in `member_table`.
+///
+/// One per member source, so two policies reading the same table share a holder and two
+/// reading different ones cannot pool their members. Disambiguated against the table
+/// types, which are all assigned before any policy is translated, so a schema that
+/// happens to declare a table by this name keeps it.
+fn holder_type_name(member_table: &str, table_types: &TableTypes) -> String {
+    let base = canonical_fga_type_name(&format!("{member_table}_holder"));
+    if table_types.claims(&base) {
+        return format!("{base}_{}", stable_hex_suffix(member_table));
+    }
+    base
 }
 
 /// Drop a `can_select` gate the rule already implies.
@@ -970,6 +960,45 @@ pub(crate) fn grantable_relations(types: &[TypePlan]) -> BTreeSet<(String, Strin
     reached
 }
 
+/// Every `(type, relation)` some definition names, a denying one included.
+///
+/// Deliberately not [`grantable_relations`], which stops at a permission that grants
+/// nothing. A relation only a denial names still has to stay declared, or the model
+/// carries a reference to something it does not define.
+fn referenced_relations(types: &[TypePlan]) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &TypePlan> = types
+        .iter()
+        .map(|plan| (plan.type_name.as_str(), plan))
+        .collect();
+    let mut reached: BTreeSet<(String, String)> = BTreeSet::new();
+    for plan in types {
+        for action in action_relations().chain(DERIVED_ACTION_RELATIONS) {
+            if let Some(expr) = plan.computed_relations.get(action) {
+                reach_userset(expr, plan, &by_name, &mut reached);
+            }
+        }
+    }
+    reached
+}
+
+/// Drop relations no permission names. They are declared, no tuple query feeds them,
+/// and nothing can consult them, so the model advertises access it can never grant.
+///
+/// An operator hand-writing their own facts for such a relation will no longer find it
+/// in the model, which is the point: it never did anything.
+fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+    let types: Vec<TypePlan> = all_types.values().cloned().collect();
+    let referenced = referenced_relations(&types);
+    for plan in all_types.values_mut() {
+        let owner = plan.type_name.clone();
+        plan.direct_relations
+            .retain(|name, _| referenced.contains(&(owner.clone(), name.clone())));
+        plan.computed_relations.retain(|name, _| {
+            generator_defines(name) || referenced.contains(&(owner.clone(), name.clone()))
+        });
+    }
+}
+
 /// Whether an expression can never grant. Only certainty is reported.
 fn grants_nothing(expr: &UsersetExpr, plan: &TypePlan, seen: &mut BTreeSet<String>) -> bool {
     match expr {
@@ -1099,11 +1128,6 @@ fn dropped_restrictive_expr(cp: &ClassifiedPolicy, clause_sql: Option<String>) -
         },
         confidence: ConfidenceLevel::D,
     }
-}
-
-/// Note that a hybrid leaves its attribute half to the caller.
-fn attribute_runtime_note(attribute: &str) -> String {
-    format!("Attribute condition '{attribute}' still requires runtime enforcement")
 }
 
 /// Attribute guards this pattern discards, which widens whatever it guards.
@@ -1263,9 +1287,9 @@ fn register_pg_role_scope(
     scope_relation: &str,
     role_names: &[String],
     policy_name: &str,
-    todo_message: String,
+    scope_note: TranslationNote,
     db: &ParserDB,
-    todos: &mut Vec<TodoItem>,
+    notes: &mut Vec<TranslationNote>,
     missing_object_what: &str,
 ) {
     ensure_pg_role_type(all_types);
@@ -1274,11 +1298,7 @@ fn register_pg_role_scope(
         scope_relation.to_string(),
         vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
     );
-    todos.push(TodoItem {
-        level: ConfidenceLevel::C,
-        policy_name: policy_name.to_string(),
-        message: todo_message,
-    });
+    notes.push(scope_note);
 
     if let Some(pk_col) = resolve_pk_column(source_table, db) {
         for role in role_names {
@@ -1286,14 +1306,10 @@ fn register_pg_role_scope(
             // A quoted role can rewrite onto a different existing role, which
             // changes who the policy admits.
             if normalize_identifier(role) != pg_role {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "PostgreSQL role '{role}' is not a valid OpenFGA identifier and was \
-                         rewritten to 'pg_role:{pg_role}'; confirm no other role maps to the \
-                         same identifier"
-                    ),
+                notes.push(TranslationNote::RoleNameRewritten {
+                    policy: policy_name.to_string(),
+                    role: role.clone(),
+                    pg_role: pg_role.clone(),
                 });
             }
             table_plan.add_source(TupleSource::PolicyScope {
@@ -1304,7 +1320,7 @@ fn register_pg_role_scope(
             });
         }
     } else {
-        add_missing_object_identifier_todo(table_plan, source_table, missing_object_what, db);
+        add_missing_object_identifier_note(table_plan, source_table, missing_object_what, db);
     }
 }
 
@@ -1409,13 +1425,20 @@ struct TableTypes {
 }
 
 impl TableTypes {
+    /// Whether a table already holds this type name, so a synthetic type must not.
+    fn claims(&self, type_name: &str) -> bool {
+        self.owners.contains_key(type_name)
+    }
+}
+
+impl TableTypes {
     /// One type name per RLS-enabled table, collisions suffixed with a hash of the
     /// qualified name.
     ///
     /// Derived from the schema alone, never from which policies survived filtering,
     /// so names do not move with the confidence threshold. Tables carrying policies
     /// claim their canonical name first.
-    fn assign(db: &ParserDB, todos: &mut Vec<TodoItem>) -> Self {
+    fn assign(db: &ParserDB, notes: &mut Vec<TranslationNote>) -> Self {
         let mut types = Self::default();
         let mut policied: BTreeSet<(Option<String>, String)> = BTreeSet::new();
         for policy in db.policies() {
@@ -1449,15 +1472,11 @@ impl TableTypes {
             let assigned = match types.owners.get(&base) {
                 Some(prior) => {
                     let disambiguated = format!("{base}_{}", stable_hex_suffix(name));
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: name.clone(),
-                        message: format!(
-                            "Type name collision: '{name}' and '{}' both canonicalize to \
-                             '{base}'. Renamed to '{disambiguated}'. Update your OpenFGA model \
-                             references accordingly.",
-                            prior.spelling
-                        ),
+                    notes.push(TranslationNote::TypeNameCollision {
+                        spelling: name.clone(),
+                        prior: prior.spelling.clone(),
+                        canonical: base.clone(),
+                        renamed: disambiguated.clone(),
                     });
                     disambiguated
                 }
@@ -1525,27 +1544,27 @@ fn action_relations() -> impl Iterator<Item = &'static str> {
 }
 
 /// Relations a statement shape needs rather than a bare SQL command name.
-const DERIVED_ACTION_RELATIONS: [&str; 5] = [
+const DERIVED_ACTION_RELATIONS: [&str; 6] = [
     CAN_UPDATE_USING_RELATION,
     CAN_UPDATE_CHECK_RELATION,
+    CAN_UPDATE_WITHOUT_READING_RELATION,
     CAN_INSERT_RETURNING_RELATION,
     CAN_UPSERT_RELATION,
     CAN_SELECT_FOR_UPDATE_RELATION,
 ];
 
-/// Drop items added since `start` that repeat an earlier one, comparing level,
-/// policy and message. Scoped to one policy so two same-named policies on
-/// different tables keep their own entries.
-fn dedup_todos_added_since(todos: &mut Vec<TodoItem>, start: usize) {
-    let mut seen: Vec<(ConfidenceLevel, String, String)> = Vec::new();
+/// Drop notes added since `start` that repeat an earlier one. A policy covering
+/// several phases is translated once per phase, so the same clause reports the same
+/// note each time.
+fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
+    let mut seen: Vec<TranslationNote> = Vec::new();
     let mut index = start;
-    while index < todos.len() {
-        let Some(todo) = todos.get(index) else { break };
-        let key = (todo.level, todo.policy_name.clone(), todo.message.clone());
-        if seen.contains(&key) {
-            todos.remove(index);
+    while index < notes.len() {
+        let Some(note) = notes.get(index) else { break };
+        if seen.contains(note) {
+            notes.remove(index);
         } else {
-            seen.push(key);
+            seen.push(note.clone());
             index += 1;
         }
     }
@@ -1700,6 +1719,25 @@ fn define_locking_read_relations(all_types: &mut BTreeMap<String, TypePlan>) {
     }
 }
 
+/// Every type carries `can_update_without_reading`, because an action relation nobody
+/// defined reads as "the consumer decides". Where no rule admits an update it points at
+/// `can_update`, which is already the denial.
+fn define_blanket_update_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        if plan
+            .computed_relations
+            .contains_key(CAN_UPDATE_WITHOUT_READING_RELATION)
+            || !plan.computed_relations.contains_key(CAN_UPDATE_RELATION)
+        {
+            continue;
+        }
+        plan.set_computed(
+            CAN_UPDATE_WITHOUT_READING_RELATION,
+            UsersetExpr::Computed(CAN_UPDATE_RELATION.to_string()),
+        );
+    }
+}
+
 /// Handle `P2RoleNameInList` when the function is *not* a `RoleThreshold` (e.g.
 /// `pg_has_role()` or Supabase `auth.role()`).  Creates scope-style direct
 /// relations per role name and emits `PolicyScope` tuple sources, mirroring the
@@ -1712,7 +1750,7 @@ fn handle_p2_role_gate(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     db: &ParserDB,
-    todos: &mut Vec<TodoItem>,
+    notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
     if role_names.is_empty() {
         return deny_expr(table_plan);
@@ -1726,13 +1764,13 @@ fn handle_p2_role_gate(
         &scope_relation,
         role_names,
         policy_name,
-        format!(
-            "Role gate ({}) mapped to relation '{scope_relation}'; \
-             ensure pg_role memberships are loaded",
-            role_names.join(", ")
-        ),
+        TranslationNote::RoleGateScope {
+            policy: policy_name.to_string(),
+            roles: role_names.to_vec(),
+            relation: scope_relation.clone(),
+        },
         db,
-        todos,
+        notes,
         "role gate tuples",
     );
 
@@ -1834,12 +1872,14 @@ fn condition_parameter_type(table: &str, column: &str, db: &ParserDB) -> Option<
         .flatten()
         .find(|candidate| same_identifier(&candidate.stored_column_name(), column))?;
     let data_type = declared.data_type(db).to_lowercase();
-    // Only a temporal guard reaches here, so only a temporal column has a counterpart.
-    if data_type.starts_with("timestamp") || data_type.starts_with("date") {
-        Some(TIMESTAMP_PARAMETER_TYPE)
-    } else {
-        None
-    }
+    // A tuple's context must be RFC 3339, which only a zoned column renders: a date
+    // carries no time part and a zoneless timestamp no offset, and `OpenFGA` v1.11.6
+    // refuses both at load while accepting the model that named them.
+    matches!(
+        data_type.as_str(),
+        "timestamptz" | "timestamp with time zone"
+    )
+    .then_some(TIMESTAMP_PARAMETER_TYPE)
 }
 
 fn combine_exprs(
@@ -1869,7 +1909,7 @@ fn pattern_to_expr(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
-    todos: &mut Vec<TodoItem>,
+    notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
     let db = crate::parser::sql_parser::parse_schema("").expect("empty schema should parse");
     translate_pattern(
@@ -1878,7 +1918,7 @@ fn pattern_to_expr(
         table_plan,
         all_types,
         registry,
-        todos,
+        notes,
         &RoleThresholdResourceHints::default(),
         &db,
         &TableTypes::default(),
@@ -1899,7 +1939,7 @@ fn translate_pattern(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
-    todos: &mut Vec<TodoItem>,
+    notes: &mut Vec<TranslationNote>,
     hints: &RoleThresholdResourceHints,
     db: &ParserDB,
     table_types: &TableTypes,
@@ -1923,7 +1963,7 @@ fn translate_pattern(
                 registry,
                 hints,
                 db,
-                todos,
+                notes,
             ) else {
                 return deny_expr(table_plan);
             };
@@ -1953,7 +1993,7 @@ fn translate_pattern(
                 registry,
                 hints,
                 db,
-                todos,
+                notes,
             ) else {
                 // Non-RoleThreshold function (e.g. pg_has_role, auth.role()) ,
                 // fall back to scope-style direct relations per role name.
@@ -1964,7 +2004,7 @@ fn translate_pattern(
                     table_plan,
                     all_types,
                     db,
-                    todos,
+                    notes,
                 );
             };
 
@@ -2013,7 +2053,7 @@ fn translate_pattern(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(
+                add_missing_object_identifier_note(
                     table_plan,
                     source_table,
                     "ownership tuples",
@@ -2036,7 +2076,7 @@ fn translate_pattern(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(
+                add_missing_object_identifier_note(
                     table_plan,
                     source_table,
                     "array membership tuples",
@@ -2062,7 +2102,7 @@ fn translate_pattern(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(
+                add_missing_object_identifier_note(
                     table_plan,
                     source_table,
                     "jsonb field ownership tuples",
@@ -2070,6 +2110,80 @@ fn translate_pattern(
                 );
             }
             UsersetExpr::Computed(relation)
+        }
+        PatternClass::P13UncorrelatedMembership {
+            member_table,
+            user_column,
+            extra_predicate_sql,
+        } => {
+            // Reading the member table is still reading it as the caller, so its own
+            // RLS decides which membership rows count, exactly as for P4.
+            match join_table_readability(member_table, db) {
+                JoinTableReadability::Unreadable => {
+                    notes.push(TranslationNote::MembershipTableGrantsNoReads {
+                        policy: policy_name.to_string(),
+                        join_table: member_table.clone(),
+                    });
+                    return deny_expr(table_plan);
+                }
+                JoinTableReadability::Guarded { .. } => {
+                    notes.push(TranslationNote::MembershipTableGuarded {
+                        policy: policy_name.to_string(),
+                        join_table: member_table.clone(),
+                    });
+                }
+                JoinTableReadability::Open => {}
+            }
+            if let Some(extra) = extra_predicate_sql {
+                notes.push(TranslationNote::MembershipExtraPredicate {
+                    policy: policy_name.to_string(),
+                    predicate: extra.clone(),
+                });
+            }
+
+            // One holder per member source, never per table and never per policy: two
+            // policies reading the same table may share, and two reading different
+            // ones must not pool their members.
+            let holder_type = holder_type_name(member_table, table_types);
+            ensure_member_type(all_types, &holder_type);
+            // Named after the type it points at, as the parent link is.
+            let holder_relation = table_plan.ensure_direct(
+                clamp_relation_name(holder_type.clone()),
+                vec![DirectSubject::Type(holder_type.clone())],
+            );
+            table_plan.add_source(TupleSource::HolderMembers {
+                holder_type: holder_type.clone(),
+                member_table: member_table.clone(),
+                user_col: user_column.clone(),
+                extra_predicate_sql: extra_predicate_sql.clone(),
+            });
+            if let Some(holder_plan) = all_types.get_mut(&holder_type) {
+                holder_plan.add_source(TupleSource::HolderMembers {
+                    holder_type: holder_type.clone(),
+                    member_table: member_table.clone(),
+                    user_col: user_column.clone(),
+                    extra_predicate_sql: extra_predicate_sql.clone(),
+                });
+            }
+            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                table_plan.add_source(TupleSource::HolderBridge {
+                    table: source_table.to_string(),
+                    pk_col,
+                    relation: holder_relation.clone(),
+                    holder_type,
+                });
+            } else {
+                add_missing_object_identifier_note(
+                    table_plan,
+                    source_table,
+                    "membership holder tuples",
+                    db,
+                );
+            }
+            UsersetExpr::TupleToUserset {
+                tupleset: holder_relation,
+                computed: MEMBER_RELATION.to_string(),
+            }
         }
         PatternClass::P4ExistsMembership {
             join_table,
@@ -2082,25 +2196,16 @@ fn translate_pattern(
             // membership rows count.
             let read_scope_roles = match join_table_readability(join_table, db) {
                 JoinTableReadability::Unreadable => {
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: policy_name.to_string(),
-                        message: format!(
-                            "Membership table '{join_table}' grants no reads, so no membership \
-                             row is visible and the command is denied"
-                        ),
+                    notes.push(TranslationNote::MembershipTableGrantsNoReads {
+                        policy: policy_name.to_string(),
+                        join_table: join_table.clone(),
                     });
                     return deny_expr(table_plan);
                 }
                 JoinTableReadability::Guarded { roles } => {
-                    todos.push(TodoItem {
-                        level: ConfidenceLevel::C,
-                        policy_name: policy_name.to_string(),
-                        message: format!(
-                            "Row level security on membership table '{join_table}' decides which \
-                             membership rows a user sees, which no relation can express. Load \
-                             tuples only for the rows it exposes."
-                        ),
+                    notes.push(TranslationNote::MembershipTableGuarded {
+                        policy: policy_name.to_string(),
+                        join_table: join_table.clone(),
                     });
                     roles
                 }
@@ -2135,12 +2240,9 @@ fn translate_pattern(
             }
 
             if let Some(extra) = extra_predicate_sql {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Membership policy carries extra predicate '{extra}' that must be preserved in tuple SQL"
-                    ),
+                notes.push(TranslationNote::MembershipExtraPredicate {
+                    policy: policy_name.to_string(),
+                    predicate: extra.clone(),
                 });
             }
 
@@ -2169,7 +2271,7 @@ fn translate_pattern(
                     relation: parent_relation.clone(),
                 });
             } else {
-                add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
+                add_missing_bridge_note(table_plan, source_table, &parent_type, db);
             }
 
             let membership = UsersetExpr::TupleToUserset {
@@ -2190,12 +2292,14 @@ fn translate_pattern(
                 &scope_relation,
                 &read_scope_roles,
                 policy_name,
-                format!(
-                    "Reading membership table '{join_table}' needs PostgreSQL role ({}), mapped to relation '{scope_relation}'; ensure pg_role memberships are loaded",
-                    read_scope_roles.join(", ")
-                ),
+                TranslationNote::MembershipReadScope {
+                    policy: policy_name.to_string(),
+                    join_table: join_table.clone(),
+                    roles: read_scope_roles.clone(),
+                    relation: scope_relation.clone(),
+                },
                 db,
-                todos,
+                notes,
                 "membership read scope tuples",
             );
             scoped_policy_expr(membership, &scope_relation)
@@ -2206,12 +2310,10 @@ fn translate_pattern(
             inner_pattern,
         } => {
             if let PatternClass::Unknown { reason, .. } = &inner_pattern.pattern {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::D,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Parent inheritance from '{parent_table}' has unknown inner rule ({reason}); mapped to no_access"
-                    ),
+                notes.push(TranslationNote::ParentRuleUnknown {
+                    policy: policy_name.to_string(),
+                    parent_table: parent_table.clone(),
+                    reason: reason.clone(),
                 });
                 return deny_expr(table_plan);
             }
@@ -2236,7 +2338,7 @@ fn translate_pattern(
                     table_plan,
                     all_types,
                     registry,
-                    todos,
+                    notes,
                     hints,
                     db,
                     table_types,
@@ -2255,7 +2357,7 @@ fn translate_pattern(
                     &mut parent_plan_owned,
                     all_types,
                     registry,
-                    todos,
+                    notes,
                     hints,
                     db,
                     table_types,
@@ -2307,13 +2409,9 @@ fn translate_pattern(
             };
 
             if rule_is_denial {
-                todos.push(TodoItem {
-                    level: ConfidenceLevel::C,
-                    policy_name: policy_name.to_string(),
-                    message: format!(
-                        "Parent inheritance from '{parent_table}' could not translate the \
-                         parent-side rule, so the command is denied"
-                    ),
+                notes.push(TranslationNote::ParentRuleUntranslated {
+                    policy: policy_name.to_string(),
+                    parent_table: parent_table.clone(),
                 });
             }
 
@@ -2325,7 +2423,7 @@ fn translate_pattern(
                     relation: parent_relation.clone(),
                 });
             } else {
-                add_missing_bridge_todo(table_plan, source_table, &parent_type, db);
+                add_missing_bridge_note(table_plan, source_table, &parent_type, db);
             }
 
             UsersetExpr::TupleToUserset {
@@ -2341,7 +2439,7 @@ fn translate_pattern(
                     flag_col: column.clone(),
                 });
             } else {
-                add_missing_object_identifier_todo(
+                add_missing_object_identifier_note(
                     table_plan,
                     source_table,
                     "public-flag tuples",
@@ -2354,10 +2452,9 @@ fn translate_pattern(
             relationship_part,
             attribute_part,
         } => {
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: policy_name.to_string(),
-                message: attribute_runtime_note(attribute_part),
+            notes.push(TranslationNote::AttributeNeedsRuntimeEnforcement {
+                policy: policy_name.to_string(),
+                attribute: attribute_part.clone(),
             });
             // Recurse first so relationship sources appear before the attribute Todo
             // in table_tuple_sources (matching old generate_tuple_queries ordering).
@@ -2367,21 +2464,18 @@ fn translate_pattern(
                 table_plan,
                 all_types,
                 registry,
-                todos,
+                notes,
                 hints,
                 db,
                 table_types,
                 source_table,
                 settings,
             );
-            table_plan.add_source(TupleSource::Todo {
-                level: ConfidenceLevel::C,
-                comment: format!(
-                    "-- TODO [Level C]: attribute condition '{attribute_part}' on {source_table} requires runtime enforcement"
-                ),
-                sql: format!(
-                    "-- No tuple can express the attribute filter '{attribute_part}', so application logic must enforce it."
-                ),
+            table_plan.add_source(TupleSource::Skipped {
+                reason: SkippedTuples::AttributeRuntimeEnforcement {
+                    table: source_table.to_string(),
+                    attribute: attribute_part.clone(),
+                },
             });
             result
         }
@@ -2394,7 +2488,7 @@ fn translate_pattern(
                     table_plan,
                     all_types,
                     registry,
-                    todos,
+                    notes,
                     hints,
                     db,
                     table_types,
@@ -2443,7 +2537,7 @@ fn translate_pattern(
                         predicate: predicate.clone(),
                     });
                 } else {
-                    add_missing_object_identifier_todo(
+                    add_missing_object_identifier_note(
                         table_plan,
                         source_table,
                         "attribute-gate tuples",
@@ -2452,21 +2546,15 @@ fn translate_pattern(
                 }
                 return public_expr(table_plan);
             }
-            todos.push(TodoItem {
-                level: ConfidenceLevel::C,
-                policy_name: policy_name.to_string(),
-                message: format!(
-                    "Standalone attribute policy on '{column}' mapped to no_access for safety"
-                ),
+            notes.push(TranslationNote::StandaloneAttributePolicy {
+                policy: policy_name.to_string(),
+                column: column.clone(),
             });
-            table_plan.add_source(TupleSource::Todo {
-                level: ConfidenceLevel::D,
-                comment: format!(
-                    "-- TODO [Level D]: skipped tuple generation for {source_table} (unsupported pattern P9)"
-                ),
-                sql: format!(
-                    "-- Tuple query not emitted; attribute condition on '{column}' is not decided by the row, so no static tuple mapping."
-                ),
+            table_plan.add_source(TupleSource::Skipped {
+                reason: SkippedTuples::StandaloneAttribute {
+                    table: source_table.to_string(),
+                    column: column.clone(),
+                },
             });
             deny_expr(table_plan)
         }
@@ -2478,7 +2566,7 @@ fn translate_pattern(
                         pk_col,
                     });
                 } else {
-                    add_missing_object_identifier_todo(
+                    add_missing_object_identifier_note(
                         table_plan,
                         source_table,
                         "constant-TRUE tuples",
@@ -2491,21 +2579,15 @@ fn translate_pattern(
             }
         }
         PatternClass::Unknown { reason, .. } => {
-            todos.push(TodoItem {
-                level: ConfidenceLevel::D,
-                policy_name: policy_name.to_string(),
-                message: format!(
-                    "Expression could not be safely translated ({reason}); mapped to no_access"
-                ),
+            notes.push(TranslationNote::ExpressionRefused {
+                policy: policy_name.to_string(),
+                reason: reason.clone(),
             });
-            table_plan.add_source(TupleSource::Todo {
-                level: ConfidenceLevel::D,
-                comment: format!(
-                    "-- TODO [Level D]: skipped tuple generation for {source_table} (unsupported pattern Unknown)"
-                ),
-                sql: format!(
-                    "-- Tuple query not emitted; classifier could not translate expression: {reason}."
-                ),
+            table_plan.add_source(TupleSource::Skipped {
+                reason: SkippedTuples::UnclassifiedExpression {
+                    table: source_table.to_string(),
+                    reason: reason.clone(),
+                },
             });
             deny_expr(table_plan)
         }
@@ -2529,7 +2611,7 @@ fn prepare_role_threshold_translation(
     registry: &FunctionRegistry,
     hints: &RoleThresholdResourceHints,
     db: &ParserDB,
-    todos: &mut Vec<TodoItem>,
+    notes: &mut Vec<TranslationNote>,
 ) -> Option<RoleThresholdPrepared> {
     let Some(FunctionSemantic::RoleThreshold {
         role_levels,
@@ -2537,12 +2619,10 @@ fn prepare_role_threshold_translation(
         ..
     }) = registry.get(function_name)
     else {
-        todos.push(TodoItem {
-            level: ConfidenceLevel::D,
-            policy_name: policy_name.to_string(),
-            message: format!(
-                "{function_kind_label} function '{function_name}' missing semantic metadata"
-            ),
+        notes.push(TranslationNote::FunctionMissingMetadata {
+            policy: policy_name.to_string(),
+            function_kind: function_kind_label.to_string(),
+            function: function_name.to_string(),
         });
         return None;
     };
@@ -2582,51 +2662,33 @@ fn missing_object_identifier_reason(source_table: &str, db: &ParserDB) -> String
     "missing object identifier column".to_string()
 }
 
-const MISSING_OBJECT_IDENTIFIER_SQL: &str =
-    "-- Tuple query not emitted; table needs a single-column primary key or a NOT NULL UNIQUE `id` column for stable object IDs.";
-
-fn add_missing_object_identifier_todo(
+fn add_missing_object_identifier_note(
     table_plan: &mut TypePlan,
     source_table: &str,
     what: &str,
     db: &ParserDB,
 ) {
-    let reason = missing_object_identifier_reason(source_table, db);
-    table_plan.add_source(TupleSource::Todo {
-        level: ConfidenceLevel::D,
-        comment: format!("-- TODO [Level D]: skipped {what} for {source_table} ({reason})"),
-        sql: MISSING_OBJECT_IDENTIFIER_SQL.to_string(),
+    table_plan.add_source(TupleSource::Skipped {
+        reason: SkippedTuples::NoObjectIdentifier {
+            table: source_table.to_string(),
+            what: what.to_string(),
+            reason: missing_object_identifier_reason(source_table, db),
+        },
     });
 }
 
-fn add_missing_bridge_todo(
+fn add_missing_bridge_note(
     table_plan: &mut TypePlan,
     source_table: &str,
     parent_type: &str,
     db: &ParserDB,
 ) {
-    let reason = missing_object_identifier_reason(source_table, db);
-    table_plan.add_source(TupleSource::Todo {
-        level: ConfidenceLevel::D,
-        comment: format!(
-            "-- TODO [Level D]: skipped {source_table} to {parent_type} bridge ({reason})"
-        ),
-        sql: "-- Bridge tuple not emitted; review schema/FK mapping.".to_string(),
-    });
-}
-
-fn add_explicit_grants_todo(
-    table_plan: &mut TypePlan,
-    source_table: &str,
-    reason: &str,
-    sql: &str,
-) {
-    table_plan.add_source(TupleSource::Todo {
-        level: ConfidenceLevel::D,
-        comment: format!(
-            "-- TODO [Level D]: skipped explicit grants for {source_table} ({reason})"
-        ),
-        sql: sql.to_string(),
+    table_plan.add_source(TupleSource::Skipped {
+        reason: SkippedTuples::NoBridge {
+            table: source_table.to_string(),
+            parent_type: parent_type.to_string(),
+            reason: missing_object_identifier_reason(source_table, db),
+        },
     });
 }
 

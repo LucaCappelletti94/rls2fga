@@ -249,6 +249,16 @@ pub enum PatternClass {
         /// Key chain to the field, the last hop extracted as text.
         path: Vec<String>,
     },
+    /// A membership check naming no column of the guarded table, so it admits every
+    /// row at once to whoever appears in the member table.
+    P13UncorrelatedMembership {
+        /// Table whose rows list the members.
+        member_table: String,
+        /// Column of that table holding the member.
+        user_column: String,
+        /// Any further condition the membership row has to satisfy.
+        extra_predicate_sql: Option<String>,
+    },
     /// No known pattern matched.
     Unknown {
         /// The expression as written.

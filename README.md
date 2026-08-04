@@ -34,15 +34,13 @@ With `default-features = false` the crate builds on `no_std` + `alloc` targets (
 
 ## Usage
 
-The library is a four-stage pipeline: parse a SQL schema, classify its RLS policies, generate an `OpenFGA` authorization model, and generate SQL queries to populate the corresponding tuples.
+The library is a three-stage pipeline: parse a SQL schema, plan a translation of its RLS policies, then ask that translation for each output you want. The plan is built once, so a caller wanting the model, the JSON and the tuple SQL pays for the analysis once.
 
 ```rust
-use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::classifier::policy_classifier::classify_policies;
-use rls2fga::generator::model_generator::{generate_model, GeneratorSettings};
-use rls2fga::generator::tuple_generator::{format_tuples, generate_tuple_queries};
+use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
+use rls2fga::translator::TranslatorBuilder;
 
 let sql = "
     CREATE TABLE documents (
@@ -61,24 +59,25 @@ let sql = "
 // Stage 1: Parse the SQL schema
 let db = parse_schema(sql).expect("parse error");
 
-// Stage 2: Classify RLS policies into patterns P1-P10
-let registry = FunctionRegistry::default();
-let policies = classify_policies(&db, &registry);
+// Stage 2: Plan the translation
+let translator = TranslatorBuilder::new()
+    .with_min_confidence(ConfidenceLevel::B)
+    .build();
+let translation = translator.translate(&db);
 
-// Stage 3: Generate the OpenFGA DSL authorization model
-let settings = GeneratorSettings::default();
-let model = generate_model(&policies, &db, &registry, ConfidenceLevel::B, &settings);
-println!("{}", model.dsl);
+// Stage 3: Take the outputs. This refuses while any expression went unclassified,
+// because such a model denies what the database grants.
+let outputs = translation.outputs().expect("every clause translated");
 
-// Stage 4: Generate SQL that populates OpenFGA relationship tuples
-let tuples = generate_tuple_queries(&policies, &db, &registry, ConfidenceLevel::B, &settings);
-println!("{}", format_tuples(&tuples));
+println!("{}", outputs.model());
+println!("{}", format_tuples(&outputs.tuple_queries()));
 
-// Review translation gaps
-for todo in &model.todos {
-    eprintln!("[{}] {}: {}", todo.level, todo.policy_name, todo.message);
+for note in outputs.notes() {
+    eprintln!("[{}] {}: {note}", note.severity(), note.subject());
 }
 ```
+
+When something did go unclassified and you want the narrower model anyway, say so: `translation.outputs_accepting_gaps()` gives the same outputs without the check. That is one visible line rather than an omission, and `translation.unhandled()` names exactly what it costs.
 
 The `min_confidence` parameter controls which policies appear in the output:
 
@@ -147,13 +146,16 @@ Run this query against your database, convert the rows to `OpenFGA` tuple object
 | P10 | `ConstantBool` | `TRUE` / `FALSE` | Open (`[user:*]`) or closed (no access) |
 | P11 | `ArrayMembership` | `current_user = ANY (editors)` | Direct relation named after the column, one tuple per array element |
 | P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `define owner: [user]` direct relation, read from the jsonb field |
+| P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object per member source, every row pointing at it, so the grant reads as `member from staff_holder` |
 | - | `Unknown` | Unrecognised expression | Denied, and emitted as `-- TODO [Level D]`, unless an oracle classifies it |
 
 ## Classifying What This Crate Refuses
 
-An expression `rls2fga` does not recognise is denied rather than guessed at, which is safe but narrower than the policy. When you know what your own expression means, implement `PolicyOracle` and call `consult_oracle` on the classified policies before generating anything. The oracle is offered each refused expression as written, along with the reason it was refused, and returns a classification or declines. What it returns is emitted exactly as a pattern the crate recognised itself, and the grade it claims still faces your confidence threshold, so an oracle cannot push a guess past a gate you set.
+An expression `rls2fga` does not recognise is denied rather than guessed at, which is safe but narrower than the policy. When you know what your own expression means, implement `PolicyOracle` and call `consult_oracle` on the classified policies before generating anything. The oracle is offered each refused expression as written, along with the reason it was refused, and answers in one of three ways: with a classification, with a deliberate denial when the expression grants nobody, or by bailing. Bailing is the default, so an oracle implementing nothing changes nothing, and it is the only answer that leaves a gap in the report. A classification is emitted exactly as a pattern the crate recognised itself, and the grade it claims still faces your confidence threshold, so an oracle cannot push a guess past a gate you set.
 
 Reach for it rather than walking the classification yourself. A refusal nests inside a parent join and inside a composite, so a walk that misses one leaves the model quietly denying, and every pattern enclosing a refusal has to be regraded or the clause is dropped for a refusal that is no longer there. `rls2fga::classifier::oracle` documents both traps and carries a worked example.
+
+**This is the general answer for a shape `rls2fga` will not bake in.** Two refusals are deliberate rather than unfinished, and both are yours to answer. A function marked `SECURITY DEFINER` that reads a table is the documented way around a policy that would otherwise recurse on its own table, and reading its body would defeat the point of the marking: the function sees rows the caller cannot, so a misreading widens access. Whoever wrote the function knows what it means and can say so. A document read by position, `data -> 0 ->> 'owner'`, identifies a value by offset rather than by name, and a permission whose name encoded an offset would be repointed silently by unrelated code that reordered the document. Neither gets a convention baked into the crate, and both reach you through the same seam.
 
 ## Reads Gate The Other Commands
 

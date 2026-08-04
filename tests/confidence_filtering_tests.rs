@@ -1,8 +1,7 @@
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::json_model;
-use rls2fga::generator::model_generator;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
+use rls2fga::translator::Translation;
 
 mod support;
 
@@ -14,13 +13,15 @@ fn json_model_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let json = json_model::generate_json_model(
-        &classified,
+    let json = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::A,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps()
+    .json_model();
 
     let posts = json
         .type_definitions
@@ -46,18 +47,19 @@ fn model_generation_respects_min_confidence_threshold() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let model = model_generator::generate_model(
-        &classified,
+    let model = Translation::plan(
+        classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::A,
         &GeneratorSettings::default(),
-    );
+    )
+    .outputs_accepting_gaps();
 
     assert!(
-        !model.dsl.contains("public_viewer"),
+        !model.model().contains("public_viewer"),
         "A-threshold model output should exclude C-level public_viewer relation, got:\n{}",
-        model.dsl
+        model.model()
     );
 }
 
@@ -82,26 +84,34 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples_a = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::A,
-        &GeneratorSettings::default(),
-    ));
+    let tuples_a = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::A,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         !tuples_a.contains("'owner' AS relation"),
         "A-threshold tuple output should exclude C-level ABAC tuples, got:\n{tuples_a}"
     );
 
-    let tuples_d = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples_d = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         tuples_d.contains("'owner' AS relation"),
@@ -117,13 +127,17 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
     }"#;
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(&tuple_generator::generate_tuple_queries(
-        &classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    ));
+    let tuples = tuple_generator::format_tuples(
+        &Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    );
 
     assert!(
         !tuples.contains("TODO [Level C]: Attribute condition"),

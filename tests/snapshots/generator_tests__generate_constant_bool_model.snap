@@ -1,6 +1,6 @@
 ---
 source: tests/generator_tests.rs
-expression: model.dsl.trim()
+expression: model.model().trim()
 ---
 model
   schema 1.1
@@ -16,3 +16,4 @@ type docs
     define can_select: public_viewer and no_access
     define can_select_for_update: can_update
     define can_update: no_access
+    define can_update_without_reading: can_update

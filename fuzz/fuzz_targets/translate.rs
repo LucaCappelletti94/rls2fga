@@ -5,7 +5,6 @@ use std::hint::black_box;
 use libfuzzer_sys::fuzz_target;
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
-use rls2fga::output::report::build_report;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
@@ -28,15 +27,14 @@ fn translate(sql: &str) {
         ConfidenceLevel::D,
     ] {
         let translator = TranslatorBuilder::new().with_min_confidence(level).build();
-        let classified = translator.classify(&db);
-        let model = translator.generate_model(&db);
-        let json = translator.generate_json_model(&db);
-        let tuples = translator.generate_tuple_queries(&db);
+        let translation = translator.translate(&db);
+        black_box(translation.unhandled().count());
+        let outputs = translation.outputs_accepting_gaps();
 
-        black_box(&model.dsl);
-        black_box(&json);
-        black_box(format_tuples(&tuples));
-        black_box(build_report(&model, &classified, level));
+        black_box(outputs.model());
+        black_box(outputs.json_model());
+        black_box(format_tuples(&outputs.tuple_queries()));
+        black_box(outputs.report());
     }
 }
 

@@ -12,6 +12,8 @@ pub(crate) mod ir;
 pub mod json_model;
 /// `OpenFGA` DSL text model generation.
 pub mod model_generator;
+// `notes` carries its own `//!` docs, so no outer doc here.
+pub mod notes;
 pub mod records;
 /// Shared helpers for stable and valid role-based relation naming.
 pub(crate) mod role_relations;
