@@ -1,0 +1,78 @@
+name: Fuzz Sweep
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly mutation sweep every Wednesday at 03:41 UTC.
+    - cron: "41 3 * * 3"
+
+concurrency:
+  group: fuzz-sweep-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz-sweep:
+    name: fuzz-sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+
+      # Carries what earlier sweeps reached, so a run starts where the last one
+      # stopped instead of rediscovering the seeds every week.
+      - name: Restore the corpus
+        uses: actions/cache@v6
+        with:
+          path: fuzz/corpus/translate
+          key: fuzz-corpus-translate-${{ github.run_id }}
+          restore-keys: fuzz-corpus-translate-
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Seed the corpus
+        run: |
+          mkdir -p fuzz/corpus/translate
+          cp fuzz/seeds/translate/* fuzz/corpus/translate/
+
+      - name: Mutate against the dictionary
+        run: |
+          cargo +nightly fuzz run translate --target x86_64-unknown-linux-gnu -- \
+            -dict=fuzz/rls.dict \
+            -max_total_time=900 \
+            -timeout=25 \
+            -rss_limit_mb=4096
+
+      # Loading the corpus is charged against the mutation budget, so a corpus
+      # left to grow eventually spends the whole sweep on startup.
+      - name: Shrink the corpus for the next sweep
+        run: cargo +nightly fuzz cmin translate --target x86_64-unknown-linux-gnu
+
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/translate
+          if-no-files-found: ignore

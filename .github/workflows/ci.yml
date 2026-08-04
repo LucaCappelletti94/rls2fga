@@ -124,7 +124,7 @@ jobs:
         run: |
           mkdir -p fuzz/corpus/translate
           cp fuzz/seeds/translate/* fuzz/corpus/translate/
-          cargo +nightly fuzz run translate --target x86_64-unknown-linux-gnu -- -runs=0
+          cargo +nightly fuzz run translate --target x86_64-unknown-linux-gnu -- -runs=0 -dict=fuzz/rls.dict
 
   docs:
     name: Rustdoc (warnings denied)
