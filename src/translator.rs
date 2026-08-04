@@ -11,6 +11,7 @@ use crate::generator::model_generator::{
     build_filtered_schema_plan, render_dsl_from_plan, GeneratorSettings, SchemaPlan,
 };
 use crate::generator::notes::{NoteSeverity, TranslationNote};
+use crate::generator::relations::{relation_shapes, RelationShapes};
 use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, TupleQuery};
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
@@ -196,6 +197,16 @@ impl<'a> Translation<'a> {
         self.notes()
             .iter()
             .filter(|note| note.severity() == NoteSeverity::Unhandled)
+    }
+
+    /// Every relation the emitted model declares, with the shapes whose records fill
+    /// it and whether one row decides them.
+    ///
+    /// Reads the plan the translation already holds, so the answers follow the
+    /// settings this translation was planned with.
+    #[must_use]
+    pub fn relations(&self) -> Vec<RelationShapes> {
+        relation_shapes(&self.plan, self.db)
     }
 
     /// The outputs, refused while any expression went unhandled.

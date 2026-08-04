@@ -6,7 +6,6 @@ use std::hint::black_box;
 use libfuzzer_sys::fuzz_target;
 use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
 use rls2fga::classifier::patterns::{ClassifiedExpr, ConfidenceLevel, PatternClass};
-use rls2fga::generator::decidable::decidable_relations;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{records_from_row, RowValues};
 use rls2fga::generator::tuple_generator::format_tuples;
@@ -67,7 +66,7 @@ impl RowValues for FuzzRow<'_> {
     }
 }
 
-/// Render every output and walk the records each tuple query describes.
+/// Render every output, and walk the records every shape describes.
 fn exercise(translation: Translation<'_>, sql: &str) {
     let unhandled = translation.unhandled().count();
     // The refusing door answers exactly when nothing went unhandled.
@@ -77,6 +76,7 @@ fn exercise(translation: Translation<'_>, sql: &str) {
         "outputs() and unhandled() disagree"
     );
 
+    let shapes = translation.relations();
     let outputs = translation.outputs_accepting_gaps();
     black_box(outputs.model());
     black_box(outputs.json_model());
@@ -90,6 +90,14 @@ fn exercise(translation: Translation<'_>, sql: &str) {
             black_box(records_from_row(description, &row).is_ok());
             black_box(description.is_pure());
             black_box(description.row_table());
+        }
+    }
+    for entry in &shapes {
+        black_box(entry.from_one_row);
+        for shape in &entry.shapes {
+            black_box(records_from_row(shape, &row).is_ok());
+            black_box(shape.is_pure());
+            black_box(shape.row_table());
         }
     }
     black_box(format_tuples(&queries));
@@ -143,14 +151,7 @@ fn translate(sql: &str) {
         ConfidenceLevel::C,
         ConfidenceLevel::D,
     ] {
-        let translator = translator_at(level);
-        black_box(decidable_relations(
-            &translator.classify(&db),
-            &db,
-            translator.registry(),
-            level,
-        ));
-        exercise(translator.translate(&db), sql);
+        exercise(translator_at(level).translate(&db), sql);
     }
 
     // An oracle's answers reach the generators only through `Translation::plan`, and at

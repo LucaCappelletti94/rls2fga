@@ -596,3 +596,90 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         "role ownership and grant expansion read a second table, saw {joined} joining"
     );
 }
+
+/// An uncorrelated membership grants the whole table at once, so the generator mints
+/// a holder object standing for the member list. Two of them: one whose list the row
+/// decides, and one carrying a predicate only SQL can read.
+const HOLDER_SCHEMA: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE staff (user_id TEXT);
+CREATE TABLE reviewers (user_id TEXT, active BOOLEAN);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_staff ON docs FOR SELECT
+    USING (EXISTS (SELECT 1 FROM staff WHERE staff.user_id = auth_current_user_id()));
+CREATE POLICY memos_reviewers ON memos FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM reviewers
+        WHERE reviewers.user_id = auth_current_user_id()
+          AND reviewers.active));
+";
+
+/// A duplicated member and a null one, which is what separates a set of records from
+/// a row count, and reviewers on both sides of the predicate so a bound query has
+/// something to narrow.
+const HOLDER_SEED: &str = "
+INSERT INTO users (id) VALUES ('alice'), ('bob'), ('carol');
+
+INSERT INTO staff (user_id) VALUES ('alice'), ('alice'), ('bob'), (NULL);
+
+INSERT INTO reviewers (user_id, active) VALUES
+    ('alice', TRUE),
+    ('alice', TRUE),
+    ('bob',   TRUE),
+    ('carol', FALSE),
+    (NULL,    TRUE);
+
+INSERT INTO docs (id, owner_id) VALUES ('d1', 'alice'), ('d2', NULL);
+INSERT INTO memos (id) VALUES ('m1'), ('m2');
+";
+
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn holder_shapes_match_their_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(HOLDER_SCHEMA)
+        .expect("failed to apply the holder schema");
+    conn.batch_execute(HOLDER_SEED)
+        .expect("failed to seed the holder schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        HOLDER_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let queries = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&mut conn, &queries, "holder shapes");
+
+    // Two bridges and one member list the row decides, plus the guarded member list.
+    assert_eq!(
+        pure, 3,
+        "both bridges and the unguarded member list follow from one row, saw {pure}"
+    );
+    assert_eq!(
+        joined, 1,
+        "only the guarded member list reads more than the row, saw {joined}"
+    );
+    assert!(
+        records >= 6,
+        "the seed must produce records to compare, saw {records}"
+    );
+}

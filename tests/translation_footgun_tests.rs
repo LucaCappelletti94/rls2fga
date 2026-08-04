@@ -4942,7 +4942,6 @@ fn expansion_leaves_the_row(
 /// its records from a table other than the one keying the object.
 #[test]
 fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
-    use rls2fga::generator::decidable::decidable_relations;
     use rls2fga::generator::records::{RecordDerivation, ValueSource};
 
     let registry_json =
@@ -4955,26 +4954,18 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
         // the analysis never saw. Building it through a registry-less translator was
         // exactly that mistake: the analysis saw `member from docs` while the model
         // said `no_access`, and a wrongly true flag passed unnoticed.
-        let json = rls2fga::translator::Translation::plan(
-            classified.clone(),
+        let planned = rls2fga::translator::Translation::plan(
+            classified,
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
-        )
-        .outputs_accepting_gaps()
-        .json_model();
-        let queries = rls2fga::translator::Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        );
+        let shapes = planned.relations();
+        let json = planned.clone().outputs_accepting_gaps().json_model();
+        let queries = planned.outputs_accepting_gaps().tuple_queries();
 
-        for row in decidable_relations(&classified, &db, &registry, ConfidenceLevel::B) {
+        for row in shapes {
             if !row.from_one_row {
                 falses += 1;
                 continue;
