@@ -191,12 +191,11 @@ fn render_tuple_source(
     let mut query = sanitize_tuple_query(render_tuple_source_inner(source, owner_type, db)?);
     // Every query passes through here, so a new variant reaches the describer
     // rather than silently shipping without a description.
-    query.description =
-        crate::generator::describe::describe_tuple_source(source, owner_type, db, &query.sql);
+    query.description = crate::generator::describe::describe_tuple_source(source, owner_type, db);
     Some(query)
 }
 
-fn render_tuple_source_inner(
+pub(crate) fn render_tuple_source_inner(
     source: &TupleSource,
     owner_type: &str,
     db: &ParserDB,

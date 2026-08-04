@@ -1,4 +1,5 @@
-//! Whether a relation's records for an object follow from that object's own row.
+//! Each relation of the emitted model, the shapes whose records fill it, and
+//! whether one row decides them.
 //!
 //! A consumer watching a change stream wants to answer the cheapest questions with
 //! no round trip, by testing the changed row's records against its own subscriber
@@ -10,21 +11,17 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::classifier::function_registry::FunctionRegistry;
-use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
-use crate::generator::model_generator::{
-    build_filtered_schema_plan, GeneratorSettings, SchemaPlan, TypePlan, UsersetExpr,
-};
-use crate::generator::records::{RecordDerivation, ValueSource};
+use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
+use crate::generator::records::{RecordDerivation, RecordDescription, ValueSource};
 use crate::generator::well_known::USER_TYPE;
 use crate::parser::sql_parser::ParserDB;
 
-/// One relation's answer.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RelationDecidability {
+/// One relation's shapes and answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationShapes {
     /// `OpenFGA` type the relation is defined on.
     pub type_name: String,
     /// Relation name.
@@ -33,25 +30,15 @@ pub struct RelationDecidability {
     /// user. False whenever the analysis cannot establish that, including every
     /// case it does not understand.
     pub from_one_row: bool,
+    /// The shapes whose records fill this relation, one per query the loader runs
+    /// for it. Empty for a relation the model computes from others, and for one
+    /// nothing populates.
+    pub shapes: Vec<RecordDescription>,
 }
 
-/// Report, per relation of the emitted model, whether one row decides its records.
-#[must_use]
-pub fn decidable_relations(
-    policies: &[ClassifiedPolicy],
-    db: &ParserDB,
-    registry: &FunctionRegistry,
-    min_confidence: ConfidenceLevel,
-) -> Vec<RelationDecidability> {
-    // The analysis reads structure rather than names, so the defaults suffice.
-    let plan = build_filtered_schema_plan(
-        policies,
-        db,
-        registry,
-        min_confidence,
-        &GeneratorSettings::default(),
-    );
-    let sources = index_sources(&plan);
+/// Report every relation of the emitted model.
+pub(crate) fn relation_shapes(plan: &SchemaPlan, db: &ParserDB) -> Vec<RelationShapes> {
+    let sources = index_sources(plan);
 
     let mut out = Vec::new();
     for type_plan in &plan.types {
@@ -60,17 +47,18 @@ pub fn decidable_relations(
         names.extend(type_plan.computed_relations.keys().map(String::as_str));
         for relation in names {
             let mut visiting = BTreeSet::new();
-            out.push(RelationDecidability {
+            out.push(RelationShapes {
                 type_name: type_plan.type_name.clone(),
                 relation: relation.to_string(),
                 from_one_row: relation_follows_from_one_row(
                     &type_plan.type_name,
                     relation,
-                    &plan,
+                    plan,
                     &sources,
                     db,
                     &mut visiting,
                 ),
+                shapes: shapes_filling(&type_plan.type_name, relation, &sources, db),
             });
         }
     }
@@ -94,6 +82,34 @@ fn index_sources(plan: &SchemaPlan) -> SourceIndex<'_> {
 }
 
 type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'plan str)>>;
+
+/// One shape per source. A source feeding the same relation from two type plans
+/// describes it twice, and the key the renderer deduplicates queries on is what
+/// says the two are the same. Scoping it by owner type would add nothing: a source
+/// keying its objects on the owning type only ever reaches the bucket named after
+/// that type.
+fn shapes_filling(
+    type_name: &str,
+    relation: &str,
+    sources: &SourceIndex<'_>,
+    db: &ParserDB,
+) -> Vec<RecordDescription> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (source, owner_type) in sources
+        .get(&(type_name.to_string(), relation.to_string()))
+        .into_iter()
+        .flatten()
+    {
+        if !seen.insert(source.dedup_key()) {
+            continue;
+        }
+        if let Some(description) = describe_tuple_source(source, owner_type, db) {
+            out.push(description);
+        }
+    }
+    out
+}
 
 fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &str) -> Option<&'plan TypePlan> {
     plan.types
@@ -166,8 +182,8 @@ fn tuples_follow_from_one_row(
     }
 
     feeding.iter().all(|(source, owner_type)| {
-        let Some(sql_owner) = describe_tuple_source(source, owner_type, db, "")
-            .map(|description| description.derivation)
+        let Some(sql_owner) =
+            describe_tuple_source(source, owner_type, db).map(|description| description.derivation)
         else {
             return false;
         };

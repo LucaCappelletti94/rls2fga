@@ -13,9 +13,9 @@ use crate::generator::ir::TupleSource;
 use crate::generator::records::{
     BoundQuery, Guard, RecordDerivation, RecordDescription, RecordTemplate, ValueSource,
 };
-use crate::generator::tuple_generator::resolve_bridge_columns;
+use crate::generator::tuple_generator::{render_tuple_source_inner, resolve_bridge_columns};
 use crate::generator::well_known::{
-    MEMBER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
+    HOLDER_OBJECT_ID, MEMBER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::sql_parser::ParserDB;
 
@@ -69,15 +69,20 @@ fn bind(sql: &str, table: &str, key_column: &str, predicate: &str) -> Option<Bou
     })
 }
 
-/// Describe the records `source` produces, or `None` where it produces none.
+/// The whole-table query for this one source, which is what a bound query extends.
 ///
-/// `sql` is the query the renderer produced for the same source, used to bind the
-/// joining shapes to one row.
+/// `None` where the renderer stands a comment in place of a query, since a comment
+/// loads nothing and there is no text to bind.
+fn rendered_sql(source: &TupleSource, owner_type: &str, db: &ParserDB) -> Option<String> {
+    let sql = render_tuple_source_inner(source, owner_type, db)?.sql;
+    (!sql.trim_start().starts_with("--")).then_some(sql)
+}
+
+/// Describe the records `source` produces, or `None` where it produces none.
 pub(crate) fn describe_tuple_source(
     source: &TupleSource,
     owner_type: &str,
     db: &ParserDB,
-    sql: &str,
 ) -> Option<RecordDescription> {
     match source {
         TupleSource::DirectOwnership {
@@ -140,7 +145,7 @@ pub(crate) fn describe_tuple_source(
             user_table,
             user_pk_col,
         } => Some(joined_ownership(
-            sql,
+            &rendered_sql(source, owner_type, db)?,
             table,
             pk_col,
             owner_col,
@@ -156,7 +161,7 @@ pub(crate) fn describe_tuple_source(
             team_table,
             team_pk_col,
         } => Some(joined_ownership(
-            sql,
+            &rendered_sql(source, owner_type, db)?,
             table,
             pk_col,
             owner_col,
@@ -178,6 +183,7 @@ pub(crate) fn describe_tuple_source(
             if role_cases.is_empty() {
                 return None;
             }
+            let sql = rendered_sql(source, owner_type, db)?;
             let mut read = vec![table.as_str(), grant_table.as_str()];
             if let Some(principal) = user_principal {
                 read.push(principal.table.as_str());
@@ -189,9 +195,9 @@ pub(crate) fn describe_tuple_source(
                 tables: tables(&read),
                 derivation: RecordDerivation::Joined {
                     queries: [
-                        bind(sql, table, pk_col, &format!("resource.\"{pk_col}\" = $1")),
+                        bind(&sql, table, pk_col, &format!("resource.\"{pk_col}\" = $1")),
                         bind(
-                            sql,
+                            &sql,
                             grant_table,
                             grant_resource_col,
                             &format!("og.\"{grant_resource_col}\" = $1"),
@@ -233,10 +239,11 @@ pub(crate) fn describe_tuple_source(
             extra_predicate_sql,
         } => {
             if let Some(predicate) = extra_predicate_sql {
+                let sql = rendered_sql(source, owner_type, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
-                        queries: bind(sql, join_table, fk_col, &format!("\"{fk_col}\" = $1"))
+                        queries: bind(&sql, join_table, fk_col, &format!("\"{fk_col}\" = $1"))
                             .into_iter()
                             .collect(),
                         reason: format!(
@@ -348,23 +355,79 @@ pub(crate) fn describe_tuple_source(
             column,
             condition,
             ..
-        } => Some(RecordDescription {
-            tables: tables(&[table]),
-            derivation: RecordDerivation::Joined {
-                queries: bind(sql, table, column, &format!("\"{column}\" = $1"))
-                    .into_iter()
-                    .collect(),
-                reason: format!(
-                    "the guard on {column} is evaluated by condition {condition} at check \
-                     time, so the row alone does not decide the grant"
-                ),
-            },
-        }),
+        } => {
+            let sql = rendered_sql(source, owner_type, db)?;
+            Some(RecordDescription {
+                tables: tables(&[table]),
+                derivation: RecordDerivation::Joined {
+                    queries: bind(&sql, table, column, &format!("\"{column}\" = $1"))
+                        .into_iter()
+                        .collect(),
+                    reason: format!(
+                        "the guard on {column} is evaluated by condition {condition} at check \
+                         time, so the row alone does not decide the grant"
+                    ),
+                },
+            })
+        }
 
-        // A holder grants the whole table together, so no single row decides it.
-        TupleSource::HolderBridge { .. }
-        | TupleSource::HolderMembers { .. }
-        | TupleSource::Skipped { .. } => None,
+        // Every row of the table points at the one holder object.
+        TupleSource::HolderBridge {
+            table,
+            pk_col,
+            relation,
+            holder_type,
+        } => Some(from_row(
+            table,
+            owner_type,
+            ValueSource::Column(pk_col.clone()),
+            relation,
+            holder_type,
+            ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
+            vec![Guard::NotNull(pk_col.clone())],
+        )),
+
+        // The holder is one object, so the object side is fixed and each member row
+        // names a user. Two rows naming the same user write one record, which a set
+        // of records collapses exactly as the query's DISTINCT does.
+        TupleSource::HolderMembers {
+            holder_type,
+            member_table,
+            user_col,
+            extra_predicate_sql,
+        } => {
+            if let Some(predicate) = extra_predicate_sql {
+                let sql = rendered_sql(source, owner_type, db)?;
+                return Some(RecordDescription {
+                    tables: tables(&[member_table]),
+                    derivation: RecordDerivation::Joined {
+                        queries: bind(
+                            &sql,
+                            member_table,
+                            user_col,
+                            &format!("\"{user_col}\" = $1"),
+                        )
+                        .into_iter()
+                        .collect(),
+                        reason: format!(
+                            "the member row carries a residual predicate only SQL can \
+                             evaluate: {predicate}"
+                        ),
+                    },
+                });
+            }
+            Some(from_row(
+                member_table,
+                holder_type,
+                ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
+                MEMBER_RELATION,
+                USER_TYPE,
+                ValueSource::Column(user_col.clone()),
+                vec![Guard::NotNull(user_col.clone())],
+            ))
+        }
+
+        TupleSource::Skipped { .. } => None,
     }
 }
 
