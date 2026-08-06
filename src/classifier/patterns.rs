@@ -2,12 +2,13 @@
 use crate::no_std_prelude::*;
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr};
 
-use crate::parser::names::{normalize_identifier, normalize_relation_name};
+use crate::parser::names::normalize_relation_name;
+use crate::parser::sql_parser::PolicyLike;
 
 /// The command a policy applies to.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PolicyCommand {
     /// Policy applies to SELECT queries only.
     Select,
@@ -346,52 +347,37 @@ impl From<CreatePolicyCommand> for PolicyCommand {
     }
 }
 
-/// Derive a policy command from an optional parsed command (`ALL` when absent).
-pub fn derive_policy_command(command: Option<&CreatePolicyCommand>) -> PolicyCommand {
-    command.map_or(PolicyCommand::All, |cmd| PolicyCommand::from(*cmd))
-}
-
-/// Derive a policy mode from a parsed policy (`PERMISSIVE` when absent).
-pub fn derive_policy_mode(policy: &sqlparser::ast::CreatePolicy) -> PolicyMode {
-    policy
-        .policy_type
-        .as_ref()
-        .map_or(PolicyMode::Permissive, |p| PolicyMode::from(*p))
+/// Policy mode as declared, `PERMISSIVE` when the policy omits it.
+pub fn derive_policy_mode<P: PolicyLike>(policy: &P) -> PolicyMode {
+    PolicyMode::from(policy.policy_type())
 }
 
 /// Whether a policy can grant reads: permissive, covering `SELECT`, and storing
 /// the `USING` clause a read is filtered by.
-pub fn policy_grants_select(policy: &sqlparser::ast::CreatePolicy) -> bool {
+pub fn policy_grants_select<P: PolicyLike>(policy: &P, db: &P::DB) -> bool {
     derive_policy_mode(policy) == PolicyMode::Permissive
-        && policy.using.is_some()
+        && policy.using_expression(db).is_some()
         && matches!(
-            derive_policy_command(policy.command.as_ref()),
+            PolicyCommand::from(policy.command()),
             PolicyCommand::Select | PolicyCommand::All
         )
 }
 
 /// Roles in `TO (...)` that constrain policy applicability.
 ///
-/// Returns an empty vector when no explicit role scope is present or when the
-/// scope includes `PUBLIC`.
-pub fn derive_scoped_roles(policy: &sqlparser::ast::CreatePolicy) -> Vec<String> {
-    let Some(to) = policy.to.as_ref() else {
+/// Empty when the policy applies to every role, which `PostgreSQL` spells both as
+/// `TO PUBLIC` and as no `TO` clause at all.
+pub fn derive_scoped_roles<P: PolicyLike>(policy: &P, db: &P::DB) -> Vec<String> {
+    if policy.applies_to_public() {
         return Vec::new();
-    };
+    }
 
-    let mut roles: Vec<String> = to
-        .iter()
+    let mut roles: Vec<String> = policy
+        .roles(db)
         .map(ToString::to_string)
         .map(|role| role.trim().to_string())
         .filter(|role| !role.is_empty())
         .collect();
-
-    if roles
-        .iter()
-        .any(|role| normalize_identifier(role) == "public")
-    {
-        return Vec::new();
-    }
 
     roles.sort();
     roles.dedup();
@@ -399,10 +385,26 @@ pub fn derive_scoped_roles(policy: &sqlparser::ast::CreatePolicy) -> Vec<String>
 }
 
 /// A classified policy with classifications for USING and WITH CHECK.
+///
+/// Holds what rls2fga reads of a policy rather than the catalog's own policy value,
+/// so the pipeline runs against any [`DatabaseLike`](crate::parser::sql_parser::DatabaseLike)
+/// rather than one instantiation of it.
 #[derive(Debug, Clone)]
 pub struct ClassifiedPolicy {
-    /// The original parsed `CREATE POLICY` statement.
-    pub policy: sqlparser::ast::CreatePolicy,
+    /// Policy name as declared in the DDL.
+    pub name: String,
+    /// Target table as the policy spelled it, quoting and schema qualifier kept.
+    pub table: String,
+    /// DML command this policy restricts (`ALL` when unspecified).
+    pub command: PolicyCommand,
+    /// Policy mode (`PERMISSIVE` when omitted).
+    pub mode: PolicyMode,
+    /// Roles in `TO (...)`, empty when the policy applies to every role.
+    pub scoped_roles: Vec<String>,
+    /// The `USING` expression the policy stores, if any.
+    pub using: Option<Expr>,
+    /// The `WITH CHECK` expression the policy stores, if any.
+    pub with_check: Option<Expr>,
     /// Classification of the USING expression, if present.
     pub using_classification: Option<ClassifiedExpr>,
     /// Classification of the WITH CHECK expression, if present.
@@ -418,24 +420,44 @@ pub struct ClassifiedPolicy {
 }
 
 impl ClassifiedPolicy {
-    /// Policy name as declared in the DDL.
-    pub fn name(&self) -> &str {
-        &self.policy.name.value
+    /// Read a policy out of a catalog, before anything classifies its clauses.
+    ///
+    /// The single place a catalog's own policy becomes one of these, so nothing
+    /// downstream has to know what the catalog stores.
+    pub fn from_policy<P: PolicyLike>(policy: &P, db: &P::DB) -> Self {
+        Self {
+            name: policy.name().to_string(),
+            table: policy.target_table_name().to_string(),
+            command: PolicyCommand::from(policy.command()),
+            mode: derive_policy_mode(policy),
+            scoped_roles: derive_scoped_roles(policy, db),
+            using: policy.using_expression(db).cloned(),
+            with_check: policy.check_expression(db).cloned(),
+            using_classification: None,
+            with_check_classification: None,
+            using_was_filtered: false,
+            with_check_was_filtered: false,
+        }
     }
 
-    /// Fully-qualified table name targeted by this policy.
-    pub fn table_name(&self) -> String {
-        self.policy.table_name.to_string()
+    /// Policy name as declared in the DDL.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Table name targeted by this policy, in the spelling the policy wrote.
+    pub fn table_name(&self) -> &str {
+        &self.table
     }
 
     /// DML command this policy restricts (ALL if unspecified).
     pub fn command(&self) -> PolicyCommand {
-        derive_policy_command(self.policy.command.as_ref())
+        self.command
     }
 
     /// Policy mode (`PERMISSIVE` by default when omitted).
     pub fn mode(&self) -> PolicyMode {
-        derive_policy_mode(&self.policy)
+        self.mode
     }
 
     /// Iterate over all classified policy expressions (`USING` and `WITH CHECK`).
@@ -449,8 +471,8 @@ impl ClassifiedPolicy {
     }
 
     /// Roles in `TO (...)` that constrain policy applicability.
-    pub fn scoped_roles(&self) -> Vec<String> {
-        derive_scoped_roles(&self.policy)
+    pub fn scoped_roles(&self) -> &[String] {
+        &self.scoped_roles
     }
 }
 
@@ -504,10 +526,10 @@ fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
     if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
         return false;
     }
-    let Some(using) = cp.policy.using.as_ref() else {
+    let Some(using) = cp.using.as_ref() else {
         return false;
     };
-    let guarded = normalize_relation_name(&cp.table_name());
+    let guarded = normalize_relation_name(cp.table_name());
     crate::parser::expr::reads_relation(using, |name| normalize_relation_name(name) == guarded)
 }
 
@@ -518,10 +540,10 @@ mod tests {
     use core::str::FromStr;
     use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType};
 
-    fn first_policy(sql: &str) -> sqlparser::ast::CreatePolicy {
+    fn first_classified(sql: &str) -> ClassifiedPolicy {
         let db = parse_schema(sql).expect("schema should parse");
-        let policy = db.policies().next().expect("expected one policy").clone();
-        policy
+        let policy = db.policies().next().expect("expected one policy");
+        ClassifiedPolicy::from_policy(policy, &db)
     }
 
     #[test]
@@ -566,16 +588,30 @@ mod tests {
     }
 
     #[test]
-    fn derive_policy_command_defaults_and_maps_explicit_values() {
-        assert_eq!(derive_policy_command(None), PolicyCommand::All);
-        assert_eq!(
-            derive_policy_command(Some(&CreatePolicyCommand::Select)),
-            PolicyCommand::Select
+    fn classified_policy_defaults_and_explicit_values() {
+        let cp_default = first_classified(
+            r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_default ON docs USING (TRUE);
+",
         );
-        assert_eq!(
-            derive_policy_command(Some(&CreatePolicyCommand::Update)),
-            PolicyCommand::Update
+        assert_eq!(cp_default.name(), "p_default");
+        assert_eq!(cp_default.table_name(), "docs");
+        assert_eq!(cp_default.command(), PolicyCommand::All);
+        assert_eq!(cp_default.mode(), PolicyMode::Permissive);
+
+        let cp_explicit = first_classified(
+            r"
+CREATE TABLE docs(id uuid primary key);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
+",
         );
+        assert_eq!(cp_explicit.name(), "p_explicit");
+        assert_eq!(cp_explicit.table_name(), "docs");
+        assert_eq!(cp_explicit.command(), PolicyCommand::Delete);
+        assert_eq!(cp_explicit.mode(), PolicyMode::Restrictive);
     }
 
     #[test]
@@ -594,74 +630,26 @@ mod tests {
     }
 
     #[test]
-    fn classified_policy_defaults_and_explicit_values() {
-        let sql_default = r"
-CREATE TABLE docs(id uuid primary key);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p_default ON docs USING (TRUE);
-";
-        let sql_explicit = r"
-CREATE TABLE docs(id uuid primary key);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p_explicit ON docs AS RESTRICTIVE FOR DELETE USING (FALSE);
-";
-
-        let cp_default = ClassifiedPolicy {
-            policy: first_policy(sql_default),
-            using_classification: None,
-            with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
-        assert_eq!(cp_default.name(), "p_default");
-        assert_eq!(cp_default.table_name(), "docs");
-        assert_eq!(cp_default.command(), PolicyCommand::All);
-        assert_eq!(cp_default.mode(), PolicyMode::Permissive);
-
-        let cp_explicit = ClassifiedPolicy {
-            policy: first_policy(sql_explicit),
-            using_classification: None,
-            with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
-        assert_eq!(cp_explicit.name(), "p_explicit");
-        assert_eq!(cp_explicit.table_name(), "docs");
-        assert_eq!(cp_explicit.command(), PolicyCommand::Delete);
-        assert_eq!(cp_explicit.mode(), PolicyMode::Restrictive);
-    }
-
-    #[test]
     fn classified_policy_scoped_roles_excludes_public_and_dedupes() {
-        let scoped_sql = r"
+        let scoped = first_classified(
+            r"
 CREATE TABLE docs(id uuid primary key);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_scoped ON docs FOR SELECT TO app_user, app_user, auditors USING (TRUE);
-";
-        let scoped = ClassifiedPolicy {
-            policy: first_policy(scoped_sql),
-            using_classification: None,
-            with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
+",
+        );
         assert_eq!(
             scoped.scoped_roles(),
-            vec!["app_user".to_string(), "auditors".to_string()]
+            ["app_user".to_string(), "auditors".to_string()]
         );
 
-        let public_sql = r"
+        let public = first_classified(
+            r"
 CREATE TABLE docs(id uuid primary key);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
-";
-        let public = ClassifiedPolicy {
-            policy: first_policy(public_sql),
-            using_classification: None,
-            with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
+",
+        );
         assert!(public.scoped_roles().is_empty());
     }
 }

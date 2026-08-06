@@ -13,16 +13,16 @@ pub(crate) fn infer_role_threshold_resource_columns(
 
     for cp in policies {
         collect_policy_resource_column(
-            &cp.table_name(),
-            cp.policy.using.as_ref(),
+            cp.table_name(),
+            cp.using.as_ref(),
             cp.using_classification.as_ref(),
             registry,
             &mut hints.columns,
             &mut hints.conflicts,
         );
         collect_policy_resource_column(
-            &cp.table_name(),
-            cp.policy.with_check.as_ref(),
+            cp.table_name(),
+            cp.with_check.as_ref(),
             cp.with_check_classification.as_ref(),
             registry,
             &mut hints.columns,
@@ -171,10 +171,10 @@ pub(super) fn positional_function_arg(function: &Function, index: usize) -> Opti
 /// `(source_table, function_name)` pair; the renderer deduplicates via
 /// [`TupleSource::dedup_key`].
 #[allow(clippy::too_many_arguments)]
-pub(super) fn populate_role_threshold_sources(
+pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     function_name: &str,
     source_table: &str,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     hints: &RoleThresholdResourceHints,
     table_plan: &mut TypePlan,

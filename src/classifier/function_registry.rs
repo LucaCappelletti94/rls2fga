@@ -6,7 +6,8 @@ use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemant
 use crate::parser::names::{
     normalize_identifier, normalize_relation_name, split_schema_and_relation,
 };
-use crate::parser::sql_parser::{DatabaseLike, FunctionLike, ParserDB};
+use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
+use sqlparser::ast::FunctionSecurity;
 
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
@@ -118,32 +119,38 @@ impl FunctionRegistry {
 
     /// Infer function semantics from parsed in-schema function bodies.
     /// Explicitly provided registry entries take precedence.
-    pub fn enrich_from_schema(&mut self, db: &ParserDB) {
+    pub fn enrich_from_schema<DB: DatabaseLike>(&mut self, db: &DB) {
         let settings = AccessorInferenceSettings::default();
         self.enrich_from_schema_with_settings(db, &settings);
     }
 
     /// Infer function semantics from parsed in-schema function bodies using
     /// explicit accessor-inference settings.
-    pub fn enrich_from_schema_with_settings(
+    pub fn enrich_from_schema_with_settings<DB: DatabaseLike>(
         &mut self,
-        db: &ParserDB,
+        db: &DB,
         settings: &AccessorInferenceSettings,
     ) {
         for function in db.functions() {
             let Some(body) = function.body() else {
                 continue;
             };
+            // A set of identities is not one identity. `is_scalar_uuid_return_type` also
+            // reads the declaration for this, but only as text, so it turns on how the
+            // catalog spells a set. This asks the catalog.
+            if function.returns_set() {
+                continue;
+            }
             let return_type = function
-                .return_type
-                .as_ref()
-                .map(ToString::to_string)
+                .return_type_name(db)
+                .map(|name| name.to_string())
                 .unwrap_or_default();
+            let security = function.security_mode();
             if let Some(semantic) = FunctionSemantic::analyze_body_with_settings(
                 body,
                 &return_type,
                 "sql",
-                function.security.as_ref(),
+                &security,
                 settings,
             ) {
                 self.register_if_absent(function.name(), &semantic);
@@ -152,7 +159,7 @@ impl FunctionRegistry {
                     body,
                     &return_type,
                     "sql",
-                    None,
+                    &FunctionSecurity::Invoker,
                     settings,
                 )
                 .is_some()
@@ -304,5 +311,33 @@ CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
             !registry.is_current_user_accessor("listed_ids_accessor"),
             "UUID[] accessors must not be inferred as scalar current-user accessors"
         );
+    }
+
+    /// A set of identities is not one identity, so keying ownership on it grants by a set
+    /// the model reads as a scalar. Both spellings of a set are refused, and the row shape is
+    /// the one text alone would miss: `return_type_name` answers `"TABLE"` for it, which
+    /// carries no `setof` token to notice.
+    ///
+    #[test]
+    fn enrich_from_schema_rejects_set_returning_accessors() {
+        for (name, declaration) in [
+            ("streamed_id_accessor", "SETOF UUID"),
+            ("tabled_id_accessor", "TABLE(id UUID)"),
+        ] {
+            let sql = format!(
+                "CREATE FUNCTION {name}() RETURNS {declaration}
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';"
+            );
+            let db = parse_schema(&sql).expect("schema should parse");
+
+            let mut registry = FunctionRegistry::new();
+            registry.enrich_from_schema(&db);
+
+            assert!(
+                !registry.is_current_user_accessor(name),
+                "`RETURNS {declaration}` must not be inferred as a scalar current-user accessor"
+            );
+        }
     }
 }

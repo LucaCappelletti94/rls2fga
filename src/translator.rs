@@ -17,7 +17,7 @@ use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, TupleQ
 use crate::output::formatter::write_output;
 use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
-use crate::parser::sql_parser::ParserDB;
+use crate::parser::sql_parser::{DatabaseLike, ParserDB};
 
 /// Builder for a [`Translator`].
 #[derive(Debug, Clone)]
@@ -107,14 +107,14 @@ pub struct Translator {
 
 impl Translator {
     /// Classify policies using the configured settings.
-    pub fn classify(&self, db: &ParserDB) -> Vec<ClassifiedPolicy> {
+    pub fn classify<DB: DatabaseLike>(&self, db: &DB) -> Vec<ClassifiedPolicy> {
         self.classify_with_effective_registry(db).0
     }
 
     /// Classify policies and return the effective registry after schema enrichment.
-    pub fn classify_with_effective_registry(
+    pub fn classify_with_effective_registry<DB: DatabaseLike>(
         &self,
-        db: &ParserDB,
+        db: &DB,
     ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
         classify_policies_with_effective_registry_and_settings(db, &self.registry, &self.settings)
     }
@@ -124,7 +124,7 @@ impl Translator {
     /// The plan is built once here and each output is rendered from it on demand, so a
     /// caller wanting the model, the JSON and the tuples classifies once rather than
     /// three times.
-    pub fn translate<'a>(&self, db: &'a ParserDB) -> Translation<'a> {
+    pub fn translate<'a, DB: DatabaseLike>(&self, db: &'a DB) -> Translation<'a, DB> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
         Translation::plan(
             classified,
@@ -157,20 +157,20 @@ impl Translator {
 /// refusable: an expression nobody classified leaves the model denying what the
 /// database grants, and that has to be seen rather than discovered later.
 #[derive(Debug, Clone)]
-pub struct Translation<'a> {
-    db: &'a ParserDB,
+pub struct Translation<'a, DB: DatabaseLike = ParserDB> {
+    db: &'a DB,
     plan: SchemaPlan,
     policies: Vec<ClassifiedPolicy>,
     min_confidence: ConfidenceLevel,
 }
 
-impl<'a> Translation<'a> {
+impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// Plan a translation from policies already classified, which is how an oracle's
     /// answers reach the generators.
     #[must_use]
     pub fn plan(
         policies: Vec<ClassifiedPolicy>,
-        db: &'a ParserDB,
+        db: &'a DB,
         registry: &FunctionRegistry,
         min_confidence: ConfidenceLevel,
         settings: &GeneratorSettings,
@@ -215,7 +215,7 @@ impl<'a> Translation<'a> {
     ///
     /// Returns the unhandled expressions, which is what a caller has to look at before
     /// trusting a model that denies what the database grants.
-    pub fn outputs(self) -> Result<Outputs<'a>, UnhandledExpressions> {
+    pub fn outputs(self) -> Result<Outputs<'a, DB>, UnhandledExpressions> {
         let unhandled: Vec<TranslationNote> = self.unhandled().cloned().collect();
         if unhandled.is_empty() {
             Ok(Outputs(self))
@@ -229,7 +229,7 @@ impl<'a> Translation<'a> {
     /// Say this deliberately. For every expression [`Translation::unhandled`] names,
     /// the model denies what the database grants.
     #[must_use]
-    pub fn outputs_accepting_gaps(self) -> Outputs<'a> {
+    pub fn outputs_accepting_gaps(self) -> Outputs<'a, DB> {
         Outputs(self)
     }
 }
@@ -240,9 +240,9 @@ impl<'a> Translation<'a> {
 /// unhandled, or [`Translation::outputs_accepting_gaps`], which is one visible line
 /// saying the caller took the narrower model on purpose.
 #[derive(Debug, Clone)]
-pub struct Outputs<'a>(Translation<'a>);
+pub struct Outputs<'a, DB: DatabaseLike = ParserDB>(Translation<'a, DB>);
 
-impl Outputs<'_> {
+impl<DB: DatabaseLike> Outputs<'_, DB> {
     /// The `OpenFGA` DSL model.
     #[must_use]
     pub fn model(&self) -> String {

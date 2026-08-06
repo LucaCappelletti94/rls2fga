@@ -17,7 +17,7 @@ use crate::generator::tuple_generator::{render_tuple_source_inner, resolve_bridg
 use crate::generator::well_known::{
     HOLDER_OBJECT_ID, MEMBER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
 };
-use crate::parser::sql_parser::ParserDB;
+use crate::parser::sql_parser::DatabaseLike;
 
 /// Sorted, deduplicated table list.
 fn tables(names: &[&str]) -> Vec<String> {
@@ -73,16 +73,20 @@ fn bind(sql: &str, table: &str, key_column: &str, predicate: &str) -> Option<Bou
 ///
 /// `None` where the renderer stands a comment in place of a query, since a comment
 /// loads nothing and there is no text to bind.
-fn rendered_sql(source: &TupleSource, owner_type: &str, db: &ParserDB) -> Option<String> {
+fn rendered_sql<DB: DatabaseLike>(
+    source: &TupleSource,
+    owner_type: &str,
+    db: &DB,
+) -> Option<String> {
     let sql = render_tuple_source_inner(source, owner_type, db)?.sql;
     (!sql.trim_start().starts_with("--")).then_some(sql)
 }
 
 /// Describe the records `source` produces, or `None` where it produces none.
-pub(crate) fn describe_tuple_source(
+pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
-    db: &ParserDB,
+    db: &DB,
 ) -> Option<RecordDescription> {
     match source {
         TupleSource::DirectOwnership {

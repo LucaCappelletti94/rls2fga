@@ -6,17 +6,20 @@ use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
 use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
-use crate::parser::sql_parser::{DatabaseLike, ParserDB};
+use crate::parser::sql_parser::DatabaseLike;
 
 /// Classify all policies in the database.
-pub fn classify_policies(db: &ParserDB, registry: &FunctionRegistry) -> Vec<ClassifiedPolicy> {
+pub fn classify_policies<DB: DatabaseLike>(
+    db: &DB,
+    registry: &FunctionRegistry,
+) -> Vec<ClassifiedPolicy> {
     let settings = AccessorInferenceSettings::default();
     classify_policies_with_effective_registry_and_settings(db, registry, &settings).0
 }
 
 /// Classify all policies and return the enriched function registry used by the classifier.
-pub fn classify_policies_with_effective_registry(
-    db: &ParserDB,
+pub fn classify_policies_with_effective_registry<DB: DatabaseLike>(
+    db: &DB,
     registry: &FunctionRegistry,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let settings = AccessorInferenceSettings::default();
@@ -24,8 +27,8 @@ pub fn classify_policies_with_effective_registry(
 }
 
 /// Classify all policies using explicit accessor-inference settings.
-pub fn classify_policies_with_effective_registry_and_settings(
-    db: &ParserDB,
+pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
+    db: &DB,
     registry: &FunctionRegistry,
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
@@ -37,34 +40,25 @@ pub fn classify_policies_with_effective_registry_and_settings(
 }
 
 /// Classify all policies using the provided (already prepared) function registry.
-pub fn classify_policies_with_registry(
-    db: &ParserDB,
+pub fn classify_policies_with_registry<DB: DatabaseLike>(
+    db: &DB,
     registry: &FunctionRegistry,
 ) -> Vec<ClassifiedPolicy> {
     db.policies()
         .map(|policy| {
-            let table_name = policy.table_name.to_string();
-            let command = derive_policy_command(policy.command.as_ref());
+            let mut classified = ClassifiedPolicy::from_policy(policy, db);
+            let classify = |expr: &Expr| {
+                classify_expr(expr, db, registry, &classified.table, classified.command)
+            };
 
             // An absent clause is not `TRUE`: PostgreSQL stores no qual for it, and
             // with no permissive qual the command falls closed.
-            let using_classification = policy
-                .using
-                .as_ref()
-                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
+            let using = classified.using.as_ref().map(&classify);
+            let with_check = classified.with_check.as_ref().map(&classify);
 
-            let with_check_classification = policy
-                .with_check
-                .as_ref()
-                .map(|expr| classify_expr(expr, db, registry, &table_name, &command));
-
-            ClassifiedPolicy {
-                policy: policy.clone(),
-                using_classification,
-                with_check_classification,
-                using_was_filtered: false,
-                with_check_was_filtered: false,
-            }
+            classified.using_classification = using;
+            classified.with_check_classification = with_check;
+            classified
         })
         .collect()
 }
@@ -150,22 +144,22 @@ fn unknown_d(expr: &Expr, reason: impl Into<String>) -> ClassifiedExpr {
 }
 
 /// Recursively classify an expression using the pattern decision tree.
-pub fn classify_expr(
+pub fn classify_expr<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     table: &str,
-    command: &PolicyCommand,
+    command: PolicyCommand,
 ) -> ClassifiedExpr {
     classify_expr_depth(expr, db, registry, table, command, 0)
 }
 
-fn classify_expr_depth(
+fn classify_expr_depth<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     table: &str,
-    command: &PolicyCommand,
+    command: PolicyCommand,
     depth: u32,
 ) -> ClassifiedExpr {
     if depth > MAX_CLASSIFY_DEPTH {
@@ -180,12 +174,12 @@ fn classify_expr_depth(
     classify_expr_inner(expr, db, registry, table, command, depth)
 }
 
-fn classify_expr_inner(
+fn classify_expr_inner<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     table: &str,
-    command: &PolicyCommand,
+    command: PolicyCommand,
     depth: u32,
 ) -> ClassifiedExpr {
     // Gap 7: Row-value comparison decomposition.
@@ -559,7 +553,7 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::sql_parser::parse_schema;
+    use crate::parser::sql_parser::{parse_schema, ParserDB};
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
 
@@ -598,7 +592,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("owner_id = current_user OR is_public = TRUE");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -620,7 +614,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             "owner_id = current_user AND status = 'published'",
         ] {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(matches!(
                 &classified.pattern,
                 PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
@@ -637,7 +631,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
 
         let expr = parse_expr("owner_id = current_user AND status IN ('active', 'pending')");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(
                 &classified.pattern,
@@ -655,7 +649,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("status = 'published' AND TRUE");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -675,7 +669,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("owner_id = current_user AND TRUE");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -693,7 +687,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("(owner_id = current_user)");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -715,7 +709,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         for (expr_sql, expected_col, expected_value) in cases {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(matches!(
                 &classified.pattern,
                 PatternClass::P9AttributeCondition {
@@ -737,7 +731,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("mystery_auth(owner_id)");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -762,7 +756,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
              )",
         );
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -786,7 +780,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
              )",
         );
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -810,7 +804,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
              )",
         );
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -846,7 +840,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
              )",
         );
 
-        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "tasks", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -877,7 +871,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         for (expr_sql, expected_fragment) in cases {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
                 matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
                     if reason.contains(expected_fragment)),
@@ -910,7 +904,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         for (expr_sql, expected_fragment) in cases {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
                 matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
                     if reason.contains(expected_fragment)),
@@ -927,7 +921,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
         let expr = parse_expr("owner_id IS NULL");
 
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -942,12 +936,12 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         let registry = FunctionRegistry::new();
 
         let or_expr = parse_expr("mystery_auth(owner_id) OR owner_id = current_user");
-        let or_classified = classify_expr(&or_expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let or_classified = classify_expr(&or_expr, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(or_classified.confidence, ConfidenceLevel::D);
 
         let and_expr = parse_expr("mystery_auth(owner_id) AND owner_id = current_user");
         let and_classified =
-            classify_expr(&and_expr, &db, &registry, "docs", &PolicyCommand::Select);
+            classify_expr(&and_expr, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(and_classified.confidence, ConfidenceLevel::D);
     }
 
@@ -964,7 +958,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             .expect("registry json should parse");
 
         let expr = parse_expr("auth_current_user_id()");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(matches!(
             &classified.pattern,
@@ -986,7 +980,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             .expect("registry json should parse");
 
         let expr = parse_expr("mystery_auth(owner_id)");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
             matches!(
@@ -1020,7 +1014,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         for expr_sql in cases {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
                 matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
                     if reason.contains("mystery_auth")),
@@ -1044,7 +1038,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             .expect("registry json should parse");
 
         let expr = parse_expr("outer_guard(inner_guard(auth_current_user_id())) = 'x'");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         let PatternClass::Unknown { reason, .. } = &classified.pattern else {
             panic!("expected Unknown, got: {:?}", classified.pattern);
@@ -1060,7 +1054,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         // One call spelled twice is one thing to go read.
         let repeated = parse_expr("tenant_of(owner_id) = tenant_of(id)");
-        let classified = classify_expr(&repeated, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&repeated, &db, &registry, "docs", PolicyCommand::Select);
         let PatternClass::Unknown { reason, .. } = &classified.pattern else {
             panic!("expected Unknown, got: {:?}", classified.pattern);
         };
@@ -1084,7 +1078,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             "current_role = data ->> 'owner_id'",
         ] {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             let PatternClass::Unknown { reason, .. } = &classified.pattern else {
                 continue;
             };
@@ -1109,7 +1103,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             ("priority << 2 = status", "<<"),
         ] {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             let PatternClass::Unknown { reason, .. } = &classified.pattern else {
                 panic!(
                     "`{expr_sql}`: expected Unknown, got {:?}",
@@ -1171,7 +1165,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
 
         for expr_sql in cases {
             let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
                 matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
                     if reason.contains("Negated boolean-flag check")),
@@ -1194,7 +1188,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         // `is_public = TRUE AND status = 'published'`: both are attribute-like checks;
         // P6 must NOT be treated as the "relationship side" of P7.
         let expr = parse_expr("status = 'published' AND is_public = TRUE");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
             matches!(
@@ -1221,7 +1215,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         // Even though `manager_id` contains "user_id" as a substring, it is not
         // a current-user accessor and must not be mistaken for one.
         let expr = parse_expr("assigned_to = manager_id");
-        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "tasks", PolicyCommand::Select);
 
         assert!(
             !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
@@ -1240,7 +1234,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         // `owner_id = author_id`: both sides are table columns.
         // `author_id` must not be treated as a user accessor just because it contains "auth".
         let expr = parse_expr("owner_id = author_id");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
             !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
@@ -1263,7 +1257,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         // EXISTS with no current-user filter is an "exists any member" check ,
         // it does not identify the current user and must not classify as P4.
         let expr = parse_expr("EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id)");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
             !matches!(&classified.pattern, PatternClass::P4ExistsMembership { .. }),
@@ -1279,7 +1273,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
 
         let not_true = parse_expr("NOT TRUE");
         let classified_not_true =
-            classify_expr(&not_true, &db, &registry, "docs", &PolicyCommand::Select);
+            classify_expr(&not_true, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(
             classified_not_true.pattern,
             PatternClass::P10ConstantBool { value: false },
@@ -1289,7 +1283,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
 
         let not_false = parse_expr("NOT FALSE");
         let classified_not_false =
-            classify_expr(&not_false, &db, &registry, "docs", &PolicyCommand::Select);
+            classify_expr(&not_false, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(
             classified_not_false.pattern,
             PatternClass::P10ConstantBool { value: true },
@@ -1333,7 +1327,7 @@ CREATE POLICY docs_open ON docs;
         // `current_role` is a PostgreSQL session-variable keyword equivalent to
         // `current_user` for authorization purposes.
         let expr = parse_expr("owner_id = current_role");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P3DirectOwnership { column }
                 if column == "owner_id"),
@@ -1351,7 +1345,7 @@ CREATE POLICY docs_open ON docs;
         let registry = FunctionRegistry::new();
 
         let expr = parse_expr("owner_id = session_user");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::Unknown { .. }),
             "owner_id = session_user should classify as Unknown, got: {:?}",
@@ -1378,7 +1372,7 @@ CREATE POLICY docs_open ON docs;
         let and_chain: String = "TRUE AND ".repeat(70) + inner_sql;
 
         let expr = parse_expr(&and_chain);
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         // With 70 levels of AND nesting the leaf expressions are beyond depth 64.
         // The resulting P8Composite or Unknown D is acceptable; what matters is
         // the classifier does not panic or overflow the stack.
@@ -1406,7 +1400,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let expr = parse_expr(
             "EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.status = 'active')",
         );
-        let classified = classify_expr(&expr, &db, &registry, "tasks", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "tasks", PolicyCommand::Select);
 
         assert!(
             !matches!(
@@ -1616,7 +1610,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
             "IS DISTINCT FROM should classify as P9, got: {:?}",
@@ -1629,7 +1623,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
             "IS NOT DISTINCT FROM should classify as P9, got: {:?}",
@@ -1642,7 +1636,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("priority BETWEEN 1 AND 10");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "priority"),
             "BETWEEN should classify as P9, got: {:?}",
@@ -1655,7 +1649,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("status > now()");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
             "temporal comparison should classify as P9, got: {:?}",
@@ -1686,7 +1680,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         // (owner_id, status) = (current_user, 'active') should decompose to
         let expr = parse_expr("(owner_id, status) = (current_user, 'active')");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(
                 &classified.pattern,
@@ -1702,7 +1696,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("(owner_id) = (current_user)");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
             "Single-element row-value should decompose to P3, got: {:?}",
@@ -1719,7 +1713,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                   WHEN is_public = TRUE THEN TRUE \
                   ELSE FALSE END",
         );
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P8Composite { op: BoolOp::Or, parts } if parts.len() == 2),
             "CASE with two TRUE branches should become P8 OR, got: {:?}",
@@ -1732,7 +1726,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("CASE WHEN owner_id = current_user THEN TRUE ELSE FALSE END");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
             "CASE with one TRUE branch should collapse to inner, got: {:?}",
@@ -1745,7 +1739,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr("CASE WHEN owner_id = current_user THEN 'yes' ELSE 'no' END");
-        let classified = classify_expr(&expr, &db, &registry, "docs", &PolicyCommand::Select);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
             matches!(&classified.pattern, PatternClass::Unknown { .. }),
             "CASE with non-boolean results should stay Unknown, got: {:?}",

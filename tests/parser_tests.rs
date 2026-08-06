@@ -302,3 +302,63 @@ fn a_table_queried_against_another_database_is_reported() {
         "a database without the table must report rather than answer"
     );
 }
+
+/// A reference the search path cannot reach is refused, not guessed at.
+///
+/// This is what replaced an older fallback that resolved an unqualified name to the
+/// only table bearing it, wherever that table lived. `PostgreSQL` refuses such DDL,
+/// so resolving it invented a policy the database would never have accepted, and
+/// every model built from one bound the policy to rows RLS never guarded.
+#[test]
+fn a_policy_naming_a_table_the_search_path_cannot_reach_is_refused() {
+    let error = parse_schema(
+        "CREATE SCHEMA app;\
+         CREATE TABLE app.docs(id INT, owner_id INT);\
+         ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;\
+         CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = 1);",
+    )
+    .expect_err("an unreachable policy target must refuse the schema");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("not found") && message.contains("docs_sel"),
+        "the refusal must say the target was not found and name the policy, got: {message}"
+    );
+
+    // The same schema with the path that makes the reference legal.
+    parse_schema(
+        "CREATE SCHEMA app;\
+         SET search_path TO app;\
+         CREATE TABLE app.docs(id INT, owner_id INT);\
+         ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;\
+         CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = 1);",
+    )
+    .expect("the path makes the reference resolve");
+}
+
+/// A foreign key the schema does not satisfy is refused. Downstream inference resolves
+/// referenced tables eagerly, so an orphan reference has to stop at the parse.
+#[test]
+fn a_foreign_key_the_schema_does_not_satisfy_is_refused() {
+    for (what, sql) in [
+        (
+            "absent table",
+            "CREATE TABLE tasks(id INT, project_id INT REFERENCES projects(id));",
+        ),
+        (
+            "absent column",
+            "CREATE TABLE projects(id INT PRIMARY KEY);\
+             CREATE TABLE tasks(id INT, ghost INT REFERENCES projects(ghost));",
+        ),
+        (
+            "column under no unique constraint",
+            "CREATE TABLE projects(id INT PRIMARY KEY, code INT);\
+             CREATE TABLE tasks(id INT, code INT REFERENCES projects(code));",
+        ),
+    ] {
+        assert!(
+            parse_schema(sql).is_err(),
+            "a foreign key naming a {what} must refuse the schema"
+        );
+    }
+}

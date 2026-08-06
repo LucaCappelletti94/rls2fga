@@ -34,6 +34,12 @@ fn definition_count(modules: &[&str], needle: &str) -> usize {
         .sum()
 }
 
+/// Count definitions of `name`, whether or not it carries a generic parameter list.
+fn fn_definitions(modules: &[&str], name: &str) -> usize {
+    definition_count(modules, &format!("fn {name}("))
+        + definition_count(modules, &format!("fn {name}<"))
+}
+
 #[test]
 fn confidence_filtering_has_single_source_of_truth() {
     let modules = [
@@ -42,7 +48,7 @@ fn confidence_filtering_has_single_source_of_truth() {
         "src/classifier/patterns.rs",
     ];
 
-    let definitions = definition_count(&modules, "fn filter_policies_for_output(");
+    let definitions = fn_definitions(&modules, "filter_policies_for_output");
 
     assert_eq!(
         definitions, 1,
@@ -58,7 +64,7 @@ fn pk_column_resolution_has_single_source_of_truth() {
         "src/generator/tuple_generator.rs",
     ];
 
-    let definitions = definition_count(&modules, "fn resolve_pk_column(");
+    let definitions = fn_definitions(&modules, "resolve_pk_column");
 
     assert_eq!(
         definitions, 1,
@@ -74,7 +80,7 @@ fn function_arg_extraction_has_single_source_of_truth() {
         "src/generator/model_generator",
     ];
 
-    let expr_defs = definition_count(&modules, "fn function_arg_expr(");
+    let expr_defs = fn_definitions(&modules, "function_arg_expr");
 
     assert_eq!(
         expr_defs, 1,
@@ -111,8 +117,10 @@ fn translation_note_prose_lives_only_in_the_notes_module() {
 
 #[test]
 fn p5_inheritance_analysis_has_single_source_of_truth() {
-    let source = read_module("src/classifier/recognizers");
-    let definitions = source.matches("fn analyze_p5_parent_inheritance(").count();
+    let definitions = fn_definitions(
+        &["src/classifier/recognizers"],
+        "analyze_p5_parent_inheritance",
+    );
     assert_eq!(
         definitions, 1,
         "expected a single P5 inheritance analysis helper, found {definitions}"
@@ -124,23 +132,25 @@ fn p5_inheritance_analysis_has_single_source_of_truth() {
 /// analyzer. A second analyzer would let one spelling keep a refusal another dropped.
 #[test]
 fn membership_analysis_has_a_single_source_of_truth() {
-    let source = read_module("src/classifier/recognizers");
+    let modules = ["src/classifier/recognizers"];
 
-    for needle in [
-        "fn analyze_membership_select(",
-        "fn membership_subquery_operands(",
-        "fn membership_exists_binding_caller(",
+    for name in [
+        "analyze_membership_select",
+        "membership_subquery_operands",
+        "membership_exists_binding_caller",
     ] {
-        let definitions = source.matches(needle).count();
+        let definitions = fn_definitions(&modules, name);
         assert_eq!(
             definitions, 1,
-            "expected one '{needle}', found {definitions}"
+            "expected one 'fn {name}', found {definitions}"
         );
     }
 
     // The row-limit refusal has to sit in the shared extractor, or the object-key spelling
     // keeps the over-grant the caller spelling was fixed for.
-    let limit_guards = source.matches("limit_clause.is_some()").count();
+    let limit_guards = read_module("src/classifier/recognizers")
+        .matches("limit_clause.is_some()")
+        .count();
     assert_eq!(
         limit_guards, 1,
         "one place refuses a row-limited membership subquery, found {limit_guards}"
@@ -190,7 +200,7 @@ fn relation_name_clamping_has_single_source_of_truth() {
         "src/generator/tuple_generator.rs",
     ];
 
-    let definitions = definition_count(&modules, "fn clamp_relation_name(");
+    let definitions = fn_definitions(&modules, "clamp_relation_name");
 
     assert_eq!(
         definitions, 1,
@@ -206,7 +216,7 @@ fn identifier_equality_has_single_source_of_truth() {
         "src/generator/model_generator",
     ];
 
-    let definitions = definition_count(&modules, "fn same_identifier(");
+    let definitions = fn_definitions(&modules, "same_identifier");
 
     assert_eq!(
         definitions, 1,
@@ -264,7 +274,7 @@ fn reserved_relation_subjects_have_a_single_source_of_truth() {
         "src/generator/json_model.rs",
     ];
 
-    let definitions = definition_count(&modules, "fn reserved_relation_subjects(");
+    let definitions = fn_definitions(&modules, "reserved_relation_subjects");
     assert_eq!(
         definitions, 1,
         "one place decides which relation names the generator keeps, found {definitions}"
@@ -275,7 +285,7 @@ fn reserved_relation_subjects_have_a_single_source_of_truth() {
 fn generator_owned_relation_names_have_a_single_source_of_truth() {
     let modules = ["src/generator/model_generator"];
 
-    let definitions = definition_count(&modules, "fn generator_defines(");
+    let definitions = fn_definitions(&modules, "generator_defines");
     assert_eq!(
         definitions, 1,
         "one place decides which relation names a translated name may not take, found {definitions}"
@@ -333,7 +343,7 @@ fn identifier_folding_has_a_single_source_of_truth() {
     // Only the sqlparser side is ours. A declared identifier folds through
     // `ColumnLike::stored_column_name`, `TableLike::stored_table_name` and
     // `TableLike::stored_table_schema`.
-    let definitions = definition_count(&modules, "fn stored_identifier(");
+    let definitions = fn_definitions(&modules, "stored_identifier");
     assert_eq!(
         definitions, 1,
         "one place folds an identifier to the name PostgreSQL stores, found {definitions}"
