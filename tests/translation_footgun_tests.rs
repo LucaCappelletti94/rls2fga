@@ -439,6 +439,7 @@ fn a_policy_naming_its_table_without_the_schema_still_translates() {
     let db = db_of(
         r"
 CREATE SCHEMA app;
+SET search_path TO app;
 CREATE TABLE app.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
@@ -465,44 +466,59 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
 }
 
-/// Two schemas may hold a table of the same name, and only the search path decides
-/// which one an unqualified policy means. Guessing binds the policy to the wrong
-/// rows, so it goes untranslated and the operator hears about it.
+/// Two schemas may hold a table of the same name, and the search path decides which one
+/// an unqualified policy means: the first entry holding it wins, which is what
+/// `PostgreSQL` does. Guessing the other one binds the policy to the wrong rows.
 #[test]
-fn a_policy_naming_an_ambiguous_table_is_reported_rather_than_guessed() {
+fn a_policy_naming_a_table_two_schemas_hold_follows_the_search_path() {
     let db = db_of(
         r"
 CREATE SCHEMA aaa;
-CREATE SCHEMA zzz;
 CREATE TABLE aaa.docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE public.docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE aaa.docs ENABLE ROW LEVEL SECURITY;
-CREATE TABLE zzz.docs(id UUID PRIMARY KEY, owner_id UUID);
-ALTER TABLE zzz.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
+SET search_path TO aaa, public;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
         .outputs_accepting_gaps();
+    let dsl = model.model();
 
-    for type_name in type_names(&model.model())
-        .iter()
-        .filter(|name| *name != "user")
-    {
-        assert_eq!(
-            relation_definition(&model.model(), type_name, "can_select").as_deref(),
-            Some("no_access"),
-            "'{type_name}' must not claim a policy naming an ambiguous table:\n{}",
-            model.model()
-        );
-    }
-    assert!(
-        model
-            .notes()
+    let reads: Vec<(String, Option<String>)> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name != "user")
+        .map(|name| {
+            let definition = relation_definition(&dsl, &name, "can_select");
+            (name, definition)
+        })
+        .collect();
+
+    assert_eq!(
+        reads
             .iter()
-            .any(|note| note.subject() == "docs_sel" && note.message().contains("docs")),
-        "the untranslated policy must be named, got {:#?}",
-        model.notes()
+            .filter(|(_, definition)| definition.as_deref() == Some("owner"))
+            .count(),
+        1,
+        "exactly one of the two tables carries the policy:\n{dsl}"
+    );
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|(_, definition)| definition.as_deref() == Some("no_access"))
+            .count(),
+        1,
+        "the table the path does not select must read nothing:\n{dsl}"
+    );
+
+    // The policy resolves to `aaa.docs`, and a table carrying a policy claims the
+    // canonical type name, so the untouched `public.docs` is the renamed one.
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("owner"),
+        "the first path entry holding the name wins:\n{dsl}"
     );
 }
 
@@ -514,6 +530,7 @@ fn a_filtered_policy_named_without_its_schema_is_reported_as_filtered() {
     let db = db_of(
         r"
 CREATE SCHEMA app;
+SET search_path TO app;
 CREATE TABLE app.docs(id UUID PRIMARY KEY, tenant TEXT);
 ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant = current_setting('app.tenant'));
@@ -5874,5 +5891,99 @@ fn the_model_follows_a_policy_altered_after_creation() {
     assert!(
         !tuples.contains("'owner' AS relation"),
         "and no tuple may still feed the superseded rule:\n{tuples}"
+    );
+}
+
+/// Two schemas holding a table of the same name must not collapse into one type.
+///
+/// Collapsing them would let a policy on one answer for rows of the other, which is the
+/// over-grant an earlier session traced to grouping policies by their raw spelling. The
+/// `schema_search_path` fixture carries the shape: `app.docs` guarded by a policy that
+/// names its table bare, `archive.docs` guarded by one that names it in full, and only
+/// the search path says which `docs` the bare one means.
+#[test]
+fn two_schemas_holding_one_table_name_get_two_types() {
+    let db = db_of(
+        &std::fs::read_to_string("tests/fixtures/schema_search_path/input.sql")
+            .expect("the fixture is readable"),
+    );
+    let dsl = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
+
+    let guarded: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| {
+            relation_definition(&dsl, name, "can_select").as_deref() == Some("owner_login")
+        })
+        .collect();
+
+    assert_eq!(
+        guarded.len(),
+        2,
+        "each table keeps its own read rule, so two types carry it:\n{dsl}"
+    );
+
+    // The renaming has to be reported, or an operator loading tuples under the canonical
+    // name feeds them to whichever table won it.
+    let renamed = guarded
+        .iter()
+        .find(|name| *name != "docs")
+        .expect("one of the two is renamed");
+    assert!(
+        translator(ConfidenceLevel::A)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .any(|note| note.message().contains(renamed.as_str())
+                && note.message().contains("collision")),
+        "the collision must be named, got {:#?}",
+        translator(ConfidenceLevel::A)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+    );
+}
+
+/// A dump carries roles, grants, sequences, indexes, views, enums, domains, generated
+/// columns, comments, an owner and a composite key. None of that is a policy, and the
+/// translator has to walk past all of it and still read the policies that are there.
+#[test]
+fn the_furniture_of_a_real_schema_does_not_disturb_the_policies() {
+    let db = db_of(
+        &std::fs::read_to_string("tests/fixtures/schema_objects/input.sql")
+            .expect("the fixture is readable"),
+    );
+    let outputs = translator(ConfidenceLevel::C)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select")
+            .as_deref()
+            .map(|d| d.contains("owner_login")),
+        Some(true),
+        "the ownership policy still reads its column:\n{dsl}"
+    );
+
+    // The owner the table was handed is exempt from every policy on it, and saying so is
+    // the only way an operator learns the model is narrower than the database.
+    assert!(
+        outputs
+            .notes()
+            .iter()
+            .any(|note| note.message().contains("auditor") && note.message().contains("exempt")),
+        "the exempt owner must be named, got {:#?}",
+        outputs.notes()
+    );
+
+    // A key over two columns leaves no single-column object identifier, so the table it
+    // keys cannot take one from somewhere else.
+    assert!(
+        type_names(&dsl).iter().any(|name| name == "doc_links"),
+        "the composite-key table is still translated:\n{dsl}"
     );
 }

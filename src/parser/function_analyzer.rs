@@ -578,7 +578,13 @@ impl FunctionSemantic {
     /// default accessor inference settings, as `SECURITY INVOKER`.
     pub fn analyze_body(body: &str, return_type: &str, language: &str) -> Option<FunctionSemantic> {
         let settings = AccessorInferenceSettings::default();
-        Self::analyze_body_with_settings(body, return_type, language, None, &settings)
+        Self::analyze_body_with_settings(
+            body,
+            return_type,
+            language,
+            &FunctionSecurity::Invoker,
+            &settings,
+        )
     }
 
     /// Attempt to classify a function body by simple heuristic analysis.
@@ -587,7 +593,7 @@ impl FunctionSemantic {
         body: &str,
         return_type: &str,
         _language: &str,
-        security: Option<&FunctionSecurity>,
+        security: &FunctionSecurity,
         settings: &AccessorInferenceSettings,
     ) -> Option<FunctionSemantic> {
         let body_lower = body.to_lowercase();
@@ -616,11 +622,8 @@ impl FunctionSemantic {
 /// but runs as the owner, which makes that value the owner's for every caller.
 ///
 /// A session setting is per session, so a `current_setting` body is unaffected.
-fn runs_as_owner_reading_effective_user(
-    body_lower: &str,
-    security: Option<&FunctionSecurity>,
-) -> bool {
-    matches!(security, Some(FunctionSecurity::Definer))
+fn runs_as_owner_reading_effective_user(body_lower: &str, security: &FunctionSecurity) -> bool {
+    matches!(security, FunctionSecurity::Definer)
         && contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(body_lower))
 }
 
@@ -668,7 +671,7 @@ mod tests {
                 body,
                 "UUID",
                 "sql",
-                Some(&FunctionSecurity::Definer),
+                &FunctionSecurity::Definer,
                 &settings,
             );
             assert!(
@@ -681,7 +684,7 @@ mod tests {
             "SELECT current_setting('app.current_user_id')::uuid",
             "UUID",
             "sql",
-            Some(&FunctionSecurity::Definer),
+            &FunctionSecurity::Definer,
             &settings,
         );
         assert!(
@@ -738,7 +741,7 @@ mod tests {
             "SELECT current_setting('app.from_user_id')::uuid",
             "UUID",
             "sql",
-            None,
+            &FunctionSecurity::Invoker,
             &settings,
         );
         assert!(
@@ -757,7 +760,7 @@ mod tests {
             "SELECT current_setting('custom.update_marker')::uuid",
             "UUID",
             "sql",
-            None,
+            &FunctionSecurity::Invoker,
             &settings,
         );
         assert!(
@@ -956,7 +959,7 @@ mod tests {
             "SELECT current_setting('tenant.current_user_uuid')::uuid",
             "UUID",
             "sql",
-            None,
+            &FunctionSecurity::Invoker,
             &settings,
         );
         assert!(

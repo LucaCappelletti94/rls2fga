@@ -1,7 +1,7 @@
 use super::dsl::*;
 use super::role_threshold::*;
 use super::*;
-use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
 
 fn role_registry(role_levels: &str, include_team: bool) -> FunctionRegistry {
     let mut registry = FunctionRegistry::new();
@@ -44,24 +44,22 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     parse_schema(&sql).expect("schema should parse")
 }
 
-fn classified_from_policy(
-    policy: sqlparser::ast::CreatePolicy,
+fn classified_from_policy<DB: DatabaseLike>(
+    policy: &DB::Policy,
+    db: &DB,
     using: Option<PatternClass>,
     with_check: Option<PatternClass>,
 ) -> ClassifiedPolicy {
-    ClassifiedPolicy {
-        policy,
-        using_classification: using.map(|pattern| ClassifiedExpr {
-            pattern,
-            confidence: ConfidenceLevel::A,
-        }),
-        with_check_classification: with_check.map(|pattern| ClassifiedExpr {
-            pattern,
-            confidence: ConfidenceLevel::A,
-        }),
-        using_was_filtered: false,
-        with_check_was_filtered: false,
-    }
+    let mut result = ClassifiedPolicy::from_policy(policy, db);
+    result.using_classification = using.map(|pattern| ClassifiedExpr {
+        pattern,
+        confidence: ConfidenceLevel::A,
+    });
+    result.with_check_classification = with_check.map(|pattern| ClassifiedExpr {
+        pattern,
+        confidence: ConfidenceLevel::A,
+    });
+    result
 }
 
 #[test]
@@ -403,9 +401,10 @@ fn build_schema_plan_adds_notes_for_non_public_to_and_empty_translation() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (TRUE);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let classified = classified_from_policy(
         policy,
+        &db,
         Some(PatternClass::Unknown {
             sql_text: "TRUE".to_string(),
             reason: "not supported".to_string(),
@@ -433,10 +432,11 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (owner_id = current_user);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let scope_relation = policy_scope_relation_name("docs_select");
     let classified = classified_from_policy(
         policy,
+        &db,
         Some(PatternClass::P3DirectOwnership {
             column: "owner_id".to_string(),
         }),
@@ -478,9 +478,10 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_update ON docs FOR UPDATE WITH CHECK (owner_id = current_user);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let classified = classified_from_policy(
         policy,
+        &db,
         None,
         Some(PatternClass::P3DirectOwnership {
             column: "owner_id".to_string(),
@@ -685,7 +686,8 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
     let mut policies = Vec::new();
     for policy in db.policies() {
         let classified = classified_from_policy(
-            policy.clone(),
+            policy,
+            &db,
             Some(PatternClass::P3DirectOwnership {
                 column: "owner_id".to_string(),
             }),
@@ -693,10 +695,7 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
         );
         if classified.name() == "docs_select" {
             let mut missing_table = classified.clone();
-            missing_table.policy.table_name =
-                sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
-                    sqlparser::ast::Ident::new("ghost_docs"),
-                )]);
+            missing_table.table = "ghost_docs".to_string();
             policies.push(missing_table);
         }
         policies.push(classified);
@@ -719,8 +718,8 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = current_user);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
-    let classified = classified_from_policy(policy, None, None);
+    let policy = db.policies().next().expect("policy should exist");
+    let classified = classified_from_policy(policy, &db, None, None);
     let registry = FunctionRegistry::new();
 
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
@@ -761,9 +760,10 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
     )
     .expect("schema should parse");
 
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let classified = classified_from_policy(
         policy,
+        &db,
         Some(PatternClass::P3DirectOwnership {
             column: "owner_id".to_string(),
         }),
@@ -787,9 +787,10 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
     let db = docs_db_with_policy(
         "CREATE POLICY docs_update ON docs FOR UPDATE USING (owner_id = current_user);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let classified = classified_from_policy(
         policy,
+        &db,
         Some(PatternClass::P3DirectOwnership {
             column: "owner_id".to_string(),
         }),
@@ -890,9 +891,9 @@ fn role_registry_helper_covers_team_branch() {
 
 #[test]
 fn action_target_helpers_cover_empty_arms() {
-    assert!(using_targets(&PolicyCommand::Insert).is_empty());
-    assert!(with_check_targets(&PolicyCommand::Select).is_empty());
-    assert!(with_check_targets(&PolicyCommand::Delete).is_empty());
+    assert!(using_targets(PolicyCommand::Insert).is_empty());
+    assert!(with_check_targets(PolicyCommand::Select).is_empty());
+    assert!(with_check_targets(PolicyCommand::Delete).is_empty());
 }
 
 #[test]
@@ -904,24 +905,20 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
         "CREATE POLICY docs_upd ON docs FOR UPDATE \
              USING (owner_id = current_user) WITH CHECK (owner_id = current_user);",
     );
-    let policy = db.policies().next().expect("policy should exist").clone();
+    let policy = db.policies().next().expect("policy should exist");
     let p3 = PatternClass::P3DirectOwnership {
         column: "owner_id".to_string(),
     };
     // Construct a policy where WITH CHECK has low confidence (B) and USING has high (A).
-    let mut classified = ClassifiedPolicy {
-        policy,
-        using_classification: Some(ClassifiedExpr {
-            pattern: p3.clone(),
-            confidence: ConfidenceLevel::A,
-        }),
-        with_check_classification: Some(ClassifiedExpr {
-            pattern: p3.clone(),
-            confidence: ConfidenceLevel::B,
-        }),
-        using_was_filtered: false,
-        with_check_was_filtered: false,
-    };
+    let mut classified = ClassifiedPolicy::from_policy(policy, &db);
+    classified.using_classification = Some(ClassifiedExpr {
+        pattern: p3.clone(),
+        confidence: ConfidenceLevel::A,
+    });
+    classified.with_check_classification = Some(ClassifiedExpr {
+        pattern: p3.clone(),
+        confidence: ConfidenceLevel::B,
+    });
     // Filter at level A: WITH CHECK (B) gets filtered out → with_check_was_filtered = true.
     let filtered = filter_policies_for_output(&[classified.clone()], ConfidenceLevel::A);
     let filtered_cp = filtered.first().expect("USING should survive at A");
@@ -1397,19 +1394,14 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
 
     let mut policies = Vec::new();
     for policy in db.policies() {
-        let table_name = policy.table_name.to_string();
-        let classified = ClassifiedPolicy {
-            policy: policy.clone(),
-            using_classification: Some(ClassifiedExpr {
-                pattern: PatternClass::P3DirectOwnership {
-                    column: "owner_id".to_string(),
-                },
-                confidence: ConfidenceLevel::A,
-            }),
-            with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
+        let table_name = policy.target_table_name().to_string();
+        let mut classified = ClassifiedPolicy::from_policy(policy, &db);
+        classified.using_classification = Some(ClassifiedExpr {
+            pattern: PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            },
+            confidence: ConfidenceLevel::A,
+        });
         policies.push((table_name, classified));
     }
 
@@ -1460,19 +1452,14 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     )
     .unwrap();
 
-    let policy = db.policies().next().expect("policy should exist").clone();
-    let classified = ClassifiedPolicy {
-        policy,
-        using_classification: Some(ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership {
-                column: "name".to_string(),
-            },
-            confidence: ConfidenceLevel::A,
-        }),
-        with_check_classification: None,
-        using_was_filtered: false,
-        with_check_was_filtered: false,
-    };
+    let policy = db.policies().next().expect("policy should exist");
+    let mut classified = ClassifiedPolicy::from_policy(policy, &db);
+    classified.using_classification = Some(ClassifiedExpr {
+        pattern: PatternClass::P3DirectOwnership {
+            column: "name".to_string(),
+        },
+        confidence: ConfidenceLevel::A,
+    });
     let registry = FunctionRegistry::new();
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 

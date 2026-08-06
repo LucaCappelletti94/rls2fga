@@ -15,7 +15,7 @@ use crate::generator::well_known::{
 use crate::parser::names::{
     lookup_table, split_qualified_identifier_parts, split_schema_and_relation,
 };
-use crate::parser::sql_parser::{ColumnLike, ParserDB, TableLike};
+use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use alloc::collections::BTreeSet;
 
 /// A generated tuple query with its descriptive comment.
@@ -55,9 +55,9 @@ pub fn format_tuples(tuples: &[TupleQuery]) -> String {
 }
 
 /// Generate tuple SQL queries from a pre-built [`SchemaPlan`].
-pub(crate) fn generate_tuple_queries_from_plan(
+pub(crate) fn generate_tuple_queries_from_plan<DB: DatabaseLike>(
     plan: &SchemaPlan,
-    db: &ParserDB,
+    db: &DB,
 ) -> Vec<TupleQuery> {
     let mut queries = Vec::new();
     let mut generated: BTreeSet<String> = BTreeSet::new();
@@ -183,10 +183,10 @@ fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
 ///
 /// Variants emitting objects of their own table MUST use `owner_type`: re-deriving
 /// a name from `table` files one table's tuples under a colliding table's type.
-fn render_tuple_source(
+fn render_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
-    db: &ParserDB,
+    db: &DB,
 ) -> Option<TupleQuery> {
     let mut query = sanitize_tuple_query(render_tuple_source_inner(source, owner_type, db)?);
     // Every query passes through here, so a new variant reaches the describer
@@ -195,10 +195,10 @@ fn render_tuple_source(
     Some(query)
 }
 
-pub(crate) fn render_tuple_source_inner(
+pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
-    db: &ParserDB,
+    db: &DB,
 ) -> Option<TupleQuery> {
     match source {
         TupleSource::DirectOwnership {
@@ -699,10 +699,10 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
     }
 }
 
-pub(crate) fn resolve_bridge_columns(
+pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     table: &str,
     fk_column: &str,
-    db: &ParserDB,
+    db: &DB,
 ) -> Option<(String, String)> {
     let table_info = lookup_table(db, table)?;
     let cols: Vec<String> = table_info
@@ -933,24 +933,20 @@ CREATE POLICY docs_update ON docs FOR ALL
         )
         .expect("schema should parse");
 
-        let policy = db.policies().next().expect("policy should exist").clone();
-        let classified = ClassifiedPolicy {
-            policy,
-            using_classification: Some(ClassifiedExpr {
-                pattern: PatternClass::P3DirectOwnership {
-                    column: "owner_id".to_string(),
-                },
-                confidence: ConfidenceLevel::A,
-            }),
-            with_check_classification: Some(ClassifiedExpr {
-                pattern: PatternClass::P6BooleanFlag {
-                    column: "is_public".to_string(),
-                },
-                confidence: ConfidenceLevel::A,
-            }),
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        };
+        let policy = db.policies().next().expect("policy should exist");
+        let mut classified = ClassifiedPolicy::from_policy(policy, &db);
+        classified.using_classification = Some(ClassifiedExpr {
+            pattern: PatternClass::P3DirectOwnership {
+                column: "owner_id".to_string(),
+            },
+            confidence: ConfidenceLevel::A,
+        });
+        classified.with_check_classification = Some(ClassifiedExpr {
+            pattern: PatternClass::P6BooleanFlag {
+                column: "is_public".to_string(),
+            },
+            confidence: ConfidenceLevel::A,
+        });
 
         let queries = Translation::plan(
             vec![classified],

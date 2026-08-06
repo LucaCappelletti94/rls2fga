@@ -1,6 +1,6 @@
 use super::subquery::*;
 use super::*;
-use crate::parser::sql_parser::parse_schema;
+use crate::parser::sql_parser::{parse_schema, ParserDB};
 use sqlparser::ast::{SetExpr, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -75,7 +75,7 @@ fn recognize_p1_supports_gt_and_rejects_unknown_functions() {
     let expr = parse_expr("role_level(auth_current_user_id(), id) > 2");
 
     let classified =
-        recognize_p1(&expr, &db, &registry, &PolicyCommand::Delete).expect("expected P1 match");
+        recognize_p1(&expr, &db, &registry, PolicyCommand::Delete).expect("expected P1 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P1NumericThreshold {
@@ -87,7 +87,7 @@ fn recognize_p1_supports_gt_and_rejects_unknown_functions() {
     ));
 
     let unknown = parse_expr("unknown_role(auth_current_user_id(), id) >= 1");
-    assert!(recognize_p1(&unknown, &db, &registry, &PolicyCommand::Select).is_none());
+    assert!(recognize_p1(&unknown, &db, &registry, PolicyCommand::Select).is_none());
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn recognize_p1_accepts_reversed_comparators() {
 
     let gte = parse_expr("2 <= role_level(auth_current_user_id(), id)");
     let classified_gte =
-        recognize_p1(&gte, &db, &registry, &PolicyCommand::Select).expect("expected P1 match");
+        recognize_p1(&gte, &db, &registry, PolicyCommand::Select).expect("expected P1 match");
     assert!(matches!(
         &classified_gte.pattern,
         PatternClass::P1NumericThreshold {
@@ -109,7 +109,7 @@ fn recognize_p1_accepts_reversed_comparators() {
 
     let gt = parse_expr("2 < role_level(auth_current_user_id(), id)");
     let classified_gt =
-        recognize_p1(&gt, &db, &registry, &PolicyCommand::Delete).expect("expected P1 match");
+        recognize_p1(&gt, &db, &registry, PolicyCommand::Delete).expect("expected P1 match");
     assert!(matches!(
         &classified_gt.pattern,
         PatternClass::P1NumericThreshold {
@@ -1225,10 +1225,10 @@ fn recognize_p1_rejects_non_numeric_threshold_expressions() {
     let registry = registry_with_role_level();
 
     let bool_threshold = parse_expr("role_level(auth_current_user_id(), id) >= TRUE");
-    assert!(recognize_p1(&bool_threshold, &db, &registry, &PolicyCommand::Select).is_none());
+    assert!(recognize_p1(&bool_threshold, &db, &registry, PolicyCommand::Select).is_none());
 
     let non_value_threshold = parse_expr("role_level(auth_current_user_id(), id) >= owner_id");
-    assert!(recognize_p1(&non_value_threshold, &db, &registry, &PolicyCommand::Select).is_none());
+    assert!(recognize_p1(&non_value_threshold, &db, &registry, PolicyCommand::Select).is_none());
 }
 
 #[test]
@@ -1250,7 +1250,7 @@ fn recognize_p1_p2_reject_when_no_current_user_argument() {
 
     let p1_no_user = parse_expr("role_level(owner_id, id) >= 2");
     assert!(
-        recognize_p1(&p1_no_user, &db, &registry, &PolicyCommand::Select).is_none(),
+        recognize_p1(&p1_no_user, &db, &registry, PolicyCommand::Select).is_none(),
         "P1 must reject role_level without a current-user argument"
     );
 
@@ -1564,7 +1564,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
              )",
     );
 
-    let classified = recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select)
+    let classified = recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select)
         .expect("expected P5 classification");
     assert!(matches!(
         classified.pattern,
@@ -1595,7 +1595,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
              )",
     );
 
-    let classified = recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select)
+    let classified = recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select)
         .expect("expected P5 classification");
     assert!(matches!(
         classified.pattern,
@@ -1733,7 +1733,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
     let expr = parse_expr(
             "NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user)",
         );
-    assert!(recognize_p5(&expr, &db, &registry, "tasks", &PolicyCommand::Select).is_none());
+    assert!(recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select).is_none());
 }
 
 #[test]
@@ -2466,7 +2466,7 @@ fn diagnose_p5_returns_conflicting_join_message() {
     let db = parse_schema(
             r"
 CREATE TABLE users(id UUID PRIMARY KEY);
-CREATE TABLE projects(id UUID PRIMARY KEY, code UUID, owner_id UUID REFERENCES users(id));
+CREATE TABLE projects(id UUID PRIMARY KEY, code UUID UNIQUE, owner_id UUID REFERENCES users(id));
 CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id), project_code UUID REFERENCES projects(code));
 ",
         )
@@ -2528,7 +2528,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         &db,
         &FunctionRegistry::new(),
         "tasks",
-        &PolicyCommand::Select,
+        PolicyCommand::Select,
     );
     assert!(
         result.is_none(),

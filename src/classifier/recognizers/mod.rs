@@ -14,7 +14,7 @@ use crate::parser::names::{
     lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
     split_schema_and_relation, stored_ident_name,
 };
-use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, TableLike};
+use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableLike};
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
@@ -30,11 +30,11 @@ pub use subquery::{
 };
 
 /// Recognize P1: `role_fn(user, resource) >= N`, in either operand order.
-pub fn recognize_p1(
+pub fn recognize_p1<DB: DatabaseLike>(
     expr: &Expr,
-    _db: &ParserDB,
+    _db: &DB,
     registry: &FunctionRegistry,
-    command: &PolicyCommand,
+    command: PolicyCommand,
 ) -> Option<ClassifiedExpr> {
     if let Expr::BinaryOp { left, op, right } = expr {
         let (func_expr, threshold_expr, operator) = match op {
@@ -61,7 +61,7 @@ pub fn recognize_p1(
                 function_name: func_name,
                 operator,
                 threshold,
-                command: command.clone(),
+                command,
             },
             confidence: ConfidenceLevel::A,
         });
@@ -70,9 +70,9 @@ pub fn recognize_p1(
 }
 
 /// Role name IN-list or `pg_has_role` built-in.
-pub fn recognize_p2(
+pub fn recognize_p2<DB: DatabaseLike>(
     expr: &Expr,
-    _db: &ParserDB,
+    _db: &DB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     if let Expr::InList {
@@ -238,9 +238,9 @@ fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Vec<St
 }
 
 /// Direct ownership check.
-pub fn recognize_p3(
+pub fn recognize_p3<DB: DatabaseLike>(
     expr: &Expr,
-    _db: &ParserDB,
+    _db: &DB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     let (left, right) = match expr {
@@ -533,9 +533,9 @@ fn json_literal_key(expr: &Expr) -> Option<String> {
 }
 
 /// Constant boolean policy.
-pub fn recognize_p10_constant_bool(
+pub fn recognize_p10_constant_bool<DB: DatabaseLike>(
     expr: &Expr,
-    _db: &ParserDB,
+    _db: &DB,
     _registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     constant_bool_value(expr).map(|value| ClassifiedExpr {
@@ -545,9 +545,9 @@ pub fn recognize_p10_constant_bool(
 }
 
 /// Boolean flag check.
-pub fn recognize_p6(
+pub fn recognize_p6<DB: DatabaseLike>(
     expr: &Expr,
-    _db: &ParserDB,
+    _db: &DB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     /// Pick confidence: A when the column is explicitly registered, B otherwise.

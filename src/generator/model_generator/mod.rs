@@ -31,7 +31,7 @@ use crate::parser::names::{
     same_identifier, stable_hex_suffix,
 };
 use crate::parser::sql_parser::{
-    ColumnLike, DatabaseLike, ForeignKeyLike, ParserDB, RoleLike, TableLike,
+    ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
 };
 use sqlparser::ast::{Expr, Function, FunctionArguments};
 
@@ -338,9 +338,9 @@ pub(crate) fn render_dsl_from_plan(plan: &SchemaPlan) -> String {
     render_dsl(&plan.types, &plan.conditions)
 }
 
-pub(crate) fn build_filtered_schema_plan(
+pub(crate) fn build_filtered_schema_plan<DB: DatabaseLike>(
     policies: &[ClassifiedPolicy],
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
     settings: &GeneratorSettings,
@@ -349,9 +349,9 @@ pub(crate) fn build_filtered_schema_plan(
     build_schema_plan(&filtered, db, registry, settings)
 }
 
-pub(crate) fn build_schema_plan(
+pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     policies: &[ClassifiedPolicy],
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
 ) -> SchemaPlan {
@@ -377,7 +377,7 @@ pub(crate) fn build_schema_plan(
     let mut group_keys: BTreeMap<String, String> = BTreeMap::new();
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
-        let key = table_group_key(db, cp.table_name(), &mut group_keys);
+        let key = table_group_key(db, cp.table_name().to_string(), &mut group_keys);
         by_table.entry(key).or_default().push(cp);
     }
 
@@ -403,13 +403,12 @@ pub(crate) fn build_schema_plan(
     // The schema's own permissive policies under the same key, since the filtered
     // set cannot say whether a policy exists at all. Splitting the two keys would
     // tell the operator RLS denies a command its own policy grants.
-    let mut declared_permissive: BTreeMap<String, Vec<&<ParserDB as DatabaseLike>::Policy>> =
-        BTreeMap::new();
+    let mut declared_permissive: BTreeMap<String, Vec<&DB::Policy>> = BTreeMap::new();
     for policy in db.policies() {
         if derive_policy_mode(policy) != PolicyMode::Permissive {
             continue;
         }
-        let key = table_group_key(db, policy.table_name.to_string(), &mut group_keys);
+        let key = table_group_key(db, policy.target_table_name().to_string(), &mut group_keys);
         declared_permissive.entry(key).or_default().push(policy);
     }
 
@@ -452,7 +451,7 @@ pub(crate) fn build_schema_plan(
         for cp in table_policies {
             // A policy the schema gives no clause constrains nothing, so it must not
             // mint a scope relation or ask for tuples either.
-            if cp.policy.using.is_none() && cp.policy.with_check.is_none() {
+            if cp.using.is_none() && cp.with_check.is_none() {
                 continue;
             }
             if let Some(ref c) = cp.using_classification {
@@ -473,11 +472,11 @@ pub(crate) fn build_schema_plan(
                     &mut all_types,
                     &source_table_name,
                     &relation,
-                    &scoped_roles,
+                    scoped_roles,
                     cp.name(),
                     TranslationNote::PolicyRoleScope {
                         policy: cp.name().to_string(),
-                        roles: scoped_roles.clone(),
+                        roles: scoped_roles.to_vec(),
                         relation: relation.clone(),
                     },
                     db,
@@ -620,12 +619,12 @@ pub(crate) fn build_schema_plan(
 
         // An undefined action relation reads as "the consumer decides", which is
         // how RLS coverage gaps become open access.
-        let declared_here: &[&<ParserDB as DatabaseLike>::Policy] = declared_permissive
+        let declared_here: &[&DB::Policy] = declared_permissive
             .get(&source_table_name)
             .map_or(&[], Vec::as_slice);
         let uncovered = fill_uncovered_actions_with_deny(&mut table_plan);
         if !uncovered.is_empty() {
-            let covered_by_schema = commands_a_permissive_policy_covers(declared_here);
+            let covered_by_schema = commands_a_permissive_policy_covers(declared_here, db);
             let (dropped, unpolicied): (Vec<&str>, Vec<&str>) = uncovered
                 .into_iter()
                 .partition(|command| covered_by_schema.contains(command));
@@ -643,7 +642,7 @@ pub(crate) fn build_schema_plan(
             }
         }
 
-        for (policy_name, commands, clause) in policies_missing_a_clause(declared_here) {
+        for (policy_name, commands, clause) in policies_missing_a_clause(declared_here, db) {
             notes.push(TranslationNote::PolicyClauseAbsent {
                 policy: policy_name,
                 commands,
@@ -781,7 +780,7 @@ fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
 /// The table's owner is the third mechanism and is not reported by name: the upstream
 /// parser discards `ALTER TABLE ... OWNER TO`, so only the absence of `FORCE` is
 /// visible. See `docs/upstream/`.
-fn report_row_level_security_bypasses(db: &ParserDB, notes: &mut Vec<TranslationNote>) {
+fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec<TranslationNote>) {
     for role in db.roles() {
         if role.can_bypass_rls() {
             notes.push(TranslationNote::RoleBypassesPolicies {
@@ -1083,7 +1082,7 @@ fn scoped_policy_expr(expr: UsersetExpr, scope_relation: &str) -> UsersetExpr {
     ])
 }
 
-fn using_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
+fn using_targets(command: PolicyCommand) -> Vec<ActionTarget> {
     match command {
         PolicyCommand::Select => vec![ActionTarget::Select],
         PolicyCommand::Insert => vec![],
@@ -1097,7 +1096,7 @@ fn using_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
     }
 }
 
-fn with_check_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
+fn with_check_targets(command: PolicyCommand) -> Vec<ActionTarget> {
     match command {
         PolicyCommand::Insert => vec![ActionTarget::Insert],
         PolicyCommand::Update => vec![ActionTarget::UpdateCheck],
@@ -1106,7 +1105,7 @@ fn with_check_targets(command: &PolicyCommand) -> Vec<ActionTarget> {
     }
 }
 
-fn policy_uses_using_for_missing_with_check(command: &PolicyCommand) -> bool {
+fn policy_uses_using_for_missing_with_check(command: PolicyCommand) -> bool {
     matches!(
         command,
         PolicyCommand::All | PolicyCommand::Update | PolicyCommand::Insert
@@ -1144,9 +1143,9 @@ fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
 
 /// Whether reading `type_name` would expand this policy again, which `PostgreSQL`
 /// rejects as infinite recursion.
-fn policy_recurses_on_reads(
+fn policy_recurses_on_reads<DB: DatabaseLike>(
     cp: &ClassifiedPolicy,
-    db: &ParserDB,
+    db: &DB,
     table_types: &TableTypes,
     type_name: &str,
 ) -> bool {
@@ -1154,14 +1153,18 @@ fn policy_recurses_on_reads(
         return false;
     }
     // Only the read side matters: a WITH CHECK clause guards new rows.
-    cp.policy
-        .using
+    cp.using
         .as_ref()
         .is_some_and(|using| expr_reads_table(using, db, table_types, type_name))
 }
 
 /// Whether any relation the expression reads resolves to `type_name`.
-fn expr_reads_table(expr: &Expr, db: &ParserDB, table_types: &TableTypes, type_name: &str) -> bool {
+fn expr_reads_table<DB: DatabaseLike>(
+    expr: &Expr,
+    db: &DB,
+    table_types: &TableTypes,
+    type_name: &str,
+) -> bool {
     reads_relation(expr, |name| table_types.resolve(db, name) == type_name)
 }
 
@@ -1177,7 +1180,7 @@ enum JoinTableReadability {
     Unreadable,
 }
 
-fn join_table_readability(join_table: &str, db: &ParserDB) -> JoinTableReadability {
+fn join_table_readability<DB: DatabaseLike>(join_table: &str, db: &DB) -> JoinTableReadability {
     let Some(table) = lookup_table(db, join_table) else {
         return JoinTableReadability::Open;
     };
@@ -1192,10 +1195,10 @@ fn join_table_readability(join_table: &str, db: &ParserDB) -> JoinTableReadabili
         .policies(db)
         .into_iter()
         .flatten()
-        .filter(|p| policy_grants_select(p))
+        .filter(|p| policy_grants_select(p, db))
     {
         grants_read = true;
-        let scoped = derive_scoped_roles(policy);
+        let scoped = derive_scoped_roles(policy, db);
         if scoped.is_empty() {
             return JoinTableReadability::Guarded { roles: Vec::new() };
         }
@@ -1218,25 +1221,23 @@ where
     let restrictive = cp.mode() == PolicyMode::Restrictive;
 
     let dropped_using = (restrictive && cp.using_was_filtered)
-        .then(|| dropped_restrictive_expr(cp, cp.policy.using.as_ref().map(ToString::to_string)));
+        .then(|| dropped_restrictive_expr(cp, cp.using.as_ref().map(ToString::to_string)));
     if let Some(using) = cp.using_classification.as_ref().or(dropped_using.as_ref()) {
-        for target in using_targets(&cp.command()) {
+        for target in using_targets(cp.command()) {
             f(target, using);
         }
     }
 
     // Mirror USING → WITH CHECK only when the SQL had no WITH CHECK at all. A filtered
     // one falls closed instead.
-    let dropped_with_check = (restrictive && cp.with_check_was_filtered).then(|| {
-        dropped_restrictive_expr(cp, cp.policy.with_check.as_ref().map(ToString::to_string))
-    });
+    let dropped_with_check = (restrictive && cp.with_check_was_filtered)
+        .then(|| dropped_restrictive_expr(cp, cp.with_check.as_ref().map(ToString::to_string)));
     let with_check_pattern = cp
         .with_check_classification
         .as_ref()
         .or(dropped_with_check.as_ref())
         .or_else(|| {
-            if !cp.with_check_was_filtered
-                && policy_uses_using_for_missing_with_check(&cp.command())
+            if !cp.with_check_was_filtered && policy_uses_using_for_missing_with_check(cp.command())
             {
                 cp.using_classification.as_ref()
             } else {
@@ -1245,7 +1246,7 @@ where
         });
 
     if let Some(with_check) = with_check_pattern {
-        for target in with_check_targets(&cp.command()) {
+        for target in with_check_targets(cp.command()) {
             f(target, with_check);
         }
     }
@@ -1280,7 +1281,7 @@ fn push_action_expr(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn register_pg_role_scope(
+fn register_pg_role_scope<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     source_table: &str,
@@ -1288,7 +1289,7 @@ fn register_pg_role_scope(
     role_names: &[String],
     policy_name: &str,
     scope_note: TranslationNote,
-    db: &ParserDB,
+    db: &DB,
     notes: &mut Vec<TranslationNote>,
     missing_object_what: &str,
 ) {
@@ -1379,7 +1380,7 @@ fn quoted_for_lookup(part: &str) -> String {
 }
 
 /// Schema-qualified stored name, in the spelling `lookup_table` resolves.
-fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
+fn qualified_table_name<T: TableLike>(table: &T) -> String {
     let relation = quoted_for_lookup(&table.stored_table_name());
     match table.stored_table_schema() {
         Some(schema) => format!("{}.{relation}", quoted_for_lookup(&schema)),
@@ -1390,7 +1391,11 @@ fn qualified_table_name(table: &<ParserDB as DatabaseLike>::Table) -> String {
 /// Key grouping every spelling of one table together, memoized in `cache` because
 /// resolving a spelling walks the tables. Both groupings call this, so the filtered
 /// classifications and the schema's own policies cannot land under different keys.
-fn table_group_key(db: &ParserDB, named: String, cache: &mut BTreeMap<String, String>) -> String {
+fn table_group_key<DB: DatabaseLike>(
+    db: &DB,
+    named: String,
+    cache: &mut BTreeMap<String, String>,
+) -> String {
     if let Some(key) = cache.get(&named) {
         return key.clone();
     }
@@ -1403,7 +1408,7 @@ fn table_group_key(db: &ParserDB, named: String, cache: &mut BTreeMap<String, St
 }
 
 /// Identity that matches two table references however the policy spelled them.
-fn table_identity(table: &<ParserDB as DatabaseLike>::Table) -> (Option<String>, String) {
+fn table_identity<T: TableLike>(table: &T) -> (Option<String>, String) {
     (
         table.table_schema().map(ToString::to_string),
         table.table_name().to_string(),
@@ -1438,11 +1443,11 @@ impl TableTypes {
     /// Derived from the schema alone, never from which policies survived filtering,
     /// so names do not move with the confidence threshold. Tables carrying policies
     /// claim their canonical name first.
-    fn assign(db: &ParserDB, notes: &mut Vec<TranslationNote>) -> Self {
+    fn assign<DB: DatabaseLike>(db: &DB, notes: &mut Vec<TranslationNote>) -> Self {
         let mut types = Self::default();
         let mut policied: BTreeSet<(Option<String>, String)> = BTreeSet::new();
         for policy in db.policies() {
-            if let Some(table) = lookup_table(db, &policy.table_name.to_string()) {
+            if let Some(table) = lookup_table(db, &policy.target_table_name().to_string()) {
                 policied.insert(table_identity(table));
             }
         }
@@ -1496,7 +1501,7 @@ impl TableTypes {
     }
 
     /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
-    fn get(&self, db: &ParserDB, table: &str) -> Option<&str> {
+    fn get<DB: DatabaseLike>(&self, db: &DB, table: &str) -> Option<&str> {
         let identity = table_identity(lookup_table(db, table)?);
         self.by_identity.get(&identity).map(String::as_str)
     }
@@ -1505,7 +1510,7 @@ impl TableTypes {
     /// needs a type for the child to point at. The derived name steps aside when
     /// another table already owns it, so the child cannot inherit that table's
     /// permissions.
-    fn resolve(&self, db: &ParserDB, table: &str) -> String {
+    fn resolve<DB: DatabaseLike>(&self, db: &DB, table: &str) -> String {
         let identity = lookup_table(db, table).map(table_identity);
         if let Some(assigned) = identity.as_ref().and_then(|id| self.by_identity.get(id)) {
             return assigned.clone();
@@ -1572,16 +1577,17 @@ fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
 
 /// Action targets a policy's stored clauses reach, which is the routing
 /// `for_each_policy_target_expr` performs once those clauses are classified.
-fn policy_clause_targets(policy: &sqlparser::ast::CreatePolicy) -> BTreeSet<ActionTarget> {
-    let command = derive_policy_command(policy.command.as_ref());
+fn policy_clause_targets<P: PolicyLike>(policy: &P, db: &P::DB) -> BTreeSet<ActionTarget> {
+    let command = PolicyCommand::from(policy.command());
     let mut targets = BTreeSet::new();
-    if policy.using.is_some() {
-        targets.extend(using_targets(&command));
+    if policy.using_expression(db).is_some() {
+        targets.extend(using_targets(command));
     }
-    if policy.with_check.is_some()
-        || (policy.using.is_some() && policy_uses_using_for_missing_with_check(&command))
+    if policy.check_expression(db).is_some()
+        || (policy.using_expression(db).is_some()
+            && policy_uses_using_for_missing_with_check(command))
     {
-        targets.extend(with_check_targets(&command));
+        targets.extend(with_check_targets(command));
     }
     targets
 }
@@ -1589,12 +1595,13 @@ fn policy_clause_targets(policy: &sqlparser::ast::CreatePolicy) -> BTreeSet<Acti
 /// Commands the schema's permissive policies on one table cover, whatever their
 /// confidence. The filtered policy set cannot answer this, and the answer decides
 /// whether a denied command is a coverage gap in `PostgreSQL` or in the translation.
-fn commands_a_permissive_policy_covers(
-    declared: &[&<ParserDB as DatabaseLike>::Policy],
+fn commands_a_permissive_policy_covers<P: PolicyLike>(
+    declared: &[&P],
+    db: &P::DB,
 ) -> BTreeSet<&'static str> {
     let mut commands = BTreeSet::new();
     for policy in declared {
-        let reached = policy_clause_targets(policy);
+        let reached = policy_clause_targets(*policy, db);
         commands.extend(
             ACTION_RELATION_COMMANDS
                 .into_iter()
@@ -1608,17 +1615,18 @@ fn commands_a_permissive_policy_covers(
 /// Permissive policies that name a command without storing the clause it reads,
 /// as `(policy, commands, clause)`. `PostgreSQL` finds no qual for those, so the
 /// policy admits nothing and the schema reads as if it covered them.
-fn policies_missing_a_clause(
-    declared: &[&<ParserDB as DatabaseLike>::Policy],
+fn policies_missing_a_clause<P: PolicyLike>(
+    declared: &[&P],
+    db: &P::DB,
 ) -> Vec<(String, String, &'static str)> {
     let mut missing = Vec::new();
     for policy in declared {
-        if policy.using.is_some() {
+        if policy.using_expression(db).is_some() {
             continue;
         }
-        let command = derive_policy_command(policy.command.as_ref());
-        let checks: BTreeSet<ActionTarget> = with_check_targets(&command).into_iter().collect();
-        let applies: BTreeSet<ActionTarget> = using_targets(&command)
+        let command = PolicyCommand::from(policy.command());
+        let checks: BTreeSet<ActionTarget> = with_check_targets(command).into_iter().collect();
+        let applies: BTreeSet<ActionTarget> = using_targets(command)
             .into_iter()
             .chain(checks.iter().copied())
             .collect();
@@ -1639,11 +1647,11 @@ fn policies_missing_a_clause(
         }
 
         if !needs_using.is_empty() {
-            missing.push((policy.name.value.clone(), needs_using.join(", "), "USING"));
+            missing.push((policy.name().to_string(), needs_using.join(", "), "USING"));
         }
-        if !needs_check.is_empty() && policy.with_check.is_none() {
+        if !needs_check.is_empty() && policy.check_expression(db).is_none() {
             missing.push((
-                policy.name.value.clone(),
+                policy.name().to_string(),
                 needs_check.join(", "),
                 "WITH CHECK",
             ));
@@ -1743,13 +1751,13 @@ fn define_blanket_update_relations(all_types: &mut BTreeMap<String, TypePlan>) {
 /// relations per role name and emits `PolicyScope` tuple sources, mirroring the
 /// pattern used for policy-level `TO` role scoping.
 #[allow(clippy::too_many_arguments)]
-fn handle_p2_role_gate(
+fn handle_p2_role_gate<DB: DatabaseLike>(
     role_names: &[String],
     policy_name: &str,
     source_table: &str,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
-    db: &ParserDB,
+    db: &DB,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
     if role_names.is_empty() {
@@ -1797,12 +1805,12 @@ fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
 ///
 /// Returns `None` when the row cannot be identified or the column's type has no
 /// condition parameter type, so the caller falls back to closing the policy.
-fn conditional_gate_expr(
+fn conditional_gate_expr<DB: DatabaseLike>(
     request: &AttributeRequestPredicate,
     policy_name: &str,
     source_table: &str,
     table_plan: &mut TypePlan,
-    db: &ParserDB,
+    db: &DB,
     request_time_parameter: &str,
 ) -> Option<UsersetExpr> {
     let pk_col = resolve_pk_column(source_table, db)?;
@@ -1864,7 +1872,11 @@ fn condition_operator(operator: AttributeOperator) -> &'static str {
 
 /// The condition parameter type for a column, or `None` when the schema does not say
 /// or the type has no `OpenFGA` counterpart.
-fn condition_parameter_type(table: &str, column: &str, db: &ParserDB) -> Option<&'static str> {
+fn condition_parameter_type<DB: DatabaseLike>(
+    table: &str,
+    column: &str,
+    db: &DB,
+) -> Option<&'static str> {
     let meta = lookup_table(db, table)?;
     let declared = meta
         .columns(db)
@@ -1933,7 +1945,7 @@ fn pattern_to_expr(
 /// always reads the parent's SELECT relation, and the caller files the expression
 /// under the right action.
 #[allow(clippy::too_many_arguments)]
-fn translate_pattern(
+fn translate_pattern<DB: DatabaseLike>(
     pattern: &PatternClass,
     policy_name: &str,
     table_plan: &mut TypePlan,
@@ -1941,7 +1953,7 @@ fn translate_pattern(
     registry: &FunctionRegistry,
     notes: &mut Vec<TranslationNote>,
     hints: &RoleThresholdResourceHints,
-    db: &ParserDB,
+    db: &DB,
     table_types: &TableTypes,
     source_table: &str,
     settings: &GeneratorSettings,
@@ -2601,7 +2613,7 @@ struct RoleThresholdPrepared {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_role_threshold_translation(
+fn prepare_role_threshold_translation<DB: DatabaseLike>(
     function_name: &str,
     function_kind_label: &str,
     policy_name: &str,
@@ -2610,7 +2622,7 @@ fn prepare_role_threshold_translation(
     all_types: &mut BTreeMap<String, TypePlan>,
     registry: &FunctionRegistry,
     hints: &RoleThresholdResourceHints,
-    db: &ParserDB,
+    db: &DB,
     notes: &mut Vec<TranslationNote>,
 ) -> Option<RoleThresholdPrepared> {
     let Some(FunctionSemantic::RoleThreshold {
@@ -2647,7 +2659,7 @@ fn prepare_role_threshold_translation(
 }
 
 /// Explain why `source_table` has no usable `OpenFGA` object identifier.
-fn missing_object_identifier_reason(source_table: &str, db: &ParserDB) -> String {
+fn missing_object_identifier_reason<DB: DatabaseLike>(source_table: &str, db: &DB) -> String {
     if let Some(columns) = composite_primary_key_columns(source_table, db) {
         return format!(
             "composite primary key ({}) leaves no single-column object identifier",
@@ -2662,11 +2674,11 @@ fn missing_object_identifier_reason(source_table: &str, db: &ParserDB) -> String
     "missing object identifier column".to_string()
 }
 
-fn add_missing_object_identifier_note(
+fn add_missing_object_identifier_note<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
     what: &str,
-    db: &ParserDB,
+    db: &DB,
 ) {
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::NoObjectIdentifier {
@@ -2677,11 +2689,11 @@ fn add_missing_object_identifier_note(
     });
 }
 
-fn add_missing_bridge_note(
+fn add_missing_bridge_note<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
     parent_type: &str,
-    db: &ParserDB,
+    db: &DB,
 ) {
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::NoBridge {
@@ -2826,7 +2838,7 @@ fn exact_roles_expr(
     combine_union(children)
 }
 
-fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
+fn resolve_owner_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option<String> {
     let table_info = lookup_table(db, table)?;
     for col in table_info.columns(db).into_iter().flatten() {
         let name = col.stored_column_name();
@@ -2856,8 +2868,8 @@ fn resolve_owner_column(table: &str, db: &ParserDB) -> Option<String> {
 
 /// Returns the name of the table that `fk_column` in `table` references, or
 /// `None` if no matching FK constraint is found in the schema.
-fn referenced_table_for_fk_col<'db>(
-    db: &'db ParserDB,
+fn referenced_table_for_fk_col<'db, DB: DatabaseLike>(
+    db: &'db DB,
     table: &str,
     fk_column: &str,
 ) -> Option<&'db str> {
@@ -2875,8 +2887,8 @@ fn referenced_table_for_fk_col<'db>(
     None
 }
 
-fn resolve_principal_info(
-    db: &ParserDB,
+fn resolve_principal_info<DB: DatabaseLike>(
+    db: &DB,
     configured_table: Option<&str>,
     configured_pk_col: Option<&str>,
     fallback_candidates: &[&str],

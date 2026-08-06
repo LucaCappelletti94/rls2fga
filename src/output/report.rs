@@ -215,10 +215,13 @@ fn format_notes(pattern: &crate::classifier::patterns::PatternClass) -> String {
 mod tests {
     use super::*;
     use crate::classifier::patterns::*;
-    use crate::generator::notes::TranslationNote;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
 
-    fn policy_with_name(name: &str) -> sqlparser::ast::CreatePolicy {
+    fn classified_policy(
+        name: &str,
+        using: Option<PatternClass>,
+        with_check: Option<PatternClass>,
+    ) -> ClassifiedPolicy {
         let sql = format!(
             "
 CREATE TABLE docs(id uuid primary key);
@@ -227,28 +230,17 @@ CREATE POLICY {name} ON docs USING (TRUE);
 "
         );
         let db = parse_schema(&sql).expect("schema should parse");
-        let policy = db.policies().next().expect("expected a policy").clone();
-        policy
-    }
-
-    fn classified_policy(
-        name: &str,
-        using: Option<PatternClass>,
-        with_check: Option<PatternClass>,
-    ) -> ClassifiedPolicy {
-        ClassifiedPolicy {
-            policy: policy_with_name(name),
-            using_classification: using.map(|pattern| ClassifiedExpr {
-                pattern,
-                confidence: ConfidenceLevel::A,
-            }),
-            with_check_classification: with_check.map(|pattern| ClassifiedExpr {
-                pattern,
-                confidence: ConfidenceLevel::C,
-            }),
-            using_was_filtered: false,
-            with_check_was_filtered: false,
-        }
+        let policy = db.policies().next().expect("expected a policy");
+        let mut result = ClassifiedPolicy::from_policy(policy, &db);
+        result.using_classification = using.map(|pattern| ClassifiedExpr {
+            pattern,
+            confidence: ConfidenceLevel::A,
+        });
+        result.with_check_classification = with_check.map(|pattern| ClassifiedExpr {
+            pattern,
+            confidence: ConfidenceLevel::C,
+        });
+        result
     }
 
     #[test]

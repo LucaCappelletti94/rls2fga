@@ -32,11 +32,6 @@ impl From<sql_traits::errors::Error> for SchemaError {
 
 /// Parse SQL DDL into a [`ParserDB`].
 ///
-/// Rejects schemas whose foreign keys reference a table or column absent from
-/// the input. Downstream FK-based inference resolves referenced tables eagerly
-/// (`sql-traits` panics on an orphaned reference), so validating here keeps the
-/// whole translation pipeline total on untrusted input.
-///
 /// References to objects the input never creates are read under
 /// [`AccessResolution::OpenWorld`]. rls2fga models policies rather than
 /// privileges, and roles are cluster objects a schema dump does not emit, so a
@@ -44,12 +39,13 @@ impl From<sql_traits::errors::Error> for SchemaError {
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError::Schema`] when the schema does not parse or does not
-/// validate.
+/// Returns [`SchemaError::Schema`] when the schema does not parse, and when it
+/// describes something `PostgreSQL` would refuse: a foreign key whose target
+/// table, target column or unique constraint is absent, or a policy on a table
+/// the search path does not reach. Those refusals are what keeps the rest of the
+/// pipeline total, since it resolves references eagerly.
 pub fn parse_schema(sql: &str) -> Result<ParserDB, SchemaError> {
-    let db = ParseOptions::default()
+    Ok(ParseOptions::default()
         .with_access_resolution(AccessResolution::OpenWorld)
-        .parse::<PostgreSqlDialect>(sql)?;
-    db.validate_foreign_key_targets()?;
-    Ok(db)
+        .parse::<PostgreSqlDialect>(sql)?)
 }

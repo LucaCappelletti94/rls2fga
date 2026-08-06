@@ -17,7 +17,7 @@ use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
 use crate::generator::records::{RecordDerivation, RecordDescription, ValueSource};
 use crate::generator::well_known::USER_TYPE;
-use crate::parser::sql_parser::ParserDB;
+use crate::parser::sql_parser::DatabaseLike;
 
 /// One relation's shapes and answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,7 @@ pub struct RelationShapes {
 }
 
 /// Report every relation of the emitted model.
-pub(crate) fn relation_shapes(plan: &SchemaPlan, db: &ParserDB) -> Vec<RelationShapes> {
+pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<RelationShapes> {
     let sources = index_sources(plan);
 
     let mut out = Vec::new();
@@ -88,11 +88,11 @@ type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'
 /// says the two are the same. Scoping it by owner type would add nothing: a source
 /// keying its objects on the owning type only ever reaches the bucket named after
 /// that type.
-fn shapes_filling(
+fn shapes_filling<DB: DatabaseLike>(
     type_name: &str,
     relation: &str,
     sources: &SourceIndex<'_>,
-    db: &ParserDB,
+    db: &DB,
 ) -> Vec<RecordDescription> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
@@ -117,12 +117,12 @@ fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &str) -> Option<&'plan T
         .find(|candidate| candidate.type_name == type_name)
 }
 
-fn relation_follows_from_one_row(
+fn relation_follows_from_one_row<DB: DatabaseLike>(
     type_name: &str,
     relation: &str,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
-    db: &ParserDB,
+    db: &DB,
     visiting: &mut BTreeSet<(String, String)>,
 ) -> bool {
     // A cycle is not something the analysis can judge, so it falls closed.
@@ -142,12 +142,12 @@ fn relation_follows_from_one_row(
     answer
 }
 
-fn expr_follows_from_one_row(
+fn expr_follows_from_one_row<DB: DatabaseLike>(
     type_name: &str,
     expr: &UsersetExpr,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
-    db: &ParserDB,
+    db: &DB,
     visiting: &mut BTreeSet<(String, String)>,
 ) -> bool {
     match expr {
@@ -166,11 +166,11 @@ fn expr_follows_from_one_row(
 
 /// Every source feeding `relation` must key its object on this row's identity and
 /// name a user the row itself supplies.
-fn tuples_follow_from_one_row(
+fn tuples_follow_from_one_row<DB: DatabaseLike>(
     type_name: &str,
     relation: &str,
     sources: &SourceIndex<'_>,
-    db: &ParserDB,
+    db: &DB,
 ) -> bool {
     let Some(feeding) = sources.get(&(type_name.to_string(), relation.to_string())) else {
         // Nothing the generator emits populates it, so its tuples come from

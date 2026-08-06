@@ -282,39 +282,26 @@ fn has_token_pair(tokens: &[&str], first: &str, second: &str) -> bool {
     tokens.windows(2).any(|w| w == [first, second])
 }
 
-/// Build lookup candidates for schema-aware table resolution.
-///
-/// Ordered from most specific to least specific.
-pub fn table_lookup_candidates(name: &str) -> Vec<(Option<String>, String)> {
-    let mut candidates = Vec::new();
-
-    if let Some((schema, relation)) = split_schema_and_relation(name) {
-        candidates.push((Some(schema), relation.clone()));
-        candidates.push((None, name.to_string()));
-        candidates.push((None, relation));
-    } else {
-        let raw = name.to_string();
-        candidates.push((None, raw.clone()));
-
-        let unquoted = unquote_identifier(name.trim()).to_string();
-        if unquoted != raw {
-            candidates.push((None, unquoted));
-        }
+/// Split a name a statement wrote into the target it denotes, keeping the quoting
+/// of each part because that is what decides case sensitivity.
+fn target_parts(name: &str) -> (Option<(String, bool)>, (String, bool)) {
+    fn part(raw: &str) -> (String, bool) {
+        let trimmed = raw.trim();
+        let quoted = trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"');
+        (unquote_identifier(trimmed).to_string(), quoted)
     }
 
-    let mut deduped = Vec::new();
-    for candidate in candidates {
-        if !deduped.contains(&candidate) {
-            deduped.push(candidate);
-        }
+    let parts = split_qualified_identifier_parts(name);
+    match parts.as_slice() {
+        [.., schema, relation] => (Some(part(schema)), part(relation)),
+        [relation] => (None, part(relation)),
+        [] => (None, (String::new(), false)),
     }
-    deduped
 }
 
-/// Resolve a table by trying schema-aware fallback candidates, then, for a name
-/// carrying no schema, the only table bearing it. `PostgreSQL` resolves such a name
-/// through the search path, which the schema alone does not record, so an ambiguous
-/// name stays unresolved.
+/// Resolve a name a statement wrote into the table it denotes, by `PostgreSQL`'s
+/// rules: a qualified name matches exactly, and an unqualified one walks the search
+/// path in order. An ambiguous name stays unresolved.
 pub fn lookup_table<'db, DB>(
     db: &'db DB,
     name: &str,
@@ -322,25 +309,29 @@ pub fn lookup_table<'db, DB>(
 where
     DB: sql_traits::prelude::DatabaseLike,
 {
-    use sql_traits::prelude::TableLike;
-
-    let candidate = table_lookup_candidates(name)
-        .into_iter()
-        .find_map(|(schema, relation)| db.table(schema.as_deref(), &relation));
-    if candidate.is_some() || split_schema_and_relation(name).is_some() {
-        return candidate;
-    }
-
-    let mut bearers = db
-        .tables()
-        .filter(|table| same_identifier(table.table_name(), name));
-    let only = bearers.next()?;
-    bearers.next().is_none().then_some(only)
+    let (schema, (relation, relation_quoted)) = target_parts(name);
+    let target = sql_traits::structs::TargetName::new(&relation, relation_quoted);
+    let target = match schema.as_ref() {
+        Some((schema, quoted)) => target.with_schema(schema, *quoted),
+        None => target,
+    };
+    db.resolve_target_table(target).ok().flatten()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::sql_parser::{parse_schema, TableLike};
+
+    fn resolved(sql: &str, spelling: &str) -> Option<(Option<String>, String)> {
+        let db = parse_schema(sql).expect("the schema parses");
+        lookup_table(&db, spelling).map(|table| {
+            (
+                table.table_schema().map(ToString::to_string),
+                table.table_name().to_string(),
+            )
+        })
+    }
 
     #[test]
     fn split_schema_and_relation_handles_quoted_dots() {
@@ -418,27 +409,68 @@ mod tests {
     }
 
     #[test]
-    fn table_lookup_candidates_prioritize_schema_then_fallbacks() {
-        let candidates = table_lookup_candidates("app.docs");
+    fn lookup_table_resolves_a_qualified_spelling_to_that_schema() {
         assert_eq!(
-            candidates,
-            vec![
-                (Some("app".to_string()), "docs".to_string()),
-                (None, "app.docs".to_string()),
-                (None, "docs".to_string()),
-            ]
+            resolved(
+                "CREATE SCHEMA app; CREATE TABLE app.docs(id INT); CREATE TABLE docs(id INT);",
+                "app.docs"
+            ),
+            Some((Some("app".to_string()), "docs".to_string()))
         );
     }
 
     #[test]
-    fn table_lookup_candidates_include_unquoted_variant_for_quoted_relations() {
-        let candidates = table_lookup_candidates(r#""Doc Items""#);
+    fn lookup_table_walks_the_search_path_for_an_unqualified_spelling() {
         assert_eq!(
-            candidates,
-            vec![
-                (None, r#""Doc Items""#.to_string()),
-                (None, "Doc Items".to_string()),
-            ]
+            resolved(
+                "CREATE SCHEMA app; SET search_path TO app; CREATE TABLE docs(id INT);",
+                "docs"
+            ),
+            Some((Some("app".to_string()), "docs".to_string())),
+            "the path carries the name into the schema it selects"
+        );
+    }
+
+    /// Two schemas hold the name and the path decides, in both directions. A table written
+    /// unqualified is `public`, which the resolver treats as the schema-less one it models.
+    #[test]
+    fn lookup_table_lets_the_path_order_decide_between_two_schemas() {
+        let schema = |path: &str| {
+            format!(
+                "CREATE SCHEMA app;\
+                 CREATE TABLE docs(id INT);\
+                 CREATE TABLE app.docs(id INT);\
+                 SET search_path TO {path};"
+            )
+        };
+
+        assert_eq!(
+            resolved(&schema("app, public"), "docs"),
+            Some((Some("app".to_string()), "docs".to_string()))
+        );
+        assert_eq!(
+            resolved(&schema("public, app"), "docs"),
+            Some((None, "docs".to_string())),
+            "reversing the path must reverse the answer, or the order is not being read"
+        );
+    }
+
+    #[test]
+    fn lookup_table_answers_nothing_for_a_name_no_table_bears() {
+        assert_eq!(resolved("CREATE TABLE other(id INT);", "docs"), None);
+    }
+
+    #[test]
+    fn lookup_table_keeps_quoting_case_sensitive() {
+        let sql = r#"CREATE TABLE "Doc Items"(id INT);"#;
+        assert_eq!(
+            resolved(sql, r#""Doc Items""#),
+            Some((None, "Doc Items".to_string()))
+        );
+        assert_eq!(
+            resolved(sql, r#""doc items""#),
+            None,
+            "a quoted spelling matches exactly, so a folded one must not"
         );
     }
 

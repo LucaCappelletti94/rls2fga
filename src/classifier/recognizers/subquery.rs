@@ -2,9 +2,9 @@ use super::*;
 use alloc::collections::BTreeSet;
 
 /// EXISTS membership check.
-pub fn recognize_p4(
+pub fn recognize_p4<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
@@ -24,12 +24,12 @@ pub fn recognize_p4(
 }
 
 /// Parent inheritance via correlated EXISTS.
-pub fn recognize_p5(
+pub fn recognize_p5<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
-    command: &PolicyCommand,
+    command: PolicyCommand,
 ) -> Option<ClassifiedExpr> {
     if let Expr::Exists { subquery, negated } = expr {
         if *negated {
@@ -131,9 +131,9 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::
 /// filters either way. So it is rewritten into that `EXISTS` and handed to the one
 /// membership analyzer, which keeps every refusal it already makes, the uncorrelated case
 /// included.
-pub fn recognize_p4_caller_in_subquery(
+pub fn recognize_p4_caller_in_subquery<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
@@ -198,9 +198,9 @@ fn single_projected_column(select: &Select) -> Option<Expr> {
 }
 
 /// Recognize P4 membership through `col IN (SELECT ...)` or `col = ANY (SELECT ...)`.
-pub fn recognize_p4_in_subquery(
+pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
@@ -222,9 +222,9 @@ pub fn recognize_p4_in_subquery(
     None
 }
 
-fn classify_membership_select(
+fn classify_membership_select<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
     projected_fk: Option<String>,
@@ -293,9 +293,9 @@ enum MembershipSelectAnalysis {
     NoMatch,
 }
 
-fn analyze_membership_select(
+fn analyze_membership_select<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
     projected_fk_hint: Option<&str>,
@@ -365,9 +365,9 @@ fn analyze_membership_select(
 /// Every refusal here matters, because the translation grants the whole table at once:
 /// exactly one source with no joins, exactly one comparison against the caller, and
 /// nothing reaching outside that one table. Anything else stays refused.
-fn analyze_uncorrelated_membership(
+fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<MembershipSelectAnalysis> {
@@ -436,7 +436,7 @@ fn analyze_uncorrelated_membership(
 ///
 /// A dependent row keyed by its parent (`doc_owner(doc_id PRIMARY KEY REFERENCES
 /// docs)`) is a membership row and stays translatable. A root entity scanned by its
-fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> bool {
+fn scans_root_entity_by_its_key<DB: DatabaseLike>(db: &DB, table: &str, column: &str) -> bool {
     let Some(meta) = lookup_table(db, table) else {
         return false;
     };
@@ -456,15 +456,15 @@ fn scans_root_entity_by_its_key(db: &ParserDB, table: &str, column: &str) -> boo
     })
 }
 
-pub(crate) fn diagnose_p4_membership_ambiguity(
+pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<String> {
-    fn diagnose_select(
+    fn diagnose_select<DB: DatabaseLike>(
         select: &Select,
-        db: &ParserDB,
+        db: &DB,
         registry: &FunctionRegistry,
         outer_table: &str,
         projected_fk: Option<&str>,
@@ -525,9 +525,9 @@ pub(crate) fn diagnose_p4_membership_ambiguity(
     }
 }
 
-pub(crate) fn diagnose_p5_parent_inheritance_ambiguity(
+pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     expr: &Expr,
-    db: &ParserDB,
+    db: &DB,
     outer_table: &str,
 ) -> Option<String> {
     let Expr::Exists { subquery, negated } = expr else {
@@ -574,9 +574,9 @@ pub(super) struct P5InheritanceAnalysis {
     pub(super) saw_conflicting_join: bool,
 }
 
-pub(super) fn analyze_p5_parent_inheritance(
+pub(super) fn analyze_p5_parent_inheritance<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     outer_table: &str,
 ) -> Option<P5InheritanceAnalysis> {
     let sources = relation_sources(select);
@@ -723,7 +723,10 @@ fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource>
     })
 }
 
-fn membership_sources_include_ambiguous_unresolvable_shape(select: &Select, db: &ParserDB) -> bool {
+fn membership_sources_include_ambiguous_unresolvable_shape<DB: DatabaseLike>(
+    select: &Select,
+    db: &DB,
+) -> bool {
     let mut relation_factor_count = 0usize;
     let mut has_non_plain_source = false;
     let mut has_unresolvable_source = false;
@@ -754,9 +757,9 @@ fn membership_sources_include_ambiguous_unresolvable_shape(select: &Select, db: 
     relation_factor_count > 1 && (has_non_plain_source || has_unresolvable_source)
 }
 
-fn membership_matches(
+fn membership_matches<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     registry: &FunctionRegistry,
     projected_fk_hint: Option<&str>,
 ) -> Vec<(String, String, String, Option<String>)> {
@@ -895,7 +898,7 @@ pub(super) fn extract_membership_columns(
     registry: &FunctionRegistry,
     projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
-    extract_membership_columns_with_db(
+    extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
         select,
         join_table,
         join_alias,
@@ -906,12 +909,12 @@ pub(super) fn extract_membership_columns(
     )
 }
 
-fn extract_membership_columns_with_db(
+fn extract_membership_columns_with_db<DB: DatabaseLike>(
     select: &Select,
     join_table: &str,
     join_alias: Option<&str>,
     join_cols: &[String],
-    db: Option<&ParserDB>,
+    db: Option<&DB>,
     registry: &FunctionRegistry,
     projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
@@ -1191,9 +1194,9 @@ struct UnqualifiedMembershipScope {
     other_columns: BTreeSet<String>,
 }
 
-fn build_unqualified_membership_scope(
+fn build_unqualified_membership_scope<DB: DatabaseLike>(
     select: &Select,
-    db: &ParserDB,
+    db: &DB,
     join_table: &str,
     join_cols: &[String],
 ) -> UnqualifiedMembershipScope {
@@ -1419,9 +1422,9 @@ fn is_outer_column_ref(
     }
 }
 
-fn table_has_fk_to_parent(
-    outer_table: &<ParserDB as DatabaseLike>::Table,
-    db: &ParserDB,
+fn table_has_fk_to_parent<DB: DatabaseLike>(
+    outer_table: &DB::Table,
+    db: &DB,
     fk_column: &str,
     parent_table_name: &str,
 ) -> bool {
