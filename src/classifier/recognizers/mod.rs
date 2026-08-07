@@ -657,6 +657,31 @@ pub(crate) fn constant_bool_value(expr: &Expr) -> Option<bool> {
     }
 }
 
+/// Whether the clause filters every row out whatever the data holds.
+///
+/// A qual that is not true rejects the row, so a constant false admits nothing, an `AND`
+/// admits nothing as soon as either side does, and an `OR` only when both do. Answered from
+/// the expression rather than from its classification, since a pattern graded `no_access`
+/// may equally be one the crate could not translate, which says nothing about the database.
+pub(crate) fn is_constantly_false(expr: &Expr) -> bool {
+    if constant_bool_value(expr) == Some(false) {
+        return true;
+    }
+    match unparenthesize(expr) {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => is_constantly_false(left) || is_constantly_false(right),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Or,
+            right,
+        } => is_constantly_false(left) && is_constantly_false(right),
+        _ => false,
+    }
+}
+
 /// Normalized name of the function `expr` calls, through casts and parentheses.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
     match expr {

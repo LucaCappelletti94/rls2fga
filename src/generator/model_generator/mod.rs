@@ -5,6 +5,7 @@ use core::fmt::Write;
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
+use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
     composite_primary_key_columns, resolve_pk_column, table_has_column,
 };
@@ -416,6 +417,9 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
 
     let table_types = TableTypes::assign(db, &mut notes);
     let recursion = PolicyReadRecursion::detect(db, &table_types);
+    // Answered once per membership table rather than once per clause naming it.
+    let mut readability: BTreeMap<String, JoinTableReadability> = BTreeMap::new();
+    let readability = &mut readability;
 
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
@@ -523,6 +527,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                     &table_types,
                     &source_table_name,
                     settings,
+                    readability,
                 );
                 // A restrictive clause is a barrier, so a dropped conjunct must still deny.
                 let guards = dropped_attribute_guards(&classified.pattern);
@@ -1180,6 +1185,7 @@ fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
 }
 
 /// How much of a membership table a querying user may read.
+#[derive(Clone)]
 enum JoinTableReadability {
     /// No row level security, so every membership row counts.
     Open,
@@ -1191,7 +1197,25 @@ enum JoinTableReadability {
     Unreadable,
 }
 
-fn join_table_readability<DB: DatabaseLike>(join_table: &str, db: &DB) -> JoinTableReadability {
+/// Readability of one membership table, computed once per plan per table.
+///
+/// The uncached walk reads every policy the schema declares to find the table's own, and it
+/// runs once per clause naming that table, so a schema whose tables all join one membership
+/// table pays it quadratically. Memoized on the spelling, which `lookup_table` resolves.
+fn join_table_readability<DB: DatabaseLike>(
+    join_table: &str,
+    db: &DB,
+    memo: &mut BTreeMap<String, JoinTableReadability>,
+) -> JoinTableReadability {
+    memo.entry(join_table.to_string())
+        .or_insert_with(|| read_join_table_readability(join_table, db))
+        .clone()
+}
+
+fn read_join_table_readability<DB: DatabaseLike>(
+    join_table: &str,
+    db: &DB,
+) -> JoinTableReadability {
     let Some(table) = lookup_table(db, join_table) else {
         return JoinTableReadability::Open;
     };
@@ -1200,28 +1224,57 @@ fn join_table_readability<DB: DatabaseLike>(join_table: &str, db: &DB) -> JoinTa
         return JoinTableReadability::Open;
     }
 
+    // A clause that admits no row grants nobody, whichever side of the algebra it sits on:
+    // PostgreSQL reads the table as (permissive OR ...) AND restrictive AND ..., so every
+    // permissive one being empty leaves nothing, and any restrictive one being empty removes
+    // whatever they admit. Only provable emptiness counts, since denying on a clause the
+    // crate merely failed to read would refuse what RLS allows.
+    //
+    // One pass, and at most one clause read per policy: this runs once per dependent clause
+    // and the accessors consult the schema, so a second walk here is quadratic in the tables
+    // that join one membership table.
     let mut roles = BTreeSet::new();
     let mut grants_read = false;
-    for policy in table
-        .policies(db)
-        .into_iter()
-        .flatten()
-        .filter(|p| policy_grants_select(p, db))
-    {
+    let mut grants_read_unscoped = false;
+    for policy in table.policies(db).into_iter().flatten() {
+        if !matches!(
+            PolicyCommand::from(policy.command()),
+            PolicyCommand::Select | PolicyCommand::All
+        ) {
+            continue;
+        }
+        let Some(using) = policy.using_expression(db) else {
+            continue;
+        };
+        let admits_nothing = is_constantly_false(using);
+
+        if derive_policy_mode(policy) == PolicyMode::Restrictive {
+            // A barrier bound to roles closes the table for those roles alone, which the
+            // three answers here cannot express, so it is left as a disclosed widening.
+            if admits_nothing && derive_scoped_roles(policy, db).is_empty() {
+                return JoinTableReadability::Unreadable;
+            }
+            continue;
+        }
+        if admits_nothing {
+            continue;
+        }
+
         grants_read = true;
         let scoped = derive_scoped_roles(policy, db);
         if scoped.is_empty() {
-            return JoinTableReadability::Guarded { roles: Vec::new() };
+            grants_read_unscoped = true;
+        } else {
+            roles.extend(scoped);
         }
-        roles.extend(scoped);
     }
 
-    if grants_read {
-        JoinTableReadability::Guarded {
+    match (grants_read, grants_read_unscoped) {
+        (false, _) => JoinTableReadability::Unreadable,
+        (true, true) => JoinTableReadability::Guarded { roles: Vec::new() },
+        (true, false) => JoinTableReadability::Guarded {
             roles: roles.into_iter().collect(),
-        }
-    } else {
-        JoinTableReadability::Unreadable
+        },
     }
 }
 
@@ -1953,6 +2006,7 @@ fn pattern_to_expr(
         &TableTypes::default(),
         "test_table",
         &GeneratorSettings::default(),
+        &mut BTreeMap::new(),
     )
 }
 
@@ -1974,6 +2028,7 @@ fn translate_pattern<DB: DatabaseLike>(
     table_types: &TableTypes,
     source_table: &str,
     settings: &GeneratorSettings,
+    readability: &mut BTreeMap<String, JoinTableReadability>,
 ) -> UsersetExpr {
     match pattern {
         PatternClass::P1NumericThreshold {
@@ -2147,7 +2202,7 @@ fn translate_pattern<DB: DatabaseLike>(
         } => {
             // Reading the member table is still reading it as the caller, so its own
             // RLS decides which membership rows count, exactly as for P4.
-            match join_table_readability(member_table, db) {
+            match join_table_readability(member_table, db, readability) {
                 JoinTableReadability::Unreadable => {
                     notes.push(TranslationNote::MembershipTableGrantsNoReads {
                         policy: policy_name.to_string(),
@@ -2223,7 +2278,7 @@ fn translate_pattern<DB: DatabaseLike>(
         } => {
             // The subquery reads `join_table` as the user, so its own RLS decides which
             // membership rows count.
-            let read_scope_roles = match join_table_readability(join_table, db) {
+            let read_scope_roles = match join_table_readability(join_table, db, readability) {
                 JoinTableReadability::Unreadable => {
                     notes.push(TranslationNote::MembershipTableGrantsNoReads {
                         policy: policy_name.to_string(),
@@ -2373,6 +2428,7 @@ fn translate_pattern<DB: DatabaseLike>(
                     table_types,
                     parent_table,
                     settings,
+                    readability,
                 )
             } else {
                 let parent_plan = all_types
@@ -2392,6 +2448,7 @@ fn translate_pattern<DB: DatabaseLike>(
                     table_types,
                     parent_table,
                     settings,
+                    readability,
                 );
                 *all_types
                     .entry(parent_type.clone())
@@ -2499,6 +2556,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 table_types,
                 source_table,
                 settings,
+                readability,
             );
             table_plan.add_source(TupleSource::Skipped {
                 reason: SkippedTuples::AttributeRuntimeEnforcement {
@@ -2523,6 +2581,7 @@ fn translate_pattern<DB: DatabaseLike>(
                     table_types,
                     source_table,
                     settings,
+                    readability,
                 ));
             }
             match op {

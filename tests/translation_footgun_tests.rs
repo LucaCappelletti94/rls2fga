@@ -7270,3 +7270,150 @@ fn condition_expressions(dsl: &str) -> std::collections::BTreeMap<String, String
     }
     found
 }
+
+/// `docs.can_select` and whether any query loads the membership table, for a schema whose
+/// membership table carries `policies`.
+fn membership_readability(policies: &str) -> (String, bool, Vec<String>) {
+    let db = db_of(&format!(
+        r"
+CREATE TABLE docs(id INTEGER PRIMARY KEY, title TEXT);
+CREATE TABLE m(id INTEGER PRIMARY KEY, doc_id INTEGER REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE m ENABLE ROW LEVEL SECURITY;
+{policies}
+CREATE POLICY pd ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+"
+    ));
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let select = relation_definition(&dsl, "docs", "can_select")
+        .unwrap_or_else(|| panic!("docs should define can_select:\n{dsl}"));
+    let loads_m = outputs
+        .tuple_queries()
+        .iter()
+        .any(|query| query.sql.contains("FROM \"m\""));
+    let notes = outputs
+        .notes()
+        .iter()
+        .map(|note| note.message().clone())
+        .collect();
+    (select, loads_m, notes)
+}
+
+/// A membership read policy that cannot admit a row leaves the guarded table's subquery
+/// with nothing to find, so the guarded table grants nothing. Probed on `postgres:18` with
+/// one membership row naming the caller: the read of `m` returns 0 and so does the read of
+/// `docs`, for every spelling below.
+#[test]
+fn a_membership_read_policy_that_cannot_admit_a_row_denies_the_guarded_table() {
+    let mut complaints = Vec::new();
+    for policy in [
+        "CREATE POLICY pm ON m FOR SELECT USING (false);",
+        // Parenthesised the way pg_dump writes it back.
+        "CREATE POLICY pm ON m FOR SELECT USING ((false));",
+        "CREATE POLICY pm ON m FOR SELECT USING (NOT true);",
+        // An AND is empty as soon as either side is, whatever the other side says.
+        "CREATE POLICY pm ON m FOR SELECT USING (false AND m.user_id = current_user);",
+        "CREATE POLICY pm ON m FOR SELECT USING (m.user_id = current_user AND false);",
+        // Both sides of an OR empty is still empty.
+        "CREATE POLICY pm ON m FOR SELECT USING (false OR false);",
+        // Every permissive read policy empty, so none of them grants.
+        "CREATE POLICY pm ON m FOR SELECT USING (false);\n\
+         CREATE POLICY pm2 ON m FOR SELECT USING (false AND m.user_id = current_user);",
+        // FOR ALL applies its USING to reads too.
+        "CREATE POLICY pm ON m FOR ALL USING (false);",
+    ] {
+        let (select, loads_m, notes) = membership_readability(policy);
+        if select != "no_access" {
+            complaints.push(format!("`{policy}` left can_select as `{select}`"));
+        }
+        if loads_m {
+            complaints.push(format!("`{policy}` still loads membership rows"));
+        }
+        if !notes
+            .iter()
+            .any(|note| note.contains("'m' grants no reads"))
+        {
+            complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
+        }
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// A RESTRICTIVE read policy narrows whatever the permissive ones admit, so one that
+/// cannot admit a row closes the table however wide they are. Probed: a permissive
+/// `USING (true)` beside a restrictive `USING (false)` returns 0 rows.
+#[test]
+fn a_restrictive_kill_switch_on_a_membership_table_denies_the_guarded_table() {
+    let mut complaints = Vec::new();
+    for policy in [
+        "CREATE POLICY pm ON m FOR SELECT USING (true);\n\
+         CREATE POLICY pmr ON m AS RESTRICTIVE FOR SELECT USING (false);",
+        // The permissive side being a real rule changes nothing: the barrier still closes.
+        "CREATE POLICY pm ON m FOR SELECT USING (m.user_id = current_user);\n\
+         CREATE POLICY pmr ON m AS RESTRICTIVE FOR SELECT USING (false);",
+        "CREATE POLICY pm ON m FOR SELECT USING (m.user_id = current_user);\n\
+         CREATE POLICY pmr ON m AS RESTRICTIVE FOR ALL USING (false);",
+    ] {
+        let (select, loads_m, notes) = membership_readability(policy);
+        if select != "no_access" {
+            complaints.push(format!("`{policy}` left can_select as `{select}`"));
+        }
+        if loads_m {
+            complaints.push(format!("`{policy}` still loads membership rows"));
+        }
+        if !notes
+            .iter()
+            .any(|note| note.contains("'m' grants no reads"))
+        {
+            complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
+        }
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// The guard must not over-fire. Anything whose emptiness depends on the data, or that the
+/// crate simply does not recognise, keeps its disclosed grant: denying there would refuse
+/// what RLS allows on the strength of a guess. Probed row counts are in the comments.
+#[test]
+fn a_membership_read_policy_that_may_admit_a_row_keeps_its_grant() {
+    let mut complaints = Vec::new();
+    for policy in [
+        // 1 row.
+        "CREATE POLICY pm ON m FOR SELECT USING (true);",
+        // 1 row: the OR still has a live side.
+        "CREATE POLICY pm ON m FOR SELECT USING (false OR m.user_id = current_user);",
+        // 1 row.
+        "CREATE POLICY pm ON m FOR SELECT USING (m.user_id = current_user);",
+        // 0 rows for this data only, and the crate cannot tell, so it must not claim to.
+        "CREATE POLICY pm ON m FOR SELECT USING (m.user_id = 'nobody');",
+        // 0 rows, but the crate folds no arithmetic, so this is not proven either.
+        "CREATE POLICY pm ON m FOR SELECT USING (1 = 2);",
+        // One empty policy beside a live one still leaves the live one granting.
+        "CREATE POLICY pm ON m FOR SELECT USING (false);\n\
+         CREATE POLICY pm2 ON m FOR SELECT USING (m.user_id = current_user);",
+        // A restrictive barrier that hides only some rows is the documented widening.
+        "CREATE POLICY pm ON m FOR SELECT USING (true);\n\
+         CREATE POLICY pmr ON m AS RESTRICTIVE FOR SELECT USING (m.user_id = current_user);",
+        // A non-read policy says nothing about reads.
+        "CREATE POLICY pm ON m FOR SELECT USING (true);\n\
+         CREATE POLICY pmd ON m FOR DELETE USING (false);",
+        // A barrier bound to named roles leaves everyone outside them whatever the
+        // permissive policies grant, so closing the table would refuse those readers what
+        // RLS allows. The three-way answer cannot say "closed for these roles only".
+        "CREATE POLICY pm ON m FOR SELECT USING (true);\n\
+         CREATE POLICY pmr ON m AS RESTRICTIVE FOR SELECT TO contractor USING (false);",
+    ] {
+        let (select, loads_m, _) = membership_readability(policy);
+        if select == "no_access" {
+            complaints.push(format!("`{policy}` denied a grant RLS may allow"));
+        }
+        if !loads_m {
+            complaints.push(format!("`{policy}` stopped loading membership rows"));
+        }
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}

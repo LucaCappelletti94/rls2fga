@@ -2742,3 +2742,47 @@ fn is_literal_or_temporal_rejects_arbitrary_functions() {
         "arbitrary functions should not match as temporal"
     );
 }
+
+/// A qual that is not true rejects the row, so the question is whether the expression can
+/// ever be true. Only what the crate can prove counts: it folds no arithmetic and reads no
+/// data, so `1 = 2` and a comparison against a literal are both live as far as it knows.
+#[test]
+fn is_constantly_false_propagates_over_the_boolean_tree() {
+    for empty in [
+        "false",
+        "(false)",
+        "((false))",
+        "NOT true",
+        "false AND owner = current_user",
+        "owner = current_user AND false",
+        "false AND false",
+        "false OR false",
+        "(false OR false) AND owner = current_user",
+        // An unknown side cannot save an AND.
+        "false AND some_function(owner)",
+    ] {
+        assert!(
+            is_constantly_false(&parse_expr(empty)),
+            "`{empty}` admits no row whatever the data holds"
+        );
+    }
+
+    for live in [
+        "true",
+        "owner = current_user",
+        "false OR owner = current_user",
+        "owner = current_user OR false",
+        "true AND owner = current_user",
+        // Not folded, so not proven.
+        "1 = 2",
+        "owner = 'nobody'",
+        // Nothing is proven about an unknown alone.
+        "some_function(owner)",
+        "NOT false",
+    ] {
+        assert!(
+            !is_constantly_false(&parse_expr(live)),
+            "`{live}` may admit a row, so nothing may claim otherwise"
+        );
+    }
+}
