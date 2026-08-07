@@ -1,0 +1,38 @@
+---
+source: tests/generator_tests.rs
+expression: model.model().trim()
+---
+model
+  schema 1.1
+
+type user
+
+type campaigns
+  relations
+    define gate_visible_now_7dce72fa: [user:* with when_campaigns_visible_now_d8ae5d2b]
+    define no_access: [user]
+    define can_delete: no_access
+    define can_insert: no_access
+    define can_select: gate_visible_now_7dce72fa
+    define can_select_for_update: can_update
+    define can_update: no_access
+    define can_update_without_reading: can_update
+
+type embargoes
+  relations
+    define gate_visible_now_7dce72fa: [user:* with when_embargoes_visible_now_b550f981]
+    define no_access: [user]
+    define can_delete: no_access
+    define can_insert: no_access
+    define can_select: gate_visible_now_7dce72fa
+    define can_select_for_update: can_update
+    define can_update: no_access
+    define can_update_without_reading: can_update
+
+condition when_campaigns_visible_now_d8ae5d2b(request_time: timestamp, starts_at: timestamp) {
+  starts_at <= request_time
+}
+
+condition when_embargoes_visible_now_b550f981(lifts_at: timestamp, request_time: timestamp) {
+  lifts_at > request_time
+}

@@ -80,12 +80,15 @@ pub enum TranslationNote {
         /// Policy carrying the clause.
         policy: String,
     },
-    /// A `SELECT` policy reads the table it guards, which `PostgreSQL` refuses.
-    SelectPolicyRecurses {
-        /// Policy reading its own table.
-        policy: String,
-        /// Table it guards.
+    /// Reading a table expands its policies, and a loop there raises `infinite
+    /// recursion` rather than filtering.
+    PolicyReadRecursion {
+        /// Table whose commands the loop denies.
         table: String,
+        /// Commands it denies.
+        commands: Vec<String>,
+        /// Tables the loop runs through, in order.
+        cycle: Vec<String>,
     },
     /// No permissive policy covers these commands, so the database denies them too.
     NoPermissivePolicy {
@@ -272,7 +275,7 @@ impl TranslationNote {
             | Self::MembershipReadScope { .. }
             | Self::RoleNameRewritten { .. }
             | Self::TypeNameCollision { .. } => NoteSeverity::ActionRequired,
-            Self::SelectPolicyRecurses { .. }
+            Self::PolicyReadRecursion { .. }
             | Self::NoPermissivePolicy { .. }
             | Self::PolicyClauseAbsent { .. }
             | Self::MembershipTableGrantsNoReads { .. }
@@ -287,13 +290,13 @@ impl TranslationNote {
             Self::OwnerBoundFunction { function } => function,
             Self::TypeNameCollision { spelling, .. } => spelling,
             Self::RoleBypassesPolicies { role } => role,
-            Self::NoPermissivePolicy { table, .. }
+            Self::PolicyReadRecursion { table, .. }
+            | Self::NoPermissivePolicy { table, .. }
             | Self::CoveringPoliciesBelowThreshold { table, .. }
             | Self::TableOwnerBypassesPolicies { table, .. }
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
             Self::UnresolvedPolicyTable { policy, .. }
             | Self::RestrictiveAttributeRefused { policy }
-            | Self::SelectPolicyRecurses { policy, .. }
             | Self::PolicyClauseAbsent { policy, .. }
             | Self::PolicyRoleScope { policy, .. }
             | Self::RoleGateScope { policy, .. }
@@ -337,10 +340,16 @@ impl fmt::Display for TranslationNote {
                 "RESTRICTIVE policy '{policy}' guards on an attribute the model cannot express, \
                  so the command is denied"
             ),
-            Self::SelectPolicyRecurses { policy, table } => write!(
+            Self::PolicyReadRecursion {
+                table,
+                commands,
+                cycle,
+            } => write!(
                 f,
-                "SELECT policy '{policy}' reads '{table}', the table it guards, so PostgreSQL \
-                 raises infinite recursion on every read. Reads are denied to match."
+                "PostgreSQL raises infinite recursion on {} of '{table}', since the policies it \
+                 expands loop ({}), so the model denies to match",
+                commands.join(", "),
+                render_read_loop(cycle)
             ),
             Self::NoPermissivePolicy { table, commands } => write!(
                 f,
@@ -481,6 +490,20 @@ impl fmt::Display for TranslationNote {
             }
         }
     }
+}
+
+/// A loop in the policy read graph as `a reads b, b reads a`. A table reading itself is
+/// a one-element loop.
+fn render_read_loop(cycle: &[String]) -> String {
+    let hops: Vec<String> = cycle
+        .iter()
+        .enumerate()
+        .filter_map(|(index, table)| {
+            let next = cycle.get(index + 1).or_else(|| cycle.first())?;
+            Some(format!("{table} reads {next}"))
+        })
+        .collect();
+    hops.join(", ")
 }
 
 /// Why a tuple query was not emitted, rendered as the two comment lines that stand in

@@ -219,8 +219,17 @@ pub fn conditional_gate_relation_name(policy_name: &str) -> String {
 }
 
 /// Derive the condition name that guard's relation reference points at.
-pub fn gate_condition_name(policy_name: &str) -> String {
-    scope_relation_name("when", policy_name)
+///
+/// Keyed on the type as well as the policy: a condition name is global to the model while
+/// a `PostgreSQL` policy name is unique only per table, so one name reused across tables
+/// would otherwise collapse two guards into one spec.
+pub fn gate_condition_name(type_name: &str, policy_name: &str) -> String {
+    // The base joins on an underscore to read as a name, which is ambiguous between
+    // (a_b, c) and (a, b_c), so the hash joins on a dot instead. A type name is canonical
+    // and so carries no dot, which makes that pair unambiguous.
+    let base = canonical_fga_type_name(&format!("{type_name}_{policy_name}"));
+    let suffix = stable_hex_suffix(&format!("{type_name}.{policy_name}"));
+    clamp_relation_name(format!("when_{base}_{suffix}"))
 }
 
 fn scope_relation_name(prefix: &str, key: &str) -> String {
@@ -578,6 +587,27 @@ mod tests {
         assert_eq!(
             parent_type_from_fk_column("organization_uuid"),
             "organization_uuid"
+        );
+    }
+
+    /// The readable base joins on an underscore, which cannot tell `(a_b, c)` from
+    /// `(a, b_c)`. Two distinct guards mapping to one condition name is the whole defect
+    /// this key exists to prevent, so the hash has to see the boundary.
+    #[test]
+    fn gate_condition_name_separates_a_type_from_a_policy() {
+        assert_ne!(
+            gate_condition_name("a_b", "c"),
+            gate_condition_name("a", "b_c")
+        );
+        // Same policy name, two tables, which is the shape PostgreSQL allows freely.
+        assert_ne!(
+            gate_condition_name("campaigns", "visible_now"),
+            gate_condition_name("embargoes", "visible_now")
+        );
+        // Stable, since it reaches the tuple SQL an operator reloads.
+        assert_eq!(
+            gate_condition_name("campaigns", "visible_now"),
+            gate_condition_name("campaigns", "visible_now")
         );
     }
 }

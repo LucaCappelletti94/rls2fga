@@ -2936,3 +2936,396 @@ CREATE POLICY doc_links_visible ON doc_links FOR SELECT
         failures.join("\n")
     );
 }
+
+/// Typed schema for the read-recursion case. Both foreign keys are nullable, since the
+/// two tables reference each other and the rows have to go in one at a time.
+mod read_recursion_schema {
+    diesel::table! {
+        users (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        folders (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+            note_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+
+    diesel::table! {
+        notes (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+            folder_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(users, folders, notes);
+}
+
+/// Note ids the plain login role reads with `app.current_user_id` set to `user_id`, or
+/// `None` when `PostgreSQL` refuses to plan the read. The refusal reason is checked, so a
+/// statement broken some other way cannot masquerade as one.
+fn postgres_readable_recursive_notes(
+    conn: &mut PgConnection,
+    user_id: &str,
+) -> Option<BTreeSet<String>> {
+    use read_recursion_schema::notes;
+
+    let outcome = conn.transaction::<Vec<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        notes::table.select(notes::id).load(conn)
+    });
+
+    match outcome {
+        Ok(ids) => Some(ids.into_iter().collect()),
+        Err(error) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("infinite recursion"),
+                "reading notes as {user_id} failed for another reason: {rendered}"
+            );
+            None
+        }
+    }
+}
+
+/// Two `SELECT` policies reading each other's table make `PostgreSQL` raise on every read
+/// of both, so an owner sees nothing of the row they own. The model has to deny to match,
+/// which is the one shape where an error and a denial agree.
+///
+/// Two-sided by construction: a model that keeps the ownership grant, which is what
+/// reading each policy on its own produces, grants each owner their own row against a
+/// database that returns none, and the seed gives each owner a row so a bad one cannot
+/// make it pass quietly.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn read_recursion_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("read_recursion");
+    let (classified, db, registry) = support::load_fixture_classified("read_recursion");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the read_recursion schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON users, notes, folders TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    let owners = [USER_ALICE, USER_BOB];
+    {
+        use read_recursion_schema::{folders, notes, users};
+        diesel::insert_into(users::table)
+            .values(owners.map(|id| users::id.eq(id)).to_vec())
+            .execute(&mut conn)
+            .expect("Failed to seed users");
+        for owner in owners {
+            let folder = format!("f-{owner}");
+            let note = format!("n-{owner}");
+            diesel::insert_into(folders::table)
+                .values((folders::id.eq(&folder), folders::owner_id.eq(owner)))
+                .execute(&mut conn)
+                .expect("Failed to seed folders");
+            diesel::insert_into(notes::table)
+                .values((
+                    notes::id.eq(&note),
+                    notes::owner_id.eq(owner),
+                    notes::folder_id.eq(&folder),
+                ))
+                .execute(&mut conn)
+                .expect("Failed to seed notes");
+            diesel::update(folders::table.find(&folder))
+                .set(folders::note_id.eq(&note))
+                .execute(&mut conn)
+                .expect("Failed to close the reference loop");
+        }
+    }
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "read-recursion-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut raised = 0usize;
+    for owner in owners {
+        let readable = postgres_readable_recursive_notes(&mut conn, owner);
+        if readable.is_none() {
+            raised += 1;
+        }
+        for other in owners {
+            let note = format!("n-{other}");
+            let expected = readable
+                .as_ref()
+                .is_some_and(|ids| ids.contains(note.as_str()));
+            let user = format!("user:{owner}");
+            let object = format!("notes:{note}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // Each owner owns a row, so a read that returned rows instead of raising would make
+    // the comparison two-sided rather than let it pass quietly.
+    assert_eq!(
+        raised,
+        owners.len(),
+        "every read must raise for this case to be the shape it claims"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA read-recursion parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Typed schema for the shared-policy-name case. The timestamps are written by SQL,
+/// since this build carries no Rust type for `TIMESTAMPTZ`.
+mod shared_name_schema {
+    diesel::table! {
+        campaigns (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        embargoes (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(campaigns, embargoes);
+}
+
+/// Ids of one table the plain login role reads.
+fn postgres_readable_ids(conn: &mut PgConnection, table: &str) -> BTreeSet<String> {
+    use shared_name_schema::{campaigns, embargoes};
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching has no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        let ids: Vec<String> = if table == "campaigns" {
+            campaigns::table.select(campaigns::id).load(conn)?
+        } else {
+            embargoes::table.select(embargoes::id).load(conn)?
+        };
+        Ok(ids.into_iter().collect())
+    })
+    .expect("reading the guarded table should succeed")
+}
+
+/// `PostgreSQL` policy names are unique per table and `OpenFGA` condition names are global
+/// to the model, so one name on two tables has to reach two conditions.
+///
+/// Both guards here read a column of the same name and compare it opposite ways, which is
+/// the **silent** form of the defect: every tuple carries the context key the shared
+/// condition declares, so the load succeeds and one table simply answers with the other's
+/// rule. The louder form, two tables whose columns are named differently, is refused by
+/// the service on the tuple write and is covered by the `shared_policy_name` fixture and
+/// `every_condition_parameter_is_supplied_by_its_own_tuples`.
+///
+/// Two-sided by construction: each table has a row its own guard admits and a row it
+/// refuses, so a model that grants everything, denies everything, or answers one table
+/// with the other's rule fails.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn shared_policy_name_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE campaigns (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL);
+CREATE TABLE embargoes (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL);
+ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE embargoes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY visible_now ON campaigns FOR SELECT TO PUBLIC USING (at <= now());
+CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
+";
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the shared-name schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON campaigns, embargoes TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+    // One row each side of now() per table, so each guard admits one and refuses one.
+    conn.batch_execute(
+        "INSERT INTO campaigns (id, at) VALUES
+            ('c-running', now() - interval '1 day'),
+            ('c-upcoming', now() + interval '1 day');
+         INSERT INTO embargoes (id, at) VALUES
+            ('e-held', now() + interval '1 day'),
+            ('e-lifted', now() - interval '1 day');",
+    )
+    .expect("Failed to seed the guarded rows");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some())
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        2,
+        "each table carries its own conditional query, got {} of {}",
+        conditional.len(),
+        tuple_queries.len()
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "shared-name-parity").await;
+    // A model naming a condition it does not declare is rejected outright, so this write
+    // is itself an assertion about the two specs.
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes = Vec::new();
+    for query in &conditional {
+        for row in execute_conditional_tuple_query(&mut conn, query) {
+            writes.push(support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            ));
+        }
+    }
+    assert_eq!(writes.len(), 4, "every seeded row carries a tuple");
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let now = postgres_now(&mut conn);
+    let context = serde_json::json!({ "request_time": now });
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for (table, ids) in [
+        ("campaigns", ["c-running", "c-upcoming"]),
+        ("embargoes", ["e-held", "e-lifted"]),
+    ] {
+        let readable = postgres_readable_ids(&mut conn, table);
+        assert_eq!(
+            readable.len(),
+            1,
+            "{table} must admit exactly one of its two rows, got {readable:?}"
+        );
+        for id in ids {
+            let expected = readable.contains(id);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                "user:anyone",
+                "can_select",
+                &format!("{table}:{id}"),
+                context.clone(),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "{table}:{id}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(granted == 2 && denied == 2, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA shared-policy-name parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

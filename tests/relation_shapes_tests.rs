@@ -550,3 +550,121 @@ fn a_grant_with_no_principal_describes_nothing() {
         );
     }
 }
+
+/// Every conditional wildcard in a model, as `(type, relation, condition)`.
+fn conditional_wildcards(json: &str) -> Vec<(String, String, String)> {
+    let model: serde_json::Value = serde_json::from_str(json).expect("the JSON model parses");
+    let mut found = Vec::new();
+    for definition in model["type_definitions"].as_array().into_iter().flatten() {
+        let type_name = definition["type"].as_str().unwrap_or_default().to_string();
+        let relations = definition["metadata"]["relations"].as_object();
+        for (relation, meta) in relations.into_iter().flatten() {
+            for reference in meta["directly_related_user_types"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if let Some(condition) = reference["condition"].as_str().filter(|c| !c.is_empty()) {
+                    found.push((type_name.clone(), relation.clone(), condition.to_string()));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A condition is global to the model while the guard it expresses belongs to one table,
+/// so two types sharing one condition means one of them is answering with the other's
+/// rule. Nothing about the model itself forbids the sharing, which is why this is checked
+/// rather than assumed.
+#[test]
+fn no_condition_is_shared_by_two_types() {
+    let mut checked = 0usize;
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let planned = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+        let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
+            .expect("the model serializes");
+        let mut owners: std::collections::BTreeMap<String, BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (type_name, _, condition) in conditional_wildcards(&json) {
+            checked += 1;
+            owners.entry(condition).or_default().insert(type_name);
+        }
+        for (condition, types) in owners {
+            assert_eq!(
+                types.len(),
+                1,
+                "{fixture}: condition '{condition}' is referenced by {types:?}, so one of them \
+                 carries the other's guard"
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "no fixture exercises a condition, so this invariant checks nothing"
+    );
+}
+
+/// A condition reads its row's value under a parameter name, and the tuple supplies that
+/// value under a context key. The two are minted apart, and a mismatch denies every check
+/// on the type while the model and the SQL each look right alone.
+#[test]
+fn every_condition_parameter_is_supplied_by_its_own_tuples() {
+    let mut checked = 0usize;
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let outputs = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps();
+        let json = serde_json::to_string(&outputs.json_model()).expect("the model serializes");
+        let model: serde_json::Value = serde_json::from_str(&json).expect("parses");
+        let queries = outputs.tuple_queries();
+
+        for (type_name, relation, condition) in conditional_wildcards(&json) {
+            checked += 1;
+            let parameters = model["conditions"][&condition]["parameters"]
+                .as_object()
+                .unwrap_or_else(|| {
+                    panic!("{fixture}: {type_name}#{relation} names condition '{condition}', which the model does not declare")
+                });
+            let query = queries
+                .iter()
+                .find(|query| {
+                    query.sql.contains(&format!("'{relation}' AS relation"))
+                        && query.sql.contains(&format!("'{condition}' AS condition"))
+                })
+                .unwrap_or_else(|| {
+                    panic!("{fixture}: nothing loads {type_name}#{relation} under '{condition}'")
+                });
+            let supplied: BTreeSet<&str> = parameters
+                .keys()
+                .filter(|name| query.sql.contains(&format!("'{name}',")))
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                supplied.len(),
+                1,
+                "{fixture}: condition '{condition}' declares {:?} and its tuples supply {supplied:?}, \
+                 so exactly one parameter must come from the row:\n{}",
+                parameters.keys().collect::<Vec<_>>(),
+                query.sql
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "no fixture exercises a condition, so this invariant checks nothing"
+    );
+}

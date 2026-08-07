@@ -65,7 +65,8 @@ pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
     false
 }
 
-/// Whether any relation the expression or its subqueries read satisfies `matches`.
+/// Whether any relation the expression or its subqueries read satisfies `matches`, which
+/// stops the walk. A caller collecting every read returns `false` throughout.
 /// Column qualifiers are identifiers, so `docs.owner_id` never reports `docs`.
 pub fn reads_relation(expr: &Expr, mut matches: impl FnMut(&str) -> bool) -> bool {
     let mut reads = false;

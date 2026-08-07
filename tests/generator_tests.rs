@@ -489,3 +489,38 @@ fn generate_attribute_guard_model_and_tuples() {
         tuple_generator::format_tuples(&tuples)
     );
 }
+
+// ── Request-time conditions ──────────────────────────────────────────────────
+
+/// The only fixture carrying conditions, so it is the only mechanical check on the
+/// condition block and on the context column the tuple SQL builds beside it.
+#[test]
+fn generate_shared_policy_name_model_and_tuples() {
+    let db = support::parse_fixture_db("shared_policy_name");
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    insta::assert_snapshot!("generate_shared_policy_name_model", model.model().trim());
+
+    let tuples = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    insta::assert_snapshot!(
+        "generate_shared_policy_name_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}

@@ -4,7 +4,6 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr};
 
-use crate::parser::names::normalize_relation_name;
 use crate::parser::sql_parser::PolicyLike;
 
 /// The command a policy applies to.
@@ -480,8 +479,9 @@ impl ClassifiedPolicy {
 ///
 /// A RESTRICTIVE policy is kept even when all its classifications drop: RLS is
 /// `(permissive OR ...) AND restrictive AND ...`, so removing one grants access
-/// it forbids. A `SELECT` policy reading its own table is kept for the same
-/// reason. The `*_was_filtered` flags tell the generator to fall closed.
+/// it forbids. The `*_was_filtered` flags tell the generator to fall closed. A policy
+/// whose reads loop needs no such retention, since the generator reads that loop off the
+/// schema rather than off the classifications.
 pub fn filter_policies_for_output(
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
@@ -510,7 +510,6 @@ pub fn filter_policies_for_output(
             if filtered.using_classification.is_some()
                 || filtered.with_check_classification.is_some()
                 || filtered.mode() == PolicyMode::Restrictive
-                || reads_its_own_table_on_select(cp)
             {
                 Some(filtered)
             } else {
@@ -518,19 +517,6 @@ pub fn filter_policies_for_output(
             }
         })
         .collect()
-}
-
-/// Whether a policy guarding reads also reads the table it guards. Retaining one too
-/// many is harmless, since the generator resolves types properly before acting.
-fn reads_its_own_table_on_select(cp: &ClassifiedPolicy) -> bool {
-    if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
-        return false;
-    }
-    let Some(using) = cp.using.as_ref() else {
-        return false;
-    };
-    let guarded = normalize_relation_name(cp.table_name());
-    crate::parser::expr::reads_relation(using, |name| normalize_relation_name(name) == guarded)
 }
 
 #[cfg(test)]

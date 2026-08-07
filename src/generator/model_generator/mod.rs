@@ -21,7 +21,6 @@ use crate::generator::well_known::{
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
-use crate::parser::expr::reads_relation;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
@@ -37,10 +36,13 @@ use sqlparser::ast::{Expr, Function, FunctionArguments};
 
 /// `OpenFGA` DSL text rendering from the schema plan.
 mod dsl;
+/// Which statements `PostgreSQL` refuses to plan because the policies loop.
+mod recursion;
 /// Role-threshold resource-column inference and tuple-source population.
 mod role_threshold;
 
 use dsl::render_dsl;
+use recursion::PolicyReadRecursion;
 use role_threshold::{infer_role_threshold_resource_columns, populate_role_threshold_sources};
 
 /// `OpenFGA` authorization model schema version.
@@ -413,6 +415,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     }
 
     let table_types = TableTypes::assign(db, &mut notes);
+    let recursion = PolicyReadRecursion::detect(db, &table_types);
 
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
@@ -434,8 +437,9 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             .remove(&canonical_table_name)
             .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
 
-        // A SELECT policy reading its own table makes PostgreSQL fail every read of it.
-        let mut recursive_select: Option<String> = None;
+        // A clause reading a table whose policies loop cannot be planned, so PostgreSQL
+        // raises rather than filtering and every command that clause feeds must deny.
+        let recursive_targets = recursion.blocked_targets(&canonical_table_name);
 
         // UPDATE and DELETE name the row they change. INSERT does not.
         let has_row_scoped_write_policy = table_policies.iter().any(|cp| {
@@ -452,6 +456,19 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             // A policy the schema gives no clause constrains nothing, so it must not
             // mint a scope relation or ask for tuples either.
             if cp.using.is_none() && cp.with_check.is_none() {
+                continue;
+            }
+            // Nor may a policy every target of which is blocked: the loop denies each of
+            // them, so a scope relation minted here would ask for tuples nothing reads.
+            let mut reached = BTreeSet::new();
+            for_each_policy_target_expr(cp, |target, _| {
+                reached.insert(target);
+            });
+            if !reached.is_empty()
+                && reached
+                    .iter()
+                    .all(|target| recursive_targets.contains_key(target))
+            {
                 continue;
             }
             if let Some(ref c) = cp.using_classification {
@@ -486,18 +503,12 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 Some(relation)
             };
 
-            // Judged before classification: a filtered clause still poisons reads.
-            let recurses = policy_recurses_on_reads(cp, db, &table_types, &canonical_table_name);
-            if recurses {
-                recursive_select = Some(cp.name().to_string());
-            }
-
             // A policy covering several phases is translated once per phase, so the
             // same clause reports the same item repeatedly. Keep one per policy.
             let notes_before = notes.len();
             for_each_policy_target_expr(cp, |target, classified| {
-                if recurses && target == ActionTarget::Select {
-                    // Nothing here can be evaluated, so translating it leaves dead relations.
+                if recursive_targets.contains_key(&target) {
+                    // Nothing here can be planned, so translating it leaves dead relations.
                     return;
                 }
                 let expr = translate_pattern(
@@ -562,11 +573,35 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         let mut delete_expr =
             compose_action(&mut table_plan, action_buckets.get(&ActionTarget::Delete));
 
-        if let Some(policy_name) = recursive_select {
-            select_expr = Some(deny_expr(&mut table_plan));
-            notes.push(TranslationNote::SelectPolicyRecurses {
-                policy: policy_name.clone(),
+        // Skipping the blocked targets above left their buckets empty, so the deny fill
+        // below already answers for them. The UPDATE pair is the exception: a check the
+        // fill never sees would fall back to mirroring the USING, which grants.
+        if recursive_targets.contains_key(&ActionTarget::UpdateUsing)
+            || recursive_targets.contains_key(&ActionTarget::UpdateCheck)
+        {
+            update_using_expr = None;
+            update_check_expr = None;
+        }
+
+        // One note per loop, naming the commands it denies. A command denies as soon as
+        // one of its targets is blocked, and its own coverage gap is then the loop rather
+        // than a missing or dropped policy.
+        let mut denied_by_loop: BTreeMap<&[String], Vec<&'static str>> = BTreeMap::new();
+        for (_, command, targets) in ACTION_RELATION_COMMANDS {
+            if let Some(cycle) = targets
+                .iter()
+                .find_map(|target| recursive_targets.get(target))
+            {
+                denied_by_loop.entry(cycle).or_default().push(command);
+            }
+        }
+        let blocked_commands: BTreeSet<&'static str> =
+            denied_by_loop.values().flatten().copied().collect();
+        for (cycle, commands) in denied_by_loop {
+            notes.push(TranslationNote::PolicyReadRecursion {
                 table: source_table_name.clone(),
+                commands: commands.into_iter().map(ToString::to_string).collect(),
+                cycle: cycle.to_vec(),
             });
         }
 
@@ -622,7 +657,10 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         let declared_here: &[&DB::Policy] = declared_permissive
             .get(&source_table_name)
             .map_or(&[], Vec::as_slice);
-        let uncovered = fill_uncovered_actions_with_deny(&mut table_plan);
+        let uncovered: Vec<&'static str> = fill_uncovered_actions_with_deny(&mut table_plan)
+            .into_iter()
+            .filter(|command| !blocked_commands.contains(command))
+            .collect();
         if !uncovered.is_empty() {
             let covered_by_schema = commands_a_permissive_policy_covers(declared_here, db);
             let (dropped, unpolicied): (Vec<&str>, Vec<&str>) = uncovered
@@ -1141,33 +1179,6 @@ fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
     }
 }
 
-/// Whether reading `type_name` would expand this policy again, which `PostgreSQL`
-/// rejects as infinite recursion.
-fn policy_recurses_on_reads<DB: DatabaseLike>(
-    cp: &ClassifiedPolicy,
-    db: &DB,
-    table_types: &TableTypes,
-    type_name: &str,
-) -> bool {
-    if !matches!(cp.command(), PolicyCommand::Select | PolicyCommand::All) {
-        return false;
-    }
-    // Only the read side matters: a WITH CHECK clause guards new rows.
-    cp.using
-        .as_ref()
-        .is_some_and(|using| expr_reads_table(using, db, table_types, type_name))
-}
-
-/// Whether any relation the expression reads resolves to `type_name`.
-fn expr_reads_table<DB: DatabaseLike>(
-    expr: &Expr,
-    db: &DB,
-    table_types: &TableTypes,
-    type_name: &str,
-) -> bool {
-    reads_relation(expr, |name| table_types.resolve(db, name) == type_name)
-}
-
 /// How much of a membership table a querying user may read.
 enum JoinTableReadability {
     /// No row level security, so every membership row counts.
@@ -1434,6 +1445,13 @@ impl TableTypes {
     fn claims(&self, type_name: &str) -> bool {
         self.owners.contains_key(type_name)
     }
+
+    /// The schema's own spelling of the table holding this type, for a note to name.
+    fn spelling<'a>(&'a self, type_name: &'a str) -> &'a str {
+        self.owners
+            .get(type_name)
+            .map_or(type_name, |owner| owner.spelling.as_str())
+    }
 }
 
 impl TableTypes {
@@ -1578,18 +1596,11 @@ fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
 /// Action targets a policy's stored clauses reach, which is the routing
 /// `for_each_policy_target_expr` performs once those clauses are classified.
 fn policy_clause_targets<P: PolicyLike>(policy: &P, db: &P::DB) -> BTreeSet<ActionTarget> {
-    let command = PolicyCommand::from(policy.command());
-    let mut targets = BTreeSet::new();
-    if policy.using_expression(db).is_some() {
-        targets.extend(using_targets(command));
-    }
-    if policy.check_expression(db).is_some()
-        || (policy.using_expression(db).is_some()
-            && policy_uses_using_for_missing_with_check(command))
-    {
-        targets.extend(with_check_targets(command));
-    }
-    targets
+    recursion::declared_clause_targets(policy, db)
+        .into_iter()
+        .filter(|(clause, _)| clause.is_some())
+        .flat_map(|(_, targets)| targets)
+        .collect()
 }
 
 /// Commands the schema's permissive policies on one table cover, whatever their
@@ -1816,7 +1827,7 @@ fn conditional_gate_expr<DB: DatabaseLike>(
     let pk_col = resolve_pk_column(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, &request.column, db)?;
 
-    let condition = gate_condition_name(policy_name);
+    let condition = gate_condition_name(&table_plan.type_name, policy_name);
     // A column named like the request's parameter yields, since two parameters cannot
     // share one name.
     let request_parameter = request_time_parameter.to_string();
