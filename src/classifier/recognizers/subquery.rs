@@ -1,5 +1,6 @@
 use super::*;
 use alloc::collections::BTreeSet;
+use sqlparser::ast::{Distinct, GroupByExpr, LimitClause, Query, SetExpr};
 
 /// EXISTS membership check.
 pub fn recognize_p4<DB: DatabaseLike>(
@@ -8,19 +9,13 @@ pub fn recognize_p4<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::Exists { subquery, negated } = expr {
-        if *negated {
-            return None;
-        }
-
-        let query = subquery.as_ref();
-        let body = query.body.as_ref();
-
-        if let sqlparser::ast::SetExpr::Select(select) = body {
-            return classify_membership_select(select.as_ref(), db, registry, outer_table, None);
-        }
-    }
-    None
+    classify_membership_select(
+        readable_exists_select(expr)?,
+        db,
+        registry,
+        outer_table,
+        None,
+    )
 }
 
 /// Parent inheritance via correlated EXISTS.
@@ -31,74 +26,156 @@ pub fn recognize_p5<DB: DatabaseLike>(
     outer_table: &str,
     command: PolicyCommand,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::Exists { subquery, negated } = expr {
-        if *negated {
-            return None;
-        }
+    let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
 
-        let query = subquery.as_ref();
-        let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-            return None;
+    let mut matches = Vec::new();
+    for candidate in analysis.candidates {
+        let P5InheritanceCandidate {
+            parent_table,
+            parent_alias,
+            fk_column,
+            inner_predicates,
+        } = candidate;
+        let Some(mut inner_expr) = combine_predicates_with_and(inner_predicates) else {
+            continue;
         };
-        let analysis = analyze_p5_parent_inheritance(select.as_ref(), db, outer_table)?;
+        // Nested queries use parent alias from outer scope.
+        strip_qualifier_from_expr_deep(&mut inner_expr, &parent_table, parent_alias.as_deref());
+        let inner_classified = crate::classifier::policy_classifier::classify_expr(
+            &inner_expr,
+            db,
+            registry,
+            &parent_table,
+            command,
+        );
+        // Only accept relationship patterns, not attribute checks.
+        if !matches!(
+            inner_classified.pattern,
+            PatternClass::P1NumericThreshold { .. }
+                | PatternClass::P2RoleNameInList { .. }
+                | PatternClass::P3DirectOwnership { .. }
+                | PatternClass::P4ExistsMembership { .. }
+                | PatternClass::P5ParentInheritance { .. }
+                | PatternClass::P7AbacAnd { .. }
+                | PatternClass::P8Composite { .. }
+        ) {
+            continue;
+        }
 
-        let mut matches = Vec::new();
-        for candidate in analysis.candidates {
-            let P5InheritanceCandidate {
+        matches.push(ClassifiedExpr {
+            confidence: inner_classified.confidence,
+            pattern: PatternClass::P5ParentInheritance {
                 parent_table,
-                parent_alias,
                 fk_column,
-                inner_predicates,
-            } = candidate;
-            let Some(mut inner_expr) = combine_predicates_with_and(inner_predicates) else {
-                continue;
-            };
-            // Nested queries use parent alias from outer scope.
-            strip_qualifier_from_expr_deep(&mut inner_expr, &parent_table, parent_alias.as_deref());
-            let inner_classified = crate::classifier::policy_classifier::classify_expr(
-                &inner_expr,
-                db,
-                registry,
-                &parent_table,
-                command,
-            );
-            // Only accept relationship patterns, not attribute checks.
-            if !matches!(
-                inner_classified.pattern,
-                PatternClass::P1NumericThreshold { .. }
-                    | PatternClass::P2RoleNameInList { .. }
-                    | PatternClass::P3DirectOwnership { .. }
-                    | PatternClass::P4ExistsMembership { .. }
-                    | PatternClass::P5ParentInheritance { .. }
-                    | PatternClass::P7AbacAnd { .. }
-                    | PatternClass::P8Composite { .. }
-            ) {
-                continue;
-            }
+                inner_pattern: Box::new(inner_classified),
+            },
+        });
+    }
 
-            matches.push(ClassifiedExpr {
-                confidence: inner_classified.confidence,
-                pattern: PatternClass::P5ParentInheritance {
-                    parent_table,
-                    fk_column,
-                    inner_pattern: Box::new(inner_classified),
-                },
-            });
-        }
-
-        if matches.len() == 1 {
-            return matches.into_iter().next();
-        }
+    if matches.len() == 1 {
+        return matches.into_iter().next();
     }
     None
 }
 
-/// The `(tested value, subquery)` of `x IN (SELECT ...)` or `x = ANY (SELECT ...)`.
+/// The single `Select` a query's body is, if it is one.
+fn query_select(query: &Query) -> Option<&Select> {
+    match query.body.as_ref() {
+        SetExpr::Select(select) => Some(select.as_ref()),
+        _ => None,
+    }
+}
+
+/// The clause by which a subquery shapes its rows beyond FROM and WHERE, if any.
 ///
-/// A query that limits or offsets its rows is refused: membership then tests one
-/// arbitrary row rather than the whole result, so reading it as full membership grants
-/// rows the policy refuses. Ordering alone is irrelevant to a set membership test.
-fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::Query)> {
+/// Membership and parent inheritance read the subquery as a plain set of rows, so a clause
+/// that drops rows from it lets the model grant rows the policy refuses. `HAVING` is named
+/// ahead of the `GROUP BY` it usually rides on because it is the clause doing the
+/// filtering. Plain `DISTINCT` drops duplicate rows only, leaving the set itself intact.
+fn select_result_shaping_clause(select: &Select) -> Option<&'static str> {
+    if select.having.is_some() {
+        return Some("HAVING");
+    }
+    if select.qualify.is_some() {
+        return Some("QUALIFY");
+    }
+    let grouped = match &select.group_by {
+        GroupByExpr::All(_) => true,
+        GroupByExpr::Expressions(expressions, modifiers) => {
+            !expressions.is_empty() || !modifiers.is_empty()
+        }
+    };
+    if grouped {
+        return Some("GROUP BY");
+    }
+    matches!(select.distinct, Some(Distinct::On(_))).then_some("DISTINCT ON")
+}
+
+/// True when a row count is a literal of at least one, so it cannot empty a result.
+fn limit_keeps_a_row(rows: &Expr) -> bool {
+    extract_integer_value(rows).is_some_and(|rows| rows >= 1)
+}
+
+/// The clause by which a query's row limit can leave `EXISTS` with nothing, if any.
+///
+/// `EXISTS` asks only whether one row survives, so a limit matters where it can empty a
+/// non-empty result: a count that is not a literal of at least one, or an offset past the
+/// first row.
+fn exists_emptying_limit_clause(query: &Query) -> Option<&'static str> {
+    match &query.limit_clause {
+        None => {}
+        Some(LimitClause::LimitOffset {
+            limit,
+            offset,
+            limit_by,
+        }) => {
+            if !limit_by.is_empty() || limit.as_ref().is_some_and(|rows| !limit_keeps_a_row(rows)) {
+                return Some("LIMIT");
+            }
+            if offset
+                .as_ref()
+                .is_some_and(|offset| extract_integer_value(&offset.value) != Some(0))
+            {
+                return Some("OFFSET");
+            }
+        }
+        Some(LimitClause::OffsetCommaLimit { .. }) => return Some("LIMIT"),
+    }
+    let fetch_keeps_a_row = query.fetch.as_ref().is_none_or(|fetch| {
+        !fetch.percent && fetch.quantity.as_ref().is_none_or(limit_keeps_a_row)
+    });
+    (!fetch_keeps_a_row).then_some("FETCH")
+}
+
+/// The `Select` an `EXISTS` tests, paired with the clause shaping its rows, if any.
+fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<&'static str>)> {
+    let Expr::Exists {
+        subquery,
+        negated: false,
+    } = expr
+    else {
+        return None;
+    };
+    let select = query_select(subquery)?;
+    let shaping =
+        exists_emptying_limit_clause(subquery).or_else(|| select_result_shaping_clause(select));
+    Some((select, shaping))
+}
+
+/// As [`exists_subquery_select`], for the callers that need the rows unshaped.
+fn readable_exists_select(expr: &Expr) -> Option<&Select> {
+    let (select, shaping) = exists_subquery_select(expr)?;
+    shaping.is_none().then_some(select)
+}
+
+/// The `(tested value, subquery)` of `x IN (SELECT ...)` or `x = ANY (SELECT ...)`, paired
+/// with the clause shaping the set of tested values, if any.
+///
+/// Any row limit shapes that set here, `LIMIT 1` included: membership then tests one
+/// arbitrary slice of the result rather than the whole of it, so reading it as full
+/// membership grants rows the policy refuses. Ordering alone is irrelevant to a set
+/// membership test.
+fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<&'static str>)> {
     let (lhs, query) = match expr {
         Expr::InSubquery {
             expr: lhs,
@@ -117,10 +194,20 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &sqlparser::ast::
         _ => return None,
     };
 
-    if query.limit_clause.is_some() || query.fetch.is_some() {
-        return None;
-    }
-    Some((lhs, query))
+    let shaping = if query.limit_clause.is_some() {
+        Some("LIMIT")
+    } else if query.fetch.is_some() {
+        Some("FETCH")
+    } else {
+        select_result_shaping_clause(query_select(query)?)
+    };
+    Some((lhs, query, shaping))
+}
+
+/// As [`membership_subquery_operands`], for the callers that need the set unshaped.
+fn readable_membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query)> {
+    let (lhs, query, shaping) = membership_subquery_operands(expr)?;
+    shaping.is_none().then_some((lhs, query))
 }
 
 /// Membership written with the caller on the left: `caller IN (SELECT user_col FROM m
@@ -137,7 +224,7 @@ pub fn recognize_p4_caller_in_subquery<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
-    let (caller, query) = membership_subquery_operands(expr)?;
+    let (caller, query) = readable_membership_subquery_operands(expr)?;
     // The equivalence holds for any left-hand value, but only the caller spelling was
     // verified against PostgreSQL, so the rewrite stays confined to it. Defensive: with a
     // column on the left the analyzer finds no user column and refuses anyway, so no
@@ -156,14 +243,11 @@ pub fn recognize_p4_caller_in_subquery<DB: DatabaseLike>(
 /// `SELECT user_col FROM m WHERE p` rewritten as `EXISTS (SELECT user_col FROM m WHERE p
 /// AND user_col = caller)`. The projection is left alone because the `EXISTS` path never
 /// reads it.
-fn membership_exists_binding_caller(query: &sqlparser::ast::Query, caller: &Expr) -> Option<Expr> {
-    let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-        return None;
-    };
-    let projected = single_projected_column(select.as_ref())?;
+fn membership_exists_binding_caller(query: &Query, caller: &Expr) -> Option<Expr> {
+    let projected = single_projected_column(query_select(query)?)?;
 
     let mut rewritten = query.clone();
-    let sqlparser::ast::SetExpr::Select(select) = rewritten.body.as_mut() else {
+    let SetExpr::Select(select) = rewritten.body.as_mut() else {
         return None;
     };
     let bound = Expr::BinaryOp {
@@ -204,22 +288,13 @@ pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
-    let (lhs, query) = membership_subquery_operands(expr)?;
+    let (lhs, query) = readable_membership_subquery_operands(expr)?;
 
     // LHS should be a column reference (e.g. team_id)
     let lhs_col = extract_column_name(lhs)?;
-
-    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-        let projected_col = extract_projection_column(select.as_ref()).unwrap_or(lhs_col);
-        return classify_membership_select(
-            select.as_ref(),
-            db,
-            registry,
-            outer_table,
-            Some(projected_col),
-        );
-    }
-    None
+    let select = query_select(query)?;
+    let projected_col = extract_projection_column(select).unwrap_or(lhs_col);
+    classify_membership_select(select, db, registry, outer_table, Some(projected_col))
 }
 
 fn classify_membership_select<DB: DatabaseLike>(
@@ -496,33 +571,30 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         }
     }
 
-    match expr {
-        Expr::Exists { subquery, negated } if !negated => {
-            let query = subquery.as_ref();
-            let body = query.body.as_ref();
-            if let sqlparser::ast::SetExpr::Select(select) = body {
-                return diagnose_select(select.as_ref(), db, registry, outer_table, None);
-            }
-            None
-        }
-        _ => {
-            let (lhs, query) = membership_subquery_operands(expr)?;
-            let lhs_col = extract_column_name(lhs)?;
-            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                let projected_fk = extract_projection_column(select.as_ref())
-                    .unwrap_or(lhs_col)
-                    .clone();
-                return diagnose_select(
-                    select.as_ref(),
-                    db,
-                    registry,
-                    outer_table,
-                    Some(&projected_fk),
-                );
-            }
-            None
-        }
+    if let Expr::Exists { .. } = expr {
+        let (select, shaping) = exists_subquery_select(expr)?;
+        return match shaping {
+            Some(clause) => Some(shaped_subquery_reason(clause)),
+            None => diagnose_select(select, db, registry, outer_table, None),
+        };
     }
+
+    let (lhs, query, shaping) = membership_subquery_operands(expr)?;
+    if let Some(clause) = shaping {
+        return Some(shaped_subquery_reason(clause));
+    }
+    let lhs_col = extract_column_name(lhs)?;
+    let select = query_select(query)?;
+    let projected_fk = extract_projection_column(select).unwrap_or(lhs_col);
+    diagnose_select(select, db, registry, outer_table, Some(&projected_fk))
+}
+
+/// Why a subquery whose rows are shaped cannot become a membership relation.
+fn shaped_subquery_reason(clause: &str) -> String {
+    format!(
+        "Subquery result is shaped by {clause}, so it admits fewer rows than a membership \
+         relation would grant, pre-compute the shaped set as its own table"
+    )
 }
 
 pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
@@ -530,18 +602,7 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     db: &DB,
     outer_table: &str,
 ) -> Option<String> {
-    let Expr::Exists { subquery, negated } = expr else {
-        return None;
-    };
-    if *negated {
-        return None;
-    }
-
-    let query = subquery.as_ref();
-    let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-        return None;
-    };
-    let analysis = analyze_p5_parent_inheritance(select.as_ref(), db, outer_table)?;
+    let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
 
     if analysis.candidates.len() > 1 {
         return Some(

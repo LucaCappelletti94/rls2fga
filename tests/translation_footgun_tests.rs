@@ -4454,6 +4454,293 @@ fn a_row_limited_membership_subquery_is_refused() {
     }
 }
 
+/// Whatever is wrong with the refusal of `clause`, across the classification, the model,
+/// and the membership tuples alike. Empty when every output refuses it.
+///
+/// Collected rather than asserted so one test reports every spelling of a clause instead
+/// of stopping at the first, which is how a guard wired into one extractor and not the
+/// other stays hidden.
+fn shaped_membership_subquery_complaints(clause: &str, shaping: &str) -> Vec<String> {
+    let db = db_of(&format!(
+        "{MEMBERSHIP_SCHEMA}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
+    ));
+    let translator = translator(ConfidenceLevel::B);
+    let mut complaints = Vec::new();
+
+    let classified = translator.classify(&db);
+    let [policy] = classified.as_slice() else {
+        panic!("expected one classified policy for `{clause}`");
+    };
+    let pattern = &policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern;
+    match pattern {
+        PatternClass::Unknown { reason, .. } if reason.contains(shaping) => {}
+        PatternClass::Unknown { reason, .. } => {
+            complaints.push(format!(
+                "`{clause}` refuses without naming {shaping}: {reason}"
+            ));
+        }
+        classified => {
+            complaints.push(format!(
+                "`{clause}` shapes its rows, yet classified {classified:?}"
+            ));
+        }
+    }
+
+    let outputs = translator.translate(&db).outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let can_select = relation_definition(&dsl, "docs", "can_select");
+    if can_select.as_deref() != Some("no_access") {
+        complaints.push(format!(
+            "`{clause}` must fall closed, can_select is {can_select:?}"
+        ));
+    }
+    let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "doc_members");
+    if !membership_tuples.is_empty() {
+        complaints.push(format!(
+            "`{clause}` must emit no membership tuples, got {membership_tuples:?}"
+        ));
+    }
+    let denial_disclosed = outputs
+        .notes()
+        .iter()
+        .map(TranslationNote::message)
+        .any(|message| message.contains("the model denies what RLS grants"));
+    if !denial_disclosed {
+        complaints.push(format!(
+            "`{clause}` narrows the grant, so a note must say so: {:#?}",
+            outputs
+                .notes()
+                .iter()
+                .map(TranslationNote::message)
+                .collect::<Vec<_>>()
+        ));
+    }
+    complaints
+}
+
+/// Every spelling of a shaped subquery has to be refused, since they share one analyzer.
+fn assert_every_spelling_refused(spellings: &[(&str, &str)]) {
+    let complaints: Vec<String> = spellings
+        .iter()
+        .flat_map(|(clause, shaping)| shaped_membership_subquery_complaints(clause, shaping))
+        .collect();
+    assert!(
+        complaints.is_empty(),
+        "a subquery that shapes its rows must be refused in every spelling:\n{}",
+        complaints.join("\n")
+    );
+}
+
+/// `GROUP BY` collapses the rows into groups, so the subquery stops returning the rows a
+/// membership relation would hold.
+#[test]
+fn a_grouped_membership_subquery_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user GROUP BY doc_id)",
+            "GROUP BY",
+        ),
+        (
+            "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user GROUP BY doc_id)",
+            "GROUP BY",
+        ),
+        (
+            "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user \
+             GROUP BY doc_id)",
+            "GROUP BY",
+        ),
+        (
+            "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id \
+             GROUP BY user_id)",
+            "GROUP BY",
+        ),
+    ]);
+}
+
+/// `HAVING count(*) > 1` is the two-person rule, admitting only rows backed by a second
+/// membership row, while a membership relation grants every member.
+#[test]
+fn a_membership_subquery_filtered_by_having_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user HAVING count(*) > 1)",
+            "HAVING",
+        ),
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user GROUP BY doc_id HAVING count(*) > 1)",
+            "HAVING",
+        ),
+        (
+            "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user \
+             GROUP BY doc_id HAVING count(*) > 1)",
+            "HAVING",
+        ),
+        (
+            "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user \
+             GROUP BY doc_id HAVING count(*) > 1)",
+            "HAVING",
+        ),
+        (
+            "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id \
+             GROUP BY user_id HAVING count(*) > 1)",
+            "HAVING",
+        ),
+    ]);
+}
+
+/// `QUALIFY` filters on a window function, keeping one row per partition.
+#[test]
+fn a_qualify_filtered_membership_subquery_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user \
+             QUALIFY row_number() OVER (PARTITION BY doc_id ORDER BY role) = 1)",
+            "QUALIFY",
+        ),
+        (
+            "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user \
+             QUALIFY row_number() OVER (PARTITION BY doc_id ORDER BY role) = 1)",
+            "QUALIFY",
+        ),
+        (
+            "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user \
+             QUALIFY row_number() OVER (PARTITION BY doc_id ORDER BY role) = 1)",
+            "QUALIFY",
+        ),
+        (
+            "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id \
+             QUALIFY row_number() OVER (PARTITION BY user_id ORDER BY role) = 1)",
+            "QUALIFY",
+        ),
+    ]);
+}
+
+/// `DISTINCT ON` keeps one arbitrary row per key and drops the rest.
+#[test]
+fn a_distinct_on_membership_subquery_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT DISTINCT ON (role) doc_id FROM doc_members \
+             WHERE doc_id = docs.id AND user_id = current_user)",
+            "DISTINCT ON",
+        ),
+        (
+            "id IN (SELECT DISTINCT ON (role) doc_id FROM doc_members \
+             WHERE user_id = current_user)",
+            "DISTINCT ON",
+        ),
+        (
+            "id = ANY (SELECT DISTINCT ON (role) doc_id FROM doc_members \
+             WHERE user_id = current_user)",
+            "DISTINCT ON",
+        ),
+        (
+            "current_user IN (SELECT DISTINCT ON (role) user_id FROM doc_members \
+             WHERE doc_id = docs.id)",
+            "DISTINCT ON",
+        ),
+    ]);
+}
+
+/// `EXISTS` is blind to a row limit that cannot empty the result, but `OFFSET` and a zero
+/// limit can empty it, and then the policy admits fewer rows than full membership.
+#[test]
+fn an_exists_membership_subquery_whose_row_limit_can_empty_it_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user OFFSET 1)",
+            "OFFSET",
+        ),
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user LIMIT 0)",
+            "LIMIT",
+        ),
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user LIMIT (SELECT count(*) FROM doc_members))",
+            "LIMIT",
+        ),
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user FETCH FIRST 0 ROWS ONLY)",
+            "FETCH",
+        ),
+    ]);
+}
+
+/// The guard must not over-fire: inside `EXISTS` a limit of at least one row cannot change
+/// whether a row exists, and `SELECT 1 ... LIMIT 1` is the idiom people write.
+#[test]
+fn an_exists_membership_subquery_keeping_at_least_one_row_still_translates() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
+    );
+    assert_eq!(
+        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
+        Some("member from docs"),
+        "guard precondition: the plain spelling must translate:\n{expected_dsl}"
+    );
+
+    for clause in [
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+         AND user_id = current_user LIMIT 1)",
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+         AND user_id = current_user LIMIT ALL)",
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+         AND user_id = current_user OFFSET 0)",
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+         AND user_id = current_user FETCH FIRST 1 ROWS ONLY)",
+    ] {
+        let (dsl, tuples) = membership_translation(clause);
+        assert_eq!(
+            dsl, expected_dsl,
+            "`{clause}` cannot empty the subquery, so it must translate unchanged"
+        );
+        assert_eq!(
+            tuples, expected_tuples,
+            "`{clause}` must yield the same tuples as the unlimited spelling"
+        );
+    }
+}
+
+/// The guard must not over-fire on plain `DISTINCT` either: dropping duplicate rows leaves
+/// the set of values the membership test reads untouched.
+#[test]
+fn a_distinct_membership_subquery_still_translates() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
+    );
+    assert_eq!(
+        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
+        Some("member from docs"),
+        "guard precondition: the plain spelling must translate:\n{expected_dsl}"
+    );
+
+    for clause in [
+        "id IN (SELECT DISTINCT doc_id FROM doc_members WHERE user_id = current_user)",
+        "id = ANY (SELECT DISTINCT doc_id FROM doc_members WHERE user_id = current_user)",
+    ] {
+        let (dsl, tuples) = membership_translation(clause);
+        assert_eq!(
+            dsl, expected_dsl,
+            "`{clause}` tests the same set as the spelling without DISTINCT"
+        );
+        assert_eq!(
+            tuples, expected_tuples,
+            "`{clause}` must yield the same tuples as the spelling without DISTINCT"
+        );
+    }
+}
+
 /// `pg_dump` parenthesises every conjunct it deparses, so `WHERE ((a = b) AND (c = d))`
 /// is the spelling any policy read back from `PostgreSQL` carries. Parsing has already
 /// fixed precedence, so those parentheses cannot change what the policy means.

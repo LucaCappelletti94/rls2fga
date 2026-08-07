@@ -138,6 +138,11 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "analyze_membership_select",
         "membership_subquery_operands",
         "membership_exists_binding_caller",
+        // Every spelling reads its subquery through one of these two extractors, so the
+        // refusals below cannot be dropped by one spelling and kept by another.
+        "exists_subquery_select",
+        "select_result_shaping_clause",
+        "exists_emptying_limit_clause",
     ] {
         let definitions = fn_definitions(&modules, name);
         assert_eq!(
@@ -146,15 +151,22 @@ fn membership_analysis_has_a_single_source_of_truth() {
         );
     }
 
-    // The row-limit refusal has to sit in the shared extractor, or the object-key spelling
-    // keeps the over-grant the caller spelling was fixed for.
-    let limit_guards = read_module("src/classifier/recognizers")
-        .matches("limit_clause.is_some()")
-        .count();
-    assert_eq!(
-        limit_guards, 1,
-        "one place refuses a row-limited membership subquery, found {limit_guards}"
-    );
+    // Each clause that can shape a subquery's rows is read in exactly one place. A second
+    // reader would let one spelling keep a refusal another spelling dropped.
+    let source = read_module("src/classifier/recognizers");
+    for clause in [
+        "limit_clause.is_some()",
+        "fetch.is_some()",
+        "having.is_some()",
+        "qualify.is_some()",
+        "Distinct::On",
+    ] {
+        let readers = source.matches(clause).count();
+        assert_eq!(
+            readers, 1,
+            "'{clause}' decides a refusal in one place, found {readers}"
+        );
+    }
 }
 
 #[test]
