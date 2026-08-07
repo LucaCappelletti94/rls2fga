@@ -1,6 +1,7 @@
 use super::*;
+use crate::parser::names::unquote_identifier;
 use alloc::collections::BTreeSet;
-use sqlparser::ast::{Distinct, GroupByExpr, LimitClause, Query, SetExpr};
+use sqlparser::ast::{Distinct, GroupByExpr, Ident, LimitClause, Query, SetExpr};
 
 /// EXISTS membership check.
 pub fn recognize_p4<DB: DatabaseLike>(
@@ -9,13 +10,7 @@ pub fn recognize_p4<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
 ) -> Option<ClassifiedExpr> {
-    classify_membership_select(
-        readable_exists_select(expr)?,
-        db,
-        registry,
-        outer_table,
-        None,
-    )
+    classify_membership_select(readable_exists_select(expr)?, db, registry, outer_table)
 }
 
 /// Parent inheritance via correlated EXISTS.
@@ -210,52 +205,67 @@ fn readable_membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query)>
     shaping.is_none().then_some((lhs, query))
 }
 
-/// Membership written with the caller on the left: `caller IN (SELECT user_col FROM m
-/// WHERE m.fk = outer.id)`, and the `= ANY` spelling of the same.
+/// Membership and parent inheritance written as `x IN (SELECT y FROM t WHERE p)`, and the
+/// `= ANY` spelling of the same, the caller-on-the-left form included.
 ///
-/// Verified on `PostgreSQL` 18 to admit exactly the rows the `EXISTS` spelling admits,
-/// differing only where the projected column is NULL, which yields NULL against false and
-/// filters either way. So it is rewritten into that `EXISTS` and handed to the one
-/// membership analyzer, which keeps every refusal it already makes, the uncorrelated case
-/// included.
-pub fn recognize_p4_caller_in_subquery<DB: DatabaseLike>(
+/// Verified on `PostgreSQL` 18 to admit exactly the rows `EXISTS (SELECT 1 FROM t WHERE p
+/// AND y = x)` admits, over rows covering a member, a non-member, no membership row at
+/// all, a row whose key is NULL, a member beside a NULL key, and a member failing a
+/// residual predicate: zero disagreements. The only difference is NULL against false,
+/// which filters either way. So it is rewritten into that `EXISTS` and handed to the
+/// recognizers in dispatch order, which keeps every refusal they already make.
+pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
     expr: &Expr,
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    command: PolicyCommand,
 ) -> Option<ClassifiedExpr> {
-    let (caller, query) = readable_membership_subquery_operands(expr)?;
-    // The equivalence holds for any left-hand value, but only the caller spelling was
-    // verified against PostgreSQL, so the rewrite stays confined to it. Defensive: with a
-    // column on the left the analyzer finds no user column and refuses anyway, so no
-    // generated model distinguishes this check.
-    if !is_current_user_expr(caller, registry) {
-        return None;
-    }
-    recognize_p4(
-        &membership_exists_binding_caller(query, caller)?,
-        db,
-        registry,
-        outer_table,
-    )
+    let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table)?;
+    recognize_p5(&rewritten, db, registry, outer_table, command)
+        .or_else(|| recognize_p4(&rewritten, db, registry, outer_table))
 }
 
-/// `SELECT user_col FROM m WHERE p` rewritten as `EXISTS (SELECT user_col FROM m WHERE p
-/// AND user_col = caller)`. The projection is left alone because the `EXISTS` path never
-/// reads it.
-fn membership_exists_binding_caller(query: &Query, caller: &Expr) -> Option<Expr> {
-    let projected = single_projected_column(query_select(query)?)?;
+/// `x IN (SELECT y FROM t WHERE p)` as `EXISTS (SELECT y FROM t WHERE p AND t.y = outer.x)`.
+///
+/// Both operands gain the qualifier the `IN` form leaves to scoping: the projection names
+/// the subquery's own source, the tested value the guarded table. Without them a column
+/// both tables spell alike reads as either, which drops the correlation and grants the
+/// guarded table whole.
+fn membership_exists_from_in_subquery(
+    expr: &Expr,
+    registry: &FunctionRegistry,
+    outer_table: &str,
+) -> Option<Expr> {
+    let (tested, query) = readable_membership_subquery_operands(expr)?;
+    let tested = if is_current_user_expr(tested, registry) {
+        tested.clone()
+    } else if matches!(tested, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) {
+        qualified_column(tested, outer_table)
+    } else {
+        return None;
+    };
+
+    let select = query_select(query)?;
+    let projected = single_projected_column(select)?;
+    let projected = match relation_sources(select).as_slice() {
+        [source] => qualified_column(
+            &projected,
+            source.alias.as_deref().unwrap_or(&source.table_name),
+        ),
+        _ => projected,
+    };
 
     let mut rewritten = query.clone();
-    let SetExpr::Select(select) = rewritten.body.as_mut() else {
+    let SetExpr::Select(body) = rewritten.body.as_mut() else {
         return None;
     };
     let bound = Expr::BinaryOp {
         left: Box::new(projected),
         op: BinaryOperator::Eq,
-        right: Box::new(caller.clone()),
+        right: Box::new(tested),
     };
-    select.selection = Some(match select.selection.take() {
+    body.selection = Some(match body.selection.take() {
         Some(existing) => Expr::BinaryOp {
             left: Box::new(existing),
             op: BinaryOperator::And,
@@ -267,6 +277,23 @@ fn membership_exists_binding_caller(query: &Query, caller: &Expr) -> Option<Expr
         subquery: Box::new(rewritten),
         negated: false,
     })
+}
+
+/// `col` as `qualifier.col`, leaving anything already qualified alone.
+///
+/// The qualifier is written unquoted because every comparison against it folds case and
+/// quoting, so it matches whichever spelling the schema declared.
+fn qualified_column(expr: &Expr, qualifier: &str) -> Expr {
+    let Expr::Identifier(column) = expr else {
+        return expr.clone();
+    };
+    let relation = table_qualifier_candidates(qualifier)
+        .pop()
+        .unwrap_or_else(|| qualifier.to_string());
+    Expr::CompoundIdentifier(vec![
+        Ident::new(unquote_identifier(&relation).into_owned()),
+        column.clone(),
+    ])
 }
 
 /// The one column a select projects, qualifier kept. `*`, several items, or anything that
@@ -281,39 +308,22 @@ fn single_projected_column(select: &Select) -> Option<Expr> {
     extract_column_name(expr).is_some().then(|| expr.clone())
 }
 
-/// Recognize P4 membership through `col IN (SELECT ...)` or `col = ANY (SELECT ...)`.
-pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
-    expr: &Expr,
-    db: &DB,
-    registry: &FunctionRegistry,
-    outer_table: &str,
-) -> Option<ClassifiedExpr> {
-    let (lhs, query) = readable_membership_subquery_operands(expr)?;
-
-    // LHS should be a column reference (e.g. team_id)
-    let lhs_col = extract_column_name(lhs)?;
-    let select = query_select(query)?;
-    let projected_col = extract_projection_column(select).unwrap_or(lhs_col);
-    classify_membership_select(select, db, registry, outer_table, Some(projected_col))
-}
-
 fn classify_membership_select<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
-    projected_fk: Option<String>,
 ) -> Option<ClassifiedExpr> {
-    match analyze_membership_select(select, db, registry, outer_table, projected_fk.as_deref()) {
+    match analyze_membership_select(select, db, registry, outer_table) {
         MembershipSelectAnalysis::Unique {
             join_table,
-            inferred_fk_column,
+            fk_column,
             user_column,
             extra_predicate_sql,
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership {
                 join_table,
-                fk_column: projected_fk.unwrap_or(inferred_fk_column),
+                fk_column,
                 user_column,
                 extra_predicate_sql,
             },
@@ -342,7 +352,7 @@ fn classify_membership_select<DB: DatabaseLike>(
 enum MembershipSelectAnalysis {
     Unique {
         join_table: String,
-        inferred_fk_column: String,
+        fk_column: String,
         user_column: String,
         extra_predicate_sql: Option<String>,
     },
@@ -373,7 +383,6 @@ fn analyze_membership_select<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
-    projected_fk_hint: Option<&str>,
 ) -> MembershipSelectAnalysis {
     if membership_sources_include_ambiguous_unresolvable_shape(select, db)
         && selection_references_current_user(select, registry)
@@ -392,16 +401,16 @@ fn analyze_membership_select<DB: DatabaseLike>(
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
 
-    let mut matches = membership_matches(select, db, registry, projected_fk_hint);
+    let mut matches = membership_matches(select, db, registry);
     if matches.len() > 1 {
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
     match matches.pop() {
-        Some((join_table, inferred_fk_column, user_column, extra_predicate_sql)) => {
+        Some((join_table, fk_column, user_column, extra_predicate_sql)) => {
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
-            if scans_root_entity_by_its_key(db, &join_table, &inferred_fk_column) {
+            if scans_root_entity_by_its_key(db, &join_table, &fk_column) {
                 return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
             }
             // A third table in the subquery carries conditions that no single
@@ -421,7 +430,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
             }
             MembershipSelectAnalysis::Unique {
                 join_table,
-                inferred_fk_column,
+                fk_column,
                 user_column,
                 extra_predicate_sql,
             }
@@ -542,9 +551,8 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         db: &DB,
         registry: &FunctionRegistry,
         outer_table: &str,
-        projected_fk: Option<&str>,
     ) -> Option<String> {
-        match analyze_membership_select(select, db, registry, outer_table, projected_fk) {
+        match analyze_membership_select(select, db, registry, outer_table) {
             MembershipSelectAnalysis::AmbiguousMultiple => Some(
                 "Ambiguous membership pattern: multiple candidate membership sources matched"
                     .to_string(),
@@ -575,18 +583,28 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         let (select, shaping) = exists_subquery_select(expr)?;
         return match shaping {
             Some(clause) => Some(shaped_subquery_reason(clause)),
-            None => diagnose_select(select, db, registry, outer_table, None),
+            None => diagnose_select(select, db, registry, outer_table),
         };
     }
 
-    let (lhs, query, shaping) = membership_subquery_operands(expr)?;
+    let (_, query, shaping) = membership_subquery_operands(expr)?;
     if let Some(clause) = shaping {
         return Some(shaped_subquery_reason(clause));
     }
-    let lhs_col = extract_column_name(lhs)?;
-    let select = query_select(query)?;
-    let projected_fk = extract_projection_column(select).unwrap_or(lhs_col);
-    diagnose_select(select, db, registry, outer_table, Some(&projected_fk))
+    if single_projected_column(query_select(query)?).is_none() {
+        return Some(
+            "Subquery selects an expression rather than a column, so nothing links it to \
+             the guarded row; project the correlating column instead"
+                .to_string(),
+        );
+    }
+    // Diagnose the rewrite the recognizer classifies, so the reason names the shape the
+    // analyzer saw rather than the one the policy spells.
+    let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table)?;
+    let Expr::Exists { subquery, .. } = &rewritten else {
+        return None;
+    };
+    diagnose_select(query_select(subquery)?, db, registry, outer_table)
 }
 
 /// Why a subquery whose rows are shaped cannot become a membership relation.
@@ -822,7 +840,6 @@ fn membership_matches<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
     registry: &FunctionRegistry,
-    projected_fk_hint: Option<&str>,
 ) -> Vec<(String, String, String, Option<String>)> {
     let mut matches = Vec::new();
     for source in relation_sources(select) {
@@ -843,20 +860,11 @@ fn membership_matches<DB: DatabaseLike>(
             &col_names,
             Some(db),
             registry,
-            projected_fk_hint,
         ) {
             matches.push((source.table_name, fk_col, user_col, extra_predicate_sql));
         }
     }
     matches
-}
-
-pub(super) fn extract_projection_column(select: &Select) -> Option<String> {
-    select.projection.first().and_then(|p| match p {
-        SelectItem::UnnamedExpr(e) => extract_column_name(e),
-        SelectItem::ExprWithAlias { expr, .. } => extract_column_name(expr),
-        _ => None,
-    })
 }
 
 pub(super) fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
@@ -957,16 +965,9 @@ pub(super) fn extract_membership_columns(
     join_alias: Option<&str>,
     join_cols: &[String],
     registry: &FunctionRegistry,
-    projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
-        select,
-        join_table,
-        join_alias,
-        join_cols,
-        None,
-        registry,
-        projected_fk_hint,
+        select, join_table, join_alias, join_cols, None, registry,
     )
 }
 
@@ -977,7 +978,6 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     join_cols: &[String],
     db: Option<&DB>,
     registry: &FunctionRegistry,
-    projected_fk_hint: Option<&str>,
 ) -> Option<(String, String, Option<String>)> {
     let mut fk_col: Option<String> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
@@ -1072,20 +1072,6 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             }
             MembershipEqAnalysis::OuterCorrelation | MembershipEqAnalysis::NotRelevant => {}
         }
-    }
-
-    // Only fall back to column-name inference when the IN-subquery form provides
-    // an implicit correlation via the projected FK hint.  An EXISTS without an
-    // explicit `join_table_col = outer_table_col` predicate cannot be safely
-    // classified as P4: the policy would grant access to any resource the user
-    // is a member of, rather than the specific resource being queried.
-    if fk_col.is_none() && !fk_col_is_explicit && projected_fk_hint.is_some() {
-        fk_col = infer_membership_fk_column(
-            join_table,
-            join_cols,
-            user_col.as_deref(),
-            projected_fk_hint,
-        );
     }
 
     let user_col = user_col?;
@@ -1507,66 +1493,4 @@ fn table_has_fk_to_parent<DB: DatabaseLike>(
                 qualifier_matches_table(referenced.table_name(), parent_table_name, None)
             })
         })
-}
-pub(super) fn infer_membership_fk_column(
-    join_table: &str,
-    join_cols: &[String],
-    user_col: Option<&str>,
-    projected_fk_hint: Option<&str>,
-) -> Option<String> {
-    let id_candidates: Vec<String> = join_cols
-        .iter()
-        .filter(|c| c.ends_with("_id") && Some(c.as_str()) != user_col)
-        .cloned()
-        .collect();
-
-    if id_candidates.is_empty() {
-        return None;
-    }
-    if id_candidates.len() == 1 {
-        return id_candidates.first().cloned();
-    }
-
-    if let Some(hint) = projected_fk_hint {
-        if id_candidates.iter().any(|c| c == hint) {
-            return Some(hint.to_string());
-        }
-    }
-
-    let relation = normalize_relation_name(join_table);
-    let mut relation_hints = Vec::new();
-    if let Some(stem) = relation.strip_suffix("_members") {
-        relation_hints.push(format!("{stem}_id"));
-    }
-    if let Some(stem) = relation.strip_suffix("_memberships") {
-        relation_hints.push(format!("{stem}_id"));
-    }
-    if let Some(stem) = relation.strip_suffix("_membership") {
-        relation_hints.push(format!("{stem}_id"));
-    }
-
-    let hinted: Vec<String> = id_candidates
-        .iter()
-        .filter(|candidate| relation_hints.iter().any(|hint| hint == *candidate))
-        .cloned()
-        .collect();
-    if hinted.len() == 1 {
-        return hinted.into_iter().next();
-    }
-
-    let non_scope_candidates: Vec<String> = id_candidates
-        .iter()
-        .filter(|candidate| {
-            !matches!(
-                candidate.as_str(),
-                "tenant_id" | "org_id" | "organization_id" | "account_id" | "workspace_id"
-            )
-        })
-        .cloned()
-        .collect();
-    if non_scope_candidates.len() == 1 {
-        return non_scope_candidates.into_iter().next();
-    }
-
-    None
 }

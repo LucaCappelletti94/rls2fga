@@ -25,9 +25,7 @@ pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };
-pub use subquery::{
-    recognize_p4, recognize_p4_caller_in_subquery, recognize_p4_in_subquery, recognize_p5,
-};
+pub use subquery::{recognize_p4, recognize_p4_in_subquery, recognize_p5};
 
 /// Recognize P1: `role_fn(user, resource) >= N`, in either operand order.
 pub fn recognize_p1<DB: DatabaseLike>(

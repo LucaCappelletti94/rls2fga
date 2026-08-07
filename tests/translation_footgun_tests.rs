@@ -6274,3 +6274,280 @@ fn the_furniture_of_a_real_schema_does_not_disturb_the_policies() {
         "the composite-key table is still translated:\n{dsl}"
     );
 }
+
+const TEAMS_SCHEMA: &str = "
+CREATE TABLE teams(id UUID PRIMARY KEY, name TEXT);
+CREATE TABLE members(id UUID PRIMARY KEY, team_id UUID REFERENCES teams(id), user_id TEXT);
+ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
+";
+
+/// Whatever is wrong with the refusal of a `SELECT` policy on `teams`, across the
+/// classification, its reason, the model and the membership tuples alike. Empty when
+/// every output refuses it and says why.
+fn refused_teams_policy_complaints(clause: &str, reason_names: &str) -> Vec<String> {
+    let db = db_of(&format!(
+        "{TEAMS_SCHEMA}CREATE POLICY teams_members ON teams FOR SELECT USING ({clause});"
+    ));
+    let translator = translator(ConfidenceLevel::B);
+    let mut complaints = Vec::new();
+
+    let classified = translator.classify(&db);
+    let [policy] = classified.as_slice() else {
+        panic!("expected one classified policy for `{clause}`");
+    };
+    let pattern = &policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern;
+    match pattern {
+        PatternClass::Unknown { reason, .. } if reason.contains(reason_names) => {}
+        PatternClass::Unknown { reason, .. } => complaints.push(format!(
+            "`{clause}` refuses without naming {reason_names}: {reason}"
+        )),
+        classified => complaints.push(format!("`{clause}` must not classify, got {classified:?}")),
+    }
+
+    let outputs = translator.translate(&db).outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let can_select = relation_definition(&dsl, "teams", "can_select");
+    if can_select.as_deref() != Some("no_access") {
+        complaints.push(format!(
+            "`{clause}` must fall closed, can_select is {can_select:?}"
+        ));
+    }
+    let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "\"members\"");
+    if !membership_tuples.is_empty() {
+        complaints.push(format!(
+            "`{clause}` must emit no membership tuples, got {membership_tuples:?}"
+        ));
+    }
+    // A type named after the projected column is the shape the phantom holder takes.
+    let phantom: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name != "teams" && name != "user" && name != "members")
+        .collect();
+    if !phantom.is_empty() {
+        complaints.push(format!("`{clause}` invented the types {phantom:?}"));
+    }
+    complaints
+}
+
+/// A subquery selecting anything but a column has no column to correlate on, and taking
+/// the outer one instead grants every membership row under a type named after it.
+/// `min(team_id)` admits the lowest team alone on `PostgreSQL` 18, the model admitted
+/// every team the caller belongs to.
+#[test]
+fn an_in_subquery_selecting_something_other_than_a_column_is_refused() {
+    let complaints: Vec<String> = [
+        "id IN (SELECT min(team_id) FROM members WHERE user_id = current_user)",
+        "id = ANY (SELECT min(team_id) FROM members WHERE user_id = current_user)",
+        "id IN (SELECT team_id || '' FROM members WHERE user_id = current_user)",
+        "id IN (SELECT * FROM members WHERE user_id = current_user)",
+        "id IN (SELECT row_number() OVER (ORDER BY team_id) FROM members \
+         WHERE user_id = current_user)",
+    ]
+    .iter()
+    .flat_map(|clause| {
+        refused_teams_policy_complaints(clause, "selects an expression rather than a column")
+    })
+    .collect();
+    assert!(
+        complaints.is_empty(),
+        "a subquery selecting no column cannot be membership:\n{}",
+        complaints.join("\n")
+    );
+}
+
+/// A cast changes the value, not only its type: `PostgreSQL` stores `(om.org_id)::uuid`
+/// and matches the normalized uuid, while a tuple keyed on the raw column carries the
+/// spelling the column holds. Probed on 18: the row is admitted by the policy and missed
+/// by the tuple, so the cast cannot be dropped.
+#[test]
+fn an_in_subquery_selecting_a_cast_is_refused() {
+    // Refused by the analyzer rather than by the projection guard: a cast is a column
+    // reference, and what it cannot be is the key a tuple carries.
+    let complaints = refused_teams_policy_complaints(
+        "id IN (SELECT team_id::uuid FROM members WHERE user_id = current_user)",
+        "could not infer a unique membership join",
+    );
+    assert!(
+        complaints.is_empty(),
+        "a cast projection cannot key a tuple:\n{}",
+        complaints.join("\n")
+    );
+}
+
+const TENANT_SCHEMA: &str = "
+CREATE TABLE docs(id UUID PRIMARY KEY, tenant_id UUID);
+CREATE TABLE m(doc_id UUID REFERENCES docs(id), tenant_id UUID, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+";
+
+/// The selected column is a correlation, so a second one written out in the `WHERE` makes
+/// two, and one relation carries one. Probed on `PostgreSQL` 18 over a caller named on a
+/// doc in another tenant: both correlations admit doc 1 alone, the selected column alone
+/// admits docs 1 and 2, and the written-out one alone admits docs 1 and 3. Neither half is
+/// the policy, so the pair is refused, which is what the `EXISTS` spelling already does.
+#[test]
+fn an_in_subquery_carrying_two_correlations_is_refused() {
+    let clauses = [
+        "id IN (SELECT m.doc_id FROM m WHERE m.tenant_id = docs.tenant_id \
+         AND m.user_id = current_user)",
+        "id = ANY (SELECT m.doc_id FROM m WHERE m.tenant_id = docs.tenant_id \
+         AND m.user_id = current_user)",
+        // The same policy as an EXISTS, refused today, pinned so the two cannot drift.
+        "EXISTS (SELECT 1 FROM m WHERE m.doc_id = docs.id AND m.tenant_id = docs.tenant_id \
+         AND m.user_id = current_user)",
+    ];
+    let mut complaints = Vec::new();
+    for clause in clauses {
+        let db = db_of(&format!(
+            "{TENANT_SCHEMA}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
+        ));
+        let translator = translator(ConfidenceLevel::B);
+        let outputs = translator.translate(&db).outputs_accepting_gaps();
+        let dsl = outputs.model();
+        let can_select = relation_definition(&dsl, "docs", "can_select");
+        if can_select.as_deref() != Some("no_access") {
+            complaints.push(format!(
+                "`{clause}` drops one of its two correlations, can_select is {can_select:?}"
+            ));
+        }
+        let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "\"m\"");
+        if !membership_tuples.is_empty() {
+            complaints.push(format!(
+                "`{clause}` must emit no membership tuples, got {membership_tuples:?}"
+            ));
+        }
+    }
+    assert!(
+        complaints.is_empty(),
+        "a subquery correlated twice cannot become one relation:\n{}",
+        complaints.join("\n")
+    );
+}
+
+const DOC_LINKS_SCHEMA: &str = "
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_login TEXT);
+CREATE TABLE doc_links(
+  id UUID PRIMARY KEY,
+  parent_id UUID NOT NULL REFERENCES docs(id),
+  label TEXT
+);
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+";
+
+/// `parent_id IN (SELECT id FROM parents WHERE <owner>)` names one parent row per child
+/// row, so it is parent inheritance. Reading it as a subquery over a membership table
+/// finds no column to correlate on and grants the whole table through a holder: probed on
+/// `PostgreSQL` 18, only links to owned docs are visible, while the holder admits every
+/// link to anyone owning any doc.
+#[test]
+fn an_in_subquery_naming_the_parent_by_its_key_inherits_from_the_parent() {
+    let db = db_of(&format!(
+        "{DOC_LINKS_SCHEMA}CREATE POLICY docs_owner ON docs FOR SELECT \
+         USING (owner_login = current_user);\n\
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+         CREATE POLICY doc_links_visible ON doc_links FOR SELECT \
+         USING (parent_id IN (SELECT id FROM docs WHERE owner_login = current_user));"
+    ));
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    let can_select =
+        relation_definition(&dsl, "doc_links", "can_select").expect("doc_links defines can_select");
+    assert!(
+        can_select.contains("from docs"),
+        "the link inherits from the doc it names, got `{can_select}`:\n{dsl}"
+    );
+    assert!(
+        !can_select.contains("holder"),
+        "a per-row link is not a table-wide holder, got `{can_select}`:\n{dsl}"
+    );
+    assert!(
+        !type_names(&dsl).iter().any(|name| name.contains("holder")),
+        "no holder type is minted for a correlated policy:\n{dsl}"
+    );
+}
+
+/// The object-key spelling is the `EXISTS` spelling written the other way round. Probed on
+/// `PostgreSQL` 18 over rows covering a member, a non-member, no membership row at all, a
+/// membership row whose key is NULL, a member beside a NULL key, and a member failing a
+/// residual predicate: `IN`, `= ANY` and `EXISTS` disagree on zero rows. So the model and
+/// the tuples have to match byte for byte, or the fix has narrowed the shape.
+#[test]
+fn the_object_key_in_subquery_translates_like_the_exists_spelling() {
+    let (expected_dsl, expected_tuples) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
+    );
+    assert!(
+        !expected_dsl.contains("can_select: no_access"),
+        "guard precondition: the EXISTS spelling must translate:\n{expected_dsl}"
+    );
+
+    for clause in [
+        "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
+        "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
+        "id IN (SELECT dm.doc_id FROM doc_members dm WHERE dm.user_id = current_user)",
+        "docs.id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
+    ] {
+        let (dsl, tuples) = membership_translation(clause);
+        assert_eq!(
+            dsl, expected_dsl,
+            "`{clause}` must yield the same model as the EXISTS spelling"
+        );
+        assert_eq!(
+            tuples, expected_tuples,
+            "`{clause}` must yield the same tuples as the EXISTS spelling"
+        );
+    }
+}
+
+/// A residual predicate is what tells the operator the relation is wider than the policy,
+/// so it has to survive the rewrite of the object-key spelling too.
+#[test]
+fn a_residual_predicate_survives_the_object_key_in_subquery_rewrite() {
+    let (expected_dsl, _) = membership_translation(
+        "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND role = 'admin' \
+         AND user_id = current_user)",
+    );
+    let (dsl, _) = membership_translation(
+        "id IN (SELECT doc_id FROM doc_members WHERE role = 'admin' AND user_id = current_user)",
+    );
+    assert_eq!(
+        dsl, expected_dsl,
+        "the role predicate must reach the same place it does through EXISTS"
+    );
+}
+
+/// The `IN` form leaves to scoping which side of `doc_id = doc_id` is the guarded row and
+/// which the membership row. Read without that scope the correlation vanishes, and the
+/// policy reads as "the caller is a member of something", which grants the table whole.
+#[test]
+fn a_membership_column_spelled_like_the_guarded_key_still_correlates() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(doc_id UUID PRIMARY KEY, title TEXT);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(doc_id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT
+  USING (doc_id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("member from docs"),
+        "the shared column name still names one doc per membership row:\n{dsl}"
+    );
+    assert!(
+        !type_names(&dsl).iter().any(|name| name.contains("holder")),
+        "a correlated policy mints no holder:\n{dsl}"
+    );
+}

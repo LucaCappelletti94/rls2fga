@@ -381,14 +381,9 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return classified;
     }
 
-    // Try P4: IN-subquery membership
-    if let Some(classified) = recognizers::recognize_p4_in_subquery(expr, db, registry, table) {
-        return classified;
-    }
-
-    // Try P4: the caller inside a membership subquery, the same check written backwards.
+    // Try P4 and P5: the IN-subquery spellings, normalized into the EXISTS one.
     if let Some(classified) =
-        recognizers::recognize_p4_caller_in_subquery(expr, db, registry, table)
+        recognizers::recognize_p4_in_subquery(expr, db, registry, table, command)
     {
         return classified;
     }

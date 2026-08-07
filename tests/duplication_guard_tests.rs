@@ -128,8 +128,9 @@ fn p5_inheritance_analysis_has_single_source_of_truth() {
 }
 
 /// Three spellings reach P4 membership: `EXISTS`, `col IN (SELECT ...)`, and the caller on
-/// the left. The third is a rewrite into the first, so all three must land on one
-/// analyzer. A second analyzer would let one spelling keep a refusal another dropped.
+/// the left. The last two are one rewrite into the first, so all three land on one
+/// analyzer. A second analyzer, or a second reader of the projection, would let one
+/// spelling keep a refusal another dropped.
 #[test]
 fn membership_analysis_has_a_single_source_of_truth() {
     let modules = ["src/classifier/recognizers"];
@@ -137,7 +138,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
     for name in [
         "analyze_membership_select",
         "membership_subquery_operands",
-        "membership_exists_binding_caller",
+        "membership_exists_from_in_subquery",
         // Every spelling reads its subquery through one of these two extractors, so the
         // refusals below cannot be dropped by one spelling and kept by another.
         "exists_subquery_select",
@@ -167,6 +168,16 @@ fn membership_analysis_has_a_single_source_of_truth() {
             "'{clause}' decides a refusal in one place, found {readers}"
         );
     }
+
+    // The projected column of an `IN` subquery is a correlation, not a hint. Reading it
+    // anywhere but the rewrite is how it used to reach the pattern without facing the
+    // conflict check, which dropped a second correlation and granted the table whole.
+    let membership = read_module("src/classifier/recognizers/subquery.rs");
+    let projection_readers = membership.matches("select.projection").count();
+    assert_eq!(
+        projection_readers, 1,
+        "the projection is read only by the rewrite, found {projection_readers} readers"
+    );
 }
 
 #[test]

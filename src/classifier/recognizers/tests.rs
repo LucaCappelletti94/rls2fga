@@ -792,7 +792,9 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
-    assert!(recognize_p4_in_subquery(&negated, &db, &registry, "docs").is_none());
+    assert!(
+        recognize_p4_in_subquery(&negated, &db, &registry, "docs", PolicyCommand::Select).is_none()
+    );
 
     let in_subquery = parse_expr(
         "doc_id IN (
@@ -802,7 +804,8 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
              )",
     );
     let classified =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").expect("expected match");
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+            .expect("expected match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -828,7 +831,8 @@ fn recognize_p4_in_subquery_supports_joined_membership_tables() {
     );
 
     let classified =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").expect("expected P4 match");
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+            .expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership {
@@ -862,7 +866,8 @@ fn recognize_p4_in_subquery_fails_closed_for_non_membership_distinct_predicates(
         ));
 
         assert!(
-            recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
+            recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+                .is_none(),
             "non-membership DISTINCT predicate `{clause}` should fail closed for P4 IN-subquery"
         );
     }
@@ -884,7 +889,8 @@ fn recognize_p4_in_subquery_fails_closed_for_function_wrapped_non_membership_ref
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+            .is_none(),
         "function-wrapped non-membership reference should fail closed for P4 IN-subquery"
     );
 }
@@ -913,8 +919,9 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
     );
 
     let exists = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected EXISTS match");
-    let in_sub = recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs")
-        .expect("expected IN-subquery match");
+    let in_sub =
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+            .expect("expected IN-subquery match");
 
     let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicate_sql) =
         match exists.pattern {
@@ -979,7 +986,8 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
         "ambiguous EXISTS sources should fail closed"
     );
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs").is_none(),
+        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
+            .is_none(),
         "ambiguous IN-subquery sources should fail closed"
     );
 }
@@ -1079,14 +1087,13 @@ fn membership_column_extraction_requires_explicit_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
-            .is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
         "membership without user predicate must fail closed"
     );
 }
 
 #[test]
-fn table_and_projection_extractors_cover_non_table_and_alias_paths() {
+fn table_extractors_cover_non_table_and_alias_paths() {
     let table_select = parse_select("SELECT dm.doc_id AS projected FROM doc_members dm");
     let from = &table_select.from[0];
     let table_name =
@@ -1095,10 +1102,6 @@ fn table_and_projection_extractors_cover_non_table_and_alias_paths() {
     assert_eq!(
         extract_table_alias_from_table_factor(&from.relation).as_deref(),
         Some("dm")
-    );
-    assert_eq!(
-        extract_projection_column(&table_select).as_deref(),
-        Some("doc_id")
     );
 
     let derived_select = parse_select("SELECT x.id FROM (SELECT 1 AS id) x WHERE x.id = 1");
@@ -1131,12 +1134,6 @@ fn current_user_expr_detection_supports_cast_and_nested() {
         "schema-qualified function names that normalize to SQL keywords are not accessors"
     );
     assert!(!is_current_user_expr(&other, &registry));
-}
-
-#[test]
-fn extract_projection_column_returns_none_for_wildcard() {
-    let select = parse_select("SELECT * FROM doc_members");
-    assert!(extract_projection_column(&select).is_none());
 }
 
 #[test]
@@ -1213,7 +1210,7 @@ fn extract_membership_columns_detects_reversed_predicates() {
     ];
 
     let extracted =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry)
             .expect("reversed predicates should still infer membership columns");
     assert_eq!(extracted.0, "doc_id");
     assert_eq!(extracted.1, "user_id");
@@ -1301,7 +1298,14 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE odd_members.beta = 'x'
              )",
     );
-    assert!(recognize_p4_in_subquery(&in_subquery_expr, &db, &registry, "docs").is_none());
+    assert!(recognize_p4_in_subquery(
+        &in_subquery_expr,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select
+    )
+    .is_none());
 }
 
 #[test]
@@ -1360,7 +1364,10 @@ fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
                (SELECT dm.doc_id FROM doc_members dm)
              )",
     );
-    assert!(recognize_p4_in_subquery(&unsupported, &db, &registry, "docs").is_none());
+    assert!(
+        recognize_p4_in_subquery(&unsupported, &db, &registry, "docs", PolicyCommand::Select)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1372,7 +1379,10 @@ fn recognize_p4_paths_fail_closed_for_values_subqueries() {
     let in_values = parse_expr("id IN (VALUES (1))");
 
     assert!(recognize_p4(&exists_values, &db, &registry, "docs").is_none());
-    assert!(recognize_p4_in_subquery(&in_values, &db, &registry, "docs").is_none());
+    assert!(
+        recognize_p4_in_subquery(&in_values, &db, &registry, "docs", PolicyCommand::Select)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1404,7 +1414,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
              )",
     );
     assert!(matches!(
-        recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs"),
+        recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs", PolicyCommand::Select),
         Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
             ..
@@ -1445,7 +1455,7 @@ fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
     ];
 
     let extracted =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None)
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry)
             .expect("columns should still be inferred");
     assert_eq!(extracted.0, "doc_id");
     assert_eq!(extracted.1, "user_id");
@@ -1467,8 +1477,7 @@ fn extract_membership_columns_returns_none_without_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
-            .is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
         "membership without any WHERE must fail closed"
     );
 }
@@ -1491,8 +1500,7 @@ fn membership_column_extraction_requires_user_predicate_not_just_role() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None,)
-            .is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
         "membership with only a role predicate must fail closed"
     );
 }
@@ -1512,8 +1520,7 @@ fn membership_column_extraction_fails_when_fk_remains_ambiguous() {
         "role".to_string(),
     ];
 
-    let extracted =
-        extract_membership_columns(&select, "memberships", Some("m"), &cols, &registry, None);
+    let extracted = extract_membership_columns(&select, "memberships", Some("m"), &cols, &registry);
     assert!(
         extracted.is_none(),
         "ambiguous membership FK should fail closed"
@@ -1536,8 +1543,7 @@ fn extract_membership_columns_fails_when_join_predicates_conflict() {
         "user_id".to_string(),
     ];
 
-    let extracted =
-        extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry, None);
+    let extracted = extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry);
     assert!(
         extracted.is_none(),
         "conflicting join predicates should fail closed"
@@ -1940,30 +1946,6 @@ fn extract_parent_join_columns_right_is_parent_left_is_outer() {
 }
 
 #[test]
-fn infer_membership_fk_column_uses_table_stem_hint() {
-    let cols = vec![
-        "project_id".to_string(),
-        "org_id".to_string(),
-        "user_id".to_string(),
-    ];
-    // Table name: project_members -> stem hint: project_id
-    let result = infer_membership_fk_column("project_members", &cols, Some("user_id"), None);
-    assert_eq!(result, Some("project_id".to_string()));
-}
-
-#[test]
-fn infer_membership_fk_column_filters_scope_candidates() {
-    // When there are multiple _id cols but one is a scope candidate (tenant_id)
-    let cols = vec![
-        "doc_id".to_string(),
-        "tenant_id".to_string(),
-        "user_id".to_string(),
-    ];
-    let result = infer_membership_fk_column("memberships", &cols, Some("user_id"), None);
-    assert_eq!(result, Some("doc_id".to_string()));
-}
-
-#[test]
 fn diagnose_p4_membership_ambiguity_in_subquery_form() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
@@ -2004,8 +1986,7 @@ fn extract_membership_columns_via_join_on_clause() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry);
     assert!(
         result.is_some(),
         "ON-clause fk_col and WHERE user_col should be extracted"
@@ -2138,8 +2119,7 @@ fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (left=join) should be extracted"
@@ -2162,8 +2142,7 @@ fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (right=join) should be extracted"
@@ -2187,8 +2166,7 @@ fn extract_membership_columns_on_clause_fk_right_is_join() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
     assert!(
         result.is_some(),
         "ON-clause FK (right_is_join) should be extracted"
@@ -2216,8 +2194,7 @@ fn extract_membership_columns_where_right_is_join_fk_conflict_returns_none() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
     assert!(
         result.is_none(),
         "conflicting right_is_join FK columns should return None"
@@ -2320,65 +2297,6 @@ fn qualifier_matches_table_with_schema_qualified_name() {
     assert!(qualifier_matches_table("d", "public.docs", Some("d")));
     // Non-matching qualifier.
     assert!(!qualifier_matches_table("other", "public.docs", None));
-}
-
-//    and None for multiple non-scope candidates
-#[test]
-fn infer_membership_fk_column_uses_membership_suffix_hint() {
-    // join_table "team_membership" → hint "team_id"
-    let result = infer_membership_fk_column(
-        "team_membership",
-        &["id".into(), "user_id".into(), "team_id".into()],
-        Some("user_id"),
-        None,
-    );
-    assert_eq!(result, Some("team_id".to_string()));
-}
-
-#[test]
-fn infer_membership_fk_column_uses_memberships_suffix_hint() {
-    // join_table "org_memberships" → hint "org_id"
-    let result = infer_membership_fk_column(
-        "org_memberships",
-        &["id".into(), "user_id".into(), "org_id".into()],
-        Some("user_id"),
-        None,
-    );
-    assert_eq!(result, Some("org_id".to_string()));
-}
-
-#[test]
-fn infer_membership_fk_column_returns_none_for_multiple_non_scope_candidates() {
-    // Multiple id-like columns, no hint match, no scope filter → None
-    let result = infer_membership_fk_column(
-        "assignments",
-        &[
-            "id".into(),
-            "project_id".into(),
-            "task_id".into(),
-            "user_id".into(),
-        ],
-        Some("user_id"),
-        None,
-    );
-    assert_eq!(result, None);
-}
-
-#[test]
-fn infer_membership_fk_column_projected_fk_hint_takes_priority() {
-    // When projected_fk_hint matches one of the candidates, use it
-    let result = infer_membership_fk_column(
-        "assignments",
-        &[
-            "id".into(),
-            "project_id".into(),
-            "task_id".into(),
-            "user_id".into(),
-        ],
-        Some("user_id"),
-        Some("task_id"),
-    );
-    assert_eq!(result, Some("task_id".to_string()));
 }
 
 // 9. diagnose_p4_membership_ambiguity: InSubquery form
@@ -2641,8 +2559,7 @@ fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry, None);
+    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
     assert!(result.is_some());
     let (fk, user, _) = result.unwrap();
     assert_eq!(fk, "doc_id");

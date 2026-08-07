@@ -2756,3 +2756,183 @@ CREATE POLICY docs_staff ON docs FOR SELECT USING (
         failures.join("\n")
     );
 }
+
+/// Typed schema for the parent-key case.
+mod parent_key_schema {
+    diesel::table! {
+        parent_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        doc_links (id) {
+            id -> diesel::sql_types::Text,
+            parent_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(parent_docs, doc_links);
+}
+
+/// Link ids the plain login role can read, with `app.current_user_id` set to `user_id`.
+fn postgres_readable_doc_links(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use parent_key_schema::doc_links;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = doc_links::table.select(doc_links::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the doc links")
+}
+
+/// `parent_id IN (SELECT id FROM parent_docs WHERE <owner>)` names one parent row per
+/// child row, so it is parent inheritance rather than a subquery over membership rows.
+/// Read the other way it correlates on nothing and grants every link to anyone owning any
+/// doc, which is what the model did.
+///
+/// Two owners with one link each, so the case fails both on a model that grants the link
+/// whose parent the caller does not own (the old behaviour) and on one that denies the
+/// link they do own (what dropping the parent-inheritance route leaves).
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn parent_key_in_subquery_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE parent_docs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL);
+CREATE TABLE doc_links (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL REFERENCES parent_docs(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE parent_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parent_docs_owner ON parent_docs FOR SELECT
+    USING (owner_id = auth_current_user_id());
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id FROM parent_docs WHERE owner_id = auth_current_user_id()));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the parent-key schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON parent_docs, doc_links TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    let links = [("l-alice", USER_ALICE), ("l-bob", USER_BOB)];
+    {
+        use parent_key_schema::{doc_links, parent_docs};
+        for (link, owner) in links {
+            let parent = format!("p-{owner}");
+            diesel::insert_into(parent_docs::table)
+                .values((parent_docs::id.eq(&parent), parent_docs::owner_id.eq(owner)))
+                .execute(&mut conn)
+                .expect("Failed to seed parent docs");
+            diesel::insert_into(doc_links::table)
+                .values((doc_links::id.eq(link), doc_links::parent_id.eq(&parent)))
+                .execute(&mut conn)
+                .expect("Failed to seed doc links");
+        }
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "parent-key-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for (_, user) in links {
+        let readable = postgres_readable_doc_links(&mut conn, user);
+        // One link each, so a seed that made every link visible could not pass quietly.
+        assert_eq!(
+            readable.len(),
+            1,
+            "{user} owns one link, PostgreSQL showed {readable:?}"
+        );
+        for (link, _) in links {
+            let expected = readable.contains(link);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("doc_links:{link}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "doc_links:{link} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // A model that denied everything, or granted everything, would pass a one-sided case.
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA parent-key IN-subquery parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
