@@ -4,6 +4,7 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr};
 
+use crate::generator::well_known::MEMBER_RELATION;
 use crate::parser::sql_parser::PolicyLike;
 
 /// The command a policy applies to.
@@ -55,6 +56,64 @@ pub enum ThresholdOperator {
     Gte,
     /// `> N`
     Gt,
+}
+
+/// Which kind of membership in a role a policy asked about.
+///
+/// `pg_has_role` answers a different question per kind, verified against `PostgreSQL` 18.1
+/// over six ways of granting one role: a member granted `NOINHERIT` holds `Member` and `SetRole`
+/// but not `Usage`, a member granted `WITH SET FALSE` holds `Member` and `Usage` but not
+/// `SetRole`, and only a member granted `WITH ADMIN OPTION` holds `AdminOption`. The kind
+/// written before `WITH ADMIN OPTION` makes no difference to the answer, so all three of those
+/// spellings are one variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RolePrivilege {
+    /// A member of the role, directly or through a chain of grants.
+    Member,
+    /// A member whose privileges apply without `SET ROLE`, so every grant in the chain
+    /// inherits.
+    Usage,
+    /// A member who may `SET ROLE` to it.
+    SetRole,
+    /// A holder of the role's admin option.
+    AdminOption,
+}
+
+impl RolePrivilege {
+    /// Relation on the `pg_role` type holding the facts this kind needs.
+    ///
+    /// One relation per kind, since the sets differ: sharing one would make the operator's
+    /// facts mean whichever policy the reader happened to look at.
+    #[must_use]
+    pub fn relation_name(self) -> &'static str {
+        match self {
+            Self::Member => MEMBER_RELATION,
+            Self::Usage => "usage",
+            Self::SetRole => "set_role",
+            Self::AdminOption => "admin_option",
+        }
+    }
+
+    /// Parse the privilege argument of `pg_has_role`, or `None` when it names no kind the
+    /// crate can act on. `PostgreSQL` compares case insensitively and ignores surrounding
+    /// space, and answers false for a string it does not know, so refusing one falls closed
+    /// the same way.
+    #[must_use]
+    pub fn parse(argument: &str) -> Option<Self> {
+        let normalized = argument.trim().to_ascii_uppercase();
+        let kind = normalized
+            .strip_suffix("WITH ADMIN OPTION")
+            .map(str::trim_end);
+        if let Some(kind) = kind {
+            return matches!(kind, "MEMBER" | "USAGE" | "SET").then_some(Self::AdminOption);
+        }
+        match normalized.as_str() {
+            "MEMBER" => Some(Self::Member),
+            "USAGE" => Some(Self::Usage),
+            "SET" => Some(Self::SetRole),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for PolicyCommand {
@@ -168,6 +227,8 @@ pub enum PatternClass {
         function_name: String,
         /// Roles the list admits.
         role_names: Vec<String>,
+        /// Which kind of membership in those roles the policy asked about.
+        privilege: RolePrivilege,
     },
     /// P3: Direct column equality: `owner_id = current_user_id()`.
     P3DirectOwnership {
@@ -637,5 +698,60 @@ CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
 ",
         );
         assert!(public.scoped_roles().is_empty());
+    }
+
+    /// `PostgreSQL` compares the privilege case insensitively and ignores surrounding space,
+    /// and it answers false for a string it does not know rather than raising. Verified on
+    /// 18.1, including that `'MEMBER WITH GRANT OPTION'` simply returns false.
+    #[test]
+    fn role_privilege_parses_every_spelling_postgres_accepts() {
+        use RolePrivilege::{AdminOption, Member, SetRole, Usage};
+
+        for (spelling, expected) in [
+            ("MEMBER", Member),
+            ("USAGE", Usage),
+            ("SET", SetRole),
+            ("member", Member),
+            ("  usage  ", Usage),
+            // The kind before the admin option makes no difference to the answer, so all
+            // three spellings are one relation.
+            ("MEMBER WITH ADMIN OPTION", AdminOption),
+            ("USAGE WITH ADMIN OPTION", AdminOption),
+            ("SET WITH ADMIN OPTION", AdminOption),
+            ("member with admin option", AdminOption),
+            ("MEMBER  WITH ADMIN OPTION", AdminOption),
+        ] {
+            assert_eq!(
+                RolePrivilege::parse(spelling),
+                Some(expected),
+                "`{spelling}` names {expected:?} to PostgreSQL"
+            );
+        }
+
+        for unknown in [
+            "MEMBER WITH GRANT OPTION",
+            "WITH ADMIN OPTION",
+            "ADMIN",
+            "nonsense",
+            "",
+            "MEMBERSHIP",
+        ] {
+            assert_eq!(
+                RolePrivilege::parse(unknown),
+                None,
+                "`{unknown}` names no kind the crate can act on"
+            );
+        }
+
+        // One relation per kind, since the sets differ.
+        let names = [Member, Usage, SetRole, AdminOption].map(RolePrivilege::relation_name);
+        assert_eq!(
+            names
+                .iter()
+                .collect::<alloc::collections::BTreeSet<_>>()
+                .len(),
+            names.len(),
+            "two kinds sharing a relation would make the operator's facts mean both"
+        );
     }
 }

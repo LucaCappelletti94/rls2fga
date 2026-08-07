@@ -164,6 +164,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     let p2 = PatternClass::P2RoleNameInList {
         function_name: "missing_fn".to_string(),
         role_names: vec!["viewer".to_string()],
+        privilege: RolePrivilege::Member,
     };
 
     let p1_expr = pattern_to_expr(
@@ -213,10 +214,12 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
     let p2_non_numeric = PatternClass::P2RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["viewer".to_string()],
+        privilege: RolePrivilege::Member,
     };
     let p2_numeric_without_levels = PatternClass::P2RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["5".to_string()],
+        privilege: RolePrivilege::Member,
     };
 
     let first = pattern_to_expr(
@@ -853,6 +856,7 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
     let p2_mixed_case = PatternClass::P2RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["VIEWER".to_string()],
+        privilege: RolePrivilege::Member,
     };
 
     let p1_expr = pattern_to_expr(

@@ -135,6 +135,8 @@ pub enum TranslationNote {
         roles: Vec<String>,
         /// Relation the gate became.
         relation: String,
+        /// Relation on `pg_role` holding the kind of membership the policy asked about.
+        held_by: String,
     },
     /// Reading the membership table needs a role, so the grant is scoped to it.
     MembershipReadScope {
@@ -387,11 +389,14 @@ impl fmt::Display for TranslationNote {
                 roles.join(", ")
             ),
             Self::RoleGateScope {
-                roles, relation, ..
+                roles,
+                relation,
+                held_by,
+                ..
             } => write!(
                 f,
-                "Role gate ({}) mapped to relation '{relation}'; ensure pg_role memberships are \
-                 loaded",
+                "Role gate ({}) mapped to relation '{relation}', which reads pg_role '{held_by}', \
+                 so load that relation with the roles' holders of that kind",
                 roles.join(", ")
             ),
             Self::MembershipReadScope {

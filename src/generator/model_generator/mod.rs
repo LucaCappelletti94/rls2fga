@@ -1817,6 +1817,7 @@ fn define_blanket_update_relations(all_types: &mut BTreeMap<String, TypePlan>) {
 #[allow(clippy::too_many_arguments)]
 fn handle_p2_role_gate<DB: DatabaseLike>(
     role_names: &[String],
+    privilege: RolePrivilege,
     policy_name: &str,
     source_table: &str,
     table_plan: &mut TypePlan,
@@ -1829,6 +1830,7 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
     }
 
     let scope_relation = policy_scope_relation_name(policy_name);
+    let held_by = privilege.relation_name();
     register_pg_role_scope(
         table_plan,
         all_types,
@@ -1840,18 +1842,22 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
             policy: policy_name.to_string(),
             roles: role_names.to_vec(),
             relation: scope_relation.clone(),
+            held_by: held_by.to_string(),
         },
         db,
         notes,
         "role gate tuples",
     );
+    // Each kind of membership admits a different set, so each gets its own relation for the
+    // operator to load. Sharing one would make those facts mean whichever policy was read.
+    ensure_pg_role_relation(all_types, held_by);
 
-    // The relation holds `[pg_role]` subjects, so a `user:` subject can never satisfy it
-    // directly. Walking it to the role's members is what admits them, and it is what makes
-    // `pg_role#member` survive the pruner so an operator can load memberships into it.
+    // The scope relation holds `[pg_role]` subjects, so a `user:` subject can never satisfy
+    // it directly. Walking it to the role's holders is what admits them, and it is what
+    // makes the relation survive the pruner.
     UsersetExpr::TupleToUserset {
         tupleset: scope_relation,
-        computed: MEMBER_RELATION.to_string(),
+        computed: held_by.to_string(),
     }
 }
 
@@ -2066,6 +2072,7 @@ fn translate_pattern<DB: DatabaseLike>(
         PatternClass::P2RoleNameInList {
             function_name,
             role_names,
+            privilege,
         } => {
             let Some(prepared) = prepare_role_threshold_translation(
                 function_name,
@@ -2083,6 +2090,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 // fall back to scope-style direct relations per role name.
                 return handle_p2_role_gate(
                     role_names,
+                    *privilege,
                     policy_name,
                     source_table,
                     table_plan,
@@ -2792,6 +2800,14 @@ fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &st
 
 fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
     ensure_member_type(all_types, PG_ROLE_TYPE);
+}
+
+/// Give `pg_role` a relation holding one kind of role membership, for an operator to load.
+fn ensure_pg_role_relation(all_types: &mut BTreeMap<String, TypePlan>, relation: &str) {
+    all_types
+        .entry(PG_ROLE_TYPE.to_string())
+        .or_insert_with(|| TypePlan::new(PG_ROLE_TYPE))
+        .ensure_direct(relation, vec![DirectSubject::Type(USER_TYPE.to_string())]);
 }
 
 fn ensure_role_threshold_scaffold(

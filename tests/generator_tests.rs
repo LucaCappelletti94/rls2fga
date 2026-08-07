@@ -484,6 +484,141 @@ CREATE POLICY docs_select ON docs FOR SELECT
     );
 }
 
+/// The privilege decides which members the policy admits, so it decides which relation the
+/// gate walks. Probed on `postgres:18`: a member granted without inheritance has `MEMBER`
+/// and not `USAGE`, one granted with `SET FALSE` has `MEMBER` and not `SET`, and only an
+/// administrator has any `WITH ADMIN OPTION` form, whichever kind precedes it.
+#[test]
+fn each_pg_has_role_privilege_walks_its_own_relation() {
+    let mut complaints = Vec::new();
+    for (privilege, relation) in [
+        ("MEMBER", "member"),
+        ("USAGE", "usage"),
+        ("SET", "set_role"),
+        // All three admin spellings are one answer: PostgreSQL ignores the kind once the
+        // admin option is asked about.
+        ("MEMBER WITH ADMIN OPTION", "admin_option"),
+        ("USAGE WITH ADMIN OPTION", "admin_option"),
+        ("SET WITH ADMIN OPTION", "admin_option"),
+        // Case and surrounding space do not change the answer in PostgreSQL either.
+        ("usage", "usage"),
+        (" MEMBER ", "member"),
+        ("member with admin option", "admin_option"),
+    ] {
+        let sql = format!(
+            r"
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+    USING (pg_has_role(current_user, 'editor', '{privilege}'));
+"
+        );
+        let (classified, db, registry) = support::classify_sql(&sql, None);
+        let dsl = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .model();
+
+        let expected = format!("{relation} from scope_docs_select_14425117");
+        if relation_body(&dsl, "docs", "can_select").as_deref() != Some(expected.as_str()) {
+            complaints.push(format!(
+                "'{privilege}' should walk `{expected}`, got `{:?}`",
+                relation_body(&dsl, "docs", "can_select")
+            ));
+        }
+        if relation_body(&dsl, "pg_role", relation).as_deref() != Some("[user]") {
+            complaints.push(format!(
+                "'{privilege}' needs pg_role#{relation} for the operator to load into:\n{dsl}"
+            ));
+        }
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// Two policies naming different privileges of one role is the shape that forces a relation
+/// per privilege: sharing one would make the operator's single set of facts mean both.
+#[test]
+fn two_privileges_of_one_role_get_their_own_relations() {
+    let sql = r"
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_read ON docs FOR SELECT
+    USING (pg_has_role(current_user, 'editor', 'USAGE'));
+CREATE POLICY docs_admin ON docs FOR DELETE
+    USING (pg_has_role(current_user, 'editor', 'MEMBER WITH ADMIN OPTION'));
+";
+    let (classified, db, registry) = support::classify_sql(sql, None);
+    let dsl = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .model();
+
+    assert_eq!(
+        relation_body(&dsl, "docs", "can_select").as_deref(),
+        Some("usage from scope_docs_read_06abf03b"),
+        "the read policy asked about inheriting members:\n{dsl}"
+    );
+    assert_eq!(
+        relation_body(&dsl, "docs", "can_delete").as_deref(),
+        Some("admin_option from scope_docs_admin_e9b28a46 and can_select"),
+        "the delete policy asked about the role's administrators:\n{dsl}"
+    );
+    for relation in ["usage", "admin_option"] {
+        assert_eq!(
+            relation_body(&dsl, "pg_role", relation).as_deref(),
+            Some("[user]"),
+            "each privilege needs its own set of facts:\n{dsl}"
+        );
+    }
+    assert_eq!(
+        relation_body(&dsl, "pg_role", "member"),
+        None,
+        "no policy asked about plain membership, so nothing may offer to hold it:\n{dsl}"
+    );
+}
+
+/// A privilege the crate cannot read is not plain membership. `PostgreSQL` answers false for
+/// an unrecognised string, so falling closed is faithful, and a privilege that is not a
+/// literal cannot be known at all.
+#[test]
+fn a_pg_has_role_privilege_the_crate_cannot_read_falls_closed() {
+    for privilege in ["'MEMBER WITH GRANT OPTION'", "'nonsense'", "some_column"] {
+        let sql = format!(
+            r"
+CREATE TABLE docs (id TEXT PRIMARY KEY, some_column TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT
+    USING (pg_has_role(current_user, 'editor', {privilege}));
+"
+        );
+        let (classified, db, registry) = support::classify_sql(&sql, None);
+        let dsl = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .model();
+        assert_eq!(
+            relation_body(&dsl, "docs", "can_select").as_deref(),
+            Some("no_access"),
+            "{privilege} names no privilege the crate can act on:\n{dsl}"
+        );
+    }
+}
+
 // ── P9: standalone attribute condition ──────────────────────────────────────
 
 #[test]

@@ -97,6 +97,7 @@ pub fn recognize_p2<DB: DatabaseLike>(
                         pattern: PatternClass::P2RoleNameInList {
                             function_name: func_name,
                             role_names,
+                            privilege: RolePrivilege::Member,
                         },
                         confidence: ConfidenceLevel::A,
                     });
@@ -127,11 +128,24 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
 
     let args: Vec<&Expr> = arg_list.args.iter().filter_map(function_arg_expr).collect();
 
-    let role_expr = match args.as_slice() {
-        // Three-arg: pg_has_role(user, 'role', privilege), user must be current_user.
-        [user_expr, role_expr, _priv] if is_current_user_expr(user_expr, registry) => role_expr,
-        // Two-arg: pg_has_role('role', privilege), current session user is implicit.
-        [role_expr, _priv] => role_expr,
+    // The implicit user of the two-argument form is `current_user`, not `session_user`:
+    // probed under SET ROLE, where the two answer differently and the two-argument form
+    // followed `current_user`.
+    let (role_expr, privilege_expr) = match args.as_slice() {
+        [user_expr, role_expr, privilege] if is_current_user_expr(user_expr, registry) => {
+            (role_expr, privilege)
+        }
+        [role_expr, privilege] => (role_expr, privilege),
+        _ => return None,
+    };
+
+    // The privilege decides which members the policy admits, so a privilege the crate cannot
+    // read is refused rather than taken for plain membership.
+    let privilege = match privilege_expr {
+        Expr::Value(v) => match &v.value {
+            Value::SingleQuotedString(s) => RolePrivilege::parse(s)?,
+            _ => return None,
+        },
         _ => return None,
     };
 
@@ -147,6 +161,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
         pattern: PatternClass::P2RoleNameInList {
             function_name: "pg_has_role".to_string(),
             role_names: vec![role_name],
+            privilege,
         },
         confidence: ConfidenceLevel::A,
     })
@@ -190,6 +205,9 @@ fn recognize_role_accessor_comparison(
             pattern: PatternClass::P2RoleNameInList {
                 function_name: func_name,
                 role_names: vec![role_name],
+                // A role accessor names the caller's role rather than asking about a kind of
+                // membership in another one, so the widest kind is the faithful reading.
+                privilege: RolePrivilege::Member,
             },
             confidence: ConfidenceLevel::A,
         });
@@ -212,6 +230,7 @@ fn recognize_role_accessor_comparison(
             pattern: PatternClass::P2RoleNameInList {
                 function_name: func_name,
                 role_names,
+                privilege: RolePrivilege::Member,
             },
             confidence: ConfidenceLevel::A,
         });

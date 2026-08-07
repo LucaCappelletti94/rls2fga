@@ -265,6 +265,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
                 PatternClass::P2RoleNameInList {
                     function_name: "role_level".to_string(),
                     role_names: vec!["viewer".to_string(), "editor".to_string()],
+                    privilege: RolePrivilege::Member,
                 },
                 "P2 (roles: viewer, editor)",
             ),

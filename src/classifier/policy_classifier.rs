@@ -1423,6 +1423,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 PatternClass::P2RoleNameInList {
                     function_name: "f".into(),
                     role_names: vec!["a".into()],
+                    privilege: RolePrivilege::Member,
                 },
                 "role-name-in-list check",
             ),
@@ -1522,6 +1523,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             &PatternClass::P2RoleNameInList {
                 function_name: "f".into(),
                 role_names: vec!["a".into()],
+                privilege: RolePrivilege::Member,
             }
         ));
         assert!(is_relationship_pattern_for_p7(&p3));

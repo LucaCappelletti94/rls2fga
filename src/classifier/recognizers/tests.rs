@@ -142,6 +142,7 @@ fn recognize_p2_handles_negation_and_literal_filtering() {
         PatternClass::P2RoleNameInList {
             function_name,
             role_names,
+            ..
         } if function_name == "role_level"
             && role_names == &vec!["viewer".to_string(), "2".to_string()]
     ));
@@ -158,7 +159,7 @@ fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
     assert!(
         matches!(
             &c3.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names }
+            PatternClass::P2RoleNameInList { function_name, role_names, .. }
                 if function_name == "pg_has_role" && role_names == &["admin"]
         ),
         "three-arg pg_has_role should produce P2 with role 'admin', got: {:?}",
@@ -172,7 +173,7 @@ fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
     assert!(
         matches!(
             &c2.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names }
+            PatternClass::P2RoleNameInList { function_name, role_names, .. }
                 if function_name == "pg_has_role" && role_names == &["editor"]
         ),
         "two-arg pg_has_role should produce P2 with role 'editor', got: {:?}",
@@ -206,7 +207,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         matches!(
             &c_eq.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names }
+            PatternClass::P2RoleNameInList { function_name, role_names, .. }
                 if function_name == "role" && role_names == &["authenticated"]
         ),
         "auth.role() = 'authenticated' should produce P2, got: {:?}",
@@ -221,7 +222,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         matches!(
             &c_in.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names }
+            PatternClass::P2RoleNameInList { function_name, role_names, .. }
                 if function_name == "role"
                     && role_names == &["authenticated", "service_role"]
         ),

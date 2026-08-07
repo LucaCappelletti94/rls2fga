@@ -377,6 +377,7 @@ fn role_in_list_classification() {
         PatternClass::P2RoleNameInList {
             function_name,
             role_names,
+            ..
         } => {
             assert_eq!(function_name, "get_owner_role");
             assert_eq!(role_names.len(), 3, "Should have 3 integer values");
