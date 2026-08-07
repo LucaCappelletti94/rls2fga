@@ -1313,9 +1313,15 @@ fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
 fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
     let mut plan = TypePlan::new("test");
     let first = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
-    let second = plan.ensure_direct("rel", vec![DirectSubject::Type("team".into())]);
+    let team = vec![DirectSubject::Type("team".into())];
+    let second = plan.ensure_direct("rel", team.clone());
     assert_eq!(first, "rel");
-    assert_ne!(second, first);
+    // One collision carries no counter: a `_1` would imply a `_2` that does not exist.
+    assert_eq!(
+        second,
+        format!("rel_{}", stable_hex_suffix(&subject_key(&team))),
+        "a lone yield is the base and the value's own suffix"
+    );
     assert_eq!(
         plan.direct_relations.get(&first),
         Some(&vec![DirectSubject::Type("user".into())])
@@ -1329,6 +1335,68 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
         plan.ensure_direct("rel", vec![DirectSubject::Type("team".into())]),
         second
     );
+}
+
+/// The rename is derived from the value, so the only way its result is already taken is
+/// something else holding that exact name. Renaming once and inserting blind then declares
+/// one name twice, since direct and computed relations live in separate maps.
+#[test]
+fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
+    let mut plan = TypePlan::new("docs");
+    let subjects = vec![DirectSubject::Type(USER_TYPE.to_string())];
+
+    // `owner` is held by a rule, so a direct `owner` has to yield.
+    plan.ensure_computed("owner", UsersetExpr::Computed("a".into()));
+    // Occupy exactly where that yield lands, with something else.
+    let taken = clamp_relation_name(format!(
+        "owner_{}",
+        stable_hex_suffix(&subject_key(&subjects))
+    ));
+    plan.ensure_computed(taken.clone(), UsersetExpr::Computed("b".into()));
+
+    let got = plan.ensure_direct("owner", subjects.clone());
+    assert_ne!(got, "owner", "the rule still holds 'owner'");
+    assert_ne!(got, taken, "'{taken}' already means something else");
+    assert_eq!(
+        plan.direct_relations.get(&got).map(Vec::as_slice),
+        Some(subjects.as_slice()),
+        "the subjects asked for have to be the ones stored"
+    );
+    for name in plan.direct_relations.keys() {
+        assert!(
+            !plan.computed_relations.contains_key(name),
+            "'{name}' is declared both ways, so the model defines it twice"
+        );
+    }
+}
+
+/// The same for a rule, where the collision is with a direct relation.
+#[test]
+fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
+    let mut plan = TypePlan::new("docs");
+    let rule = UsersetExpr::Computed("wanted".into());
+
+    plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    let taken = clamp_relation_name(format!("owner_{}", stable_hex_suffix(&userset_key(&rule))));
+    plan.ensure_direct(
+        taken.clone(),
+        vec![DirectSubject::Type(TEAM_TYPE.to_string())],
+    );
+
+    let got = plan.ensure_computed("owner", rule.clone());
+    assert_ne!(got, "owner", "the direct relation still holds 'owner'");
+    assert_ne!(got, taken, "'{taken}' already means something else");
+    assert_eq!(
+        plan.computed_relations.get(&got),
+        Some(&rule),
+        "the rule asked for has to be the one stored"
+    );
+    for name in plan.computed_relations.keys() {
+        assert!(
+            !plan.direct_relations.contains_key(name),
+            "'{name}' is declared both ways, so the model defines it twice"
+        );
+    }
 }
 
 #[test]

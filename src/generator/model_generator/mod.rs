@@ -28,7 +28,7 @@ use crate::parser::names::{
     gate_condition_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
     parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
-    same_identifier, stable_hex_suffix,
+    same_identifier, stable_hex_suffix, yielded_relation_name, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
@@ -211,20 +211,25 @@ impl TypePlan {
         relation: impl Into<String>,
         subjects: Vec<DirectSubject>,
     ) -> String {
-        let mut relation = clamp_relation_name(relation.into());
+        let base = clamp_relation_name(relation.into());
+        let key = subject_key(&subjects);
+        let mut relation = base.clone();
         // A name already held must yield rather than emit a second `define` or inherit
-        // subjects it does not accept.
-        let conflicts = self.computed_relations.contains_key(&relation)
-            || self
-                .direct_relations
-                .get(&relation)
-                .is_some_and(|held| *held != subjects)
-            || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects)
-            || generator_defines(&relation);
-        if conflicts {
-            let key = subject_key(&subjects);
-            relation =
-                clamp_relation_name(format!("{relation}_{}", stable_hex_suffix(key.as_str())));
+        // subjects it does not accept. The yielded name can be held too, since it is derived
+        // from the value while whatever holds it may come from the schema, so keep looking:
+        // the two maps are separate, and inserting blind would declare one name twice.
+        for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
+            let held = self.computed_relations.contains_key(&relation)
+                || self
+                    .direct_relations
+                    .get(&relation)
+                    .is_some_and(|held| *held != subjects)
+                || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects)
+                || generator_defines(&relation);
+            if !held {
+                break;
+            }
+            relation = yielded_relation_name(&base, &key, attempt);
         }
         self.direct_relations
             .entry(relation.clone())
@@ -233,18 +238,21 @@ impl TypePlan {
     }
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> String {
-        let mut relation = clamp_relation_name(relation.into());
+        let base = clamp_relation_name(relation.into());
+        let key = userset_key(&expr);
+        let mut relation = base.clone();
         // One name, one rule, or a caller deriving the name reads the wrong definition.
-        let conflicts = self.direct_relations.contains_key(&relation)
-            || self
-                .computed_relations
-                .get(&relation)
-                .is_some_and(|held| *held != expr)
-            || generator_defines(&relation);
-        if conflicts {
-            let key = userset_key(&expr);
-            relation =
-                clamp_relation_name(format!("{relation}_{}", stable_hex_suffix(key.as_str())));
+        for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
+            let held = self.direct_relations.contains_key(&relation)
+                || self
+                    .computed_relations
+                    .get(&relation)
+                    .is_some_and(|held| *held != expr)
+                || generator_defines(&relation);
+            if !held {
+                break;
+            }
+            relation = yielded_relation_name(&base, &key, attempt);
         }
         self.computed_relations
             .entry(relation.clone())

@@ -195,6 +195,26 @@ pub fn clamp_relation_name(name: String) -> String {
     format!("{head}_{suffix}")
 }
 
+/// How many times a colliding relation name yields before the crate stops looking.
+///
+/// The first yield is keyed on the value, so the only way it is taken too is something else
+/// holding that exact name, which a schema can arrange. Bounded so such input cannot spin,
+/// in the same spirit as the classifier's depth limit: each attempt appends a distinct
+/// counter, so reaching this many needs that many engineered names rather than bad luck.
+pub(crate) const MAX_RELATION_RENAME_ATTEMPTS: usize = 64;
+
+/// Name for the `attempt`th yield of `base`, keyed on `key` so one value always yields one
+/// name. Attempt zero is what a single rename produced, so a first collision reads as before.
+pub(crate) fn yielded_relation_name(base: &str, key: &str, attempt: usize) -> String {
+    let suffix = stable_hex_suffix(key);
+    let candidate = if attempt == 0 {
+        format!("{base}_{suffix}")
+    } else {
+        format!("{base}_{suffix}_{}", attempt + 1)
+    };
+    clamp_relation_name(candidate)
+}
+
 /// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
 pub fn policy_scope_relation_name(policy_name: &str) -> String {
     scope_relation_name("scope", policy_name)
