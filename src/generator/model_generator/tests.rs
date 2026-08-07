@@ -184,11 +184,15 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     );
 
     assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
-    // P2 with missing metadata now falls through to handle_p2_role_gate,
-    // which creates a scope-style relation instead of deny_expr.
+    // P2 with missing metadata falls through to `handle_p2_role_gate`, which walks a
+    // scope relation rather than denying.
     assert!(
-        matches!(&p2_expr, UsersetExpr::Computed(name) if name.starts_with("scope_")),
-        "P2 with non-RoleThreshold function should produce scope relation, got: {p2_expr:?}"
+        matches!(
+            &p2_expr,
+            UsersetExpr::TupleToUserset { tupleset, computed }
+                if tupleset.starts_with("scope_") && computed == "member"
+        ),
+        "P2 with a non-RoleThreshold function should walk a scope relation, got: {p2_expr:?}"
     );
     // P1 emits a TODO about missing semantic metadata; P2 emits a TODO
     // about the role gate (and possibly missing object identifier).

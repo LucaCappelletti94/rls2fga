@@ -263,6 +263,24 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:alice", "can_select", "docs:d1", false),
             ],
         },
+        // P2 — pg_has_role gate. The role membership is written by hand, since it lives
+        // outside the policy tables and no generated query can produce it. The scope tuple
+        // is what the generated SQL emits, one per row.
+        Scenario {
+            name: "P2_pg_role_gate",
+            fixture: "pg_role_gate",
+            min_confidence: ConfidenceLevel::B,
+            tuples: vec![
+                ("docs:d1", "scope_docs_select_14425117", "pg_role:editor"),
+                ("pg_role:editor", "member", "user:alice"),
+            ],
+            checks: vec![
+                // RLS admits every member of 'editor', so the model has to as well.
+                ("user:alice", "can_select", "docs:d1", true),
+                // And nobody else, which is what makes the grant a gate.
+                ("user:bob", "can_select", "docs:d1", false),
+            ],
+        },
     ];
 
     // ── Run all scenarios ───────────────────────────────────────────────────

@@ -17,6 +17,24 @@ fn load_emi() -> (
     support::load_fixture_classified("earth_metabolome")
 }
 
+/// The right-hand side of `define <relation>:` inside `type <type_name>`.
+fn relation_body(dsl: &str, type_name: &str, relation: &str) -> Option<String> {
+    let mut in_type = false;
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            in_type = name.trim() == type_name;
+            continue;
+        }
+        if in_type {
+            if let Some(rest) = trimmed.strip_prefix(&format!("define {relation}:")) {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn generate_emi_model() {
     let (classified, db, registry) = load_emi();
@@ -370,10 +388,13 @@ fn generate_constant_bool_model_and_tuples() {
     );
 }
 
-// ── Gap 1: pg_has_role / RoleAccessor → scope relation (not deny) ───────────
+// ── Gap 1: pg_has_role / RoleAccessor → a walked pg_role scope ───────────────
 
+/// The relation holds `[pg_role]` subjects, so pointing an action straight at it admits a
+/// `pg_role:` object and never a `user:`. The action has to walk it to the role's members,
+/// which is also what makes `pg_role#member` exist for the operator to load into.
 #[test]
-fn pg_has_role_generates_scope_relation_not_deny() {
+fn pg_has_role_walks_the_scope_to_the_roles_members() {
     let sql = r"
 CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -390,11 +411,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .outputs_accepting_gaps();
-    // Other commands lack a policy and are legitimately denied; only can_select
-    // must not degrade to a deny.
+    assert_eq!(
+        relation_body(&model.model(), "docs", "can_select").as_deref(),
+        Some("member from scope_docs_select_14425117"),
+        "pg_has_role admits every member of the role, so the grant walks the scope:\n{}",
+        model.model()
+    );
     assert!(
-        model.model().contains("define can_select: scope_"),
-        "pg_has_role should drive can_select from a scope relation, not a deny; DSL:\n{}",
+        model.model().contains("define member: [user]"),
+        "the walked relation has to exist for the operator to load memberships into:\n{}",
         model.model()
     );
     insta::assert_snapshot!("pg_has_role_model", model.model().trim());
@@ -414,8 +439,9 @@ CREATE POLICY docs_select ON docs FOR SELECT
     );
 }
 
+/// The accessor spelling reaches the same gate, so it needs the same walk.
 #[test]
-fn role_accessor_generates_scope_relation() {
+fn role_accessor_walks_the_scope_to_the_roles_members() {
     let sql = r"
 CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -435,9 +461,10 @@ CREATE POLICY docs_select ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .outputs_accepting_gaps();
-    assert!(
-        model.model().contains("define can_select: scope_"),
-        "role accessor should drive can_select from a scope relation, not a deny; DSL:\n{}",
+    assert_eq!(
+        relation_body(&model.model(), "docs", "can_select").as_deref(),
+        Some("member from scope_docs_select_14425117"),
+        "the role accessor admits every member of the role:\n{}",
         model.model()
     );
     insta::assert_snapshot!("role_accessor_model", model.model().trim());

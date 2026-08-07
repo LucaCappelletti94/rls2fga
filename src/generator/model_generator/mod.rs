@@ -1793,7 +1793,13 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
         "role gate tuples",
     );
 
-    UsersetExpr::Computed(scope_relation)
+    // The relation holds `[pg_role]` subjects, so a `user:` subject can never satisfy it
+    // directly. Walking it to the role's members is what admits them, and it is what makes
+    // `pg_role#member` survive the pruner so an operator can load memberships into it.
+    UsersetExpr::TupleToUserset {
+        tupleset: scope_relation,
+        computed: MEMBER_RELATION.to_string(),
+    }
 }
 
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {

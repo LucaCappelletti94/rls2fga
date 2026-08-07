@@ -13,9 +13,11 @@ type docs
     define scope_docs_select_14425117: [pg_role]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: scope_docs_select_14425117
+    define can_select: member from scope_docs_select_14425117
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
 
 type pg_role
+  relations
+    define member: [user]
