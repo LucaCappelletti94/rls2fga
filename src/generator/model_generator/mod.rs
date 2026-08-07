@@ -445,6 +445,10 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         // raises rather than filtering and every command that clause feeds must deny.
         let recursive_targets = recursion.blocked_targets(&canonical_table_name);
 
+        // Whether a row of this table can be named at all, which decides whether any tuple
+        // source can be emitted for it. Resolved once here rather than per policy.
+        let object_identifier = resolve_pk_column(&source_table_name, db);
+
         // UPDATE and DELETE name the row they change. INSERT does not.
         let has_row_scoped_write_policy = table_policies.iter().any(|cp| {
             cp.mode() == PolicyMode::Permissive
@@ -483,7 +487,21 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             }
 
             let scoped_roles = cp.scoped_roles();
-            let scope_relation = if scoped_roles.is_empty() {
+            // A barrier is folded as `(base and rule) or (base but not member from scope)`, so
+            // an unfillable scope excuses everyone from it. Binding everyone instead denies
+            // more than RLS does, which is the direction a missing input has to take. The
+            // permissive side needs no such case: it intersects with the scope, so an empty
+            // one already falls closed.
+            let barrier_cannot_bind = !scoped_roles.is_empty()
+                && cp.mode() == PolicyMode::Restrictive
+                && object_identifier.is_none();
+            if barrier_cannot_bind {
+                notes.push(TranslationNote::RestrictiveBarrierBindsEveryone {
+                    policy: cp.name().to_string(),
+                    roles: scoped_roles.to_vec(),
+                });
+            }
+            let scope_relation = if scoped_roles.is_empty() || barrier_cannot_bind {
                 None
             } else {
                 has_role_scopes = true;

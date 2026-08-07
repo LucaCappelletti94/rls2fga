@@ -80,6 +80,13 @@ pub enum TranslationNote {
         /// Policy carrying the clause.
         policy: String,
     },
+    /// A barrier bound to roles binds everyone, since nothing can say who is bound.
+    RestrictiveBarrierBindsEveryone {
+        /// Policy carrying the barrier.
+        policy: String,
+        /// Roles it named.
+        roles: Vec<String>,
+    },
     /// Reading a table expands its policies, and a loop there raises `infinite
     /// recursion` rather than filtering.
     PolicyReadRecursion {
@@ -259,6 +266,7 @@ impl TranslationNote {
             Self::OwnerBoundFunction { .. }
             | Self::UnresolvedPolicyTable { .. }
             | Self::RestrictiveAttributeRefused { .. }
+            | Self::RestrictiveBarrierBindsEveryone { .. }
             | Self::ParentRuleUnknown { .. }
             | Self::ParentRuleUntranslated { .. }
             | Self::StandaloneAttributePolicy { .. }
@@ -299,6 +307,7 @@ impl TranslationNote {
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
             Self::UnresolvedPolicyTable { policy, .. }
             | Self::RestrictiveAttributeRefused { policy }
+            | Self::RestrictiveBarrierBindsEveryone { policy, .. }
             | Self::PolicyClauseAbsent { policy, .. }
             | Self::PolicyRoleScope { policy, .. }
             | Self::RoleGateScope { policy, .. }
@@ -336,6 +345,13 @@ impl fmt::Display for TranslationNote {
                 f,
                 "Policy '{policy}' names '{named}', which does not resolve to one table in the \
                  schema, so qualify it with a schema to have the policy translated"
+            ),
+            Self::RestrictiveBarrierBindsEveryone { policy, roles } => write!(
+                f,
+                "RESTRICTIVE policy '{policy}' binds only {}, but no tuple can name a row of \
+                 this table, so nothing can say who is bound and the barrier is applied to \
+                 everyone. That denies more than RLS does",
+                roles.join(", ")
             ),
             Self::RestrictiveAttributeRefused { policy } => write!(
                 f,

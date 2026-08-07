@@ -7417,3 +7417,82 @@ fn a_membership_read_policy_that_may_admit_a_row_keeps_its_grant() {
     }
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
 }
+
+/// The model and the notes for a table whose primary key is `key`.
+fn barrier_outputs(key: &str) -> (String, Vec<String>) {
+    let db = db_of(&format!(
+        r"
+CREATE TABLE docs ({key}, owner_id UUID, secret BOOLEAN);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT TO contractor
+    USING (secret = false);
+"
+    ));
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let notes = outputs
+        .notes()
+        .iter()
+        .map(|note| note.message().clone())
+        .collect();
+    (outputs.model(), notes)
+}
+
+/// A barrier bound to roles is folded as `(base and rule) or (base but not member from
+/// scope)`, so the roles it binds are whoever the scope relation holds. Without a
+/// single-column key no scope tuples can be emitted, and subtracting an empty set leaves the
+/// barrier binding nobody, which is the one direction a missing input must never take. It has
+/// to bind everyone instead: denying more than RLS is safe, granting more is not.
+#[test]
+fn a_role_limited_barrier_with_no_scope_tuples_binds_everyone() {
+    let (dsl, notes) = barrier_outputs("tenant TEXT, id TEXT, PRIMARY KEY (tenant, id)");
+
+    assert!(
+        !dsl.contains("but not"),
+        "no scope tuples can say who is bound, so nothing may be excused from the barrier:\n{dsl}"
+    );
+    assert!(
+        !dsl.contains("[pg_role]"),
+        "a scope relation nothing can fill must not be published:\n{dsl}"
+    );
+    assert!(
+        !dsl.contains("type pg_role"),
+        "and neither must the type it would need:\n{dsl}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("docs_bar") && note.contains("everyone")),
+        "the operator must be told the barrier now binds more than RLS does, got {notes:#?}"
+    );
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.contains("ensure pg_role memberships are loaded")),
+        "nothing may ask for memberships no relation reads, got {notes:#?}"
+    );
+}
+
+/// The guard must not over-fire: with a key the scope tuples can name, the barrier binds the
+/// roles it names and leaves everyone else alone, which is what `PostgreSQL` does.
+#[test]
+fn a_role_limited_barrier_with_scope_tuples_still_binds_only_its_roles() {
+    let (dsl, notes) = barrier_outputs("id TEXT PRIMARY KEY");
+
+    assert!(
+        dsl.contains("but not"),
+        "a fillable scope excuses everyone outside the bound roles:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("[pg_role]"),
+        "the scope relation the exclusion reads has to be declared:\n{dsl}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("docs_bar") && note.contains("pg_role")),
+        "and the operator is asked to fill it, got {notes:#?}"
+    );
+}
