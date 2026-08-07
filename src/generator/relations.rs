@@ -1,11 +1,14 @@
-//! Each relation of the emitted model, the shapes whose records fill it, and
-//! whether one row decides them.
+//! Each relation of the emitted model, the shapes whose records fill it, and how one
+//! row decides them.
 //!
 //! A consumer watching a change stream wants to answer the cheapest questions with
 //! no round trip, by testing the changed row's records against its own subscriber
 //! list. That is correct only for some relations, and being wrong in the permissive
 //! direction is a wrong allow, so the analysis refuses to guess: anything it cannot
 //! judge is reported as not decidable.
+//!
+//! The flag and the recipe leave one traversal. Derived apart they could disagree,
+//! which is the divergence this surface exists to remove.
 
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
@@ -34,6 +37,33 @@ pub struct RelationShapes {
     /// for it. Empty for a relation the model computes from others, and for one
     /// nothing populates.
     pub shapes: Vec<RecordDescription>,
+    /// How the subjects this relation grants compose from one row, `Some` exactly
+    /// when `from_one_row` is true.
+    pub decision: Option<RowDecision>,
+}
+
+/// How the subjects a relation grants compose from one row's records.
+///
+/// The whole evaluation: [`Self::Leaf`] is the union of the subjects
+/// [`crate::generator::records::records_from_row`] yields over its shapes,
+/// [`Self::Any`] is the union of its children and [`Self::All`] their intersection.
+///
+/// `#[non_exhaustive]`: a shape the analysis learns to decide adds a variant, and a
+/// caller matching this outside the crate keeps a wildcard arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowDecision {
+    /// The subjects are the records these shapes produce for this row.
+    Leaf {
+        /// The direct relation whose records answer. Always on the same type.
+        relation: String,
+        /// The shapes filling it, identical to that relation's own entry. Never empty.
+        shapes: Vec<RecordDescription>,
+    },
+    /// A subject any child grants.
+    Any(Vec<RowDecision>),
+    /// A subject every child grants.
+    All(Vec<RowDecision>),
 }
 
 /// Report every relation of the emitted model.
@@ -47,18 +77,20 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
         names.extend(type_plan.computed_relations.keys().map(String::as_str));
         for relation in names {
             let mut visiting = BTreeSet::new();
+            let decision = relation_decision(
+                &type_plan.type_name,
+                relation,
+                plan,
+                &sources,
+                db,
+                &mut visiting,
+            );
             out.push(RelationShapes {
                 type_name: type_plan.type_name.clone(),
                 relation: relation.to_string(),
-                from_one_row: relation_follows_from_one_row(
-                    &type_plan.type_name,
-                    relation,
-                    plan,
-                    &sources,
-                    db,
-                    &mut visiting,
-                ),
+                from_one_row: decision.is_some(),
                 shapes: shapes_filling(&type_plan.type_name, relation, &sources, db),
+                decision,
             });
         }
     }
@@ -117,102 +149,136 @@ fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &str) -> Option<&'plan T
         .find(|candidate| candidate.type_name == type_name)
 }
 
-fn relation_follows_from_one_row<DB: DatabaseLike>(
+fn relation_decision<DB: DatabaseLike>(
     type_name: &str,
     relation: &str,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
     db: &DB,
     visiting: &mut BTreeSet<(String, String)>,
-) -> bool {
+) -> Option<RowDecision> {
     // A cycle is not something the analysis can judge, so it falls closed.
     if !visiting.insert((type_name.to_string(), relation.to_string())) {
-        return false;
+        return None;
     }
     let answer = match find_type(plan, type_name) {
-        None => false,
+        None => None,
         Some(type_plan) => match type_plan.computed_relations.get(relation) {
-            Some(expr) => expr_follows_from_one_row(type_name, expr, plan, sources, db, visiting),
+            Some(expr) => expr_decision(type_name, expr, plan, sources, db, visiting),
             // A relation with direct subjects is answered by the tuples loaded into
             // it, so the sources feeding it decide.
-            None => tuples_follow_from_one_row(type_name, relation, sources, db),
+            None => leaf_decision(type_name, relation, sources, db),
         },
     };
     visiting.remove(&(type_name.to_string(), relation.to_string()));
     answer
 }
 
-fn expr_follows_from_one_row<DB: DatabaseLike>(
+fn expr_decision<DB: DatabaseLike>(
     type_name: &str,
     expr: &UsersetExpr,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
     db: &DB,
     visiting: &mut BTreeSet<(String, String)>,
-) -> bool {
+) -> Option<RowDecision> {
     match expr {
+        // A named relation stands for its own definition, so the recipe reaches
+        // through it to the relations records actually fill.
         UsersetExpr::Computed(name) => {
-            relation_follows_from_one_row(type_name, name, plan, sources, db, visiting)
+            relation_decision(type_name, name, plan, sources, db, visiting)
         }
-        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => children
-            .iter()
-            .all(|child| expr_follows_from_one_row(type_name, child, plan, sources, db, visiting)),
+        // Every child has to decide, otherwise the composition does not either.
+        UsersetExpr::Union(children) => {
+            child_decisions(type_name, children, plan, sources, db, visiting).map(RowDecision::Any)
+        }
+        UsersetExpr::Intersection(children) => {
+            child_decisions(type_name, children, plan, sources, db, visiting).map(RowDecision::All)
+        }
         // A tuple-to-userset resolves on the object the tupleset reaches rather than
         // on this row, and an exclusion lets adding a record revoke access, so
         // neither is decidable from the row.
-        UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => false,
+        UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => None,
     }
 }
 
+fn child_decisions<DB: DatabaseLike>(
+    type_name: &str,
+    children: &[UsersetExpr],
+    plan: &SchemaPlan,
+    sources: &SourceIndex<'_>,
+    db: &DB,
+    visiting: &mut BTreeSet<(String, String)>,
+) -> Option<Vec<RowDecision>> {
+    children
+        .iter()
+        .map(|child| expr_decision(type_name, child, plan, sources, db, visiting))
+        .collect()
+}
+
 /// Every source feeding `relation` must key its object on this row's identity and
-/// name a user the row itself supplies.
-fn tuples_follow_from_one_row<DB: DatabaseLike>(
+/// name a user the row itself supplies. The shapes that pass are the ones
+/// [`shapes_filling`] reports for it, deduplicated the same way.
+fn leaf_decision<DB: DatabaseLike>(
     type_name: &str,
     relation: &str,
     sources: &SourceIndex<'_>,
     db: &DB,
-) -> bool {
-    let Some(feeding) = sources.get(&(type_name.to_string(), relation.to_string())) else {
-        // Nothing the generator emits populates it, so its tuples come from
-        // somewhere this analysis cannot see, `pg_role` memberships among them.
-        return false;
-    };
+) -> Option<RowDecision> {
+    // Nothing the generator emits populates it, so its tuples come from somewhere
+    // this analysis cannot see, `pg_role` memberships among them.
+    let feeding = sources.get(&(type_name.to_string(), relation.to_string()))?;
     if feeding.is_empty() {
-        return false;
+        return None;
     }
 
-    feeding.iter().all(|(source, owner_type)| {
-        let Some(sql_owner) =
-            describe_tuple_source(source, owner_type, db).map(|description| description.derivation)
-        else {
-            return false;
-        };
-        let RecordDerivation::FromRow {
-            table, template, ..
-        } = sql_owner
-        else {
-            // A joining source reads a second table, so the row does not decide.
-            return false;
-        };
-        if template.object_type != type_name {
-            return false;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut shapes = Vec::new();
+    for (source, owner_type) in feeding {
+        let description = describe_tuple_source(source, owner_type, db)?;
+        if !row_names_a_user(&description.derivation, type_name, db) {
+            return None;
         }
-        // The object has to be this row's identity. A record keyed by a foreign
-        // column describes another object, which a change to this row does not own.
-        let ValueSource::Column(object_column) = &template.object_key else {
-            return false;
-        };
-        let Some(primary_key) = resolve_pk_column(&table, db) else {
-            return false;
-        };
-        if *object_column != primary_key {
-            return false;
+        if seen.insert(source.dedup_key()) {
+            shapes.push(description);
         }
-        // The subject has to be a user the consumer can compare against, named by
-        // this row rather than reached through another type's membership.
-        if template.subject_type != USER_TYPE {
-            return false;
-        }
-        !matches!(&template.subject_key, ValueSource::Literal(_))
+    }
+    Some(RowDecision::Leaf {
+        relation: relation.to_string(),
+        shapes,
     })
+}
+
+fn row_names_a_user<DB: DatabaseLike>(
+    derivation: &RecordDerivation,
+    type_name: &str,
+    db: &DB,
+) -> bool {
+    let RecordDerivation::FromRow {
+        table, template, ..
+    } = derivation
+    else {
+        // A joining source reads a second table, so the row does not decide.
+        return false;
+    };
+    if template.object_type != type_name {
+        return false;
+    }
+    // The object has to be this row's identity. A record keyed by a foreign
+    // column describes another object, which a change to this row does not own.
+    let ValueSource::Column(object_column) = &template.object_key else {
+        return false;
+    };
+    let Some(primary_key) = resolve_pk_column(table, db) else {
+        return false;
+    };
+    if *object_column != primary_key {
+        return false;
+    }
+    // The subject has to be a user the consumer can compare against, named by
+    // this row rather than reached through another type's membership.
+    if template.subject_type != USER_TYPE {
+        return false;
+    }
+    !matches!(&template.subject_key, ValueSource::Literal(_))
 }

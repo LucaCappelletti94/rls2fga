@@ -12,9 +12,10 @@ use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{Guard, RecordDerivation, RecordDescription, ValueSource};
-use rls2fga::generator::relations::RelationShapes;
+use rls2fga::generator::relations::{RelationShapes, RowDecision};
 use rls2fga::generator::well_known::{MEMBER_RELATION, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE};
-use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
+use rls2fga::parser::names::lookup_table;
+use rls2fga::parser::sql_parser::{parse_schema, ColumnLike, ParserDB, TableLike};
 use rls2fga::translator::Translation;
 
 mod support;
@@ -667,4 +668,325 @@ fn every_condition_parameter_is_supplied_by_its_own_tuples() {
         checked > 0,
         "no fixture exercises a condition, so this invariant checks nothing"
     );
+}
+
+/// Two ownership columns in one clause. Both spellings of it render
+/// `define can_select: owner or editor`.
+const OR_COLUMNS: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_read ON docs FOR SELECT
+    USING (owner_id = auth_current_user_id() OR editor_id = auth_current_user_id());
+";
+
+/// The same grant written as two permissive policies.
+const TWO_SELECT_POLICIES: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_editor ON docs FOR SELECT USING (editor_id = auth_current_user_id());
+";
+
+/// A barrier beside the ownership grant, rendering `define can_select: owner and editor`.
+const RESTRICTIVE_BARRIER: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_barrier ON docs AS RESTRICTIVE FOR SELECT
+    USING (editor_id = auth_current_user_id());
+";
+
+/// A per-row `DELETE` reads the table, so it renders `define can_delete: editor and
+/// can_select` over `define can_select: owner`.
+const DELETE_GATED_ON_READ: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_purge ON docs FOR DELETE USING (editor_id = auth_current_user_id());
+";
+
+fn leaf(relation: &str, shapes: &[RecordDescription]) -> RowDecision {
+    RowDecision::Leaf {
+        relation: relation.to_string(),
+        shapes: shapes.to_vec(),
+    }
+}
+
+/// Every leaf a recipe reaches, in the order it reaches them.
+fn recipe_leaves(decision: &RowDecision) -> Vec<(&str, &[RecordDescription])> {
+    match decision {
+        RowDecision::Leaf { relation, shapes } => vec![(relation.as_str(), shapes.as_slice())],
+        RowDecision::Any(children) | RowDecision::All(children) => {
+            children.iter().flat_map(recipe_leaves).collect()
+        }
+        other => panic!("a recipe shape this test cannot read: {other:?}"),
+    }
+}
+
+/// Assertion 1. The flag and the recipe leave one traversal, so a relation carrying a
+/// recipe is exactly one the flag admits. Two answers derived apart could disagree,
+/// which is the divergence this surface exists to remove.
+#[test]
+fn a_recipe_is_reported_exactly_when_the_flag_says_one_row_decides() {
+    let mut with_recipe = 0usize;
+    let mut without = 0usize;
+
+    let mut check = |label: &str, reported: &[RelationShapes]| {
+        for reported in reported {
+            assert_eq!(
+                reported.decision.is_some(),
+                reported.from_one_row,
+                "{label}: {}#{} answers the flag and the recipe differently",
+                reported.type_name,
+                reported.relation
+            );
+            if reported.decision.is_some() {
+                with_recipe += 1;
+            } else {
+                without += 1;
+            }
+        }
+    };
+
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let planned = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+        check(&fixture, &planned.relations());
+    }
+    for (label, sql) in [
+        ("or_columns", OR_COLUMNS),
+        ("two_select_policies", TWO_SELECT_POLICIES),
+        ("restrictive_barrier", RESTRICTIVE_BARRIER),
+        ("delete_gated_on_read", DELETE_GATED_ON_READ),
+        ("holder", HOLDER),
+    ] {
+        check(label, &shapes_of(sql, ACCESSOR_REGISTRY));
+    }
+
+    assert!(
+        with_recipe > 0 && without > 0,
+        "the corpus has to exercise both answers, got {with_recipe} with a recipe and {without} without"
+    );
+}
+
+/// Assertion 2. The relation whose records decide a read is named rather than left to
+/// be read out of the DSL text.
+#[test]
+fn an_ownership_read_names_the_relation_whose_records_decide_it() {
+    let shapes = shapes_of(OWNERSHIP, ACCESSOR_REGISTRY);
+    let owner = entry(&shapes, "docs", "owner");
+
+    assert!(
+        !owner.shapes.is_empty(),
+        "the recipe carries these, so an empty list would say nothing"
+    );
+    assert_eq!(
+        entry(&shapes, "docs", "can_select").decision.as_ref(),
+        Some(&leaf("owner", &owner.shapes)),
+        "can_select is defined as owner, so its subjects are owner's records"
+    );
+}
+
+/// Assertion 3. A union of two ownership columns composes, and the composition is a
+/// mirror of the model rather than of the spelling: whichever operand order the DSL
+/// renders, the recipe reaches its leaves in that order. Two permissive policies and
+/// one `OR` clause therefore give the same recipe exactly when they render the same
+/// definition, which is the property the flag would otherwise be trusted to imply.
+#[test]
+fn either_spelling_of_two_ownership_columns_composes_into_any() {
+    let shapes = shapes_of(OR_COLUMNS, ACCESSOR_REGISTRY);
+    let expected = RowDecision::Any(vec![
+        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
+        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
+    ]);
+    assert_eq!(
+        entry(&shapes, "docs", "can_select").decision.as_ref(),
+        Some(&expected),
+        "either column admits the row, so the recipe is a union of both"
+    );
+
+    for (label, sql) in [
+        ("one clause", OR_COLUMNS),
+        ("two policies", TWO_SELECT_POLICIES),
+    ] {
+        let (db, registry) = parsed(sql, ACCESSOR_REGISTRY);
+        let planned = translation(&db, &registry, &GeneratorSettings::default());
+        let reported = planned.relations();
+        let named: Vec<&str> = recipe_leaves(
+            entry(&reported, "docs", "can_select")
+                .decision
+                .as_ref()
+                .expect("an ownership read decides from the row"),
+        )
+        .into_iter()
+        .map(|(relation, _)| relation)
+        .collect();
+        assert_eq!(
+            named,
+            rendered_operands(&planned.outputs_accepting_gaps().model(), "can_select"),
+            "{label}: the recipe reaches the operands the model names, in that order"
+        );
+    }
+}
+
+/// The operands of one relation's rendered definition, which for these schemas is a
+/// flat list of relation names.
+fn rendered_operands<'a>(dsl: &'a str, relation: &str) -> Vec<&'a str> {
+    let definition = format!("define {relation}:");
+    dsl.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(&definition))
+        .unwrap_or_else(|| panic!("{relation} should be defined:\n{dsl}"))
+        .split(" or ")
+        .map(str::trim)
+        .collect()
+}
+
+/// Assertion 4. The one that settles the design. A barrier renders `owner and editor`,
+/// whose flag is true and whose subjects are an intersection, so a recipe flattened
+/// into one list would let an owner who is not the editor read the row.
+#[test]
+fn a_restrictive_barrier_composes_into_all_rather_than_one_flat_list() {
+    let shapes = shapes_of(RESTRICTIVE_BARRIER, ACCESSOR_REGISTRY);
+    let can_select = entry(&shapes, "docs", "can_select");
+
+    assert!(
+        can_select.from_one_row,
+        "both sides of the barrier resolve from the row"
+    );
+    let expected = RowDecision::All(vec![
+        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
+        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
+    ]);
+    assert_eq!(
+        can_select.decision.as_ref(),
+        Some(&expected),
+        "the barrier removes subjects, so the recipe is an intersection"
+    );
+}
+
+/// Assertion 5. A recipe names the relations records fill, so a relation the model
+/// computes is flattened into whatever it names rather than reported as a hop the
+/// consumer has to resolve.
+#[test]
+fn a_computed_relation_inside_a_recipe_flattens_into_what_it_names() {
+    let shapes = shapes_of(DELETE_GATED_ON_READ, ACCESSOR_REGISTRY);
+    let expected = RowDecision::All(vec![
+        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
+        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
+    ]);
+    assert_eq!(
+        entry(&shapes, "docs", "can_delete").decision.as_ref(),
+        Some(&expected),
+        "can_delete is `editor and can_select` over `can_select: owner`"
+    );
+}
+
+/// Assertion 6. What the recipe inherits from the flag: every leaf resolves from the
+/// object's own row to a user the consumer can compare against. A literal subject would
+/// put `user:*` on the local path, which a subject set cannot express.
+#[test]
+fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
+    let mut checked = 0usize;
+
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let planned = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+        for reported in planned.relations() {
+            let Some(decision) = reported.decision.as_ref() else {
+                continue;
+            };
+            let reached = recipe_leaves(decision);
+            assert!(
+                !reached.is_empty(),
+                "{fixture}: {}#{} reports a recipe reaching no leaf, which grants either \
+                 nobody or everybody depending on how it composes",
+                reported.type_name,
+                reported.relation
+            );
+            for (relation, shapes) in reached {
+                assert!(
+                    !shapes.is_empty(),
+                    "{fixture}: leaf {}#{relation} carries no shape, so it decides nothing",
+                    reported.type_name
+                );
+                for shape in shapes {
+                    checked += 1;
+                    let RecordDerivation::FromRow {
+                        table, template, ..
+                    } = &shape.derivation
+                    else {
+                        panic!(
+                            "{fixture}: leaf {}#{relation} needs a query: {shape:#?}",
+                            reported.type_name
+                        );
+                    };
+                    assert_eq!(
+                        template.object_type, reported.type_name,
+                        "{fixture}: leaf {relation} keys objects of another type"
+                    );
+                    assert_eq!(template.relation, relation, "{fixture}: leaf misattributed");
+                    assert_eq!(
+                        template.object_key,
+                        ValueSource::Column(primary_key_of(table, &db)),
+                        "{fixture}: leaf {}#{relation} keys on a column that is not the \
+                         row's identity",
+                        reported.type_name
+                    );
+                    assert_eq!(
+                        template.subject_type, USER_TYPE,
+                        "{fixture}: leaf {}#{relation} names a subject the consumer cannot \
+                         compare against",
+                        reported.type_name
+                    );
+                    assert!(
+                        !matches!(template.subject_key, ValueSource::Literal(_)),
+                        "{fixture}: leaf {}#{relation} carries a literal subject: {:?}",
+                        reported.type_name,
+                        template.subject_key
+                    );
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "no fixture reports a recipe, so this checks nothing"
+    );
+}
+
+/// The column the crate identifies rows by: the declared primary key, or the `id`
+/// column it falls back to when a table declares none.
+fn primary_key_of(table: &str, db: &ParserDB) -> String {
+    lookup_table(db, table)
+        .and_then(|found| found.primary_key_column(db).ok().flatten())
+        .map_or_else(
+            || "id".to_string(),
+            |column| column.stored_column_name().into_owned(),
+        )
 }

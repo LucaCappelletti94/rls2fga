@@ -23,11 +23,16 @@ use testcontainers::{
     GenericImage, ImageExt,
 };
 
+use openfga_client::client::OpenFgaClient;
+use openfga_client::tonic::transport::Channel;
 use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
     records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
+    ValueSource,
 };
+use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 
@@ -681,5 +686,305 @@ async fn holder_shapes_match_their_own_sql() {
     assert!(
         records >= 6,
         "the seed must produce records to compare, saw {records}"
+    );
+}
+
+/// A schema whose reads compose all three ways a recipe can: one relation's records
+/// alone, a union of two, and an intersection a barrier makes. `can_delete` nests the
+/// union inside the intersection, since a per-row `DELETE` reads the table.
+const RECIPE_SCHEMA: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT, reviewer_id TEXT);
+CREATE TABLE memos (id TEXT PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_read ON docs FOR SELECT
+    USING (owner_id = auth_current_user_id() OR editor_id = auth_current_user_id());
+CREATE POLICY docs_purge ON docs FOR DELETE
+    USING (reviewer_id = auth_current_user_id());
+CREATE POLICY memos_owner ON memos FOR SELECT
+    USING (owner_id = auth_current_user_id());
+CREATE POLICY memos_barrier ON memos AS RESTRICTIVE FOR SELECT
+    USING (editor_id = auth_current_user_id());
+";
+
+/// Rows for both sides of every composition. `m-disagree` and `d-reviewer-out` are the
+/// ones that matter: each names a subject one side of an intersection grants and the
+/// other refuses, so a recipe flattened into a single list would read them wrong.
+const RECIPE_SEED: &str = "
+INSERT INTO users (id) VALUES ('alice'), ('bob'), ('carol');
+
+INSERT INTO docs (id, owner_id, editor_id, reviewer_id) VALUES
+    ('d-owner',        'alice', NULL,    NULL),
+    ('d-editor',       NULL,    'bob',   NULL),
+    ('d-both',         'alice', 'bob',   NULL),
+    ('d-neither',      NULL,    NULL,    NULL),
+    ('d-reviewer',     'alice', NULL,    'alice'),
+    ('d-reviewer-out', 'alice', NULL,    'carol'),
+    ('d-all-three',    'alice', 'alice', 'alice');
+
+INSERT INTO memos (id, owner_id, editor_id) VALUES
+    ('m-agree',    'alice', 'alice'),
+    ('m-disagree', 'alice', 'bob'),
+    ('m-owner',    'alice', NULL),
+    ('m-editor',   NULL,    'bob'),
+    ('m-neither',  NULL,    NULL);
+";
+
+/// Which composition a recipe is, for the coverage count.
+fn recipe_kind(decision: &RowDecision) -> &'static str {
+    match decision {
+        RowDecision::Leaf { .. } => "leaf",
+        RowDecision::Any(_) => "any",
+        RowDecision::All(_) => "all",
+        other => panic!("a recipe shape this test cannot read: {other:?}"),
+    }
+}
+
+/// The first shape a recipe reaches, which names the table and object type every other
+/// leaf of the same recipe has to agree on.
+fn first_shape(decision: &RowDecision) -> &RecordDescription {
+    match decision {
+        RowDecision::Leaf { relation, shapes } => shapes
+            .first()
+            .unwrap_or_else(|| panic!("leaf {relation} carries no shape, so it decides nothing")),
+        RowDecision::Any(children) | RowDecision::All(children) => children
+            .first()
+            .map(first_shape)
+            .expect("a recipe reaches at least one leaf"),
+        other => panic!("a recipe shape this test cannot read: {other:?}"),
+    }
+}
+
+/// The object one row of a recipe's table names, `None` when the row has no identity.
+fn recipe_object(decision: &RowDecision, row: &serde_json::Value) -> Option<String> {
+    let RecordDerivation::FromRow { template, .. } = &first_shape(decision).derivation else {
+        panic!("a leaf resolves from the row");
+    };
+    let ValueSource::Column(column) = &template.object_key else {
+        panic!("a leaf keys its object on a column");
+    };
+    let key = scalar_text(row.get(column)?)?;
+    Some(format!("{}:{key}", template.object_type))
+}
+
+/// Evaluate a recipe: a leaf is the union of the subjects its shapes produce for this
+/// row, [`RowDecision::Any`] the union of its children and [`RowDecision::All`] their
+/// intersection. Nothing else, which is the whole contract a consumer implements.
+fn recipe_subjects(
+    decision: &RowDecision,
+    row: &serde_json::Value,
+    object: &str,
+) -> BTreeSet<String> {
+    match decision {
+        RowDecision::Leaf { relation, shapes } => shapes
+            .iter()
+            .flat_map(|shape| {
+                records_from_row(shape, &JsonRowValues(row))
+                    .expect("a leaf shape resolves without a database")
+            })
+            .map(|record| {
+                assert_eq!(
+                    record.object, object,
+                    "leaf {relation} produced a record for another object"
+                );
+                assert_eq!(&record.relation, relation, "leaf {relation} misattributed");
+                record.subject
+            })
+            .collect(),
+        RowDecision::Any(children) => children
+            .iter()
+            .flat_map(|child| recipe_subjects(child, row, object))
+            .collect(),
+        RowDecision::All(children) => children
+            .iter()
+            .map(|child| recipe_subjects(child, row, object))
+            .reduce(|left, right| left.intersection(&right).cloned().collect())
+            .expect("a recipe reaches at least one leaf"),
+        other => panic!("a recipe shape this test cannot evaluate: {other:?}"),
+    }
+}
+
+/// Subjects a recipe would grant if its composition were thrown away and every leaf
+/// unioned into one list, which is the shape the intersection has to differ from.
+fn flattened_subjects(
+    decision: &RowDecision,
+    row: &serde_json::Value,
+    object: &str,
+) -> BTreeSet<String> {
+    match decision {
+        RowDecision::Leaf { .. } => recipe_subjects(decision, row, object),
+        RowDecision::Any(children) | RowDecision::All(children) => children
+            .iter()
+            .flat_map(|child| flattened_subjects(child, row, object))
+            .collect(),
+        other => panic!("a recipe shape this test cannot evaluate: {other:?}"),
+    }
+}
+
+async fn start_openfga(
+    model: &AuthorizationModel,
+    tuples: &BTreeSet<Record>,
+) -> (
+    testcontainers::ContainerAsync<GenericImage>,
+    OpenFgaClient<Channel>,
+) {
+    let container = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
+
+    let mut service = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service, "recipe-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service, &store_id, model).await;
+    let client = service.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(
+        &client,
+        tuples
+            .iter()
+            .map(|record| {
+                support::openfga::make_tuple(&record.object, &record.relation, &record.subject)
+            })
+            .collect(),
+    )
+    .await;
+    (container, client)
+}
+
+/// The recipe is the whole answer, so the subjects it yields for a row have to be the
+/// subjects the emitted model grants once the whole-table SQL has loaded it. Neither
+/// side is written by hand: the tuples come from the generated queries and the answers
+/// come from real `OpenFGA` resolving the model it was handed.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn every_recipe_grants_the_subjects_the_model_grants() {
+    let (_postgres, mut conn) = start_postgres().await;
+    conn.batch_execute(RECIPE_SCHEMA)
+        .expect("failed to apply the recipe schema");
+    conn.batch_execute(RECIPE_SEED)
+        .expect("failed to seed the recipe schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        RECIPE_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let reported = planned.relations();
+    let outputs = planned.outputs_accepting_gaps();
+
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
+    for query in &outputs.tuple_queries() {
+        tuples.extend(records_from_sql(&mut conn, query));
+    }
+    assert!(
+        !tuples.is_empty(),
+        "the loader must produce tuples, otherwise every check answers no"
+    );
+
+    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+
+    // Every user any tuple names, which bounds the comparison: a subject outside it
+    // could only reach the relation through a tuple, and every tuple is in here.
+    let universe: BTreeSet<String> = tuples
+        .iter()
+        .filter(|record| record.subject.starts_with("user:"))
+        .map(|record| record.subject.clone())
+        .collect();
+
+    let mut kinds: BTreeSet<&str> = BTreeSet::new();
+    let mut compared = 0usize;
+    let mut granting_rows = 0usize;
+    let mut refusals = 0usize;
+    let mut narrowed_by_composition = 0usize;
+    let mut failures = Vec::new();
+
+    for entry in &reported {
+        let Some(decision) = entry.decision.as_ref() else {
+            continue;
+        };
+        kinds.insert(recipe_kind(decision));
+        let table = first_shape(decision)
+            .row_table()
+            .expect("a leaf resolves from a row of one table")
+            .to_string();
+
+        for row in rows_of(&mut conn, &table) {
+            let Some(object) = recipe_object(decision, &row) else {
+                continue;
+            };
+            let expected = recipe_subjects(decision, &row, &object);
+            if !expected.is_empty() {
+                granting_rows += 1;
+            }
+            if flattened_subjects(decision, &row, &object) != expected {
+                narrowed_by_composition += 1;
+            }
+
+            let mut allowed = BTreeSet::new();
+            for candidate in universe.union(&expected) {
+                compared += 1;
+                if support::openfga::check_allowed(&client, candidate, &entry.relation, &object)
+                    .await
+                {
+                    allowed.insert(candidate.clone());
+                } else {
+                    refusals += 1;
+                }
+            }
+            if allowed != expected {
+                failures.push(format!(
+                    "{object}#{}: the recipe grants {expected:?}, the model grants {allowed:?}",
+                    entry.relation
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the recipe and the model disagree:\n{}",
+        failures.join("\n")
+    );
+
+    // Non-vacuous on every axis the comparison could be blind on.
+    assert_eq!(
+        kinds,
+        BTreeSet::from(["all", "any", "leaf"]),
+        "the schema has to exercise every composition, saw {kinds:?}"
+    );
+    assert!(
+        granting_rows > 0,
+        "no row grants anybody, so nothing is compared against a grant"
+    );
+    assert!(
+        refusals > 0,
+        "nothing is refused, so granting everybody would pass"
+    );
+    assert!(
+        narrowed_by_composition > 0,
+        "no row is narrowed by an intersection, so a recipe flattened into one list \
+         would pass this comparison"
+    );
+    assert!(
+        compared > 50,
+        "too few checks to be meaningful, saw {compared}"
     );
 }
