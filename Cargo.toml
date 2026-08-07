@@ -86,13 +86,11 @@ wildcard_imports = "allow"
 name = "records"
 harness = false
 
-# Pin sqlparser (and every dependent: sql-traits, sql_docs) to datafusion-sqlparser-rs
+# Route sqlparser (and every dependent: sql-traits, sql_docs) to datafusion-sqlparser-rs
 # main. The published 0.62.0 release declares `#![no_std]` but its body still references
-# `std::` in roughly 3200 spots, so it fails to compile without the standard library.
-# The complete no_std hygiene exists only on main (this rev), which our no_std + alloc
-# and wasm builds require. The default std build compiles fine against crates.io 0.62.0,
-# so this patch is only load-bearing for no_std. It is also why the crate cannot be
-# published on crates.io (git deps are forbidden) until sqlparser ships a release above
-# 0.62.0 carrying the no_std fixes.
+# `std::` in roughly 3200 spots, so it fails to compile without the standard library. The
+# complete no_std hygiene exists only on main, which our no_std + alloc and wasm builds
+# require. It is also why the crate cannot be published on crates.io (git deps are
+# forbidden) until sqlparser ships a release above 0.62.0 carrying the no_std fixes.
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main" }
