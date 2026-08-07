@@ -23,8 +23,7 @@ test = false
 doc = false
 bench = false
 
-# The fuzz crate is its own workspace root, so the parent's sqlparser pin does
-# not carry over. Mirror it here so sql-traits and sqlparser stay on the single
-# compatible revision (see the parent Cargo.toml for the rationale).
+# The fuzz crate is its own workspace root, so the parent's `[patch.crates-io]` does not
+# carry over. Mirror it here (see the parent Cargo.toml for the rationale).
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main" }

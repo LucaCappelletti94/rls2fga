@@ -61,8 +61,8 @@ opt-level = 1
 [profile.dev.package.arborium-tree-sitter]
 opt-level = 1
 
-# The library pins sqlparser to datafusion-sqlparser-rs main for its no_std
-# hygiene. The wasm build is no_std (default-features = false), so this patch
-# is load-bearing here and must match the parent crate's pin exactly.
+# The library routes sqlparser to datafusion-sqlparser-rs main for its no_std hygiene.
+# The wasm build is no_std (default-features = false), so this patch is load-bearing here
+# and must match the parent crate's.
 [patch.crates-io]
-sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", rev = "2f3b5b824c24304720f1e8e504f54b9910e63bad" }
+sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main" }
