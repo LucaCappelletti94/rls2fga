@@ -121,6 +121,20 @@ pub enum TranslationNote {
         /// Clause it does not store.
         clause: String,
     },
+    /// The `TO` clause names a spelling `PostgreSQL` resolves when the policy is created.
+    PolicyBoundToDdlTimeRole {
+        /// Policy carrying the clause.
+        policy: String,
+        /// The spellings, as written.
+        spellings: Vec<String>,
+    },
+    /// The policy stores a clause `PostgreSQL` refuses for its command.
+    PolicyClauseIllegal {
+        /// Policy carrying the clause.
+        policy: String,
+        /// `PostgreSQL`'s own refusal.
+        rule: String,
+    },
     /// Reads are denied, so no statement can name a row to change.
     ReadsDeniedSoWritesCannotName {
         /// Table whose reads are denied.
@@ -280,7 +294,8 @@ impl TranslationNote {
             | Self::ParentRuleUntranslated { .. }
             | Self::StandaloneAttributePolicy { .. }
             | Self::ExpressionRefused { .. }
-            | Self::FunctionMissingMetadata { .. } => NoteSeverity::Unhandled,
+            | Self::FunctionMissingMetadata { .. }
+            | Self::PolicyBoundToDdlTimeRole { .. } => NoteSeverity::Unhandled,
             Self::RoleBypassesPolicies { .. } | Self::TableOwnerBypassesPolicies { .. } => {
                 NoteSeverity::Exempt
             }
@@ -293,7 +308,8 @@ impl TranslationNote {
             | Self::RoleGateScope { .. }
             | Self::MembershipReadScope { .. }
             | Self::RoleNameRewritten { .. }
-            | Self::TypeNameCollision { .. } => NoteSeverity::ActionRequired,
+            | Self::TypeNameCollision { .. }
+            | Self::PolicyClauseIllegal { .. } => NoteSeverity::ActionRequired,
             Self::PolicyReadRecursion { .. }
             | Self::NoPermissivePolicy { .. }
             | Self::PolicyClauseAbsent { .. }
@@ -319,6 +335,8 @@ impl TranslationNote {
             | Self::RestrictiveAttributeRefused { policy }
             | Self::RestrictiveBarrierBindsEveryone { policy, .. }
             | Self::PolicyClauseAbsent { policy, .. }
+            | Self::PolicyBoundToDdlTimeRole { policy, .. }
+            | Self::PolicyClauseIllegal { policy, .. }
             | Self::PolicyRoleScope { policy, .. }
             | Self::RoleGateScope { policy, .. }
             | Self::MembershipReadScope { policy, .. }
@@ -400,6 +418,19 @@ impl fmt::Display for TranslationNote {
                 f,
                 "Policy '{policy}' names {commands} without a {clause} clause, so PostgreSQL \
                  admits no row through it"
+            ),
+            Self::PolicyBoundToDdlTimeRole { spellings, .. } => write!(
+                f,
+                "The TO clause names ({}), which PostgreSQL resolves to whoever runs the \
+                 CREATE POLICY, so a schema file cannot know the role. A permissive policy \
+                 grants nobody here and a restrictive one binds everyone. Name the role \
+                 explicitly.",
+                spellings.join(", ")
+            ),
+            Self::PolicyClauseIllegal { rule, .. } => write!(
+                f,
+                "PostgreSQL refuses this policy outright ({rule}), so no database can hold \
+                 it and the model ignores it. Fix the statement."
             ),
             Self::ReadsDeniedSoWritesCannotName { table } => write!(
                 f,

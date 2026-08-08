@@ -411,6 +411,35 @@ fn recognize_p3_current_setting_requires_registration() {
     );
 }
 
+/// The key carries the meaning, so naming it is enough: the function itself stays
+/// unregistered, which is what keeps a call reading some other key unrecognised.
+#[test]
+fn recognize_p3_reads_a_named_setting_key_without_registering_the_function() {
+    let db = db_with_docs_and_members();
+    let mut registry = FunctionRegistry::new();
+    registry.trust_current_user_setting_keys(["app.current_user_id"]);
+
+    let named = parse_expr("owner_id = current_setting('app.current_user_id')");
+    let classified = recognize_p3(&named, &db, &registry)
+        .expect("expected P3 match for a named current_setting key");
+    assert!(
+        matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "the column keyed by the caller owns the row, got: {:?}",
+        classified.pattern
+    );
+    assert_eq!(
+        classified.confidence,
+        ConfidenceLevel::A,
+        "a named key is as explicit as a registered accessor"
+    );
+
+    let unnamed = parse_expr("owner_id = current_setting('app.tenant_id')");
+    assert!(
+        recognize_p3(&unnamed, &db, &registry).is_none(),
+        "the key decides, so an unnamed one must not match through the same function"
+    );
+}
+
 #[test]
 fn recognize_p3_rejects_unregistered_current_user_like_function_names() {
     let db = db_with_docs_and_members();
@@ -2656,45 +2685,44 @@ fn nullif_wrapped_ownership_classified_as_p3() {
     );
 }
 
-// ── Gap 2: JWT claim extraction ────────────────────────────────────────
+// ── A field of the caller's value is not the caller ────────────────────
 
+/// `sub` inside a token is an identity, and so is `tenant`. Nothing in the expression
+/// says which one the caller is, and the pattern keeps only a column name, so the field
+/// selector would vanish and the model would call that column's values people.
 #[test]
-fn current_user_accessor_name_unwraps_json_long_arrow() {
-    // current_setting('request.jwt.claims')::json->>'sub'
-    let expr = parse_expr("current_setting('request.jwt.claims')::json->>'sub'");
-    assert_eq!(
-        current_user_accessor_name(&expr).as_deref(),
-        Some("current_setting"),
-    );
+fn a_field_read_out_of_an_accessor_is_not_the_caller() {
+    for sql in [
+        "current_setting('request.jwt.claims')::json->>'sub'",
+        "auth.jwt()->'user_metadata'->>'id'",
+        "auth.jwt()#>>'{user_metadata,id}'",
+    ] {
+        let expr = parse_expr(sql);
+        assert!(
+            current_user_accessor_name(&expr).is_none(),
+            "`{sql}` reads a field of the caller's value, not the caller"
+        );
+    }
 }
 
+/// The refusal holds however the accessor was named, so one shape has one answer.
 #[test]
-fn current_user_accessor_name_unwraps_nested_json_arrows() {
-    // auth.jwt()->'user_metadata'->>'id', schema prefix stripped by normalize_relation_name
-    let expr = parse_expr("auth.jwt()->'user_metadata'->>'id'");
-    assert_eq!(current_user_accessor_name(&expr).as_deref(), Some("jwt"),);
-}
-
-#[test]
-fn jwt_claim_extraction_classified_as_p3() {
+fn a_field_read_is_refused_for_a_registered_accessor_and_a_named_key_alike() {
     let db = db_with_docs_and_members();
-    let mut registry = FunctionRegistry::new();
-    registry
-        .load_from_json(
-            r#"{
-  "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"},
-  "current_setting": {"kind":"current_user_accessor","returns":"text"}
-}"#,
-        )
+    let mut registered = FunctionRegistry::new();
+    registered
+        .load_from_json(r#"{"current_setting": {"kind":"current_user_accessor","returns":"text"}}"#)
         .unwrap();
+    let mut keyed = FunctionRegistry::new();
+    keyed.trust_current_user_setting_keys(["request.jwt.claims"]);
+
     let expr = parse_expr("owner_id = current_setting('request.jwt.claims')::json->>'sub'");
-    let classified = recognize_p3(&expr, &db, &registry);
-    assert!(
-        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
-        "JWT claim extraction should classify as P3, got: {classified:?}"
-    );
-    // JSON-wrapped → capped at B
-    assert_eq!(classified.unwrap().confidence, ConfidenceLevel::B);
+    for (how, registry) in [("registered function", &registered), ("named key", &keyed)] {
+        assert!(
+            recognize_p3(&expr, &db, registry).is_none(),
+            "{how}: a field of the value is not the value"
+        );
+    }
 }
 
 // ── Gap 8: IS DISTINCT FROM ───────────────────────────────────────────

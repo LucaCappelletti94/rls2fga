@@ -2,7 +2,9 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
+use crate::parser::function_analyzer::{
+    normalize_setting_key, AccessorInferenceSettings, FunctionSemantic,
+};
 use crate::parser::names::{
     normalize_identifier, normalize_relation_name, split_schema_and_relation,
 };
@@ -19,6 +21,9 @@ pub struct FunctionRegistry {
     /// Functions whose body describes a caller accessor their security mode
     /// invalidates, kept so the report can name the cause.
     owner_bound_accessors: BTreeSet<String>,
+    /// `current_setting` keys whose value is the caller's identity, so a call reading
+    /// one names the caller wherever it appears.
+    current_user_setting_keys: BTreeSet<String>,
 }
 
 impl FunctionRegistry {
@@ -49,6 +54,7 @@ impl FunctionRegistry {
             functions: BTreeMap::new(),
             public_flag_columns: BTreeSet::new(),
             owner_bound_accessors: BTreeSet::new(),
+            current_user_setting_keys: BTreeSet::new(),
         }
     }
 
@@ -68,6 +74,28 @@ impl FunctionRegistry {
     pub(crate) fn is_confirmed_public_flag_column(&self, column: &str) -> bool {
         self.public_flag_columns
             .contains(&normalize_identifier(column))
+    }
+
+    /// Name the `current_setting` keys whose value is the caller's identity.
+    ///
+    /// A wrapper function is not required: the key is what carries the meaning, so a
+    /// policy spelling the call inline says the same thing as one calling a function
+    /// whose whole body is that call.
+    pub fn trust_current_user_setting_keys<I, S>(&mut self, keys: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.current_user_setting_keys.extend(
+            keys.into_iter()
+                .map(|key| normalize_setting_key(key.as_ref())),
+        );
+    }
+
+    /// True when `key` was named as holding the caller's identity.
+    pub(crate) fn names_caller_setting_key(&self, key: &str) -> bool {
+        self.current_user_setting_keys
+            .contains(&normalize_setting_key(key))
     }
 
     /// Load function semantics from a JSON string.
@@ -135,9 +163,9 @@ impl FunctionRegistry {
             let Some(body) = function.body() else {
                 continue;
             };
-            // A set of identities is not one identity. `is_scalar_uuid_return_type` also
-            // reads the declaration for this, but only as text, so it turns on how the
-            // catalog spells a set. This asks the catalog.
+            // A set of identities is not one identity. `returns_one_identity` also reads
+            // the declaration for this, but only as text, so it turns on how the catalog
+            // spells a set. This asks the catalog.
             if function.returns_set() {
                 continue;
             }
@@ -273,6 +301,32 @@ CREATE FUNCTION wrong_user_id() RETURNS UUID
         assert!(
             registry.get("wrong_user_id").is_none(),
             "non-allowlisted current_setting keys must not auto-register user accessors"
+        );
+    }
+
+    /// A key is named once and looked up under whatever spelling a policy uses, since
+    /// `PostgreSQL` folds a setting name when it reads it.
+    #[test]
+    fn a_named_setting_key_is_found_under_any_spelling_and_no_other_key_is() {
+        let mut registry = FunctionRegistry::new();
+        assert!(
+            !registry.names_caller_setting_key("app.user_id"),
+            "an empty registry names no key"
+        );
+
+        registry.trust_current_user_setting_keys([" App.User_Id "]);
+
+        assert!(registry.names_caller_setting_key("app.user_id"));
+        assert!(registry.names_caller_setting_key("APP.USER_ID"));
+        assert!(
+            !registry.names_caller_setting_key("app.tenant_id"),
+            "naming one key must not name another"
+        );
+
+        registry.trust_current_user_setting_keys(["app.tenant_id"]);
+        assert!(
+            registry.names_caller_setting_key("app.user_id"),
+            "naming a second key keeps the first"
         );
     }
 
