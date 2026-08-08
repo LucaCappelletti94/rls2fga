@@ -1805,10 +1805,33 @@ fn function_has_current_user_arg_returns_false_for_no_args() {
     assert!(!function_has_current_user_arg(&expr, &registry));
 }
 
+/// One value is one projection. `(SELECT a, b FROM t)` is refused for reading a table
+/// before the count is even looked at, so the count needs its own case.
 #[test]
 fn current_user_accessor_name_subquery_with_multiple_projections_returns_none() {
-    let expr = parse_expr("(SELECT a, b FROM t)");
+    for sql in ["(SELECT a, b FROM t)", "(SELECT a, b)", "(SELECT *)"] {
+        let expr = parse_expr(sql);
+        assert!(
+            current_user_accessor_name(&expr).is_none(),
+            "`{sql}` projects more than one value, so it names nobody"
+        );
+    }
+}
+
+/// A set operation is two queries, so which row it yields is not the projection of one.
+#[test]
+fn current_user_accessor_name_set_operation_subquery_returns_none() {
+    let mut registry = FunctionRegistry::new();
+    registry.trust_current_user_setting_keys(["app.user_id"]);
+    let expr = parse_expr(
+        "(SELECT current_setting('app.user_id') UNION SELECT current_setting('app.tenant_id'))",
+    );
+
     assert!(current_user_accessor_name(&expr).is_none());
+    assert!(
+        !is_current_user_expr(&expr, &registry),
+        "a union of two settings names neither of them"
+    );
 }
 
 #[test]
@@ -2682,6 +2705,25 @@ fn nullif_wrapped_ownership_classified_as_p3() {
     assert!(
         matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
         "NULLIF-wrapped column should classify as P3, got: {classified:?}"
+    );
+}
+
+/// `PostgreSQL` does not care which side of the comparison the caller sits on, and a
+/// column reached through a default is still that column on either side.
+#[test]
+fn coalesce_wrapped_ownership_classified_as_p3_with_the_caller_on_the_left() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+    let expr = parse_expr("current_user = COALESCE(owner_id, '')");
+    let classified = recognize_p3(&expr, &db, &registry);
+    assert!(
+        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+        "the operand order says nothing about who owns the row, got: {classified:?}"
+    );
+    assert_eq!(
+        classified.unwrap().confidence,
+        ConfidenceLevel::B,
+        "COALESCE wrapping caps confidence whichever side it is on"
     );
 }
 

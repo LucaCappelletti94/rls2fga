@@ -176,23 +176,22 @@ pub(super) fn set_limiting_clause(query: &Query) -> Option<&'static str> {
     query.fetch.is_some().then_some("FETCH")
 }
 
-/// True when `query` yields its projection and nothing narrows it, so its value is the
-/// projected expression itself.
+/// The `Select` a query projects when nothing narrows it, so its value is the projected
+/// expression itself.
 ///
 /// `PostgreSQL` empties a result with no `FROM` at all: `SELECT current_setting('k')
 /// WHERE false`, `LIMIT 0`, `FETCH FIRST 0 ROWS` and `HAVING false` each return no row,
 /// and a scalar subquery returning no row is NULL. `ORDER BY`, `DISTINCT` and a `WITH`
 /// binding cannot drop the single row, so they are left alone.
-pub(super) fn query_only_projects(query: &Query) -> bool {
+pub(super) fn projected_select(query: &Query) -> Option<&Select> {
     if set_limiting_clause(query).is_some() {
-        return false;
+        return None;
     }
-    let Some(select) = query_select(query) else {
-        return false;
-    };
-    select.from.is_empty()
+    let select = query_select(query)?;
+    (select.from.is_empty()
         && select.selection.is_none()
-        && select_result_shaping_clause(select).is_none()
+        && select_result_shaping_clause(select).is_none())
+    .then_some(select)
 }
 
 /// Why a subquery cannot be read as the plain set of rows in the table its `FROM` names.

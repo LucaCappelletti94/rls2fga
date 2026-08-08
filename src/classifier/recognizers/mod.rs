@@ -23,7 +23,7 @@ mod attribute;
 mod subquery;
 
 pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
-use subquery::query_only_projects;
+use subquery::projected_select;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };
@@ -803,14 +803,8 @@ fn accessor_root(expr: &Expr) -> Option<&Expr> {
         // clause that can empty its result is a conjunct in disguise, and the pattern
         // keeps only a column name, so whatever it gates would vanish from the model.
         Expr::Subquery(query) => {
-            if !query_only_projects(query) {
-                return None;
-            }
-            let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-                return None;
-            };
             let [SelectItem::UnnamedExpr(inner) | SelectItem::ExprWithAlias { expr: inner, .. }] =
-                select.projection.as_slice()
+                projected_select(query)?.projection.as_slice()
             else {
                 return None;
             };
