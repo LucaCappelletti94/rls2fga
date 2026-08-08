@@ -6,6 +6,7 @@
 //! unhandled, whether their own threshold dropped it, or whether the model simply says
 //! what the database says.
 
+use crate::classifier::patterns::RolePrivilege;
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use core::fmt;
@@ -409,9 +410,10 @@ impl fmt::Display for TranslationNote {
                 roles, relation, ..
             } => write!(
                 f,
-                "Policy role scope TO ({}) mapped to relation '{relation}'; ensure pg_role \
-                 memberships are loaded",
-                roles.join(", ")
+                "Policy role scope TO ({}) mapped to relation '{relation}', which reads pg_role \
+                 '{}', so load that relation with each role's inheriting members",
+                roles.join(", "),
+                RolePrivilege::Usage.relation_name()
             ),
             Self::RoleGateScope {
                 roles,
@@ -432,8 +434,10 @@ impl fmt::Display for TranslationNote {
             } => write!(
                 f,
                 "Reading membership table '{join_table}' needs PostgreSQL role ({}), mapped to \
-                 relation '{relation}'; ensure pg_role memberships are loaded",
-                roles.join(", ")
+                 relation '{relation}', which reads pg_role '{}', so load that relation with \
+                 each role's inheriting members",
+                roles.join(", "),
+                RolePrivilege::Usage.relation_name()
             ),
             Self::RoleNameRewritten { role, pg_role, .. } => write!(
                 f,

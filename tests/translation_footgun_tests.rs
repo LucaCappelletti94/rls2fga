@@ -903,8 +903,9 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
         })
         .expect("docs should define can_select");
     assert!(
-        limited.contains(&format!("but not member from {scope}")),
-        "a user outside the role must keep the grant, got '{limited}':\n{}",
+        limited.contains(&format!("but not usage from {scope}")),
+        "a user outside the role's inherited privileges must keep the grant, got \
+         '{limited}':\n{}",
         model.model()
     );
 }
@@ -3983,7 +3984,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR ALL TO auditor;
         !model
             .notes()
             .iter()
-            .any(|note| note.message().contains("memberships are loaded")),
+            .any(|note| note.message().contains("inheriting members")),
         "asking for tuples nothing consults is noise: {:#?}",
         model.notes()
     );
@@ -7561,9 +7562,7 @@ fn a_role_limited_barrier_with_no_scope_tuples_binds_everyone() {
         "the operator must be told the barrier now binds more than RLS does, got {notes:#?}"
     );
     assert!(
-        !notes
-            .iter()
-            .any(|note| note.contains("ensure pg_role memberships are loaded")),
+        !notes.iter().any(|note| note.contains("inheriting members")),
         "nothing may ask for memberships no relation reads, got {notes:#?}"
     );
 }
@@ -7777,4 +7776,130 @@ CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
             outputs.notes()
         );
     }
+}
+
+/// `PostgreSQL` applies a `TO role` clause with `has_privs_of_role` semantics: an
+/// inheriting member of the role is admitted, a `NOINHERIT` member and a
+/// `GRANT ... WITH INHERIT FALSE` grantee are not, while `pg_has_role(.., 'MEMBER')`
+/// holds for all three. Probed on 18.4: `USING (true) TO editors` over three rows
+/// answers 3 to the inheriting member and 0 to the other two. So a `TO` scope walks
+/// `usage`, the kind the crate already defines as "every grant in the chain
+/// inherits", never plain membership.
+#[test]
+fn a_to_scoped_policy_walks_usage_not_member() {
+    let db = db_of(
+        r"
+CREATE ROLE editors;
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO editors USING (owner_id = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("can_select must be defined");
+    assert!(
+        can_select.contains("usage from scope_"),
+        "a TO scope admits inheriting members, which is the usage kind:\n{dsl}"
+    );
+    assert!(
+        !can_select.contains("member from scope_"),
+        "membership admits NOINHERIT members PostgreSQL refuses:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "pg_role", "usage").as_deref(),
+        Some("[user]"),
+        "the walked relation must be declared for the operator to load:\n{dsl}"
+    );
+    assert!(
+        relation_definition(&dsl, "pg_role", "member").is_none(),
+        "nothing reads plain membership here, so declaring it would mislead:\n{dsl}"
+    );
+    assert!(
+        outputs
+            .notes()
+            .iter()
+            .any(|note| note.to_string().contains("reads pg_role 'usage'")),
+        "the note must name the kind the operator loads, got: {:#?}",
+        outputs.notes()
+    );
+}
+
+/// The RESTRICTIVE fold excuses everyone outside the bound roles, and `PostgreSQL`
+/// draws that line with `has_privs_of_role` too. Probed on 18.4: a barrier
+/// `TO editors` binds the inheriting member (1 of 3 rows) and leaves the `NOINHERIT`
+/// member alone (3 of 3). Excusing by `member` would bind users `PostgreSQL` excuses.
+#[test]
+fn a_to_scoped_barrier_excuses_by_usage_not_membership() {
+    let db = db_of(
+        r"
+CREATE ROLE editors;
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (true);
+CREATE POLICY r ON docs AS RESTRICTIVE FOR SELECT TO editors USING (owner_id = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    let limit = relation_definitions(&dsl, "docs")
+        .into_iter()
+        .find(|(name, _)| name.starts_with("limit_"))
+        .map(|(_, body)| body)
+        .expect("the barrier must fold into a limit_ relation");
+    assert!(
+        limit.contains("but not usage from scope_"),
+        "the excused set is who lacks the role's inherited privileges:\n{dsl}"
+    );
+    assert!(
+        !limit.contains("but not member from scope_"),
+        "excusing non-members binds NOINHERIT members PostgreSQL excuses:\n{dsl}"
+    );
+}
+
+/// A membership table readable only by named roles scopes the parent grant, and the
+/// reader `PostgreSQL` admits is again the inheriting member, so the read scope walks
+/// `usage` like every other `TO` consumer.
+#[test]
+fn a_membership_read_scope_walks_usage() {
+    let db = db_of(
+        r"
+CREATE ROLE auditor;
+CREATE TABLE users(id TEXT PRIMARY KEY);
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE doc_members(
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES docs(id),
+    user_id TEXT NOT NULL REFERENCES users(id)
+);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY m ON doc_members FOR SELECT TO auditor USING (true);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)
+);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("can_select must be defined");
+    assert!(
+        can_select.contains("usage from read_scope_"),
+        "only the roles that may read memberships inherit the grant:\n{dsl}"
+    );
+    assert!(
+        !can_select.contains("member from read_scope_"),
+        "membership admits readers PostgreSQL refuses:\n{dsl}"
+    );
 }

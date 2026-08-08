@@ -378,7 +378,6 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
-    let mut has_role_scopes = false;
 
     for function in registry.owner_bound_accessors() {
         notes.push(TranslationNote::OwnerBoundFunction {
@@ -548,13 +547,13 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             let scope_relation = if scoped_roles.is_empty() || barrier_cannot_bind {
                 None
             } else {
-                has_role_scopes = true;
                 let relation = policy_scope_relation_name(cp.name());
                 register_pg_role_scope(
                     &mut table_plan,
                     &mut all_types,
                     &source_table_name,
                     &relation,
+                    RolePrivilege::Usage.relation_name(),
                     scoped_roles,
                     cp.name(),
                     TranslationNote::PolicyRoleScope {
@@ -768,10 +767,6 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         }
 
         all_types.insert(canonical_table_name, table_plan);
-    }
-
-    if has_role_scopes {
-        ensure_pg_role_type(&mut all_types);
     }
 
     all_types
@@ -1177,14 +1172,21 @@ fn reach_userset(
     }
 }
 
+/// The walk from a `TO`-clause scope to the users it admits.
+///
+/// `PostgreSQL` applies a `TO` clause with `has_privs_of_role` semantics, which is the
+/// `usage` kind: an inheriting member is admitted, a `NOINHERIT` member or a
+/// `WITH INHERIT FALSE` grant is not, while all three hold plain `MEMBER`. Probed on
+/// 18.4 for the permissive scope and the restrictive barrier alike.
+fn to_clause_scope_walk(scope_relation: &str) -> UsersetExpr {
+    UsersetExpr::TupleToUserset {
+        tupleset: scope_relation.to_string(),
+        computed: RolePrivilege::Usage.relation_name().to_string(),
+    }
+}
+
 fn scoped_policy_expr(expr: UsersetExpr, scope_relation: &str) -> UsersetExpr {
-    UsersetExpr::Intersection(vec![
-        expr,
-        UsersetExpr::TupleToUserset {
-            tupleset: scope_relation.to_string(),
-            computed: MEMBER_RELATION.to_string(),
-        },
-    ])
+    UsersetExpr::Intersection(vec![expr, to_clause_scope_walk(scope_relation)])
 }
 
 fn using_targets(command: PolicyCommand) -> Vec<ActionTarget> {
@@ -1412,6 +1414,9 @@ fn register_pg_role_scope<DB: DatabaseLike>(
     all_types: &mut BTreeMap<String, TypePlan>,
     source_table: &str,
     scope_relation: &str,
+    // The `pg_role` relation the caller's walk reads. Declared here so the walk and
+    // the relation the operator loads cannot drift apart.
+    walked: &'static str,
     role_names: &[String],
     policy_name: &str,
     scope_note: TranslationNote,
@@ -1419,7 +1424,7 @@ fn register_pg_role_scope<DB: DatabaseLike>(
     notes: &mut Vec<TranslationNote>,
     missing_object_what: &str,
 ) {
-    ensure_pg_role_type(all_types);
+    ensure_pg_role_relation(all_types, walked);
 
     table_plan.ensure_direct(
         scope_relation.to_string(),
@@ -1475,10 +1480,7 @@ fn compose_action(table_plan: &mut TypePlan, bucket: Option<&ModeBuckets>) -> Op
         let bound = UsersetExpr::Intersection(vec![expr.clone(), limited.rule.clone()]);
         let unbound = UsersetExpr::Exclusion {
             base: Box::new(expr),
-            subtract: Box::new(UsersetExpr::TupleToUserset {
-                tupleset: limited.scope_relation.clone(),
-                computed: MEMBER_RELATION.to_string(),
-            }),
+            subtract: Box::new(to_clause_scope_walk(&limited.scope_relation)),
         };
         let name = table_plan.ensure_computed(
             role_limited_relation_name(&limited.policy),
@@ -1898,6 +1900,7 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
         all_types,
         source_table,
         &scope_relation,
+        held_by,
         role_names,
         policy_name,
         TranslationNote::RoleGateScope {
@@ -1910,9 +1913,6 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
         notes,
         "role gate tuples",
     );
-    // Each kind of membership admits a different set, so each gets its own relation for the
-    // operator to load. Sharing one would make those facts mean whichever policy was read.
-    ensure_pg_role_relation(all_types, held_by);
 
     // The scope relation holds `[pg_role]` subjects, so a `user:` subject can never satisfy
     // it directly. Walking it to the role's holders is what admits them, and it is what
@@ -2444,6 +2444,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 all_types,
                 source_table,
                 &scope_relation,
+                RolePrivilege::Usage.relation_name(),
                 &read_scope_roles,
                 policy_name,
                 TranslationNote::MembershipReadScope {
@@ -2858,10 +2859,6 @@ fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &st
         MEMBER_RELATION,
         vec![DirectSubject::Type(USER_TYPE.to_string())],
     );
-}
-
-fn ensure_pg_role_type(all_types: &mut BTreeMap<String, TypePlan>) {
-    ensure_member_type(all_types, PG_ROLE_TYPE);
 }
 
 /// Give `pg_role` a relation holding one kind of role membership, for an operator to load.

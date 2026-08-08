@@ -71,7 +71,7 @@ pub enum RolePrivilege {
     /// A member of the role, directly or through a chain of grants.
     Member,
     /// A member whose privileges apply without `SET ROLE`, so every grant in the chain
-    /// inherits.
+    /// inherits. This is `has_privs_of_role`, the test a `TO` clause applies.
     Usage,
     /// A member who may `SET ROLE` to it.
     SetRole,

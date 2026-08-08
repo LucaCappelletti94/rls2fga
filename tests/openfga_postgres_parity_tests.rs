@@ -674,7 +674,7 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         if in_auditor {
             writes.push(support::openfga::make_tuple(
                 "pg_role:auditor",
-                "member",
+                "usage",
                 &format!("user:{user_id}"),
             ));
         }
@@ -861,7 +861,7 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         if in_contractor {
             writes.push(support::openfga::make_tuple(
                 "pg_role:contractor",
-                "member",
+                "usage",
                 &format!("user:{user_id}"),
             ));
         }
@@ -889,6 +889,147 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         failures.is_empty(),
         "PostgreSQL/OpenFGA role scoped restrictive parity mismatches:\n{}",
         failures.join("\n")
+    );
+}
+
+/// One reader: `(app user id, login role, grants inherit)`. Both are members of
+/// `editors`, only the first inherits its privileges.
+const INHERIT_READERS: [(&str, &str, bool); 2] = [
+    (USER_ALICE, "app_alice", true),
+    (USER_BOB, "app_bob", false),
+];
+
+/// A `TO editors` policy admits the role's inheriting members and nobody else:
+/// a `NOINHERIT` member holds `MEMBER` yet reads nothing, so the scope has to walk
+/// `usage` facts, which only the inheriting member gets.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn noinherit_member_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("role_scope_inherit");
+    let (classified, db, registry) = support::load_fixture_classified("role_scope_inherit");
+    // The policy names the role, so it has to exist before the schema is applied.
+    conn.batch_execute("CREATE ROLE editors")
+        .expect("Failed to create the scoped role");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the role_scope_inherit schema on PostgreSQL 18");
+    diesel::insert_into(docs::table)
+        .values([docs::id.eq(DOC_1), docs::id.eq(DOC_2)])
+        .execute(&mut conn)
+        .expect("Failed to seed docs");
+
+    for (_, login_role, inherits) in INHERIT_READERS {
+        let attribute = if inherits { "" } else { " NOINHERIT" };
+        conn.batch_execute(&format!(
+            "CREATE ROLE {login_role} LOGIN{attribute}; \
+             GRANT editors TO {login_role}; \
+             GRANT SELECT ON docs TO {login_role};"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "noinherit-member-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    // The report asks the operator for usage facts, the grants whose whole chain
+    // inherits, so the NOINHERIT member gets none however real their membership is.
+    for (user_id, _, inherits) in INHERIT_READERS {
+        if inherits {
+            writes.push(support::openfga::make_tuple(
+                "pg_role:editors",
+                "usage",
+                &format!("user:{user_id}"),
+            ));
+        }
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for (user_id, login_role, _) in INHERIT_READERS {
+        for doc_id in [DOC_1, DOC_2] {
+            let expected = postgres_allows_select(&mut conn, user_id, login_role, doc_id);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let user = format!("user:{user_id}");
+            let object = format!("docs:{doc_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA NOINHERIT member parity mismatches:\n{}",
+        failures.join("\n")
+    );
+    // Two-sided by construction: the inheriting member reads and the NOINHERIT member
+    // does not, so a model granting everything or nothing cannot pass.
+    assert!(
+        granted > 0 && denied > 0,
+        "the fixture must separate the two members, got granted={granted} denied={denied}"
     );
 }
 

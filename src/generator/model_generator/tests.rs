@@ -465,7 +465,7 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
                 && children.iter().any(|c| matches!(
                     c,
                     UsersetExpr::TupleToUserset { tupleset, computed }
-                        if tupleset == &scope_relation && computed == "member"
+                        if tupleset == &scope_relation && computed == "usage"
                 ))
     ));
 
@@ -475,8 +475,8 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
         .find(|t| t.type_name == "pg_role")
         .expect("pg_role type should exist");
     assert!(matches!(
-        pg_role.direct_relations.get("member"),
-        Some(subjects) if subjects == &vec![DirectSubject::Type("user".to_string())]
+        pg_role.direct_relations.get("usage"),
+        Some(subjects) if matches!(subjects.as_slice(), [DirectSubject::Type(t)] if t == "user")
     ));
 }
 
