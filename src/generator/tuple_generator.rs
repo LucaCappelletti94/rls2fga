@@ -1309,6 +1309,24 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
         );
     }
 
+    /// `is_self_parent_bridge` compares in lowercase, never through
+    /// `canonical_fga_type_name`, and that is load bearing rather than an oversight.
+    ///
+    /// Canonicalizing folds every name outside `[a-z0-9_]` onto `resource`, so two
+    /// unrelated non-ASCII names would compare equal and mint a self-reference tuple for
+    /// tables that have nothing to do with each other.
+    #[test]
+    fn two_unrelated_non_ascii_names_do_not_bridge() {
+        assert!(
+            is_self_parent_bridge("projects", "project_id"),
+            "a table named for its own foreign key still bridges"
+        );
+        assert!(
+            !is_self_parent_bridge("\u{65e5}\u{672c}", "\u{4e2d}\u{6587}"),
+            "two names that both canonicalize to 'resource' are not the same table"
+        );
+    }
+
     #[test]
     fn canonical_table_name_is_used_for_tuple_object_prefixes() {
         let db = parse_schema(

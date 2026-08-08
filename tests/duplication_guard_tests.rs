@@ -127,6 +127,34 @@ fn p5_inheritance_analysis_has_single_source_of_truth() {
     );
 }
 
+/// The name a `<thing>_id` column gives the entity it references is decided once.
+///
+/// The model generator reaches it through `parent_type_from_fk_column` rather than
+/// stripping the suffix itself, so a change to the rule cannot move a parent type while
+/// leaving an ownership relation on the old spelling.
+///
+/// `is_self_parent_bridge` in the tuple generator deliberately stays outside this: it
+/// compares a column name against a table name in lowercase, and canonicalizing either
+/// side would fold every non-ASCII name onto `resource`. That is pinned by
+/// `two_unrelated_non_ascii_names_do_not_bridge`.
+#[test]
+fn the_name_an_id_column_references_has_a_single_source_of_truth() {
+    let definitions = fn_definitions(&["src/parser/names.rs"], "parent_type_from_fk_column");
+    assert_eq!(
+        definitions, 1,
+        "expected one 'fn parent_type_from_fk_column', found {definitions}"
+    );
+
+    let stray = read_module("src/generator/model_generator")
+        .matches(r#"strip_suffix("_id")"#)
+        .count();
+    assert_eq!(
+        stray, 0,
+        "the model generator must reach the rule through parent_type_from_fk_column, \
+         found {stray} hand-rolled strips"
+    );
+}
+
 /// Three spellings reach P4 membership: `EXISTS`, `col IN (SELECT ...)`, and the caller on
 /// the left. The last two are one rewrite into the first, so all three land on one
 /// analyzer. A second analyzer, or a second reader of the projection, would let one

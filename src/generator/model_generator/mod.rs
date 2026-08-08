@@ -182,7 +182,7 @@ impl TypePlan {
             return existing.clone();
         }
 
-        let base = canonical_fga_type_name(name_source.strip_suffix("_id").unwrap_or(name_source));
+        let base = parent_type_from_fk_column(name_source);
         let taken = |name: &str, plan: &Self| {
             reserved_relation_subjects(name).is_some()
                 || generator_defines(name)
