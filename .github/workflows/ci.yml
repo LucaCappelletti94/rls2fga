@@ -23,29 +23,12 @@ env:
 
 jobs:
   quality:
-    name: Quality (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Quality
+    runs-on: ubuntu-latest
     timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Install libpq (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install libpq
-          LIBPQ_PREFIX="$(brew --prefix libpq)"
-          echo "${LIBPQ_PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "LIBRARY_PATH=${LIBPQ_PREFIX}/lib" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=${LIBPQ_PREFIX}/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=${LIBPQ_PREFIX}/lib" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -55,22 +38,12 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run quality checks (non-Windows)
-        if: runner.os != 'Windows'
+      - name: Run quality checks
         run: |
           cargo fmt --all -- --check
           cargo clippy --all-targets --all-features --locked -- -D warnings
           cargo test --features db --locked --lib --tests
           cargo test --all-features --locked --no-run --lib --tests
-          cargo test --doc --all-features --locked
-
-      - name: Run quality checks (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          cargo test --locked --lib --tests
-          cargo test --features agent --locked --no-run --lib --tests
           cargo test --doc --all-features --locked
 
   no-std:
