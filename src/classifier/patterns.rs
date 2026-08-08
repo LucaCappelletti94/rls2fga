@@ -2,7 +2,7 @@
 use crate::no_std_prelude::*;
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
 use crate::generator::well_known::MEMBER_RELATION;
 use crate::parser::sql_parser::PolicyLike;
@@ -423,25 +423,69 @@ pub fn policy_grants_select<P: PolicyLike>(policy: &P, db: &P::DB) -> bool {
         )
 }
 
-/// Roles in `TO (...)` that constrain policy applicability.
+/// Roles in `TO (...)` that constrain policy applicability, named and resolvable.
 ///
 /// Empty when the policy applies to every role, which `PostgreSQL` spells both as
-/// `TO PUBLIC` and as no `TO` clause at all.
+/// `TO PUBLIC` and as no `TO` clause at all. A spelling `PostgreSQL` resolves when the
+/// DDL runs is not a name and is answered by [`derive_ddl_time_scoped_roles`].
 pub fn derive_scoped_roles<P: PolicyLike>(policy: &P, db: &P::DB) -> Vec<String> {
+    split_scoped_roles(policy, db).0
+}
+
+/// The `TO (...)` spellings `PostgreSQL` resolves to the executing role when the
+/// policy is created (`CURRENT_USER`, `CURRENT_ROLE`, `SESSION_USER`).
+///
+/// `pg_policy` stores the resolved role, so a dump never carries these and a schema
+/// file holding one cannot say who the policy binds.
+pub fn derive_ddl_time_scoped_roles<P: PolicyLike>(policy: &P, db: &P::DB) -> Vec<String> {
+    split_scoped_roles(policy, db).1
+}
+
+/// One walk of the owners: `(named roles, ddl-time spellings)`.
+fn split_scoped_roles<P: PolicyLike>(policy: &P, db: &P::DB) -> (Vec<String>, Vec<String>) {
     if policy.applies_to_public() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
-    let mut roles: Vec<String> = policy
-        .roles(db)
-        .map(ToString::to_string)
-        .map(|role| role.trim().to_string())
-        .filter(|role| !role.is_empty())
-        .collect();
+    let mut named = Vec::new();
+    let mut ddl_time = Vec::new();
+    for owner in policy.roles(db) {
+        let spelling = owner.to_string().trim().to_string();
+        if spelling.is_empty() {
+            continue;
+        }
+        match owner {
+            Owner::Ident(_) => named.push(spelling),
+            // The keywords, and whatever keyword upstream learns later: resolved when
+            // the DDL runs, unknowable from a schema file.
+            _ => ddl_time.push(spelling),
+        }
+    }
+    named.sort();
+    named.dedup();
+    ddl_time.sort();
+    ddl_time.dedup();
+    (named, ddl_time)
+}
 
-    roles.sort();
-    roles.dedup();
-    roles
+/// The refusal `PostgreSQL` answers a policy storing `clause` for `command`, if any.
+///
+/// `CREATE POLICY` refuses a `USING` on `FOR INSERT` and a `WITH CHECK` on `FOR
+/// SELECT` or `FOR DELETE`, so a policy carrying one never came out of a database and
+/// nothing may translate it as if it had.
+#[must_use]
+pub fn clause_illegal_for_command(
+    command: PolicyCommand,
+    has_using: bool,
+    has_with_check: bool,
+) -> Option<&'static str> {
+    match command {
+        PolicyCommand::Insert if has_using => Some("only WITH CHECK expression allowed for INSERT"),
+        PolicyCommand::Select | PolicyCommand::Delete if has_with_check => {
+            Some("WITH CHECK cannot be applied to SELECT or DELETE")
+        }
+        _ => None,
+    }
 }
 
 /// A classified policy with classifications for USING and WITH CHECK.
@@ -461,6 +505,9 @@ pub struct ClassifiedPolicy {
     pub mode: PolicyMode,
     /// Roles in `TO (...)`, empty when the policy applies to every role.
     pub scoped_roles: Vec<String>,
+    /// `TO (...)` spellings resolved only when the DDL runs, empty for every policy a
+    /// dump can carry.
+    pub ddl_time_roles: Vec<String>,
     /// The `USING` expression the policy stores, if any.
     pub using: Option<Expr>,
     /// The `WITH CHECK` expression the policy stores, if any.
@@ -485,12 +532,14 @@ impl ClassifiedPolicy {
     /// The single place a catalog's own policy becomes one of these, so nothing
     /// downstream has to know what the catalog stores.
     pub fn from_policy<P: PolicyLike>(policy: &P, db: &P::DB) -> Self {
+        let (scoped_roles, ddl_time_roles) = split_scoped_roles(policy, db);
         Self {
             name: policy.name().to_string(),
             table: policy.target_table_name().to_string(),
             command: PolicyCommand::from(policy.command()),
             mode: derive_policy_mode(policy),
-            scoped_roles: derive_scoped_roles(policy, db),
+            scoped_roles,
+            ddl_time_roles,
             using: policy.using_expression(db).cloned(),
             with_check: policy.check_expression(db).cloned(),
             using_classification: None,
@@ -533,6 +582,11 @@ impl ClassifiedPolicy {
     /// Roles in `TO (...)` that constrain policy applicability.
     pub fn scoped_roles(&self) -> &[String] {
         &self.scoped_roles
+    }
+
+    /// `TO (...)` spellings resolved only when the DDL runs.
+    pub fn ddl_time_roles(&self) -> &[String] {
+        &self.ddl_time_roles
     }
 }
 

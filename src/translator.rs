@@ -56,7 +56,11 @@ impl TranslatorBuilder {
         Ok(self)
     }
 
-    /// Replace allowed `current_setting` keys used for automatic accessor inference.
+    /// Replace the `current_setting` keys this builder names as holding the caller's
+    /// identity. A key the base registry already names is kept.
+    ///
+    /// A call reading one names the caller wherever it appears: inline in a policy, or
+    /// as the whole body of a function the policy calls.
     #[must_use]
     pub fn with_current_user_setting_keys<I, S>(mut self, keys: I) -> Self
     where

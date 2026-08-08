@@ -33,6 +33,7 @@ pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
+    effective_registry.trust_current_user_setting_keys(settings.current_user_setting_keys());
     effective_registry.enrich_from_schema_with_settings(db, settings);
 
     let classified = classify_policies_with_registry(db, &effective_registry);

@@ -9,6 +9,7 @@ use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
+use crate::parser::function_analyzer::current_setting_literal_key;
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
     lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
@@ -22,6 +23,7 @@ mod attribute;
 mod subquery;
 
 pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
+use subquery::query_only_projects;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };
@@ -270,112 +272,59 @@ pub fn recognize_p3<DB: DatabaseLike>(
         _ => return None,
     };
 
-    // Try column = accessor_expr or accessor_expr = column.
-    // Falls through to extract_column_name_through_coalesce when plain
-    // extract_column_name returns None (e.g. COALESCE(col, default)).
-    let (
-        col_name,
-        accessor_name,
-        accessor_indirection,
-        accessor_is_bare_identifier,
-        accessor_is_sql_keyword_expr,
-        accessor_is_keyword_named_function_call,
-    ) = if let (Some(col), Some(accessor)) =
+    // Either operand may carry the accessor, and either may reach its column through a
+    // COALESCE default, which `extract_column_name` alone does not see through.
+    let (col_name, accessor_name, column_side, accessor_side) = if let (Some(col), Some(accessor)) =
         (extract_column_name(left), current_user_accessor_name(right))
     {
-        let indirection = is_subquery_wrapped(right) || is_json_accessor_wrapped(right);
-        let is_bare_identifier = is_bare_identifier_expr(right);
-        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
-        let is_keyword_named_function_call = is_keyword_named_function_call_expr(right);
-        (
-            col,
-            accessor,
-            indirection,
-            is_bare_identifier,
-            is_sql_keyword_expr,
-            is_keyword_named_function_call,
-        )
+        (col, accessor, left, right)
     } else if let (Some(accessor), Some(col)) =
         (current_user_accessor_name(left), extract_column_name(right))
     {
-        let indirection = is_subquery_wrapped(left) || is_json_accessor_wrapped(left);
-        let is_bare_identifier = is_bare_identifier_expr(left);
-        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
-        let is_keyword_named_function_call = is_keyword_named_function_call_expr(left);
-        (
-            col,
-            accessor,
-            indirection,
-            is_bare_identifier,
-            is_sql_keyword_expr,
-            is_keyword_named_function_call,
-        )
+        (col, accessor, right, left)
     } else if let (Some(col), Some(accessor)) = (
         extract_column_name_through_coalesce(left),
         current_user_accessor_name(right),
     ) {
-        let indirection = is_subquery_wrapped(right)
-            || is_json_accessor_wrapped(right)
-            || is_coalesce_wrapped(left);
-        let is_bare_identifier = is_bare_identifier_expr(right);
-        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(right);
-        let is_keyword_named_function_call = is_keyword_named_function_call_expr(right);
-        (
-            col,
-            accessor,
-            indirection,
-            is_bare_identifier,
-            is_sql_keyword_expr,
-            is_keyword_named_function_call,
-        )
+        (col, accessor, left, right)
     } else if let (Some(accessor), Some(col)) = (
         current_user_accessor_name(left),
         extract_column_name_through_coalesce(right),
     ) {
-        let indirection = is_subquery_wrapped(left)
-            || is_json_accessor_wrapped(left)
-            || is_coalesce_wrapped(right);
-        let is_bare_identifier = is_bare_identifier_expr(left);
-        let is_sql_keyword_expr = is_sql_current_user_keyword_expr(left);
-        let is_keyword_named_function_call = is_keyword_named_function_call_expr(left);
-        (
-            col,
-            accessor,
-            indirection,
-            is_bare_identifier,
-            is_sql_keyword_expr,
-            is_keyword_named_function_call,
-        )
+        (col, accessor, right, left)
     } else {
         return None;
     };
 
     // Determine how we matched the accessor and assign confidence accordingly.
-    let is_registry_confirmed = registry.is_current_user_accessor(&accessor_name);
-    let is_sql_keyword = accessor_is_sql_keyword_expr;
+    let is_named = registry.is_current_user_accessor(&accessor_name)
+        || reads_caller_setting_key(accessor_side, registry);
+    let is_sql_keyword = is_sql_current_user_keyword_expr(accessor_side);
 
     // Guard against false positives like `owner_id = author_id`:
     // bare identifiers that are not SQL current-user keywords are columns/aliases,
     // not accessor expressions.
-    if accessor_is_bare_identifier && !is_sql_keyword && !is_registry_confirmed {
+    if is_bare_identifier_expr(accessor_side) && !is_sql_keyword && !is_named {
         return None;
     }
 
     // Prevent false positives from user-defined function calls that only *look*
     // like SQL current-user keywords (e.g. `"current_user"()`, `x.current_user()`).
-    if accessor_is_keyword_named_function_call && !is_sql_keyword && !is_registry_confirmed {
+    if is_keyword_named_function_call_expr(accessor_side) && !is_sql_keyword && !is_named {
         return None;
     }
 
-    // Strict policy: only SQL current-user keywords and registry-confirmed
-    // accessors are eligible for P3.
-    if !is_registry_confirmed && !is_sql_keyword {
+    // Strict policy: only SQL current-user keywords and accessors somebody named,
+    // by function or by setting key, are eligible for P3.
+    if !is_named && !is_sql_keyword {
         return None;
     }
 
-    // Subquery/JSON/COALESCE-wrapped accessors are accepted but capped at B
-    // due to added indirection. This cap only applies after strict accessor
-    // validation above.
+    let accessor_indirection =
+        is_subquery_wrapped(accessor_side) || is_coalesce_wrapped(column_side);
+
+    // Subquery- and COALESCE-wrapped accessors are accepted but capped at B due to added
+    // indirection. This cap only applies after strict accessor validation above.
     if accessor_indirection {
         return Some(ClassifiedExpr {
             pattern: PatternClass::P3DirectOwnership { column: col_name },
@@ -842,64 +791,59 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     }
 }
 
-fn current_user_accessor_name(expr: &Expr) -> Option<String> {
+/// The node an accessor expression bottoms out at, under parentheses, casts, and a scalar
+/// subquery that is only its projection.
+///
+/// One traversal so the name and the setting key an expression carries can never
+/// disagree about which call they describe.
+fn accessor_root(expr: &Expr) -> Option<&Expr> {
     match expr {
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => accessor_root(inner),
+        // `(SELECT auth.uid())`, and only that: a subquery reading a table or carrying a
+        // clause that can empty its result is a conjunct in disguise, and the pattern
+        // keeps only a column name, so whatever it gates would vanish from the model.
+        Expr::Subquery(query) => {
+            if !query_only_projects(query) {
+                return None;
+            }
+            let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
+                return None;
+            };
+            let [SelectItem::UnnamedExpr(inner) | SelectItem::ExprWithAlias { expr: inner, .. }] =
+                select.projection.as_slice()
+            else {
+                return None;
+            };
+            accessor_root(inner)
+        }
+        // A field pulled out of the value stops here: `sub` inside a token is an identity,
+        // and so is `tenant`, and nothing in the expression says which of them the caller
+        // is. Name a key holding the identity itself instead.
+        other => Some(other),
+    }
+}
+
+fn current_user_accessor_name(expr: &Expr) -> Option<String> {
+    match accessor_root(expr)? {
         Expr::Function(func) => Some(normalized_function_name(func)),
         Expr::Identifier(ident) => ident
             .quote_style
             .is_none()
             .then(|| normalize_relation_name(&ident.value)),
-        Expr::Cast { expr, .. } => current_user_accessor_name(expr),
-        Expr::Nested(inner) => current_user_accessor_name(inner),
-        // Phase 6b: unwrap a scalar subquery, `(SELECT auth.uid())`.
-        // The subquery must project exactly one non-wildcard expression.
-        Expr::Subquery(query) => {
-            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                if select.projection.len() == 1 {
-                    if let Some(
-                        SelectItem::UnnamedExpr(inner)
-                        | SelectItem::ExprWithAlias { expr: inner, .. },
-                    ) = select.projection.first()
-                    {
-                        return current_user_accessor_name(inner);
-                    }
-                }
-            }
-            None
-        }
-        // Gap 2: unwrap JSON accessor operators (`->`, `->>`, `#>`, `#>>`).
-        // Example: `current_setting('request.jwt.claims')::json->>'sub'`
-        Expr::BinaryOp {
-            op:
-                BinaryOperator::Arrow
-                | BinaryOperator::LongArrow
-                | BinaryOperator::HashArrow
-                | BinaryOperator::HashLongArrow,
-            left,
-            ..
-        } => current_user_accessor_name(left),
         _ => None,
     }
+}
+
+/// Whether the accessor `expr` reads a `current_setting` key named as the caller.
+fn reads_caller_setting_key(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    accessor_root(expr)
+        .and_then(current_setting_literal_key)
+        .is_some_and(|key| registry.names_caller_setting_key(&key))
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.
 fn is_subquery_wrapped(expr: &Expr) -> bool {
     matches!(unwrap_cast_or_nested(expr), Expr::Subquery(_))
-}
-
-/// Returns `true` when `expr` (or its Cast/Nested wrapper) contains a JSON
-/// accessor operator (`->`, `->>`, `#>`, `#>>`).  Used in [`recognize_p3`] to
-fn is_json_accessor_wrapped(expr: &Expr) -> bool {
-    matches!(
-        unwrap_cast_or_nested(expr),
-        Expr::BinaryOp {
-            op: BinaryOperator::Arrow
-                | BinaryOperator::LongArrow
-                | BinaryOperator::HashArrow
-                | BinaryOperator::HashLongArrow,
-            ..
-        }
-    )
 }
 
 fn is_bare_identifier_expr(expr: &Expr) -> bool {
@@ -957,15 +901,6 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
             }
             false
         }
-        Expr::BinaryOp {
-            op:
-                BinaryOperator::Arrow
-                | BinaryOperator::LongArrow
-                | BinaryOperator::HashArrow
-                | BinaryOperator::HashLongArrow,
-            left,
-            ..
-        } => is_sql_current_user_keyword_expr(left),
         _ => false,
     }
 }
@@ -987,15 +922,6 @@ fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
             }
             false
         }
-        Expr::BinaryOp {
-            op:
-                BinaryOperator::Arrow
-                | BinaryOperator::LongArrow
-                | BinaryOperator::HashArrow
-                | BinaryOperator::HashLongArrow,
-            left,
-            ..
-        } => is_keyword_named_function_call_expr(left),
         _ => false,
     }
 }
@@ -1006,6 +932,7 @@ fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
     };
     let normalized = normalize_relation_name(&name);
     registry.is_current_user_accessor(&normalized)
+        || reads_caller_setting_key(expr, registry)
         || (is_current_user_keyword(&normalized) && is_sql_current_user_keyword_expr(expr))
 }
 

@@ -509,6 +509,20 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             if cp.using.is_none() && cp.with_check.is_none() {
                 continue;
             }
+            // A clause PostgreSQL refuses to store never came out of a database, so
+            // nothing downstream may read it as one. The INSERT spelling would
+            // otherwise mint a grant through the USING-to-check mirror.
+            if let Some(rule) = clause_illegal_for_command(
+                cp.command(),
+                cp.using.is_some(),
+                cp.with_check.is_some(),
+            ) {
+                notes.push(TranslationNote::PolicyClauseIllegal {
+                    policy: cp.name().to_string(),
+                    rule: rule.to_string(),
+                });
+                continue;
+            }
             // Nor may a policy every target of which is blocked: the loop denies each of
             // them, so a scope relation minted here would ask for tuples nothing reads.
             let mut reached = BTreeSet::new();
@@ -522,6 +536,22 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
             {
                 continue;
             }
+            // PostgreSQL resolves these spellings to the DDL-running role when the
+            // policy is created, so a schema file cannot know who they bind. Fall
+            // closed per mode: a permissive grant is dropped, and a barrier binds
+            // everyone by keeping its scope empty, named roles beside the spelling
+            // included, since a barrier that also binds the DDL runner cannot be
+            // narrowed to the names alone.
+            let scope_unknowable = !cp.ddl_time_roles().is_empty();
+            if scope_unknowable {
+                notes.push(TranslationNote::PolicyBoundToDdlTimeRole {
+                    policy: cp.name().to_string(),
+                    spellings: cp.ddl_time_roles().to_vec(),
+                });
+                if cp.mode() == PolicyMode::Permissive {
+                    continue;
+                }
+            }
             if let Some(ref c) = cp.using_classification {
                 confidence_summary.push((cp.name().to_string(), c.confidence));
             }
@@ -529,7 +559,11 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 confidence_summary.push((format!("{} (WITH CHECK)", cp.name()), c.confidence));
             }
 
-            let scoped_roles = cp.scoped_roles();
+            let scoped_roles: &[String] = if scope_unknowable {
+                &[]
+            } else {
+                cp.scoped_roles()
+            };
             // A barrier is folded as `(base and rule) or (base but not member from scope)`, so
             // an unfillable scope excuses everyone from it. Binding everyone instead denies
             // more than RLS does, which is the direction a missing input has to take. The
@@ -877,9 +911,8 @@ fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
 /// permission would be the largest widening available here, and it misfires the moment
 /// a service account stops running as the exempt principal.
 ///
-/// The table's owner is the third mechanism and is not reported by name: the upstream
-/// parser discards `ALTER TABLE ... OWNER TO`, so only the absence of `FORCE` is
-/// visible. See `docs/upstream/`.
+/// The table's owner is the third mechanism, named where the schema assigns one and
+/// generic where it does not, since an unreadable answer must not invent a role.
 fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec<TranslationNote>) {
     for role in db.roles() {
         if role.can_bypass_rls() {
@@ -1212,11 +1245,11 @@ fn with_check_targets(command: PolicyCommand) -> Vec<ActionTarget> {
     }
 }
 
+/// Whether a missing `WITH CHECK` reads the `USING` instead, which is what `PostgreSQL`
+/// does for the commands that may store both. A bare `INSERT` policy cannot store a
+/// `USING` at all, so it has no arm here.
 fn policy_uses_using_for_missing_with_check(command: PolicyCommand) -> bool {
-    matches!(
-        command,
-        PolicyCommand::All | PolicyCommand::Update | PolicyCommand::Insert
-    )
+    matches!(command, PolicyCommand::All | PolicyCommand::Update)
 }
 
 /// Stand-in expression for a RESTRICTIVE clause dropped by confidence filtering:
@@ -1749,10 +1782,21 @@ fn policies_missing_a_clause<P: PolicyLike>(
 ) -> Vec<(String, String, &'static str)> {
     let mut missing = Vec::new();
     for policy in declared {
+        let command = PolicyCommand::from(policy.command());
+        // An illegal clause gets its own note, and an absent-clause line beside it
+        // would send the operator hunting for a legal policy that never existed.
+        if clause_illegal_for_command(
+            command,
+            policy.using_expression(db).is_some(),
+            policy.check_expression(db).is_some(),
+        )
+        .is_some()
+        {
+            continue;
+        }
         if policy.using_expression(db).is_some() {
             continue;
         }
-        let command = PolicyCommand::from(policy.command());
         let checks: BTreeSet<ActionTarget> = with_check_targets(command).into_iter().collect();
         let applies: BTreeSet<ActionTarget> = using_targets(command)
             .into_iter()

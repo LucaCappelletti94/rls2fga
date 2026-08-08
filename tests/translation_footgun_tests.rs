@@ -4,6 +4,8 @@
 use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+use rls2fga::generator::records::{RecordDerivation, ValueSource};
+use rls2fga::generator::relations::RelationShapes;
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
@@ -5264,7 +5266,7 @@ fn feeds(
     relation: &str,
 ) -> bool {
     match &description.derivation {
-        rls2fga::generator::records::RecordDerivation::FromRow { template, .. } => {
+        RecordDerivation::FromRow { template, .. } => {
             template.object_type == type_name && template.relation == relation
         }
         // A joining description names no template, so it cannot be attributed to a
@@ -7901,5 +7903,423 @@ CREATE POLICY p ON docs FOR SELECT USING (
     assert!(
         !can_select.contains("member from read_scope_"),
         "membership admits readers PostgreSQL refuses:\n{dsl}"
+    );
+}
+
+/// `PostgreSQL` resolves `TO CURRENT_USER`, `TO CURRENT_ROLE` and `TO SESSION_USER`
+/// to the role executing `CREATE POLICY` (probed on 18.4: `pg_policies.roles` stores
+/// `{postgres}`, or `{app_admin}` under `SET ROLE app_admin`), so the symbolic form
+/// never reaches a dump and a schema file cannot know the role. Minting a
+/// `pg_role:current_user` object asks the operator to populate a role that does not
+/// exist, so the spelling is refused instead: a permissive policy falls closed.
+#[test]
+fn a_pseudo_role_scope_is_refused_not_minted() {
+    for spelling in ["CURRENT_USER", "CURRENT_ROLE", "SESSION_USER"] {
+        let db = db_of(&format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO {spelling} USING (owner_id = current_user);
+"
+        ));
+        let outputs = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        assert!(
+            relation_denies(&dsl, "docs", "can_select"),
+            "`TO {spelling}` binds a role the schema cannot name, so the grant falls \
+             closed:\n{dsl}"
+        );
+        assert!(
+            pg_role_relation(&dsl, "docs").is_none(),
+            "no scope relation may ask for tuples of a role that does not exist \
+             (`TO {spelling}`):\n{dsl}"
+        );
+        assert!(
+            !outputs
+                .tuple_queries()
+                .iter()
+                .any(|q| q.sql.contains("pg_role:")),
+            "no tuple may name a pseudo-role object (`TO {spelling}`), got: {:#?}",
+            outputs
+                .tuple_queries()
+                .iter()
+                .map(|q| &q.sql)
+                .collect::<Vec<_>>()
+        );
+        let note = outputs.notes().iter().find(|note| {
+            matches!(
+                note,
+                TranslationNote::PolicyBoundToDdlTimeRole { policy, spellings }
+                    if policy == "p" && spellings == &[spelling.to_string()]
+            )
+        });
+        assert!(
+            note.is_some(),
+            "the refusal must name the spelling (`TO {spelling}`), got: {:#?}",
+            outputs.notes()
+        );
+        assert_eq!(
+            note.map(TranslationNote::severity),
+            Some(NoteSeverity::Unhandled),
+            "the model denies what the created policy would grant, which has to block \
+             the outputs (`TO {spelling}`)"
+        );
+    }
+}
+
+/// The restrictive direction is the over-grant: probed on 18.4, a `LOGIN` owner under
+/// `FORCE ROW LEVEL SECURITY` creating `AS RESTRICTIVE ... TO CURRENT_USER` sees 1 of
+/// 2 rows while the old model excused everyone from the unfillable scope and granted
+/// both. An unknowable scope has to bind everyone instead, named roles beside it
+/// included, since a barrier that also binds the DDL runner cannot be narrowed to the
+/// names alone.
+#[test]
+fn a_pseudo_role_barrier_binds_everyone() {
+    for to_clause in ["CURRENT_USER", "editors, CURRENT_USER"] {
+        let db = db_of(&format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (true);
+CREATE POLICY r ON docs AS RESTRICTIVE FOR SELECT TO {to_clause} USING (owner_id = current_user);
+"
+        ));
+        let outputs = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        assert!(
+            !dsl.contains("but not"),
+            "an unfillable scope must not excuse anyone (`TO {to_clause}`):\n{dsl}"
+        );
+        let can_select =
+            relation_definition(&dsl, "docs", "can_select").expect("can_select must be defined");
+        assert!(
+            can_select.contains("public_viewer and owner"),
+            "the barrier binds everyone, so the rule intersects the grant \
+             (`TO {to_clause}`):\n{dsl}"
+        );
+        assert!(
+            !outputs
+                .tuple_queries()
+                .iter()
+                .any(|q| q.sql.contains("pg_role:")),
+            "no tuple may name a pseudo-role object (`TO {to_clause}`), got: {:#?}",
+            outputs
+                .tuple_queries()
+                .iter()
+                .map(|q| &q.sql)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            outputs.notes().iter().any(|note| matches!(
+                note,
+                TranslationNote::PolicyBoundToDdlTimeRole { policy, .. } if policy == "r"
+            )),
+            "the widening must be disclosed (`TO {to_clause}`), got: {:#?}",
+            outputs.notes()
+        );
+    }
+}
+
+/// A quoted `"current_user"` names a real role, not the keyword, and the `Owner` enum
+/// tells them apart, so the role keeps its ordinary scope.
+#[test]
+fn a_quoted_current_user_role_is_a_role() {
+    let db = db_of(
+        r#"
+CREATE ROLE "current_user";
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO "current_user" USING (owner_id = current_user);
+"#,
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("can_select must be defined");
+    assert!(
+        can_select.contains("usage from scope_"),
+        "a quoted role scopes like any other:\n{dsl}"
+    );
+    assert!(
+        outputs
+            .tuple_queries()
+            .iter()
+            .any(|q| q.sql.contains("'pg_role:current_user'")),
+        "the real role's scope tuples are wanted, got: {:#?}",
+        outputs
+            .tuple_queries()
+            .iter()
+            .map(|q| &q.sql)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::PolicyBoundToDdlTimeRole { .. })),
+        "a real role is not the keyword, got: {:#?}",
+        outputs.notes()
+    );
+}
+
+/// `PostgreSQL` refuses to store these shapes at all: `only WITH CHECK expression
+/// allowed for INSERT` and `WITH CHECK cannot be applied to SELECT or DELETE`, both
+/// probed verbatim on 18.4. Translating one describes a database that cannot exist,
+/// and the `FOR INSERT USING` spelling used to mint `can_insert` through the
+/// USING-to-check mirror.
+#[test]
+fn an_illegal_clause_refuses_the_policy() {
+    let cases = [
+        (
+            "CREATE POLICY p ON docs FOR INSERT USING (owner_id = current_user);",
+            "only WITH CHECK expression allowed for INSERT",
+        ),
+        (
+            "CREATE POLICY p ON docs FOR SELECT WITH CHECK (owner_id = current_user);",
+            "WITH CHECK cannot be applied to SELECT or DELETE",
+        ),
+        (
+            "CREATE POLICY p ON docs FOR DELETE WITH CHECK (owner_id = current_user);",
+            "WITH CHECK cannot be applied to SELECT or DELETE",
+        ),
+    ];
+    for (policy_sql, rule) in cases {
+        let db = db_of(&format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+{policy_sql}
+"
+        ));
+        let outputs = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        for action in ["can_select", "can_insert", "can_update", "can_delete"] {
+            assert!(
+                relation_denies(&dsl, "docs", action),
+                "an impossible policy grants nothing ({policy_sql}), {action}:\n{dsl}"
+            );
+        }
+        assert!(
+            outputs.tuple_queries().is_empty(),
+            "an impossible policy asks for no tuples ({policy_sql}), got: {:#?}",
+            outputs
+                .tuple_queries()
+                .iter()
+                .map(|q| &q.sql)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            outputs.notes().iter().any(|note| matches!(
+                note,
+                TranslationNote::PolicyClauseIllegal { policy, rule: r }
+                    if policy == "p" && r == rule
+            )),
+            "the refusal must quote PostgreSQL's own sentence ({policy_sql}), got: {:#?}",
+            outputs.notes()
+        );
+        assert!(
+            !outputs.notes().iter().any(|note| matches!(
+                note,
+                TranslationNote::PolicyClauseAbsent { policy, .. } if policy == "p"
+            )),
+            "an illegal clause is not an absent one, and saying both misleads \
+             ({policy_sql}), got: {:#?}",
+            outputs.notes()
+        );
+    }
+}
+
+/// Every `(relation, subject column)` a relation takes from a row of its own table.
+fn row_subject_columns(shapes: &[RelationShapes]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for entry in shapes {
+        for shape in &entry.shapes {
+            if let RecordDerivation::FromRow { template, .. } = &shape.derivation {
+                if let ValueSource::Column(column) = &template.subject_key {
+                    out.push((entry.relation.clone(), column.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `current_setting` returns whatever the key holds, so which key it names is the whole
+/// question. Reading every call as the caller turns a tenant identifier into a user and
+/// grants one tuple per tenant, and reading none of them leaves a policy that only ever
+/// spells the call inline undecidable.
+#[test]
+fn only_a_named_setting_key_becomes_a_user_subject() {
+    let owner_sql = r"
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_p ON notes USING (owner = current_setting('app.user_id', true));
+";
+    let tenant_sql = r"
+CREATE TABLE rows_(id INTEGER PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE rows_ ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rows_p ON rows_ USING (tenant_id = current_setting('app.tenant_id', true));
+";
+    let translator = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_current_user_setting_keys(["app.user_id"])
+        .build();
+
+    let owner_db = db_of(owner_sql);
+    let granted = row_subject_columns(&translator.translate(&owner_db).relations());
+    assert!(
+        !granted.is_empty(),
+        "the named key is the caller, so the owner column decides the row"
+    );
+    for (relation, column) in &granted {
+        assert_eq!(
+            column, "owner",
+            "notes#{relation} grants the wrong column as a user"
+        );
+    }
+
+    let tenant_db = db_of(tenant_sql);
+    let tenant_relations = translator.translate(&tenant_db).relations();
+    assert!(
+        row_subject_columns(&tenant_relations).is_empty(),
+        "no key names the caller here, so nothing may become a user subject: {tenant_relations:#?}"
+    );
+}
+
+/// One predicate decides who the caller is, so a named key read inline reaches every
+/// recognizer that asks it. The call itself never reaches what the loader runs: the
+/// subject comes from the row, and a `current_setting` in a loader query would read the
+/// loader's own session and load nothing.
+#[test]
+fn a_named_key_read_inline_reaches_every_recognizer_and_leaves_the_loader_clean() {
+    let cases = [
+        (
+            "ownership",
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_id', true));
+",
+        ),
+        (
+            "membership through a subquery",
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+  current_setting('app.user_id', true) IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id)
+);
+",
+        ),
+        (
+            "an array column's elements",
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, viewers TEXT[]);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (current_setting('app.user_id', true) = ANY (viewers));
+",
+        ),
+        (
+            "a jsonb field",
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, data JSONB);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (data ->> 'owner' = current_setting('app.user_id', true));
+",
+        ),
+        (
+            "a role the caller holds",
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (pg_has_role(current_setting('app.user_id', true), 'editors', 'MEMBER'));
+",
+        ),
+    ];
+
+    for (label, sql) in cases {
+        let db = db_of(sql);
+        let outputs = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+        assert!(
+            !relation_denies(&dsl, "docs", "can_select"),
+            "{label}: the named key is the caller, so reads are not denied:\n{dsl}"
+        );
+        let queries = outputs.tuple_queries();
+        assert!(
+            !queries.is_empty(),
+            "{label}: a granting relation needs tuples to grant through:\n{dsl}"
+        );
+        let tuples = format_tuples(&queries);
+        assert!(
+            !tuples.contains("current_setting"),
+            "{label}: the loader reads rows, not the caller's own session:\n{tuples}"
+        );
+    }
+}
+
+/// A scalar subquery in the accessor position is read as the caller, but only when it is
+/// nothing but its projection. Given a `FROM` or a `WHERE` it is a conjunct in disguise:
+/// it yields NULL when nothing survives, which filters every row out, while the pattern
+/// keeps only a column name and would grant the column unconditionally.
+#[test]
+fn a_filtering_accessor_subquery_is_refused_not_read_as_the_caller() {
+    let guarded = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE TABLE kill_switch(name TEXT PRIMARY KEY, enabled BOOLEAN);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+  owner_id = (SELECT current_setting('app.user_id', true)
+              FROM kill_switch WHERE name = 'docs_read' AND enabled)
+);
+";
+    let bare = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (owner_id = (SELECT current_setting('app.user_id', true)));
+";
+    let emptied = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (owner_id = (SELECT current_setting('app.user_id', true) LIMIT 0));
+";
+
+    for (label, sql) in [("a read of a table", guarded), ("a row limit", emptied)] {
+        let db = db_of(sql);
+        let relations = translator(ConfidenceLevel::B).translate(&db).relations();
+        assert!(
+            row_subject_columns(&relations).is_empty(),
+            "{label} can empty the subquery, so the column it compares is not the caller"
+        );
+    }
+
+    let db = db_of(bare);
+    let relations = translator(ConfidenceLevel::B).translate(&db).relations();
+    assert_eq!(
+        row_subject_columns(&relations)
+            .iter()
+            .map(|(_, column)| column.as_str())
+            .collect::<Vec<_>>(),
+        ["owner_id"],
+        "a subquery that is only its projection is still the caller"
     );
 }

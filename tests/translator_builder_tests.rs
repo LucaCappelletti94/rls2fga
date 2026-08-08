@@ -1,3 +1,4 @@
+use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
@@ -138,4 +139,332 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = oauth_token());
         using.pattern
     );
     assert_eq!(using.confidence, ConfidenceLevel::A);
+}
+
+/// A key names the caller wherever the call sits. Nothing forces a policy to route
+/// the read through a declared function, and a wrapper's return type says nothing
+/// about whether its value identifies the caller.
+#[test]
+fn translator_builder_names_the_caller_from_an_inline_setting_key() {
+    let sql = r"
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON notes FOR SELECT USING (owner = current_setting('app.user_id', true));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.user_id"])
+        .build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner"),
+        "a named key read inline should infer direct ownership, got: {:?}",
+        using.pattern
+    );
+    assert_eq!(
+        using.confidence,
+        ConfidenceLevel::A,
+        "naming the key is the same statement a registered accessor makes",
+    );
+}
+
+/// A helper naming the columns one translator classifies as owned, so a test asserting
+/// what is refused also asserts what is admitted under the same configuration.
+fn owned_columns(translator: &rls2fga::translator::Translator, sql: &str) -> Vec<String> {
+    let db = parse_schema(sql).expect("schema should parse");
+    let mut owned: Vec<String> = translator
+        .classify(&db)
+        .iter()
+        .filter_map(
+            |policy| match policy.using_classification.as_ref()?.pattern {
+                PatternClass::P3DirectOwnership { ref column } => Some(column.clone()),
+                _ => None,
+            },
+        )
+        .collect();
+    owned.sort();
+    owned
+}
+
+/// The keys are an allowlist, so a key nobody named stays unknown. Trusting every key
+/// would read a tenant identifier as a user and grant one tuple per tenant. The named
+/// key beside it is the control: refusing everything would satisfy the refusal alone.
+#[test]
+fn translator_builder_does_not_name_the_caller_from_an_unnamed_setting_key() {
+    let sql = r"
+CREATE TABLE rows_(id INTEGER PRIMARY KEY, tenant_id TEXT, owner_id TEXT);
+ALTER TABLE rows_ ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_tenant ON rows_ FOR SELECT USING (tenant_id = current_setting('app.tenant_id', true));
+CREATE POLICY p_owner ON rows_ FOR UPDATE USING (owner_id = current_setting('app.user_id', true));
+";
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.user_id"])
+        .build();
+
+    assert_eq!(
+        owned_columns(&translator, sql),
+        ["owner_id"],
+        "the named key names the caller and the unnamed one names nobody"
+    );
+}
+
+/// `request.jwt.claims` holds the whole token as one object, so its value is not an
+/// identity. It is reached through a `->> 'sub'` hop, which names the caller on its own.
+/// The key beside it is a built-in one, so the refusal is selective rather than total.
+#[test]
+fn translator_builder_does_not_name_the_caller_from_the_default_claims_object() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, claims_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_claims ON docs FOR SELECT USING (claims_id = current_setting('request.jwt.claims', true));
+CREATE POLICY p_owner ON docs FOR UPDATE USING (owner_id = current_setting('app.user_id', true));
+";
+    let translator = TranslatorBuilder::new().build();
+
+    assert_eq!(
+        owned_columns(&translator, sql),
+        ["owner_id"],
+        "a built-in key that holds an identity is the caller, the token object is not"
+    );
+}
+
+/// Every recognizer asks one predicate who the caller is, so a named key reaches the
+/// membership subquery too.
+#[test]
+fn translator_builder_names_the_caller_from_an_inline_key_inside_a_membership_subquery() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
+  SELECT 1 FROM doc_members m
+  WHERE m.doc_id = docs.id AND m.user_id = current_setting('app.user_id', true)
+));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.user_id"])
+        .build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(
+            &using.pattern,
+            PatternClass::P4ExistsMembership { join_table, user_column, .. }
+                if join_table == "doc_members" && user_column == "user_id"
+        ),
+        "a named key read inline should carry the membership too, got: {:?}",
+        using.pattern
+    );
+}
+
+/// A text identity is at least as common as a UUID one, and the declared return type
+/// says nothing about whether the body's value identifies the caller.
+#[test]
+fn translator_builder_infers_a_text_returning_accessor_from_its_body() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION app_user_id() RETURNS TEXT
+  LANGUAGE sql STABLE
+  AS 'SELECT current_setting(''app.user_id'', true)';
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = app_user_id());
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new().build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "a TEXT accessor body should infer direct ownership, got: {:?}",
+        using.pattern
+    );
+}
+
+/// A cast changes the type, not who the value belongs to, so it must not decide whether
+/// the key was named.
+#[test]
+fn translator_builder_names_the_caller_from_a_cast_inline_setting_key() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_id', true)::uuid);
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.user_id"])
+        .build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "a cast key read inline should infer direct ownership, got: {:?}",
+        using.pattern
+    );
+    assert_eq!(
+        using.confidence,
+        ConfidenceLevel::A,
+        "a cast is not indirection",
+    );
+}
+
+/// A login token holds the identity in a field, and no expression says which field that
+/// is, so naming the token's own key names nobody. The key holding just the subject is
+/// the spelling that works, and `PostgREST` sets it alongside the token.
+#[test]
+fn translator_builder_reads_a_token_payload_only_through_the_subject_key() {
+    let payload = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (owner_id = current_setting('request.jwt.claims', true)::json->>'sub');
+";
+    let subject = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (owner_id = current_setting('request.jwt.claim.sub', true));
+";
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["request.jwt.claims", "request.jwt.claim.sub"])
+        .build();
+
+    assert!(
+        owned_columns(&translator, payload).is_empty(),
+        "a field of the token is not the token's value, so the key names nobody here"
+    );
+    assert_eq!(
+        owned_columns(&translator, subject),
+        ["owner_id"],
+        "the key holding the subject names the caller"
+    );
+}
+
+/// Which key names the caller is the caller's to say, so a key the crate ships no
+/// default for works the moment it is named.
+#[test]
+fn translator_builder_names_the_caller_from_any_key_it_is_given() {
+    let sql = r"
+CREATE TABLE rows_(id INTEGER PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE rows_ ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON rows_ FOR SELECT USING (tenant_id = current_setting('app.tenant_id', true));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys(["app.tenant_id"])
+        .build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "tenant_id"),
+        "the named key decides, whatever it is called, got: {:?}",
+        using.pattern
+    );
+}
+
+/// The built-in keys are the ones a schema is most likely to spell, so they have to
+/// reach an inline call with nothing configured.
+#[test]
+fn translator_builder_names_the_caller_from_a_built_in_key_with_no_configuration() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (owner_id = current_setting('app.current_user_id', true));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+
+    let classified = TranslatorBuilder::new().build().classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "a built-in key read inline should infer direct ownership, got: {:?}",
+        using.pattern
+    );
+}
+
+/// `PostgreSQL` folds a setting name when it looks it up, so two spellings of one key
+/// name one setting and have to name one caller.
+#[test]
+fn translator_builder_folds_the_case_of_a_setting_key() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('APP.User_Id', true));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_current_user_setting_keys([" app.USER_ID "])
+        .build();
+
+    let classified = translator.classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("expected USING classification");
+    assert!(
+        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        "one setting under two spellings is one caller, got: {:?}",
+        using.pattern
+    );
+}
+
+/// A key named on the registry and a key named through the settings are two statements
+/// by the same caller, so both hold.
+#[test]
+fn translator_builder_keeps_a_key_the_base_registry_already_named() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, editor_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_owner ON docs FOR SELECT USING (owner_id = current_setting('one.key', true));
+CREATE POLICY p_editor ON docs FOR UPDATE USING (editor_id = current_setting('other.key', true));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let mut registry = FunctionRegistry::new();
+    registry.trust_current_user_setting_keys(["one.key"]);
+    let translator = TranslatorBuilder::new()
+        .with_registry(registry)
+        .with_current_user_setting_keys(["other.key"])
+        .build();
+
+    let classified = translator.classify(&db);
+    let mut owned: Vec<&str> = classified
+        .iter()
+        .filter_map(
+            |policy| match policy.using_classification.as_ref()?.pattern {
+                PatternClass::P3DirectOwnership { ref column } => Some(column.as_str()),
+                _ => None,
+            },
+        )
+        .collect();
+    owned.sort_unstable();
+    assert_eq!(
+        owned,
+        ["editor_id", "owner_id"],
+        "both keys name the caller: {classified:#?}"
+    );
 }

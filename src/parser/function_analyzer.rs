@@ -95,18 +95,18 @@ fn default_uuid() -> String {
     "uuid".to_string()
 }
 
-fn normalize_setting_key(key: &str) -> String {
+pub(crate) fn normalize_setting_key(key: &str) -> String {
     key.trim().to_ascii_lowercase()
 }
 
-/// Settings controlling automatic current-user accessor inference from SQL bodies.
+/// The `current_setting` keys whose value is the caller's identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessorInferenceSettings {
     current_user_setting_keys: BTreeSet<String>,
 }
 
 impl AccessorInferenceSettings {
-    /// Build settings from an explicit list of allowed `current_setting` keys.
+    /// Build settings from an explicit list of keys.
     pub fn from_keys<I, S>(keys: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -121,7 +121,8 @@ impl AccessorInferenceSettings {
         }
     }
 
-    /// Allowed `current_setting` keys that can be inferred as current-user accessors.
+    /// The keys naming the caller, whether the call sits inline in a policy or is the
+    /// whole body of a function the policy calls.
     pub fn current_user_setting_keys(&self) -> &BTreeSet<String> {
         &self.current_user_setting_keys
     }
@@ -133,12 +134,15 @@ impl AccessorInferenceSettings {
 }
 
 impl Default for AccessorInferenceSettings {
+    /// The keys whose value is the caller's identity.
+    ///
+    /// `request.jwt.claim.sub` holds one identity, which is what `PostgREST` sets it to.
+    /// `request.jwt.claims` holds the whole token, so its value names nobody.
     fn default() -> Self {
         Self::from_keys([
             "app.current_user_id",
             "app.user_id",
             "request.jwt.claim.sub",
-            "request.jwt.claims",
         ])
     }
 }
@@ -391,15 +395,23 @@ fn contains_disallowed_complex_token(sql: &str) -> bool {
     scan_identifier_tokens(sql, |token, _start, _end| COMPLEX_TOKENS.contains(&token))
 }
 
-fn is_scalar_uuid_return_type(return_type_lower: &str) -> bool {
-    if !contains_identifier_token(return_type_lower, "uuid") {
+/// True when the declaration returns one value that can name the caller.
+///
+/// Not a collection and not a set: those are many identities, not one. Not a document
+/// either: `sub` inside a token is an identity and so is `tenant`, and a body that hands
+/// back the whole token leaves nothing to say which of them the caller is.
+fn returns_one_identity(return_type_lower: &str) -> bool {
+    if return_type_lower.trim().is_empty() {
         return false;
     }
 
-    // Reject collection/set-returning declarations.
+    // `TABLE(...)` reaches here as `"table"`, carrying no `setof` token to notice.
     !return_type_lower.contains("[]")
         && !contains_identifier_token(return_type_lower, "array")
         && !contains_identifier_token(return_type_lower, "setof")
+        && !contains_identifier_token(return_type_lower, "table")
+        && !contains_identifier_token(return_type_lower, "json")
+        && !contains_identifier_token(return_type_lower, "jsonb")
 }
 
 fn contains_current_user_keyword_token(sql: &str) -> bool {
@@ -504,7 +516,7 @@ fn unwrap_accessor_expr(mut expr: &Expr) -> &Expr {
 /// The two-argument form returns NULL instead of raising when the key is unset.
 /// That only makes the policy deny (a NULL comparison is never true), so the key
 /// identifies the current user exactly as in the one-argument form.
-fn current_setting_literal_key(expr: &Expr) -> Option<String> {
+pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let Expr::Function(func) = expr else {
         return None;
     };
@@ -603,14 +615,14 @@ impl FunctionSemantic {
         // Require the body to be a *direct* accessor expression, not a complex function
         // that merely references current_user/current_setting incidentally (e.g. audit
         // triggers or functions that record the caller but return a different value).
-        if is_scalar_uuid_return_type(&return_type_lower)
+        if returns_one_identity(&return_type_lower)
             && contains_current_user_accessor_marker(&body_lower)
             && is_direct_accessor_body(&body_lower)
             && has_single_direct_accessor_expression(body, settings)
             && !runs_as_owner_reading_effective_user(&body_lower, security)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
-                returns: "uuid".to_string(),
+                returns: return_type_lower.trim().to_string(),
             });
         }
 
@@ -1024,6 +1036,77 @@ mod tests {
             ),
             "token-aware complexity scan should not reject direct accessors aliased as from_id"
         );
+    }
+
+    /// The declared type is recorded, not assumed: a text identity is at least as
+    /// common as a UUID one.
+    #[test]
+    fn analyze_body_records_the_declared_return_type() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.user_id', true)",
+            "TEXT",
+            "sql",
+        );
+
+        assert!(
+            matches!(
+                semantic,
+                Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "text"
+            ),
+            "the accessor carries the type it was declared with, got: {semantic:?}"
+        );
+    }
+
+    /// A declaration that says nothing says nothing about identifying the caller, and
+    /// `return_type_name` answers nothing for a body with no declared return.
+    #[test]
+    fn analyze_body_rejects_an_absent_return_type() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.user_id', true)",
+            "",
+            "sql",
+        );
+
+        assert!(
+            semantic.is_none(),
+            "an undeclared return type is not a scalar identity, got: {semantic:?}"
+        );
+    }
+
+    /// A row is not one identity. `RETURNS TABLE(...)` reaches here as `"TABLE"`, which
+    /// carries no `setof` token to notice.
+    #[test]
+    fn analyze_body_rejects_a_row_returning_declaration() {
+        for declaration in ["TABLE", "TABLE(id TEXT)", "SETOF TEXT", "TEXT[]"] {
+            let semantic = FunctionSemantic::analyze_body(
+                "SELECT current_setting('app.user_id', true)",
+                declaration,
+                "sql",
+            );
+
+            assert!(
+                semantic.is_none(),
+                "`RETURNS {declaration}` is not one identity, got: {semantic:?}"
+            );
+        }
+    }
+
+    /// A body handing back the whole login token names nobody: the identity is one field
+    /// of it, and the declaration does not say which.
+    #[test]
+    fn analyze_body_rejects_a_document_returning_declaration() {
+        for declaration in ["JSON", "JSONB"] {
+            let semantic = FunctionSemantic::analyze_body(
+                "SELECT current_setting('app.user_id', true)::jsonb",
+                declaration,
+                "sql",
+            );
+
+            assert!(
+                semantic.is_none(),
+                "`RETURNS {declaration}` is a document, not an identity, got: {semantic:?}"
+            );
+        }
     }
 
     #[test]

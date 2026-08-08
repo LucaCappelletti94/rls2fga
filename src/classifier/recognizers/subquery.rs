@@ -74,7 +74,7 @@ pub fn recognize_p5<DB: DatabaseLike>(
 }
 
 /// The single `Select` a query's body is, if it is one.
-fn query_select(query: &Query) -> Option<&Select> {
+pub(super) fn query_select(query: &Query) -> Option<&Select> {
     match query.body.as_ref() {
         SetExpr::Select(select) => Some(select.as_ref()),
         _ => None,
@@ -89,7 +89,7 @@ fn query_select(query: &Query) -> Option<&Select> {
 /// named first because it thins the rows before any other clause sees them. `HAVING` is
 /// named ahead of the `GROUP BY` it usually rides on because it is the clause doing the
 /// filtering. Plain `DISTINCT` drops duplicate rows only, leaving the set itself intact.
-fn select_result_shaping_clause(select: &Select) -> Option<&'static str> {
+pub(super) fn select_result_shaping_clause(select: &Select) -> Option<&'static str> {
     if from_item_is_sampled(select) {
         return Some("TABLESAMPLE");
     }
@@ -163,6 +163,36 @@ fn exists_emptying_limit_clause(query: &Query) -> Option<&'static str> {
         !fetch.percent && fetch.quantity.as_ref().is_none_or(limit_keeps_a_row)
     });
     (!fetch_keeps_a_row).then_some("FETCH")
+}
+
+/// The clause by which a query's row limit can drop a row from the set it reads, if any.
+///
+/// A plain set is not a set of one, so unlike `EXISTS` any limit refuses at all: which
+/// rows survive turns on an order nothing here pins.
+pub(super) fn set_limiting_clause(query: &Query) -> Option<&'static str> {
+    if query.limit_clause.is_some() {
+        return Some("LIMIT");
+    }
+    query.fetch.is_some().then_some("FETCH")
+}
+
+/// True when `query` yields its projection and nothing narrows it, so its value is the
+/// projected expression itself.
+///
+/// `PostgreSQL` empties a result with no `FROM` at all: `SELECT current_setting('k')
+/// WHERE false`, `LIMIT 0`, `FETCH FIRST 0 ROWS` and `HAVING false` each return no row,
+/// and a scalar subquery returning no row is NULL. `ORDER BY`, `DISTINCT` and a `WITH`
+/// binding cannot drop the single row, so they are left alone.
+pub(super) fn query_only_projects(query: &Query) -> bool {
+    if set_limiting_clause(query).is_some() {
+        return false;
+    }
+    let Some(select) = query_select(query) else {
+        return false;
+    };
+    select.from.is_empty()
+        && select.selection.is_none()
+        && select_result_shaping_clause(select).is_none()
 }
 
 /// Why a subquery cannot be read as the plain set of rows in the table its `FROM` names.
@@ -291,13 +321,9 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<Su
     if let Some(refusal) = query_level_refusal(query) {
         return Some((lhs, query, Some(refusal)));
     }
-    let shaping = if query.limit_clause.is_some() {
-        Some(SubqueryRefusal::Shaped("LIMIT"))
-    } else if query.fetch.is_some() {
-        Some(SubqueryRefusal::Shaped("FETCH"))
-    } else {
-        select_result_shaping_clause(query_select(query)?).map(SubqueryRefusal::Shaped)
-    };
+    let shaping = set_limiting_clause(query)
+        .or_else(|| select_result_shaping_clause(query_select(query)?))
+        .map(SubqueryRefusal::Shaped);
     Some((lhs, query, shaping))
 }
 
