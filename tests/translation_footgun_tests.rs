@@ -4666,6 +4666,34 @@ fn a_distinct_on_membership_subquery_is_refused() {
     ]);
 }
 
+/// `TABLESAMPLE` returns a fraction of the rows, so the subquery finds a fraction of the
+/// memberships and a different fraction on every statement unless `REPEATABLE` pins it.
+#[test]
+fn a_sampled_membership_subquery_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members TABLESAMPLE BERNOULLI (10) \
+             WHERE doc_id = docs.id AND user_id = current_user)",
+            "TABLESAMPLE",
+        ),
+        (
+            "id IN (SELECT doc_id FROM doc_members TABLESAMPLE BERNOULLI (10) \
+             WHERE user_id = current_user)",
+            "TABLESAMPLE",
+        ),
+        (
+            "id = ANY (SELECT doc_id FROM doc_members TABLESAMPLE SYSTEM (10) \
+             WHERE user_id = current_user)",
+            "TABLESAMPLE",
+        ),
+        (
+            "current_user IN (SELECT user_id FROM doc_members TABLESAMPLE SYSTEM (10) \
+             REPEATABLE (42) WHERE doc_id = docs.id)",
+            "TABLESAMPLE",
+        ),
+    ]);
+}
+
 /// `EXISTS` is blind to a row limit that cannot empty the result, but `OFFSET` and a zero
 /// limit can empty it, and then the policy admits fewer rows than full membership.
 #[test]

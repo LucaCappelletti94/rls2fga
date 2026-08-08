@@ -144,6 +144,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "exists_subquery_select",
         "select_result_shaping_clause",
         "exists_emptying_limit_clause",
+        "from_item_is_sampled",
     ] {
         let definitions = fn_definitions(&modules, name);
         assert_eq!(
@@ -161,6 +162,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "having.is_some()",
         "qualify.is_some()",
         "Distinct::On",
+        "sample: Some(_)",
     ] {
         let readers = source.matches(clause).count();
         assert_eq!(

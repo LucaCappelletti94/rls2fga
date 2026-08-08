@@ -81,13 +81,18 @@ fn query_select(query: &Query) -> Option<&Select> {
     }
 }
 
-/// The clause by which a subquery shapes its rows beyond FROM and WHERE, if any.
+/// The clause by which a subquery shapes its rows beyond reading its FROM and WHERE, if
+/// any.
 ///
 /// Membership and parent inheritance read the subquery as a plain set of rows, so a clause
-/// that drops rows from it lets the model grant rows the policy refuses. `HAVING` is named
-/// ahead of the `GROUP BY` it usually rides on because it is the clause doing the
+/// that drops rows from it lets the model grant rows the policy refuses. `TABLESAMPLE` is
+/// named first because it thins the rows before any other clause sees them. `HAVING` is
+/// named ahead of the `GROUP BY` it usually rides on because it is the clause doing the
 /// filtering. Plain `DISTINCT` drops duplicate rows only, leaving the set itself intact.
 fn select_result_shaping_clause(select: &Select) -> Option<&'static str> {
+    if from_item_is_sampled(select) {
+        return Some("TABLESAMPLE");
+    }
     if select.having.is_some() {
         return Some("HAVING");
     }
@@ -104,6 +109,24 @@ fn select_result_shaping_clause(select: &Select) -> Option<&'static str> {
         return Some("GROUP BY");
     }
     matches!(select.distinct, Some(Distinct::On(_))).then_some("DISTINCT ON")
+}
+
+/// True when a `FROM` item draws a sample of its table rather than the whole of it.
+///
+/// Only a named table is checked, since `PostgreSQL` samples a table or a materialized
+/// view and refuses `TABLESAMPLE` on a derived subquery outright. A join is not walked
+/// because a sampled table is always a named source, and a second source refuses the
+/// analysis whatever this answers.
+fn from_item_is_sampled(select: &Select) -> bool {
+    select.from.iter().any(|from| {
+        matches!(
+            from.relation,
+            TableFactor::Table {
+                sample: Some(_),
+                ..
+            }
+        )
+    })
 }
 
 /// True when a row count is a literal of at least one, so it cannot empty a result.
