@@ -580,6 +580,27 @@ mod tests {
         assert_eq!(canonical_fga_type_name("123-items"), "t_123_items");
     }
 
+    /// Callers name a relation or a type straight from this, with no emptiness check of
+    /// their own, so a name that survives nothing has to come back as `resource`.
+    #[test]
+    fn canonical_fga_type_name_never_returns_an_empty_name() {
+        for name in [
+            "",
+            "   ",
+            "___",
+            "---",
+            ".",
+            "\"\"",
+            "public.",
+            "\u{65e5}\u{672c}",
+        ] {
+            assert!(
+                !canonical_fga_type_name(name).is_empty(),
+                "canonical_fga_type_name({name:?}) must name something"
+            );
+        }
+    }
+
     #[test]
     fn policy_scope_relation_name_is_stable_and_namespaced() {
         let first = policy_scope_relation_name("EditorsOnly");

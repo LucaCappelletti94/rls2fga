@@ -189,7 +189,7 @@ impl TypePlan {
                 || plan.direct_relations.contains_key(name)
                 || plan.computed_relations.contains_key(name)
         };
-        let relation = clamp_relation_name(if base.is_empty() || taken(&base, self) {
+        let relation = clamp_relation_name(if taken(&base, self) {
             let fallback = format!("owner_{}", canonical_fga_type_name(name_source));
             if taken(&fallback, self) {
                 format!("{fallback}_{}", stable_hex_suffix(memo_key))
