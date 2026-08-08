@@ -76,9 +76,10 @@ fn bind(sql: &str, table: &str, key_column: &str, predicate: &str) -> Option<Bou
 fn rendered_sql<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
+    only_own_rows: bool,
     db: &DB,
 ) -> Option<String> {
-    let sql = render_tuple_source_inner(source, owner_type, db)?.sql;
+    let sql = render_tuple_source_inner(source, owner_type, only_own_rows, db)?.sql;
     (!sql.trim_start().starts_with("--")).then_some(sql)
 }
 
@@ -86,6 +87,7 @@ fn rendered_sql<DB: DatabaseLike>(
 pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
+    only_own_rows: bool,
     db: &DB,
 ) -> Option<RecordDescription> {
     match source {
@@ -149,7 +151,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_table,
             user_pk_col,
         } => Some(joined_ownership(
-            &rendered_sql(source, owner_type, db)?,
+            &rendered_sql(source, owner_type, only_own_rows, db)?,
             table,
             pk_col,
             owner_col,
@@ -165,7 +167,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             team_table,
             team_pk_col,
         } => Some(joined_ownership(
-            &rendered_sql(source, owner_type, db)?,
+            &rendered_sql(source, owner_type, only_own_rows, db)?,
             table,
             pk_col,
             owner_col,
@@ -187,7 +189,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if role_cases.is_empty() {
                 return None;
             }
-            let sql = rendered_sql(source, owner_type, db)?;
+            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
             let mut read = vec![table.as_str(), grant_table.as_str()];
             if let Some(principal) = user_principal {
                 read.push(principal.table.as_str());
@@ -243,7 +245,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             if let Some(predicate) = extra_predicate_sql {
-                let sql = rendered_sql(source, owner_type, db)?;
+                let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
@@ -360,7 +362,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             condition,
             ..
         } => {
-            let sql = rendered_sql(source, owner_type, db)?;
+            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
             Some(RecordDescription {
                 tables: tables(&[table]),
                 derivation: RecordDerivation::Joined {
@@ -401,7 +403,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             if let Some(predicate) = extra_predicate_sql {
-                let sql = rendered_sql(source, owner_type, db)?;
+                let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
                     derivation: RecordDerivation::Joined {

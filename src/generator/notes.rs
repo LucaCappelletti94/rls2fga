@@ -176,6 +176,14 @@ pub enum TranslationNote {
         /// Name this one got instead.
         renamed: String,
     },
+    /// The table has `INHERITS` children, so its tuple queries read `FROM ONLY` and
+    /// child rows carry no tuples on this type.
+    InheritanceParentReadsOwnRowsOnly {
+        /// Inheritance parent whose type this is.
+        table: String,
+        /// Its direct children, whose rows fall closed on this type.
+        children: Vec<String>,
+    },
     /// The membership table grants no reads, so no membership row is visible.
     MembershipTableGrantsNoReads {
         /// Policy holding the membership check.
@@ -276,9 +284,9 @@ impl TranslationNote {
                 NoteSeverity::Exempt
             }
             Self::CoveringPoliciesBelowThreshold { .. } => NoteSeverity::BelowThreshold,
-            Self::MembershipTableGuarded { .. } | Self::AttributeNeedsRuntimeEnforcement { .. } => {
-                NoteSeverity::Partial
-            }
+            Self::MembershipTableGuarded { .. }
+            | Self::AttributeNeedsRuntimeEnforcement { .. }
+            | Self::InheritanceParentReadsOwnRowsOnly { .. } => NoteSeverity::Partial,
             Self::ReadsDeniedSoWritesCannotName { .. }
             | Self::PolicyRoleScope { .. }
             | Self::RoleGateScope { .. }
@@ -304,6 +312,7 @@ impl TranslationNote {
             | Self::NoPermissivePolicy { table, .. }
             | Self::CoveringPoliciesBelowThreshold { table, .. }
             | Self::TableOwnerBypassesPolicies { table, .. }
+            | Self::InheritanceParentReadsOwnRowsOnly { table, .. }
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
             Self::UnresolvedPolicyTable { policy, .. }
             | Self::RestrictiveAttributeRefused { policy }
@@ -441,6 +450,13 @@ impl fmt::Display for TranslationNote {
                 "Type name collision: '{spelling}' and '{prior}' both canonicalize to \
                  '{canonical}'. Renamed to '{renamed}'. Update your OpenFGA model references \
                  accordingly."
+            ),
+            Self::InheritanceParentReadsOwnRowsOnly { table, children } => write!(
+                f,
+                "'{table}' has inheritance children ({}), so its tuple queries read FROM ONLY \
+                 its own rows. Child rows are readable through '{table}' in PostgreSQL but \
+                 carry no tuples here, so the model denies them.",
+                children.join(", ")
             ),
             Self::MembershipTableGrantsNoReads { join_table, .. } => write!(
                 f,

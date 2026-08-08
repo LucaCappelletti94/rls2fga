@@ -141,6 +141,10 @@ pub(crate) struct TypePlan {
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
     pub conditions: BTreeMap<String, ConditionSpec>,
+    /// The table has `INHERITS` children, so queries minting this type's objects read
+    /// `FROM ONLY`: the key does not span child rows, and a shared value would merge
+    /// two rows into one object.
+    pub reads_only_its_own_rows: bool,
 }
 
 /// Subjects the generator's own structural relations hold, or `None` when the
@@ -429,6 +433,22 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     let mut readability: BTreeMap<String, JoinTableReadability> = BTreeMap::new();
     let readability = &mut readability;
 
+    // Parent identity to the spellings of its INHERITS children, one pass, since
+    // `inheritors` walks every table per call. Partitions are not in this edge: a
+    // partitioned root holds no rows of its own and its key spans every partition,
+    // so its plain read is exact.
+    let mut inheritance_children: BTreeMap<(Option<String>, String), Vec<String>> = BTreeMap::new();
+    for table in db.tables() {
+        // A table iterated out of `db` is in `db`, so an unreadable parent list is
+        // an empty one.
+        for parent in table.inherits_from(db).into_iter().flatten() {
+            inheritance_children
+                .entry(table_identity(parent))
+                .or_default()
+                .push(qualified_table_name(table));
+        }
+    }
+
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
         // the schema cannot resolve carries the policy nowhere, so say so.
@@ -448,6 +468,22 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         let mut table_plan = all_types
             .remove(&canonical_table_name)
             .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
+
+        // Once per table: `by_table` holds each table exactly once.
+        let children = lookup_table(db, &source_table_name)
+            .map(table_identity)
+            .and_then(|identity| inheritance_children.get(&identity))
+            .cloned()
+            .unwrap_or_default();
+        if !children.is_empty() {
+            table_plan.reads_only_its_own_rows = true;
+            let mut children = children;
+            children.sort();
+            notes.push(TranslationNote::InheritanceParentReadsOwnRowsOnly {
+                table: source_table_name.clone(),
+                children,
+            });
+        }
 
         // A clause reading a table whose policies loop cannot be planned, so PostgreSQL
         // raises rather than filtering and every command that clause feeds must deny.

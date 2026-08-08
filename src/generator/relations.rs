@@ -99,21 +99,22 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
 
 /// Tuple sources by the `(type, relation)` pair each one populates.
 fn index_sources(plan: &SchemaPlan) -> SourceIndex<'_> {
-    let mut index: BTreeMap<(String, String), Vec<(&TupleSource, &str)>> = BTreeMap::new();
+    let mut index: SourceIndex<'_> = BTreeMap::new();
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
             for target in source.feeds(&type_plan.type_name) {
-                index
-                    .entry(target)
-                    .or_default()
-                    .push((source, type_plan.type_name.as_str()));
+                index.entry(target).or_default().push((
+                    source,
+                    type_plan.type_name.as_str(),
+                    type_plan.reads_only_its_own_rows,
+                ));
             }
         }
     }
     index
 }
 
-type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'plan str)>>;
+type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'plan str, bool)>>;
 
 /// One shape per source. A source feeding the same relation from two type plans
 /// describes it twice, and the key the renderer deduplicates queries on is what
@@ -128,7 +129,7 @@ fn shapes_filling<DB: DatabaseLike>(
 ) -> Vec<RecordDescription> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
-    for (source, owner_type) in sources
+    for (source, owner_type, only_own_rows) in sources
         .get(&(type_name.to_string(), relation.to_string()))
         .into_iter()
         .flatten()
@@ -136,7 +137,7 @@ fn shapes_filling<DB: DatabaseLike>(
         if !seen.insert(source.dedup_key()) {
             continue;
         }
-        if let Some(description) = describe_tuple_source(source, owner_type, db) {
+        if let Some(description) = describe_tuple_source(source, owner_type, *only_own_rows, db) {
             out.push(description);
         }
     }
@@ -234,8 +235,8 @@ fn leaf_decision<DB: DatabaseLike>(
 
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut shapes = Vec::new();
-    for (source, owner_type) in feeding {
-        let description = describe_tuple_source(source, owner_type, db)?;
+    for (source, owner_type, only_own_rows) in feeding {
+        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
         if !row_names_a_user(&description.derivation, type_name, db) {
             return None;
         }

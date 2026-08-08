@@ -155,6 +155,31 @@ fn the_name_an_id_column_references_has_a_single_source_of_truth() {
     );
 }
 
+/// `FROM ONLY` keeps an inheritance parent's child rows out of its object-minting
+/// queries, and which reads carry it is one rule: a second `ONLY` spelling site could
+/// scope a foreign-table read, which denies rows `PostgreSQL` grants, or miss an
+/// owner-table read, which merges child rows into parent objects.
+#[test]
+fn the_from_only_scope_has_a_single_source_of_truth() {
+    let definitions = fn_definitions(
+        &["src/generator/tuple_generator.rs"],
+        "owner_table_reference",
+    );
+    assert_eq!(
+        definitions, 1,
+        "expected one 'fn owner_table_reference', found {definitions}"
+    );
+
+    let spellings = read_module("src/generator/tuple_generator.rs")
+        .matches("\"ONLY {")
+        .count();
+    assert_eq!(
+        spellings, 1,
+        "the ONLY prefix must be rendered by owner_table_reference alone, \
+         found {spellings} spellings"
+    );
+}
+
 /// Three spellings reach P4 membership: `EXISTS`, `col IN (SELECT ...)`, and the caller on
 /// the left. The last two are one rewrite into the first, so all three land on one
 /// analyzer. A second analyzer, or a second reader of the projection, would let one

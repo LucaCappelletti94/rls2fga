@@ -2766,7 +2766,7 @@ dependencies = [
 [[package]]
 name = "sql-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#b6ec3290f82a5c4e13f13d25fe3e0b442facba44"
+source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#981b57f0724086ef1606fbce110758bcaa1ef0cd"
 dependencies = [
  "geometric-traits",
  "sha2",

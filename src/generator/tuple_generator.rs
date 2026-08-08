@@ -78,7 +78,12 @@ pub(crate) fn generate_tuple_queries_from_plan<DB: DatabaseLike>(
             if !generated.insert(key) {
                 continue;
             }
-            if let Some(query) = render_tuple_source(source, &type_plan.type_name, db) {
+            if let Some(query) = render_tuple_source(
+                source,
+                &type_plan.type_name,
+                type_plan.reads_only_its_own_rows,
+                db,
+            ) {
                 queries.push(query);
             }
         }
@@ -95,6 +100,8 @@ struct ObjectSource<'a> {
     type_name: &'a str,
     /// Column supplying the object identifier.
     pk_col: &'a str,
+    /// Read `FROM ONLY`, keeping inheritance children's rows out.
+    only_own_rows: bool,
 }
 
 fn render_ownership_tuple_source(
@@ -109,8 +116,9 @@ fn render_ownership_tuple_source(
         table,
         type_name: table_type,
         pk_col,
+        only_own_rows,
     } = object;
-    let table_sql = quote_sql_identifier(table);
+    let table_sql = owner_table_reference(table, only_own_rows);
     let pk_col_sql = quote_sql_identifier(pk_col);
     let owner_col_sql = quote_sql_identifier(owner_col);
 
@@ -186,18 +194,26 @@ fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
 fn render_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
+    only_own_rows: bool,
     db: &DB,
 ) -> Option<TupleQuery> {
-    let mut query = sanitize_tuple_query(render_tuple_source_inner(source, owner_type, db)?);
+    let mut query = sanitize_tuple_query(render_tuple_source_inner(
+        source,
+        owner_type,
+        only_own_rows,
+        db,
+    )?);
     // Every query passes through here, so a new variant reaches the describer
     // rather than silently shipping without a description.
-    query.description = crate::generator::describe::describe_tuple_source(source, owner_type, db);
+    query.description =
+        crate::generator::describe::describe_tuple_source(source, owner_type, only_own_rows, db);
     Some(query)
 }
 
 pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
+    only_own_rows: bool,
     db: &DB,
 ) -> Option<TupleQuery> {
     match source {
@@ -211,6 +227,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 table,
                 type_name: owner_type,
                 pk_col,
+                only_own_rows,
             },
             owner_col,
             relation,
@@ -225,7 +242,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             array_col,
             relation,
         } => {
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let array_col_sql = quote_sql_identifier(array_col);
             Some(TupleQuery {
@@ -249,7 +266,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             path,
             relation,
         } => {
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let field_sql = render_jsonb_path(&quote_sql_identifier(column), path)?;
             Some(TupleQuery {
@@ -279,6 +296,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 table,
                 type_name: owner_type,
                 pk_col,
+                only_own_rows,
             },
             owner_col,
             OWNER_USER_RELATION,
@@ -298,6 +316,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 table,
                 type_name: owner_type,
                 pk_col,
+                only_own_rows,
             },
             owner_col,
             OWNER_TEAM_RELATION,
@@ -322,7 +341,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 return None;
             }
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let grant_join_col_sql = quote_sql_identifier(grant_join_col);
             let grant_table_sql = quote_sql_identifier(grant_table);
@@ -510,7 +529,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             holder_type,
         } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             Some(TupleQuery {
                 comment: format!("-- Every {table} row points at the {holder_type} holder"),
@@ -540,7 +559,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     fk_col: fk_col.clone(),
                 }));
             };
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let object_col_sql = quote_sql_identifier(&object_col);
             let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
             Some(TupleQuery {
@@ -564,7 +583,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             flag_col,
         } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let flag_col_sql = quote_sql_identifier(flag_col);
             Some(TupleQuery {
@@ -587,7 +606,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             predicate,
         } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let column_sql = quote_sql_identifier(&predicate.column);
             let operator = render_attribute_operator(predicate.operator);
@@ -620,7 +639,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             column,
         } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             let column_sql = quote_sql_identifier(column);
             let parameter_sql = quote_sql_string_literal(row_parameter);
@@ -644,7 +663,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::ConstantTrue { table, pk_col } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             Some(TupleQuery {
                 comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
@@ -666,7 +685,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             pg_role,
         } => {
             let table_type = owner_type;
-            let table_sql = quote_sql_identifier(table);
+            let table_sql = owner_table_reference(table, only_own_rows);
             let pk_col_sql = quote_sql_identifier(pk_col);
             Some(TupleQuery {
                 comment: format!(
@@ -764,6 +783,18 @@ fn singular_candidates(relation: &str) -> Vec<String> {
     candidates
 }
 
+/// The `FROM` reference for a query minting this type's objects.
+///
+/// `ONLY` keeps inheritance children's rows out, since the parent's key does not
+/// span them and a shared key value would merge two rows into one object.
+fn owner_table_reference(table: &str, only_own_rows: bool) -> String {
+    let quoted = quote_sql_identifier(table);
+    if only_own_rows {
+        format!("ONLY {quoted}")
+    } else {
+        quoted
+    }
+}
 fn quote_sql_identifier(identifier: &str) -> String {
     split_qualified_identifier_parts(identifier)
         .into_iter()
@@ -1491,7 +1522,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
             team_principal: None,
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
+        let query =
+            render_tuple_source(&source, "docs", false, &db).expect("should produce a query");
         assert!(
             query.comment.contains("TODO [Level C]"),
             "expected a TODO comment, got: {}",
@@ -1529,7 +1561,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
+        let query =
+            render_tuple_source(&source, "docs", false, &db).expect("should produce a query");
         assert!(
             query.sql.contains("'team:'"),
             "team-only explicit grants should emit team subjects, got: {}",
@@ -1565,7 +1598,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = render_tuple_source(&source, "docs", &db).expect("should produce a query");
+        let query =
+            render_tuple_source(&source, "docs", false, &db).expect("should produce a query");
         assert!(
             !query.sql.contains("ELSE 'user:'"),
             "mixed-principal explicit grants should not fail open to user subjects, got: {}",

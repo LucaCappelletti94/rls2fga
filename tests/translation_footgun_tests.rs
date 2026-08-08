@@ -7589,3 +7589,192 @@ fn a_role_limited_barrier_with_scope_tuples_still_binds_only_its_roles() {
         "and the operator is asked to fill it, got {notes:#?}"
     );
 }
+
+const INHERITANCE_PARENT_SCHEMA: &str = r"
+CREATE TABLE docs(id INT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);
+CREATE TABLE secret_docs(classification TEXT) INHERITS (docs);
+";
+
+/// `INHERITS` does not extend the parent's primary key over the child, so parent row 1
+/// and child row 1 are two rows `PostgreSQL` filters separately while `docs:1` is one
+/// object, and a plain `FROM` loads both rows' tuples into it. Verified on 18.4: each
+/// owner sees exactly their own row through the parent. So the parent's tuple queries
+/// read `FROM ONLY`, and the child rows that drops are disclosed.
+#[test]
+fn an_inheritance_parents_tuples_read_only_its_own_rows() {
+    let db = db_of(INHERITANCE_PARENT_SCHEMA);
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let tuples = outputs.tuple_queries();
+    assert!(
+        !tuples_reading_from(&tuples, "FROM ONLY \"docs\"").is_empty(),
+        "an inheritance parent's tuples must come from its own rows alone, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        tuples_reading_from(&tuples, "FROM \"docs\"").is_empty(),
+        "a plain FROM loads child rows into parent objects, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::InheritanceParentReadsOwnRowsOnly { table, children }
+                if table == "docs" && children == &["secret_docs".to_string()]
+        )),
+        "dropping child rows must be disclosed and name the child, got: {:#?}",
+        outputs.notes()
+    );
+
+    // The narrowing lives in the tuples alone: the model is unchanged.
+    assert_eq!(
+        relation_definition(&outputs.model(), "docs", "can_select").as_deref(),
+        Some("owner")
+    );
+}
+
+/// A partitioned root holds no rows of its own, so `ONLY` there would load nothing and
+/// silently deny every row. Its keys also span every partition, so the plain read is
+/// exact. The root must stay untouched.
+#[test]
+fn a_partitioned_roots_tuples_still_read_every_partition() {
+    let db = db_of(
+        r"
+CREATE TABLE measurements(id INT PRIMARY KEY, owner_id TEXT) PARTITION BY RANGE (id);
+ALTER TABLE measurements ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON measurements FOR SELECT USING (owner_id = current_user);
+CREATE TABLE measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (100);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let tuples = outputs.tuple_queries();
+    assert!(
+        !tuples_reading_from(&tuples, "FROM \"measurements\"").is_empty(),
+        "a partitioned root's tuples come from every partition, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        tuples_reading_from(&tuples, "ONLY").is_empty(),
+        "ONLY on a partitioned root reads zero rows, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        !outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::InheritanceParentReadsOwnRowsOnly { .. }
+        )),
+        "partitions are not the inheritance narrowing, got: {:#?}",
+        outputs.notes()
+    );
+}
+
+/// `PostgreSQL` reads a membership table's children through the policy's plain `FROM`,
+/// and the membership tuple query mirrors that read, so it must not gain `ONLY` even
+/// while the guarded table's own queries do: the narrowing applies to the rows a type
+/// mints objects from, never to the rows a foreign table contributes.
+#[test]
+fn a_membership_tables_child_rows_still_grant() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE press_docs(embargo TEXT) INHERITS (docs);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+CREATE TABLE super_members(note TEXT) INHERITS (doc_members);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user)
+);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let tuples = outputs.tuple_queries();
+    assert!(
+        !tuples_reading_from(&tuples, "FROM \"doc_members\"").is_empty(),
+        "membership tuples mirror the policy's inheritance-inclusive read, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        tuples_reading_from(&tuples, "ONLY \"doc_members\"").is_empty(),
+        "ONLY on the membership read would deny rows PostgreSQL grants, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        !tuples_reading_from(&tuples, "FROM ONLY \"docs\"").is_empty(),
+        "the guarded table has a child, so its own bridge reads ONLY, got: {:#?}",
+        tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. } if table == "docs"
+        )),
+        "the guarded table narrows and says so, got: {:#?}",
+        outputs.notes()
+    );
+    assert!(
+        !outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. }
+                if table == "doc_members"
+        )),
+        "doc_members has no type, so no note names it, got: {:#?}",
+        outputs.notes()
+    );
+}
+
+/// A child can be a parent in turn, and the rule is per table: every type whose table
+/// has `INHERITS` children reads only its own rows, the middle of a chain included.
+#[test]
+fn an_inheritance_childs_own_type_reads_only_its_own_rows_too() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id INT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);
+CREATE TABLE secret_docs(classification TEXT) INHERITS (docs);
+ALTER TABLE ONLY secret_docs ADD CONSTRAINT secret_docs_pkey PRIMARY KEY (id);
+ALTER TABLE secret_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY c ON secret_docs FOR SELECT USING (owner_id = current_user);
+CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let tuples = outputs.tuple_queries();
+    for table in ["docs", "secret_docs"] {
+        assert!(
+            !tuples_reading_from(&tuples, &format!("FROM ONLY \"{table}\"")).is_empty(),
+            "'{table}' has inheritance children, so its tuples read ONLY, got: {:#?}",
+            tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+        );
+        assert!(
+            tuples_reading_from(&tuples, &format!("FROM \"{table}\"")).is_empty(),
+            "'{table}' must not also read its children, got: {:#?}",
+            tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
+        );
+    }
+    for (table, child) in [("docs", "secret_docs"), ("secret_docs", "deep_docs")] {
+        assert!(
+            outputs.notes().iter().any(|note| matches!(
+                note,
+                TranslationNote::InheritanceParentReadsOwnRowsOnly { table: t, children }
+                    if t == table && children == &[child.to_string()]
+            )),
+            "'{table}' must disclose dropping '{child}', got: {:#?}",
+            outputs.notes()
+        );
+    }
+}
