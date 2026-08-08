@@ -4729,6 +4729,36 @@ fn a_membership_subquery_that_binds_its_own_names_is_refused() {
     ]);
 }
 
+/// A locking read applies the locked table's `UPDATE` policies on top of its `SELECT`
+/// ones, so the subquery finds fewer membership rows than the table holds.
+///
+/// Probed on `PostgreSQL` 18.4 with a membership table whose `UPDATE` policy admits three
+/// of its ten rows: both `FOR UPDATE` and `FOR SHARE` admit 3 of 10 where the unlocked
+/// spelling admits all 10. `FOR NO KEY UPDATE` and `FOR KEY SHARE` are absent here only
+/// because `sqlparser` refuses them, see `docs/upstream/sqlparser-row-locking-clauses.md`.
+#[test]
+fn a_membership_subquery_that_locks_its_rows_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id \
+             AND user_id = current_user FOR UPDATE)",
+            "row lock",
+        ),
+        (
+            "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user FOR UPDATE)",
+            "row lock",
+        ),
+        (
+            "id = ANY (SELECT doc_id FROM doc_members WHERE user_id = current_user FOR SHARE)",
+            "row lock",
+        ),
+        (
+            "current_user IN (SELECT user_id FROM doc_members WHERE doc_id = docs.id FOR SHARE)",
+            "row lock",
+        ),
+    ]);
+}
+
 /// `EXISTS` is blind to a row limit that cannot empty the result, but `OFFSET` and a zero
 /// limit can empty it, and then the policy admits fewer rows than full membership.
 #[test]

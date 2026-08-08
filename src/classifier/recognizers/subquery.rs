@@ -173,14 +173,18 @@ enum SubqueryRefusal {
     /// A `WITH` clause binds names inside the subquery, so a name in its `FROM` may be
     /// that binding rather than the table it looks like.
     BindsItsOwnNames,
+    /// A `FOR UPDATE` or `FOR SHARE` clause locks the rows it reads, which `PostgreSQL`
+    /// also filters by the locked table's `UPDATE` policies.
+    LocksItsRows,
 }
 
 impl SubqueryRefusal {
     /// Why the subquery cannot become a membership relation, for the operator.
     ///
     /// A shaped subquery returns a subset, which pre-computing recovers. A binding is not
-    /// a subset at all: the rows may come from anywhere the `WITH` reads, so the advice
-    /// and the direction of the error both differ.
+    /// a subset at all: the rows may come from anywhere the `WITH` reads. A lock is a
+    /// subset again, but of a set the reader's own update rights decide. All three want
+    /// different advice.
     fn reason(self) -> String {
         match self {
             Self::Shaped(clause) => format!(
@@ -191,6 +195,11 @@ impl SubqueryRefusal {
                 "Subquery binds its own names in a WITH clause, so a table it reads may be \
                  that binding rather than the table of the same name, drop the WITH or read \
                  the tables directly",
+            ),
+            Self::LocksItsRows => String::from(
+                "Subquery takes a row lock, so PostgreSQL filters it by the locked table's \
+                 UPDATE policies as well and it finds fewer rows than a membership relation \
+                 would grant, drop the lock from the policy",
             ),
         }
     }
@@ -208,6 +217,29 @@ fn query_binds_its_own_names(query: &Query) -> Option<SubqueryRefusal> {
     None
 }
 
+/// The refusal a subquery's row locks earn, if it takes any.
+///
+/// Refused whatever the locked table's own policies say. Reading them here would mean
+/// threading the schema through every extractor, and where the locked table has row level
+/// security off the lock changes nothing, so this over-refuses that one shape in the safe
+/// direction. The lock strength is deliberately not read: `PostgreSQL` filters all four
+/// alike, and naming them would need a new arm the day `sqlparser` learns the two it still
+/// refuses.
+fn query_locks_its_rows(query: &Query) -> Option<SubqueryRefusal> {
+    if query.locks.is_empty() {
+        return None;
+    }
+    Some(SubqueryRefusal::LocksItsRows)
+}
+
+/// Everything about the query itself, rather than its `SELECT`, that stops the subquery
+/// being read as the plain set of rows in the table its `FROM` names.
+///
+/// One composition point, so a further query-level refusal reaches both spellings at once.
+fn query_level_refusal(query: &Query) -> Option<SubqueryRefusal> {
+    query_binds_its_own_names(query).or_else(|| query_locks_its_rows(query))
+}
+
 /// The `Select` an `EXISTS` tests, paired with the reason it cannot be read plainly.
 fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusal>)> {
     let Expr::Exists {
@@ -218,7 +250,7 @@ fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusa
         return None;
     };
     let select = query_select(subquery)?;
-    let refusal = query_binds_its_own_names(subquery)
+    let refusal = query_level_refusal(subquery)
         .or_else(|| exists_emptying_limit_clause(subquery).map(SubqueryRefusal::Shaped))
         .or_else(|| select_result_shaping_clause(select).map(SubqueryRefusal::Shaped));
     Some((select, refusal))
@@ -256,7 +288,7 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<Su
         _ => return None,
     };
 
-    if let Some(refusal) = query_binds_its_own_names(query) {
+    if let Some(refusal) = query_level_refusal(query) {
         return Some((lhs, query, Some(refusal)));
     }
     let shaping = if query.limit_clause.is_some() {

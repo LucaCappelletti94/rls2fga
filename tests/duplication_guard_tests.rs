@@ -146,6 +146,8 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "exists_emptying_limit_clause",
         "from_item_is_sampled",
         "query_binds_its_own_names",
+        "query_locks_its_rows",
+        "query_level_refusal",
     ] {
         let definitions = fn_definitions(&modules, name);
         assert_eq!(
@@ -166,6 +168,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "Distinct::On",
         "sample: Some(_)",
         "with.is_some()",
+        "locks.is_empty()",
     ] {
         let readers = source.matches(clause).count();
         assert_eq!(
