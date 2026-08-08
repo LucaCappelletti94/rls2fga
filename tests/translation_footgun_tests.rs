@@ -4694,6 +4694,41 @@ fn a_sampled_membership_subquery_is_refused() {
     ]);
 }
 
+/// A `WITH` clause binds a name inside the subquery, and that binding shadows the real
+/// table of the same name, so the `FROM` no longer names the table the analyzer resolves.
+///
+/// Probed on `PostgreSQL` 18.4: the `EXISTS` spelling below admits 0 of 5 rows where the
+/// same policy without the `WITH` admits all 5.
+#[test]
+fn a_membership_subquery_that_binds_its_own_names_is_refused() {
+    assert_every_spelling_refused(&[
+        (
+            "EXISTS (WITH doc_members AS (SELECT doc_id, user_id FROM doc_members \
+             WHERE role = 'nobody') SELECT 1 FROM doc_members \
+             WHERE doc_id = docs.id AND user_id = current_user)",
+            "WITH",
+        ),
+        (
+            "id IN (WITH doc_members AS (SELECT doc_id, user_id FROM doc_members \
+             WHERE role = 'nobody') SELECT doc_id FROM doc_members \
+             WHERE user_id = current_user)",
+            "WITH",
+        ),
+        (
+            "id = ANY (WITH doc_members AS (SELECT doc_id, user_id FROM doc_members \
+             WHERE role = 'nobody') SELECT doc_id FROM doc_members \
+             WHERE user_id = current_user)",
+            "WITH",
+        ),
+        (
+            "current_user IN (WITH doc_members AS (SELECT doc_id, user_id FROM doc_members \
+             WHERE role = 'nobody') SELECT user_id FROM doc_members \
+             WHERE doc_id = docs.id)",
+            "WITH",
+        ),
+    ]);
+}
+
 /// `EXISTS` is blind to a row limit that cannot empty the result, but `OFFSET` and a zero
 /// limit can empty it, and then the policy admits fewer rows than full membership.
 #[test]

@@ -165,8 +165,51 @@ fn exists_emptying_limit_clause(query: &Query) -> Option<&'static str> {
     (!fetch_keeps_a_row).then_some("FETCH")
 }
 
-/// The `Select` an `EXISTS` tests, paired with the clause shaping its rows, if any.
-fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<&'static str>)> {
+/// Why a subquery cannot be read as the plain set of rows in the table its `FROM` names.
+#[derive(Clone, Copy)]
+enum SubqueryRefusal {
+    /// A clause thins the rows the subquery returns.
+    Shaped(&'static str),
+    /// A `WITH` clause binds names inside the subquery, so a name in its `FROM` may be
+    /// that binding rather than the table it looks like.
+    BindsItsOwnNames,
+}
+
+impl SubqueryRefusal {
+    /// Why the subquery cannot become a membership relation, for the operator.
+    ///
+    /// A shaped subquery returns a subset, which pre-computing recovers. A binding is not
+    /// a subset at all: the rows may come from anywhere the `WITH` reads, so the advice
+    /// and the direction of the error both differ.
+    fn reason(self) -> String {
+        match self {
+            Self::Shaped(clause) => format!(
+                "Subquery result is shaped by {clause}, so it admits fewer rows than a \
+                 membership relation would grant, pre-compute the shaped set as its own table"
+            ),
+            Self::BindsItsOwnNames => String::from(
+                "Subquery binds its own names in a WITH clause, so a table it reads may be \
+                 that binding rather than the table of the same name, drop the WITH or read \
+                 the tables directly",
+            ),
+        }
+    }
+}
+
+/// The refusal a subquery's own name bindings earn, if it makes any.
+///
+/// Every binding is refused, referenced or not: a policy subquery that defines a `WITH` it
+/// never reads is dead SQL, and deciding which bindings shadow a `FROM` name is the kind
+/// of resolution whose failure direction is a grant.
+fn query_binds_its_own_names(query: &Query) -> Option<SubqueryRefusal> {
+    if query.with.is_some() {
+        return Some(SubqueryRefusal::BindsItsOwnNames);
+    }
+    None
+}
+
+/// The `Select` an `EXISTS` tests, paired with the reason it cannot be read plainly.
+fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusal>)> {
     let Expr::Exists {
         subquery,
         negated: false,
@@ -175,25 +218,26 @@ fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<&'static str>)
         return None;
     };
     let select = query_select(subquery)?;
-    let shaping =
-        exists_emptying_limit_clause(subquery).or_else(|| select_result_shaping_clause(select));
-    Some((select, shaping))
+    let refusal = query_binds_its_own_names(subquery)
+        .or_else(|| exists_emptying_limit_clause(subquery).map(SubqueryRefusal::Shaped))
+        .or_else(|| select_result_shaping_clause(select).map(SubqueryRefusal::Shaped));
+    Some((select, refusal))
 }
 
-/// As [`exists_subquery_select`], for the callers that need the rows unshaped.
+/// As [`exists_subquery_select`], for the callers that need the rows read plainly.
 fn readable_exists_select(expr: &Expr) -> Option<&Select> {
-    let (select, shaping) = exists_subquery_select(expr)?;
-    shaping.is_none().then_some(select)
+    let (select, refusal) = exists_subquery_select(expr)?;
+    refusal.is_none().then_some(select)
 }
 
 /// The `(tested value, subquery)` of `x IN (SELECT ...)` or `x = ANY (SELECT ...)`, paired
-/// with the clause shaping the set of tested values, if any.
+/// with the reason the set of tested values cannot be read plainly, if any.
 ///
 /// Any row limit shapes that set here, `LIMIT 1` included: membership then tests one
 /// arbitrary slice of the result rather than the whole of it, so reading it as full
 /// membership grants rows the policy refuses. Ordering alone is irrelevant to a set
 /// membership test.
-fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<&'static str>)> {
+fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<SubqueryRefusal>)> {
     let (lhs, query) = match expr {
         Expr::InSubquery {
             expr: lhs,
@@ -212,20 +256,23 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<&'
         _ => return None,
     };
 
+    if let Some(refusal) = query_binds_its_own_names(query) {
+        return Some((lhs, query, Some(refusal)));
+    }
     let shaping = if query.limit_clause.is_some() {
-        Some("LIMIT")
+        Some(SubqueryRefusal::Shaped("LIMIT"))
     } else if query.fetch.is_some() {
-        Some("FETCH")
+        Some(SubqueryRefusal::Shaped("FETCH"))
     } else {
-        select_result_shaping_clause(query_select(query)?)
+        select_result_shaping_clause(query_select(query)?).map(SubqueryRefusal::Shaped)
     };
     Some((lhs, query, shaping))
 }
 
-/// As [`membership_subquery_operands`], for the callers that need the set unshaped.
+/// As [`membership_subquery_operands`], for the callers that need the set read plainly.
 fn readable_membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query)> {
-    let (lhs, query, shaping) = membership_subquery_operands(expr)?;
-    shaping.is_none().then_some((lhs, query))
+    let (lhs, query, refusal) = membership_subquery_operands(expr)?;
+    refusal.is_none().then_some((lhs, query))
 }
 
 /// Membership and parent inheritance written as `x IN (SELECT y FROM t WHERE p)`, and the
@@ -603,16 +650,16 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     }
 
     if let Expr::Exists { .. } = expr {
-        let (select, shaping) = exists_subquery_select(expr)?;
-        return match shaping {
-            Some(clause) => Some(shaped_subquery_reason(clause)),
+        let (select, refusal) = exists_subquery_select(expr)?;
+        return match refusal {
+            Some(refusal) => Some(refusal.reason()),
             None => diagnose_select(select, db, registry, outer_table),
         };
     }
 
-    let (_, query, shaping) = membership_subquery_operands(expr)?;
-    if let Some(clause) = shaping {
-        return Some(shaped_subquery_reason(clause));
+    let (_, query, refusal) = membership_subquery_operands(expr)?;
+    if let Some(refusal) = refusal {
+        return Some(refusal.reason());
     }
     if single_projected_column(query_select(query)?).is_none() {
         return Some(
@@ -628,14 +675,6 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         return None;
     };
     diagnose_select(query_select(subquery)?, db, registry, outer_table)
-}
-
-/// Why a subquery whose rows are shaped cannot become a membership relation.
-fn shaped_subquery_reason(clause: &str) -> String {
-    format!(
-        "Subquery result is shaped by {clause}, so it admits fewer rows than a membership \
-         relation would grant, pre-compute the shaped set as its own table"
-    )
 }
 
 pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(

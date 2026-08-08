@@ -145,6 +145,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "select_result_shaping_clause",
         "exists_emptying_limit_clause",
         "from_item_is_sampled",
+        "query_binds_its_own_names",
     ] {
         let definitions = fn_definitions(&modules, name);
         assert_eq!(
@@ -153,8 +154,9 @@ fn membership_analysis_has_a_single_source_of_truth() {
         );
     }
 
-    // Each clause that can shape a subquery's rows is read in exactly one place. A second
-    // reader would let one spelling keep a refusal another spelling dropped.
+    // Each clause by which a subquery stops being the plain set of rows in the table it
+    // names is read in exactly one place. A second reader would let one spelling keep a
+    // refusal another spelling dropped.
     let source = read_module("src/classifier/recognizers");
     for clause in [
         "limit_clause.is_some()",
@@ -163,6 +165,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "qualify.is_some()",
         "Distinct::On",
         "sample: Some(_)",
+        "with.is_some()",
     ] {
         let readers = source.matches(clause).count();
         assert_eq!(
