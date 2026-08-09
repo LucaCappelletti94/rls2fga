@@ -229,6 +229,18 @@ pub enum TranslationNote {
         /// The tuple queries left unemitted, as the loader's script names them.
         sources: Vec<String>,
     },
+    /// The target caps an identifier, and this table's key can render a longer one, so
+    /// a row past the cap emits no fact and the model denies it.
+    ///
+    /// Stated as a contract rather than a list: the translator never sees the data, so
+    /// it can give the operator the exact number but not the rows. Only tables whose key
+    /// type could reach the cap get this, so a `uuid` or integer key is silent.
+    RowIdentifierBudget {
+        /// Table whose key could render too long a name.
+        table: String,
+        /// Characters the key may render, once encoded, before the row is left out.
+        budget: usize,
+    },
     /// A condition parameter the caller has to put in every check context.
     ///
     /// The model is complete without it, but a check that omits the key is refused by
@@ -353,6 +365,7 @@ impl TranslationNote {
             | Self::PolicyRoleScope { .. }
             | Self::RoleGateScope { .. }
             | Self::CallerSuppliesConditionParameter { .. }
+            | Self::RowIdentifierBudget { .. }
             | Self::MembershipReadScope { .. }
             | Self::RoleNameRewritten { .. }
             | Self::TypeNameCollision { .. }
@@ -379,6 +392,7 @@ impl TranslationNote {
             | Self::TableOwnerBypassesPolicies { table, .. }
             | Self::InheritanceParentReadsOwnRowsOnly { table, .. }
             | Self::RowsCannotBeNamed { table, .. }
+            | Self::RowIdentifierBudget { table, .. }
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
             Self::ClauseBelowThreshold { policy, .. }
             | Self::UnresolvedPolicyTable { policy, .. }
@@ -595,6 +609,13 @@ impl fmt::Display for TranslationNote {
                 "No tuple can name a row of '{table}' ({reason}), so {} cannot be loaded and \
                  every grant on this type denies where PostgreSQL grants.",
                 sources.join(", ")
+            ),
+            Self::RowIdentifierBudget { table, budget } => write!(
+                f,
+                "A row of '{table}' is named by at most {budget} characters once encoded, \
+                 and the generated query leaves a longer one out rather than shortening it, \
+                 which would merge two rows into one object. Check whether any row exceeds \
+                 it: the model denies those rows where PostgreSQL grants them."
             ),
             Self::MembershipTableGrantsNoReads { join_table, .. } => write!(
                 f,

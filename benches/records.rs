@@ -63,7 +63,7 @@ fn by_subject(schema: &str, want: &dyn Fn(&ValueSource) -> bool) -> RecordDescri
     let found: Vec<_> = descriptions(schema)
         .into_iter()
         .filter(|d| match &d.derivation {
-            RecordDerivation::FromRow { template, .. } => want(&template.subject_key),
+            RecordDerivation::FromRow { template, .. } => want(template.subject_key.part()),
             _ => false,
         })
         .collect();

@@ -12,10 +12,11 @@ use alloc::collections::BTreeSet;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::RowParameter;
 use crate::generator::records::{
-    BoundQuery, Guard, RecordContext, RecordDerivation, RecordDescription, RecordTemplate,
-    ValueSource,
+    BoundQuery, Guard, ObjectKey, RecordContext, RecordDerivation, RecordDescription,
+    RecordTemplate, SubjectKey, ValueSource,
 };
 use crate::generator::tuple_generator::{render_tuple_source_inner, resolve_bridge_columns};
+use crate::generator::tuple_generator::{NameContext, UnboundedColumns};
 use crate::generator::well_known::{
     HOLDER_OBJECT_ID, MEMBER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
 };
@@ -35,10 +36,10 @@ fn tables(names: &[&str]) -> Vec<String> {
 fn from_row(
     table: &str,
     object_type: &str,
-    object_key: ValueSource,
+    object_key: impl Into<ObjectKey>,
     relation: &str,
     subject_type: &str,
-    subject_key: ValueSource,
+    subject_key: impl Into<SubjectKey>,
     guards: Vec<Guard>,
 ) -> RecordDescription {
     with_context(
@@ -57,10 +58,10 @@ fn from_row(
 fn with_context(
     table: &str,
     object_type: &str,
-    object_key: ValueSource,
+    object_key: impl Into<ObjectKey>,
     relation: &str,
     subject_type: &str,
-    subject_key: ValueSource,
+    subject_key: impl Into<SubjectKey>,
     guards: Vec<Guard>,
     context: Option<RecordContext>,
 ) -> RecordDescription {
@@ -70,10 +71,10 @@ fn with_context(
             table: table.to_string(),
             template: Box::new(RecordTemplate {
                 object_type: object_type.to_string(),
-                object_key,
+                object_key: object_key.into(),
                 relation: relation.to_string(),
                 subject_type: subject_type.to_string(),
-                subject_key,
+                subject_key: subject_key.into(),
                 context,
             }),
             guards,
@@ -105,8 +106,31 @@ fn rendered_sql<DB: DatabaseLike>(
     only_own_rows: bool,
     db: &DB,
 ) -> Option<String> {
-    let sql = render_tuple_source_inner(source, owner_type, only_own_rows, db)?.sql;
+    // Only the SQL text is wanted here, and it is rendered per source rather than per
+    // schema, so the bounds are resolved locally. `describe` runs once per source too,
+    // so this is not on the path the cost probe measures.
+    let bounds = UnboundedColumns::resolve(db);
+    let sql = render_tuple_source_inner(
+        source,
+        owner_type,
+        only_own_rows,
+        NameContext::new(&bounds, db),
+        db,
+    )?
+    .sql;
     (!sql.trim_start().starts_with("--")).then_some(sql)
+}
+
+/// One value source per key column, in declared order.
+///
+/// A missing part makes [`ObjectKey::render`] yield no record, which is why no
+/// description carries a `NOT NULL` guard for a key column: the guard would
+/// duplicate that and read as load bearing while guarding nothing.
+fn key_parts(pk_cols: &[String]) -> Vec<ValueSource> {
+    pk_cols
+        .iter()
+        .map(|c| ValueSource::Column(c.clone()))
+        .collect()
 }
 
 /// Describe the records `source` produces, or `None` where it produces none.
@@ -119,13 +143,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     match source {
         TupleSource::DirectOwnership {
             table,
-            pk_col,
+            pk_cols,
             owner_col,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             relation,
             USER_TYPE,
             ValueSource::Column(owner_col.clone()),
@@ -136,13 +160,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // as `WHERE member IS NOT NULL` does.
         TupleSource::ArrayMembership {
             table,
-            pk_col,
+            pk_cols,
             array_col,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             relation,
             USER_TYPE,
             ValueSource::ListElements(array_col.clone()),
@@ -151,14 +175,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::JsonbFieldOwnership {
             table,
-            pk_col,
+            pk_cols,
             column,
             path,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             relation,
             USER_TYPE,
             ValueSource::JsonPath {
@@ -172,14 +196,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // say, so a change to either side moves records.
         TupleSource::RoleOwnerUser {
             table,
-            pk_col,
+            pk_cols,
             owner_col,
             user_table,
             user_pk_col,
         } => Some(joined_ownership(
             &rendered_sql(source, owner_type, only_own_rows, db)?,
             table,
-            pk_col,
+            pk_cols,
             owner_col,
             user_table,
             user_pk_col,
@@ -188,14 +212,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::RoleOwnerTeam {
             table,
-            pk_col,
+            pk_cols,
             owner_col,
             team_table,
             team_pk_col,
         } => Some(joined_ownership(
             &rendered_sql(source, owner_type, only_own_rows, db)?,
             table,
-            pk_col,
+            pk_cols,
             owner_col,
             team_table,
             team_pk_col,
@@ -204,7 +228,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::ExplicitGrants {
             table,
-            pk_col,
+            pk_cols,
             grant_table,
             grant_resource_col,
             role_cases,
@@ -223,11 +247,19 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if let Some(principal) = team_principal {
                 read.push(principal.table.as_str());
             }
+            let [first_key] = pk_cols.as_slice() else {
+                return None;
+            };
             Some(RecordDescription {
                 tables: tables(&read),
                 derivation: RecordDerivation::Joined {
                     queries: [
-                        bind(&sql, table, pk_col, &format!("resource.\"{pk_col}\" = $1")),
+                        bind(
+                            &sql,
+                            table,
+                            first_key,
+                            &format!("resource.\"{first_key}\" = $1"),
+                        ),
                         bind(
                             &sql,
                             grant_table,
@@ -321,63 +353,57 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::PublicFlag {
             table,
-            pk_col,
+            pk_cols,
             flag_col,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             PUBLIC_RELATION,
             USER_TYPE,
-            ValueSource::Literal("*".to_string()),
-            vec![
-                Guard::NotNull(pk_col.clone()),
-                Guard::IsTrue(flag_col.clone()),
-            ],
+            SubjectKey::wildcard(),
+            vec![Guard::IsTrue(flag_col.clone())],
         )),
 
-        TupleSource::ConstantTrue { table, pk_col } => Some(from_row(
+        TupleSource::ConstantTrue { table, pk_cols } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             PUBLIC_RELATION,
             USER_TYPE,
-            ValueSource::Literal("*".to_string()),
-            vec![Guard::NotNull(pk_col.clone())],
+            SubjectKey::wildcard(),
+            Vec::new(),
         )),
 
         TupleSource::PolicyScope {
             table,
-            pk_col,
+            pk_cols,
             scope_relation,
             pg_role,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             scope_relation,
             PG_ROLE_TYPE,
             ValueSource::Literal(pg_role.clone()),
-            vec![Guard::NotNull(pk_col.clone())],
+            Vec::new(),
         )),
 
         // The guard reaches the description as structure, so the evaluator applies
         // the same comparison the query puts in its WHERE.
         TupleSource::AttributeGate {
             table,
-            pk_col,
+            pk_cols,
             predicate,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             PUBLIC_RELATION,
             USER_TYPE,
-            ValueSource::Literal("*".to_string()),
-            vec![
-                Guard::NotNull(pk_col.clone()),
-                Guard::Compare(predicate.clone()),
-            ],
+            SubjectKey::wildcard(),
+            vec![Guard::Compare(predicate.clone())],
         )),
 
         // The records depend on the request as well as the row, so no row decides
@@ -408,12 +434,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // the recipe rather than the record says how the two meet.
         TupleSource::SessionAttributeGate {
             table,
-            pk_col,
+            pk_cols,
             relation,
             row_parameter,
             ..
         } => {
-            let (value, mut guards) = match row_parameter {
+            let (value, guards) = match row_parameter {
                 RowParameter::Column { column, .. } => (
                     ValueSource::Column(column.clone()),
                     vec![Guard::NotNull(column.clone())],
@@ -422,14 +448,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     (ValueSource::Literal(value.clone()), Vec::new())
                 }
             };
-            guards.insert(0, Guard::NotNull(pk_col.clone()));
             Some(with_context(
                 table,
                 owner_type,
-                ValueSource::Column(pk_col.clone()),
+                ObjectKey::new(key_parts(pk_cols)),
                 relation,
                 USER_TYPE,
-                ValueSource::Literal("*".to_string()),
+                SubjectKey::wildcard(),
                 guards,
                 Some(RecordContext {
                     key: row_parameter.parameter().to_string(),
@@ -466,17 +491,17 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // Every row of the table points at the one holder object.
         TupleSource::HolderBridge {
             table,
-            pk_col,
+            pk_cols,
             relation,
             holder_type,
         } => Some(from_row(
             table,
             owner_type,
-            ValueSource::Column(pk_col.clone()),
+            ObjectKey::new(key_parts(pk_cols)),
             relation,
             holder_type,
             ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
-            vec![Guard::NotNull(pk_col.clone())],
+            Vec::new(),
         )),
 
         // The holder is one object, so the object side is fixed and each member row
@@ -528,17 +553,20 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 fn joined_ownership(
     sql: &str,
     table: &str,
-    pk_col: &str,
+    pk_cols: &[String],
     owner_col: &str,
     principal_table: &str,
     principal_pk_col: &str,
     reason: &str,
 ) -> RecordDescription {
+    // A joined description binds its query to one column, so a compound key has
+    // no single value to bind and the shape falls back to a query per table.
+    let key_column = pk_cols.first().map_or("", String::as_str);
     RecordDescription {
         tables: tables(&[table, principal_table]),
         derivation: RecordDerivation::Joined {
             queries: [
-                bind(sql, table, pk_col, &format!("\"{pk_col}\" = $1")),
+                bind(sql, table, key_column, &format!("\"{key_column}\" = $1")),
                 bind(
                     sql,
                     principal_table,

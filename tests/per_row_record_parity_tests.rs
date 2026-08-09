@@ -759,6 +759,83 @@ async fn holder_shapes_match_their_own_sql() {
     );
 }
 
+/// A table keyed on two columns, carrying its own read policy, seeded with values the
+/// target cannot spell verbatim.
+///
+/// This is the case the encoding exists for. The whole batch is refused if one value
+/// renders wrong, and a compound name the evaluator spells differently from the SQL is
+/// drift no DSL assertion can see, so the two are compared row by row here.
+const COMPOUND_IDENTITY_SCHEMA: &str = "
+CREATE TABLE paper_shares (
+    paper_id TEXT,
+    viewer TEXT,
+    PRIMARY KEY (paper_id, viewer)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON paper_shares FOR SELECT
+    USING (viewer = auth_current_user_id());
+";
+
+/// Every member of the refused family, on both sides of the key and in the subject.
+/// `alice smith` is the ordinary one: a space in a name breaks the load today.
+const COMPOUND_IDENTITY_SEED: &str = "
+INSERT INTO paper_shares (paper_id, viewer) VALUES
+  ('p1', 'alice'),
+  ('p1', 'alice smith'),
+  ('p|2', 'bob'),
+  ('p2', 'a|b'),
+  ('p3', ''),
+  ('p4', '*'),
+  ('p5', 'carol#member'),
+  ('p6', 'ali\u{00e7}e'),
+  ('p:7', 'dave'),
+  ('', 'erin');
+";
+
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(COMPOUND_IDENTITY_SCHEMA)
+        .expect("failed to apply the compound identity schema");
+    conn.batch_execute(COMPOUND_IDENTITY_SEED)
+        .expect("failed to seed the compound identity schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        COMPOUND_IDENTITY_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let queries = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&mut conn, &queries, "compound identity");
+
+    assert_eq!(
+        pure, 1,
+        "the ownership shape follows from one row of the share table, saw {pure}"
+    );
+    assert_eq!(joined, 0, "nothing here reads a second table, saw {joined}");
+    assert_eq!(
+        records, 10,
+        "every seeded row must be named, including the ones the target refuses \
+         verbatim, saw {records}"
+    );
+}
+
 /// A schema whose reads compose all three ways a recipe can: one relation's records
 /// alone, a union of two, and an intersection a barrier makes. `can_delete` nests the
 /// union inside the intersection, since a per-row `DELETE` reads the table.
@@ -841,7 +918,7 @@ fn recipe_object(decision: &RowDecision, row: &serde_json::Value) -> Option<Stri
     let RecordDerivation::FromRow { template, .. } = &first_shape(decision).derivation else {
         panic!("a leaf resolves from the row");
     };
-    let ValueSource::Column(column) = &template.object_key else {
+    let [ValueSource::Column(column)] = template.object_key.parts() else {
         panic!("a leaf keys its object on a column");
     };
     let key = scalar_text(row.get(column)?)?;
@@ -1061,4 +1138,80 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
         compared > 50,
         "too few checks to be meaningful, saw {compared}"
     );
+}
+
+/// The other half of the compound identity case: the names the two renderers agree on
+/// have to be names the service actually takes, and they have to answer for the right
+/// caller.
+///
+/// The load is all or nothing, so one value the target cannot spell fails the write and
+/// the whole seed with it. That is the failure this encoding exists to remove, and the
+/// seed carries every member of the refused family.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_compound_identity_loads_and_answers_against_the_service() {
+    let (_postgres, mut conn) = start_postgres().await;
+    conn.batch_execute(COMPOUND_IDENTITY_SCHEMA)
+        .expect("failed to apply the compound identity schema");
+    conn.batch_execute(COMPOUND_IDENTITY_SEED)
+        .expect("failed to seed the compound identity schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        COMPOUND_IDENTITY_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
+    for query in &outputs.tuple_queries() {
+        tuples.extend(records_from_sql(&mut conn, query));
+    }
+    assert_eq!(
+        tuples.len(),
+        10,
+        "every seeded share must produce a fact, or the encoding lost a row: {tuples:#?}"
+    );
+
+    // The write is where an unspellable name fails, and it fails the whole batch.
+    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+
+    let mut allowed = 0usize;
+    let mut denied = 0usize;
+    for record in &tuples {
+        assert!(
+            support::openfga::check_allowed(
+                &client,
+                &record.subject,
+                &record.relation,
+                &record.object
+            )
+            .await,
+            "the viewer a share names must reach it: {record:?}"
+        );
+        allowed += 1;
+
+        // A stranger must not, or the encoding has collapsed two names into one. The
+        // wildcard spelling is the one that would: an owner of `*` renders `user:*`
+        // verbatim and grants everybody.
+        assert!(
+            !support::openfga::check_allowed(
+                &client,
+                "user:stranger",
+                &record.relation,
+                &record.object
+            )
+            .await,
+            "nobody else may reach it: {record:?}"
+        );
+        denied += 1;
+    }
+
+    assert!(allowed > 0 && denied > 0, "the case has to cut both ways");
 }

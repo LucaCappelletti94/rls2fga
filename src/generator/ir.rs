@@ -30,7 +30,7 @@ pub(crate) enum TupleSource {
     /// P3 ownership. Produces `(type:pk, relation, user:owner_col)`.
     DirectOwnership {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         owner_col: String,
         /// One relation per column, so two ownership columns cannot union their
         /// principals.
@@ -42,7 +42,7 @@ pub(crate) enum TupleSource {
     /// `= ANY` refuses it.
     ArrayMembership {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         array_col: String,
         relation: String,
     },
@@ -51,7 +51,7 @@ pub(crate) enum TupleSource {
     /// extracting `path` as text, dropping the NULL a missing key yields.
     JsonbFieldOwnership {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         column: String,
         path: Vec<String>,
         relation: String,
@@ -61,7 +61,7 @@ pub(crate) enum TupleSource {
     /// filtered to the user principal table.
     RoleOwnerUser {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         owner_col: String,
         user_table: String,
         user_pk_col: String,
@@ -71,7 +71,7 @@ pub(crate) enum TupleSource {
     /// filtered to the team principal table.
     RoleOwnerTeam {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         owner_col: String,
         team_table: String,
         team_pk_col: String,
@@ -81,7 +81,7 @@ pub(crate) enum TupleSource {
     /// `(type:resource_col, grant_relation, user:grantee_col)` query per role case.
     ExplicitGrants {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         /// Column of `table` joined to the grant table.
         grant_join_col: String,
         grant_table: String,
@@ -132,7 +132,7 @@ pub(crate) enum TupleSource {
     /// P6 public flag. Produces `(type:pk, public_viewer, user:*)` where the flag holds.
     PublicFlag {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         flag_col: String,
     },
 
@@ -140,7 +140,7 @@ pub(crate) enum TupleSource {
     /// `(type:pk, public_viewer, user:*)` for the rows the guard admits.
     AttributeGate {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         predicate: AttributePredicate,
     },
 
@@ -149,7 +149,7 @@ pub(crate) enum TupleSource {
     /// row's own value for the parameter the request cannot supply.
     ConditionalAttributeGate {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         relation: String,
         condition: String,
         /// Condition parameter the row supplies, and the column it reads.
@@ -163,7 +163,7 @@ pub(crate) enum TupleSource {
     /// named.
     SessionAttributeGate {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         relation: String,
         condition: String,
         /// Condition parameter the tuple supplies, and where its value comes from.
@@ -207,12 +207,12 @@ pub(crate) enum TupleSource {
     },
 
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
-    ConstantTrue { table: String, pk_col: String },
+    ConstantTrue { table: String, pk_cols: Vec<String> },
 
     /// Role-scoped policy. Produces `(type:pk, scope_relation, pg_role:pg_role)`.
     PolicyScope {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         scope_relation: String,
         pg_role: String,
     },
@@ -221,7 +221,7 @@ pub(crate) enum TupleSource {
     /// holder reaches all of them.
     HolderBridge {
         table: String,
-        pk_col: String,
+        pk_cols: Vec<String>,
         relation: String,
         holder_type: String,
     },
@@ -314,49 +314,53 @@ impl TupleSource {
         match self {
             Self::DirectOwnership {
                 table,
-                pk_col,
+                pk_cols,
                 owner_col,
                 relation,
             } => {
-                format!("p3:{table}:{pk_col}:{owner_col}:{relation}")
+                format!("p3:{table}:{pk_cols:?}:{owner_col}:{relation}")
             }
             Self::ArrayMembership {
                 table,
-                pk_col,
+                pk_cols,
                 array_col,
                 relation,
             } => {
-                format!("p11:{table}:{pk_col}:{array_col}:{relation}")
+                format!("p11:{table}:{pk_cols:?}:{array_col}:{relation}")
             }
             Self::JsonbFieldOwnership {
                 table,
-                pk_col,
+                pk_cols,
                 column,
                 path,
                 relation,
             } => {
                 format!(
-                    "p12:{table}:{pk_col}:{column}:{}:{relation}",
+                    "p12:{table}:{pk_cols:?}:{column}:{}:{relation}",
                     path.join(".")
                 )
             }
             Self::RoleOwnerUser {
                 table,
-                pk_col,
+                pk_cols,
                 owner_col,
                 user_table,
                 user_pk_col,
             } => {
-                format!("role_owner_user:{table}:{pk_col}:{owner_col}:{user_table}:{user_pk_col}")
+                format!(
+                    "role_owner_user:{table}:{pk_cols:?}:{owner_col}:{user_table}:{user_pk_col}"
+                )
             }
             Self::RoleOwnerTeam {
                 table,
-                pk_col,
+                pk_cols,
                 owner_col,
                 team_table,
                 team_pk_col,
             } => {
-                format!("role_owner_team:{table}:{pk_col}:{owner_col}:{team_table}:{team_pk_col}")
+                format!(
+                    "role_owner_team:{table}:{pk_cols:?}:{owner_col}:{team_table}:{team_pk_col}"
+                )
             }
             Self::ExplicitGrants {
                 table,
@@ -405,34 +409,34 @@ impl TupleSource {
             }
             Self::PublicFlag {
                 table,
-                pk_col,
+                pk_cols,
                 flag_col,
             } => {
-                format!("p6:{table}:{pk_col}:{flag_col}")
+                format!("p6:{table}:{pk_cols:?}:{flag_col}")
             }
             Self::AttributeGate {
                 table,
-                pk_col,
+                pk_cols,
                 predicate,
             } => {
                 format!(
-                    "p9:{table}:{pk_col}:{}:{:?}:{:?}",
+                    "p9:{table}:{pk_cols:?}:{}:{:?}:{:?}",
                     predicate.column, predicate.operator, predicate.value
                 )
             }
             Self::ConditionalAttributeGate {
                 table,
-                pk_col,
+                pk_cols,
                 relation,
                 condition,
                 row_parameter,
                 column,
             } => {
-                format!("p9c:{table}:{pk_col}:{relation}:{condition}:{row_parameter}:{column}")
+                format!("p9c:{table}:{pk_cols:?}:{relation}:{condition}:{row_parameter}:{column}")
             }
             Self::SessionAttributeGate {
                 table,
-                pk_col,
+                pk_cols,
                 relation,
                 condition,
                 row_parameter,
@@ -443,7 +447,7 @@ impl TupleSource {
             } => {
                 let _ = (setting_key, separator);
                 format!(
-                    "sess:{table}:{pk_col}:{relation}:{condition}:{}:{}:{request_parameter}:{comparison:?}",
+                    "sess:{table}:{pk_cols:?}:{relation}:{condition}:{}:{}:{request_parameter}:{comparison:?}",
                     row_parameter.parameter(),
                     row_parameter.column().unwrap_or_default()
                 )
@@ -468,24 +472,24 @@ impl TupleSource {
                     extra_predicate_sql.as_deref().unwrap_or_default()
                 )
             }
-            Self::ConstantTrue { table, pk_col } => {
-                format!("p10_true:{table}:{pk_col}")
+            Self::ConstantTrue { table, pk_cols } => {
+                format!("p10_true:{table}:{pk_cols:?}")
             }
             Self::PolicyScope {
                 table,
-                pk_col,
+                pk_cols,
                 scope_relation,
                 pg_role,
             } => {
-                format!("scope:{table}:{pk_col}:{scope_relation}:{pg_role}")
+                format!("scope:{table}:{pk_cols:?}:{scope_relation}:{pg_role}")
             }
             Self::HolderBridge {
                 table,
-                pk_col,
+                pk_cols,
                 relation,
                 holder_type,
             } => {
-                format!("holder:{table}:{pk_col}:{relation}:{holder_type}")
+                format!("holder:{table}:{pk_cols:?}:{relation}:{holder_type}")
             }
             Self::HolderMembers {
                 holder_type,
@@ -513,7 +517,7 @@ mod tests {
     fn dedup_key_differentiates_explicit_grants_across_tables() {
         let grants_a = TupleSource::ExplicitGrants {
             table: "table_a".to_string(),
-            pk_col: "id".to_string(),
+            pk_cols: vec!["id".to_string()],
             grant_join_col: "resource_id".to_string(),
             grant_table: "grants".to_string(),
             grant_role_col: "role".to_string(),
@@ -525,7 +529,7 @@ mod tests {
         };
         let grants_b = TupleSource::ExplicitGrants {
             table: "table_b".to_string(),
-            pk_col: "id".to_string(),
+            pk_cols: vec!["id".to_string()],
             grant_join_col: "resource_id".to_string(),
             grant_table: "grants".to_string(),
             grant_role_col: "role".to_string(),

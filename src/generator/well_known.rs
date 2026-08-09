@@ -34,6 +34,12 @@ pub const LIST_PARAMETER_TYPE: &str = "TYPE_NAME_LIST";
 /// Relation holding the users a membership row attaches to its parent object.
 pub const MEMBER_RELATION: &str = "member";
 
+/// Alias an unnested list element takes in generated SQL.
+///
+/// Deliberately not `member`: it is a column alias, not the [`MEMBER_RELATION`],
+/// and one spelling for both made the two read as related.
+pub(crate) const ARRAY_ELEMENT_ALIAS: &str = "element";
+
 /// Relation holding the owning user of a row.
 pub const OWNER_USER_RELATION: &str = "owner_user";
 
@@ -42,6 +48,13 @@ pub const OWNER_TEAM_RELATION: &str = "owner_team";
 
 /// Object id of every holder, since exactly one stands for each member source.
 pub const HOLDER_OBJECT_ID: &str = "all";
+
+/// Identifier standing for every subject of a type.
+///
+/// The crate's own spelling for "everyone", never a value out of a row, so it is
+/// the one identifier the encoding leaves alone. A row whose value is literally
+/// `*` still encodes, or it would grant everybody.
+pub const WILDCARD_SUBJECT_ID: &str = "*";
 
 /// Action relation answering for a SQL `SELECT`.
 pub const CAN_SELECT_RELATION: &str = "can_select";

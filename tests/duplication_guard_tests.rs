@@ -62,13 +62,24 @@ fn pk_column_resolution_has_single_source_of_truth() {
         "src/generator/db_lookup.rs",
         "src/generator/model_generator",
         "src/generator/tuple_generator.rs",
+        "src/generator/relations.rs",
     ];
 
-    let definitions = fn_definitions(&modules, "resolve_pk_column");
+    let definitions = fn_definitions(&modules, "resolve_pk_columns");
 
     assert_eq!(
         definitions, 1,
         "expected a single PK-resolution implementation, found {definitions}"
+    );
+
+    // The single-column answer is derived from the list rather than resolved again.
+    // A second resolution here is how a caller ends up naming a row one way while the
+    // rest of the crate names it another.
+    let single = fn_definitions(&modules, "single_pk_column");
+
+    assert_eq!(
+        single, 1,
+        "expected a single narrowing helper, found {single}"
     );
 }
 
@@ -568,7 +579,16 @@ fn the_row_evaluator_holds_no_database_handle() {
     // Its imports stay inside a cone that cannot reach a database. Listing the paths
     // rather than whole lines keeps this robust to formatting, and widening the cone
     // has to be a deliberate edit here.
-    let allowed = ["crate::no_std_prelude", "crate::classifier::patterns"];
+    // `generator::identity` is the encoding choke point. It reads no schema and takes
+    // no database, and the evaluator has to spell a name exactly as the SQL does, so
+    // sharing that one module is what keeps the two from drifting. `well_known` is the
+    // single source for the names both sides spell, the typed wildcard among them.
+    let allowed = [
+        "crate::no_std_prelude",
+        "crate::classifier::patterns",
+        "crate::generator::identity",
+        "crate::generator::well_known",
+    ];
     for line in source
         .lines()
         .map(str::trim)

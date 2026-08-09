@@ -3819,8 +3819,9 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     let model = planned().json_model();
     let tuple_queries = planned().tuple_queries();
 
-    // A source whose facts cannot be emitted renders as a comment rather than a
-    // statement, and `paper_shares` has two of those until compound identity exists.
+    // Both conditional sources are emittable since phase 4 gave `paper_shares` a row
+    // identity: the gate on `papers` that the share arm mints, and `shares_read` on
+    // `paper_shares` itself, which used to render as a comment.
     let runnable: Vec<TupleQuery> = tuple_queries
         .iter()
         .filter(|query| query.sql.contains("SELECT "))
@@ -3832,11 +3833,22 @@ async fn shared_paper_parity_postgres18_and_openfga() {
         .collect();
     assert_eq!(
         conditional.len(),
-        1,
-        "the share arm emits exactly one conditional query, got {} runnable queries",
+        2,
+        "the share arm gates `papers` and `shares_read` gates the share table's own \
+         rows, got {} runnable queries",
         runnable.len()
     );
-    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    let parent_gate = conditional
+        .iter()
+        .find(|query| query.sql.contains("'papers:'"))
+        .expect("the share arm keys its facts on the paper it names");
+    assert!(
+        conditional
+            .iter()
+            .any(|query| query.sql.contains("'paper_shares:'")),
+        "and the share table now names its own rows, which is what phase 4 unlocked"
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, parent_gate);
     assert_eq!(
         conditional_rows.len(),
         SEEDED_SHARES.len(),

@@ -7,12 +7,14 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    composite_primary_key_columns, resolve_pk_column, table_has_column,
+    composite_primary_key_columns, resolve_pk_columns, single_pk_column, table_has_column,
 };
+use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::notes::{SkippedTuples, TranslationNote};
 use crate::generator::relations::RequestComparison;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
+use crate::generator::tuple_generator::UnboundedColumns;
 use crate::generator::well_known::{
     CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION,
     CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
@@ -480,6 +482,9 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
 
     let table_types = TableTypes::assign(db, &mut notes);
     let recursion = PolicyReadRecursion::detect(db, &table_types);
+    // Resolved once for the whole plan, like the recursion graph above it: asking per
+    // table went through `lookup_table`, which walks every table.
+    let bounds = UnboundedColumns::resolve(db);
     // Answered once per membership table rather than once per clause naming it.
     let mut readability: BTreeMap<String, JoinTableReadability> = BTreeMap::new();
     let readability = &mut readability;
@@ -554,7 +559,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
 
         // Whether a row of this table can be named at all, which decides whether any tuple
         // source can be emitted for it. Resolved once here rather than per policy.
-        let object_identifier = resolve_pk_column(&source_table_name, db);
+        let object_identifier = resolve_pk_columns(&source_table_name, db);
 
         // UPDATE and DELETE name the row they change. INSERT does not.
         let has_row_scoped_write_policy = table_policies.iter().any(|cp| {
@@ -797,6 +802,18 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 table: source_table_name.clone(),
                 reason: missing_object_identifier_reason(&source_table_name, db),
                 sources: unfillable.into_iter().collect(),
+            });
+        }
+
+        // Where the guard is on, the operator is told the exact number. Gated the same
+        // way the guard is, on whether the key's declared type can reach the cap, so a
+        // `uuid` or integer key stays silent instead of putting a line on every table.
+        if let Some(budget) =
+            row_identifier_budget(&source_table_name, &canonical_table_name, &bounds, db)
+        {
+            notes.push(TranslationNote::RowIdentifierBudget {
+                table: source_table_name.clone(),
+                budget,
             });
         }
 
@@ -1770,7 +1787,7 @@ fn register_pg_role_scope<DB: DatabaseLike>(
     notes: &mut Vec<TranslationNote>,
     missing_object_what: &str,
 ) -> bool {
-    if let Some(pk_col) = resolve_pk_column(source_table, db) {
+    if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
         ensure_pg_role_relation(all_types, walked);
         table_plan.ensure_direct(
             scope_relation.to_string(),
@@ -1790,7 +1807,7 @@ fn register_pg_role_scope<DB: DatabaseLike>(
             }
             table_plan.add_source(TupleSource::PolicyScope {
                 table: source_table.to_string(),
-                pk_col: pk_col.clone(),
+                pk_cols: pk_cols.clone(),
                 scope_relation: scope_relation.to_string(),
                 pg_role,
             });
@@ -2321,7 +2338,7 @@ fn session_attribute_expr<DB: DatabaseLike>(
         comparison,
         separator,
     } = declared;
-    let pk_col = resolve_pk_column(source_table, db)?;
+    let pk_cols = resolve_pk_columns(source_table, db)?;
 
     let request_parameter = source.request_parameter().to_string();
     // Two parameters cannot share one name, and the caller's is the one a deployment
@@ -2380,7 +2397,7 @@ fn session_attribute_expr<DB: DatabaseLike>(
     );
     table_plan.add_source(TupleSource::SessionAttributeGate {
         table: source_table.to_string(),
-        pk_col,
+        pk_cols,
         relation: relation.clone(),
         condition,
         row_parameter,
@@ -2458,7 +2475,7 @@ fn conditional_gate_expr<DB: DatabaseLike>(
     db: &DB,
     request_time_parameter: &str,
 ) -> Option<UsersetExpr> {
-    let pk_col = resolve_pk_column(source_table, db)?;
+    let pk_cols = resolve_pk_columns(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, &request.column, db)?;
 
     // A column named like the request's parameter yields, since two parameters cannot
@@ -2503,7 +2520,7 @@ fn conditional_gate_expr<DB: DatabaseLike>(
     );
     table_plan.add_source(TupleSource::ConditionalAttributeGate {
         table: source_table.to_string(),
-        pk_col,
+        pk_cols,
         relation: relation.clone(),
         condition,
         row_parameter,
@@ -2766,10 +2783,10 @@ fn translate_pattern<DB: DatabaseLike>(
                 relation.clone(),
                 vec![DirectSubject::Type(USER_TYPE.to_string())],
             );
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                 table_plan.add_source(TupleSource::DirectOwnership {
                     table: source_table.to_string(),
-                    pk_col,
+                    pk_cols,
                     owner_col: column.clone(),
                     relation: relation.clone(),
                 });
@@ -2785,10 +2802,10 @@ fn translate_pattern<DB: DatabaseLike>(
                 relation.clone(),
                 vec![DirectSubject::Type(USER_TYPE.to_string())],
             );
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                 table_plan.add_source(TupleSource::ArrayMembership {
                     table: source_table.to_string(),
-                    pk_col,
+                    pk_cols,
                     array_col: column.clone(),
                     relation: relation.clone(),
                 });
@@ -2811,10 +2828,10 @@ fn translate_pattern<DB: DatabaseLike>(
                 relation.clone(),
                 vec![DirectSubject::Type(USER_TYPE.to_string())],
             );
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                 table_plan.add_source(TupleSource::JsonbFieldOwnership {
                     table: source_table.to_string(),
-                    pk_col,
+                    pk_cols,
                     column: column.clone(),
                     path: path.clone(),
                     relation: relation.clone(),
@@ -2857,7 +2874,7 @@ fn translate_pattern<DB: DatabaseLike>(
             // to the holder, so with no row identity there is nothing to hang it on, a
             // holder type minted here would outlive the expression that justified it,
             // and advice about the tuple SQL names a query nothing will emit.
-            let Some(pk_col) = resolve_pk_column(source_table, db) else {
+            let Some(pk_cols) = resolve_pk_columns(source_table, db) else {
                 skip_source_without_row_identity(
                     table_plan,
                     source_table,
@@ -2900,7 +2917,7 @@ fn translate_pattern<DB: DatabaseLike>(
             }
             table_plan.add_source(TupleSource::HolderBridge {
                 table: source_table.to_string(),
-                pk_col,
+                pk_cols,
                 relation: holder_relation.clone(),
                 holder_type,
             });
@@ -3048,7 +3065,7 @@ fn translate_pattern<DB: DatabaseLike>(
             // Before anything is minted: the grant hangs off a bridge from this row to
             // its parent object, so with no row identity there is nothing to hang it on
             // and a parent type minted here would outlive the expression justifying it.
-            if resolve_pk_column(source_table, db).is_none() {
+            if resolve_pk_columns(source_table, db).is_none() {
                 skip_bridge_without_row_identity(table_plan, source_table, &parent_type, db);
                 return deny_expr(table_plan);
             }
@@ -3256,7 +3273,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 });
             }
 
-            if resolve_pk_column(source_table, db).is_some() {
+            if resolve_pk_columns(source_table, db).is_some() {
                 table_plan.add_source(TupleSource::ParentBridge {
                     table: source_table.to_string(),
                     fk_col: fk_column.clone(),
@@ -3274,10 +3291,10 @@ fn translate_pattern<DB: DatabaseLike>(
             }
         }
         PatternClass::P6BooleanFlag { column } => {
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
+            if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                 table_plan.add_source(TupleSource::PublicFlag {
                     table: source_table.to_string(),
-                    pk_col,
+                    pk_cols,
                     flag_col: column.clone(),
                 });
             } else {
@@ -3375,10 +3392,10 @@ fn translate_pattern<DB: DatabaseLike>(
             // A caller-derived one would grant everyone access to rows scoped to one
             // caller, so it arrives here as `None` and keeps falling closed.
             if let Some(predicate) = predicate {
-                if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                     table_plan.add_source(TupleSource::AttributeGate {
                         table: source_table.to_string(),
-                        pk_col,
+                        pk_cols,
                         predicate: predicate.clone(),
                     });
                 } else {
@@ -3406,10 +3423,10 @@ fn translate_pattern<DB: DatabaseLike>(
         }
         PatternClass::P10ConstantBool { value } => {
             if *value {
-                if let Some(pk_col) = resolve_pk_column(source_table, db) {
+                if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
                     table_plan.add_source(TupleSource::ConstantTrue {
                         table: source_table.to_string(),
-                        pk_col,
+                        pk_cols,
                     });
                 } else {
                     skip_source_without_row_identity(
@@ -3588,8 +3605,26 @@ fn prepare_role_threshold_translation<DB: DatabaseLike>(
     Some(RoleThresholdPrepared {
         sorted_roles,
         has_team_support,
-        rows_can_be_named: resolve_pk_column(source_table, db).is_some(),
+        rows_can_be_named: resolve_pk_columns(source_table, db).is_some(),
     })
+}
+
+/// Characters this table's key may render before the guard leaves the row out, or
+/// `None` where the key's declared type cannot reach the cap.
+///
+/// The budget covers the whole `type:id` string, so it shrinks as the type name
+/// grows and two tables of the same schema can have different numbers.
+fn row_identifier_budget<DB: DatabaseLike>(
+    source_table: &str,
+    type_name: &str,
+    bounds: &UnboundedColumns,
+    db: &DB,
+) -> Option<usize> {
+    let key = resolve_pk_columns(source_table, db)?;
+    if !bounds.any_unbounded(source_table, &key, db) {
+        return None;
+    }
+    MAX_OBJECT_NAME_CHARS.checked_sub(type_name.chars().count() + 1)
 }
 
 /// Explain why `source_table` has no usable `OpenFGA` object identifier.
@@ -3843,7 +3878,7 @@ fn resolve_principal_info<DB: DatabaseLike>(
             }
             pk_col.to_string()
         } else {
-            resolve_pk_column(table, db)?
+            single_pk_column(table, db)?
         };
         return Some(PrincipalInfo {
             table: table.to_string(),
@@ -3855,7 +3890,7 @@ fn resolve_principal_info<DB: DatabaseLike>(
         if lookup_table(db, candidate).is_none() {
             continue;
         }
-        if let Some(pk_col) = resolve_pk_column(candidate, db) {
+        if let Some(pk_col) = single_pk_column(candidate, db) {
             return Some(PrincipalInfo {
                 table: candidate.to_string(),
                 pk_col,

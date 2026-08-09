@@ -185,11 +185,14 @@ fn a_direct_ownership_relation_carries_one_shape_from_its_own_row() {
     assert_eq!(table, "docs");
     assert_eq!(template.object_type, owned.type_name);
     assert_eq!(template.relation, owned.relation);
-    assert_eq!(template.object_key, ValueSource::Column("id".to_string()));
+    assert_eq!(
+        template.object_key.parts(),
+        [ValueSource::Column("id".to_string())]
+    );
     assert_eq!(template.subject_type, USER_TYPE);
     assert_eq!(
-        template.subject_key,
-        ValueSource::Column("owner_id".to_string())
+        template.subject_key.part(),
+        &ValueSource::Column("owner_id".to_string())
     );
 }
 
@@ -435,12 +438,18 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     assert_eq!(table, "docs");
     assert_eq!(template.object_type, bridge.type_name);
     assert_eq!(template.relation, bridge.relation);
-    assert_eq!(template.object_key, ValueSource::Column("id".to_string()));
-    assert_eq!(guards, &vec![Guard::NotNull("id".to_string())]);
+    assert_eq!(
+        template.object_key.parts(),
+        [ValueSource::Column("id".to_string())]
+    );
+    assert!(
+        guards.is_empty(),
+        "the key needs no NOT NULL guard: a missing part already yields no record"
+    );
     assert_eq!(template.subject_type, holder_type);
     assert_eq!(
-        template.subject_key,
-        ValueSource::Literal("all".to_string()),
+        template.subject_key.part(),
+        &ValueSource::Literal("all".to_string()),
         "one holder object stands for the whole list"
     );
 
@@ -458,8 +467,8 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     assert_eq!(template.object_type, members.type_name);
     assert_eq!(template.relation, MEMBER_RELATION);
     assert_eq!(
-        template.object_key,
-        ValueSource::Literal("all".to_string()),
+        template.object_key.parts(),
+        [ValueSource::Literal("all".to_string())],
         "every member row names the same holder object"
     );
     assert_eq!(
@@ -469,8 +478,8 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     );
     assert_eq!(template.subject_type, USER_TYPE);
     assert_eq!(
-        template.subject_key,
-        ValueSource::Column("user_id".to_string())
+        template.subject_key.part(),
+        &ValueSource::Column("user_id".to_string())
     );
 }
 
@@ -1025,10 +1034,14 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                         "{fixture}: leaf {relation} keys objects of another type"
                     );
                     assert_eq!(template.relation, relation, "{fixture}: leaf misattributed");
+                    let expected_key: Vec<ValueSource> = primary_key_of(table, &db)
+                        .into_iter()
+                        .map(ValueSource::Column)
+                        .collect();
                     assert_eq!(
-                        template.object_key,
-                        ValueSource::Column(primary_key_of(table, &db)),
-                        "{fixture}: leaf {}#{relation} keys on a column that is not the \
+                        template.object_key.parts(),
+                        expected_key,
+                        "{fixture}: leaf {}#{relation} keys on columns that are not the \
                          row's identity",
                         reported.type_name
                     );
@@ -1040,7 +1053,7 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                     );
                     match &leaf {
                         Leaf::Named { .. } => assert!(
-                            !matches!(template.subject_key, ValueSource::Literal(_)),
+                            !matches!(template.subject_key.part(), &ValueSource::Literal(_)),
                             "{fixture}: leaf {}#{relation} carries a literal subject: {:?}",
                             reported.type_name,
                             template.subject_key
@@ -1055,8 +1068,8 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                             ..
                         } => {
                             assert_eq!(
-                                template.subject_key,
-                                ValueSource::Literal("*".to_string()),
+                                template.subject_key.part(),
+                                &ValueSource::Literal("*".to_string()),
                                 "{fixture}: gated leaf {}#{relation} grants named subjects \
                                  rather than the wildcard the condition filters",
                                 reported.type_name
@@ -1093,15 +1106,23 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
     );
 }
 
-/// The column the crate identifies rows by: the declared primary key, or the `id`
-/// column it falls back to when a table declares none.
-fn primary_key_of(table: &str, db: &ParserDB) -> String {
-    lookup_table(db, table)
-        .and_then(|found| found.primary_key_column(db).ok().flatten())
-        .map_or_else(
-            || "id".to_string(),
-            |column| column.stored_column_name().into_owned(),
-        )
+/// Every column the crate identifies rows by, in declared order: the declared primary
+/// key whatever its arity, or the `id` column it falls back to when a table declares
+/// none. This is what an object key holds.
+fn primary_key_of(table: &str, db: &ParserDB) -> Vec<String> {
+    let columns: Vec<String> = lookup_table(db, table)
+        .and_then(|found| found.primary_key_columns(db).ok())
+        .map(|columns| {
+            columns
+                .map(|c| c.stored_column_name().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    if columns.is_empty() {
+        vec!["id".to_string()]
+    } else {
+        columns
+    }
 }
 
 /// An arm nothing can classify, so the threshold drops it while the ownership arm
@@ -1506,16 +1527,21 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
         ),
         // `papers_p` translates whole, the ownership arm and the share arm both, and
         // `shares_insert` translates as delegation to the parent even though connetto
-        // declares no key, because the policy states the join itself. `paper_shares` has
-        // a two-column key, so no tuple can name its rows until compound identity lands,
-        // and that is now the only thing this fixture reports losing.
+        // declares no key, because the policy states the join itself. Phase 4 gave
+        // `paper_shares` a row identity built from its two-column key, so it reports no
+        // loss at all and its own reads are decidable, which is what the fixture was
+        // added to reach.
         //
-        // `papers` reads are decidable only through ownership: the share arm is recorded
-        // on another table, so no row of `papers` settles it.
+        // `papers` reads stay decidable only through ownership: the share arm is
+        // recorded on another table, so no row of `papers` settles it.
         (
             "connetto_capability",
-            &["RowsCannotBeNamed paper_shares"],
-            &["papers#owner"],
+            &[],
+            &[
+                "paper_shares#can_select",
+                "paper_shares#gate_shares_read_abbc62d2",
+                "papers#owner",
+            ],
         ),
         (
             "tenant_setting",

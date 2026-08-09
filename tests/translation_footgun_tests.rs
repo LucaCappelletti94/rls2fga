@@ -681,9 +681,12 @@ CREATE POLICY tasks_all ON tasks FOR ALL USING (
 }
 
 /// `PRIMARY KEY (tenant_id, id)` says `id` alone is not unique, so using it as
-/// the object identifier merges rows across tenants.
+/// the object identifier merges rows across tenants. Phase 4 names such a row by
+/// every key column instead, which is the only answer that keeps two rows apart:
+/// shortening the name, by truncation or by taking one column, hands each row the
+/// other's access.
 #[test]
-fn composite_primary_key_does_not_produce_truncated_object_ids() {
+fn a_composite_primary_key_names_a_row_by_every_key_column() {
     let db = db_of(
         r"
 CREATE TABLE docs(tenant_id UUID, id UUID, owner_id UUID, PRIMARY KEY (tenant_id, id));
@@ -700,12 +703,132 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
 
     assert!(
-        !rendered.contains(r#"'docs:' || "id""#),
-        "a single column of a composite primary key must not identify objects:\n{rendered}"
+        rendered.contains(r#"'docs:' || CASE WHEN "tenant_id"::text"#),
+        "the name starts at the first key column, in declared order:\n{rendered}"
     );
     assert!(
-        rendered.contains("composite primary key"),
-        "the operator must be told why no ownership tuples were emitted:\n{rendered}"
+        rendered.contains(r#"|| '|' || CASE WHEN "id"::text"#),
+        "the second key column joins the first, or two tenants share one object:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("composite primary key"),
+        "the loss this reported is gone, so nothing may still claim it:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(r#"'docs:' || CASE WHEN "id"::text"#),
+        "one column of the key alone must never name the row:\n{rendered}"
+    );
+}
+
+/// The target caps an identifier, and the crate never sees the data, so it states the
+/// budget rather than listing the rows past it. Only where the key's type could reach
+/// the cap: a note on every table would say nothing.
+#[test]
+fn a_table_whose_key_could_overrun_is_told_its_budget() {
+    let budget_of = |declaration: &str, table: &str| -> Option<usize> {
+        let db = db_of(&format!(
+            "{declaration}
+ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON {table} FOR SELECT USING (owner_id = current_user);
+"
+        ));
+        translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .find_map(|note| match note {
+                TranslationNote::RowIdentifierBudget { table: t, budget } if t == table => {
+                    Some(*budget)
+                }
+                _ => None,
+            })
+    };
+
+    assert_eq!(
+        budget_of(
+            "CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);",
+            "docs"
+        ),
+        Some(251),
+        "a text key can reach the cap, so the operator gets the exact number"
+    );
+    assert_eq!(
+        budget_of(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);",
+            "docs"
+        ),
+        None,
+        "a uuid renders 36 safe characters, so saying anything here would be noise"
+    );
+    assert_eq!(
+        budget_of(
+            "CREATE TABLE a_longer_table_name(id TEXT PRIMARY KEY, owner_id TEXT);",
+            "a_longer_table_name"
+        ),
+        Some(236),
+        "the cap covers the whole name, so a longer type leaves the key less room"
+    );
+}
+
+/// The budget note states a contract the operator has to check, and the model is
+/// complete without it, so it must not read as the model diverging from the database.
+#[test]
+fn the_budget_note_does_not_claim_a_divergence() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let translation = translator(ConfidenceLevel::B).translate(&db);
+    assert_eq!(
+        translation
+            .clone()
+            .outputs_accepting_gaps()
+            .notes()
+            .iter()
+            .filter(|note| note.severity().diverges_from_database())
+            .count(),
+        0,
+        "a stated budget is not a loss the model already took"
+    );
+    assert!(
+        translation.outputs().is_ok(),
+        "and it must not close the ordinary door"
+    );
+}
+
+/// The subject side has its own cap and its own unit, so the generated query needs its
+/// own guard: an owner name past it aborts the whole load exactly as an object does.
+#[test]
+fn the_generated_query_guards_the_subject_length_too() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let rendered = format_tuples(
+        &translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
+
+    assert!(
+        rendered.contains("octet_length("),
+        "a text owner can overrun the subject cap, so the query must leave it out:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("<= 512"),
+        "and the subject cap is 512, not the object's 256:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("AND length("),
+        "the uuid key cannot overrun, so no object guard belongs here:\n{rendered}"
     );
 }
 
@@ -729,7 +852,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
 
     assert!(
-        !rendered.contains(r#"'docs:' || "id""#),
+        !rendered.contains(r#"'docs:' || CASE WHEN "id"::text"#),
         "a non-unique column must not identify objects:\n{rendered}"
     );
     assert!(
@@ -758,7 +881,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
 
     assert!(
-        rendered.contains(r#"'docs:' || "id""#),
+        rendered.contains(r#"'docs:' || CASE WHEN "id"::text"#),
         "a uniquely constrained column identifies objects:\n{rendered}"
     );
 }
@@ -1639,7 +1762,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
             continue;
         }
         assert!(
-            query.sql.contains(r#"'orgs:' || "org_id""#),
+            query.sql.contains(r#"'orgs:' || CASE WHEN "org_id"::text"#),
             "a projects row must reference its org by org_id:\n{}",
             query.sql
         );
@@ -3462,7 +3585,7 @@ CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
         "the stored relation name is docs:\n{rendered}"
     );
     assert!(
-        rendered.contains(r#"'docs:' || "id""#),
+        rendered.contains(r#"'docs:' || CASE WHEN "id"::text"#),
         "the stored column name is id:\n{rendered}"
     );
     assert!(
@@ -3603,7 +3726,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
                 .outputs_accepting_gaps()
                 .tuple_queries()
         )
-        .contains(r#"'projects:' || "project_id""#),
+        .contains(r#"'projects:' || CASE WHEN "project_id"::text"#),
         "the bridge query reads the stored column name"
     );
 
@@ -3653,7 +3776,7 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
     );
 
     assert!(
-        rendered.contains(r#"'docs:' || "id""#),
+        rendered.contains(r#"'docs:' || CASE WHEN "id"::text"#),
         "the unique NOT NULL id column identifies the row:\n{rendered}"
     );
 }
@@ -5270,15 +5393,15 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
                 }
 
                 assert!(
-                    matches!(template.subject_key, ValueSource::Literal(_)),
+                    matches!(template.subject_key.part(), &ValueSource::Literal(_)),
                     "{type_name}#{relation} is subtracted, so its subject may not come \
                      from the row: {:?} in {}",
                     template.subject_key,
                     query.comment
                 );
-                let identity = match &template.object_key {
-                    ValueSource::Column(column) => column.clone(),
-                    other => panic!("an object key is a column, got {other:?}"),
+                let identity = match template.object_key.parts() {
+                    [ValueSource::Column(column)] => column.clone(),
+                    other => panic!("an object key is one column, got {other:?}"),
                 };
                 for guard in guards {
                     assert!(
@@ -5457,14 +5580,14 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
                 }
                 tables.insert(table.clone());
                 assert!(
-                    !matches!(template.subject_key, ValueSource::Literal(_)),
+                    !matches!(template.subject_key.part(), &ValueSource::Literal(_)),
                     "{}#{} is flagged decidable yet its subject is a literal: {}",
                     row.type_name,
                     row.relation,
                     query.comment
                 );
-                let ValueSource::Column(object_column) = &template.object_key else {
-                    panic!("an object key is a column, got {:?}", template.object_key);
+                let [ValueSource::Column(object_column)] = template.object_key.parts() else {
+                    panic!("an object key is one column, got {:?}", template.object_key);
                 };
                 assert_eq!(
                     Some(object_column.as_str()),
@@ -7582,7 +7705,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT TO contractor
 /// to bind everyone instead: denying more than RLS is safe, granting more is not.
 #[test]
 fn a_role_limited_barrier_with_no_scope_tuples_binds_everyone() {
-    let (dsl, notes) = barrier_outputs("tenant TEXT, id TEXT, PRIMARY KEY (tenant, id)");
+    let (dsl, notes) = barrier_outputs("tenant TEXT, id TEXT");
 
     assert!(
         !dsl.contains("but not"),
@@ -8186,7 +8309,7 @@ fn row_subject_columns(shapes: &[RelationShapes]) -> Vec<(String, String)> {
     for entry in shapes {
         for shape in &entry.shapes {
             if let RecordDerivation::FromRow { template, .. } = &shape.derivation {
-                if let ValueSource::Column(column) = &template.subject_key {
+                if let ValueSource::Column(column) = template.subject_key.part() {
                     out.push((entry.relation.clone(), column.clone()));
                 }
             }
@@ -8579,11 +8702,6 @@ CREATE POLICY docs_scoped ON docs FOR SELECT TO auditor USING (opaque_gate(id));
 fn a_grant_no_tuple_can_fill_denies_and_is_reported() {
     for (cause, declaration, expected_reason) in [
         (
-            "a composite primary key",
-            "CREATE TABLE shares(paper_id UUID, viewer TEXT, PRIMARY KEY (paper_id, viewer));",
-            "composite primary key (paper_id, viewer) leaves no single-column object identifier",
-        ),
-        (
             "no primary key and an 'id' that identifies no row",
             "CREATE TABLE shares(id UUID, viewer TEXT);",
             "no primary key, and 'id' is nullable or not uniquely constrained, so it does \
@@ -8732,7 +8850,7 @@ AS 'SELECT 0';";
             "CREATE TABLE papers(id UUID PRIMARY KEY, owner TEXT);
 {extra_schema}
 CREATE TABLE shares(paper_id UUID REFERENCES papers(id), viewer TEXT, editors TEXT[],
-  meta JSONB, is_public BOOLEAN, status TEXT, PRIMARY KEY (paper_id, viewer));
+  meta JSONB, is_public BOOLEAN, status TEXT);
 ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shares ENABLE ROW LEVEL SECURITY;
 CREATE POLICY papers_own ON papers FOR SELECT USING (owner = current_user);

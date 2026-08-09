@@ -14,7 +14,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::generator::db_lookup::resolve_pk_column;
+use crate::generator::db_lookup::single_pk_column;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
@@ -338,10 +338,10 @@ fn row_names_a_user<DB: DatabaseLike>(
     }
     // The object has to be this row's identity. A record keyed by a foreign
     // column describes another object, which a change to this row does not own.
-    let ValueSource::Column(object_column) = &template.object_key else {
+    let [ValueSource::Column(object_column)] = template.object_key.parts() else {
         return false;
     };
-    let Some(primary_key) = resolve_pk_column(table, db) else {
+    let Some(primary_key) = single_pk_column(table, db) else {
         return false;
     };
     if *object_column != primary_key {
@@ -352,5 +352,5 @@ fn row_names_a_user<DB: DatabaseLike>(
     if template.subject_type != USER_TYPE {
         return false;
     }
-    !matches!(&template.subject_key, ValueSource::Literal(_))
+    !matches!(template.subject_key.part(), ValueSource::Literal(_))
 }
