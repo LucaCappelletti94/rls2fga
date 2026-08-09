@@ -175,6 +175,89 @@ CREATE POLICY p ON notes FOR SELECT USING (owner = current_setting('app.user_id'
     );
 }
 
+/// A wrapper resolves to the key it reads, so its body has to be that read and nothing
+/// else. With a `FROM` and a `WHERE` the function yields no row once the guard is gone,
+/// so it returns NULL and `PostgreSQL` hides every row, while resolving it to the key
+/// would grant every row the request's value matches.
+///
+/// The caller identity half of this door is guarded by `is_direct_accessor_body`. This
+/// covers the declared attribute half, which reaches the key through `SettingReader`
+/// instead and so never meets that guard.
+#[test]
+fn a_wrapper_whose_body_can_return_no_row_does_not_resolve_to_its_key() {
+    fn schema(body: &str) -> String {
+        format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, tenant_id UUID);\n\
+             CREATE TABLE kill_switch(enabled BOOLEAN);\n\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE FUNCTION gated_tenant() RETURNS UUID LANGUAGE sql STABLE AS '{body}';\n\
+             CREATE POLICY p ON documents FOR SELECT USING (tenant_id = gated_tenant());\n"
+        )
+    }
+    fn classify(body: &str) -> PatternClass {
+        declared(
+            &schema(body),
+            vec![SessionAttribute::setting(
+                "app.tenant_id",
+                SessionAttributeKind::ScalarAttribute,
+            )],
+        )
+        .remove(0)
+        .1
+    }
+
+    let gated =
+        classify("SELECT current_setting(''app.tenant_id'')::uuid FROM kill_switch WHERE enabled");
+    assert!(
+        matches!(gated, PatternClass::Unknown { .. }),
+        "a body that can return no row does not resolve to its key, got: {gated:?}"
+    );
+
+    // The companion half, so the guard is known to be narrow rather than blanket: the
+    // same read with nothing around it still resolves to the declared key.
+    let plain = classify("SELECT current_setting(''app.tenant_id'')::uuid");
+    assert!(
+        matches!(&plain, PatternClass::P15RowValueEqualsCallerScalar { column, .. } if column == "tenant_id"),
+        "a body that is only the read still resolves to its key, got: {plain:?}"
+    );
+}
+
+/// The same hole on the caller identity door, reached by a clause the token scan in
+/// `is_direct_accessor_body` does not look at. `LIMIT 0` yields no row, so the function
+/// returns NULL and `PostgreSQL` hides every row, while naming the caller grants owners.
+#[test]
+fn an_accessor_body_that_can_return_no_row_does_not_name_the_caller() {
+    fn schema(body: &str) -> String {
+        format!(
+            "CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);\n\
+             ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+             CREATE FUNCTION who() RETURNS TEXT LANGUAGE sql STABLE AS '{body}';\n\
+             CREATE POLICY p ON notes FOR SELECT USING (owner = who());\n"
+        )
+    }
+    fn classify(body: &str) -> PatternClass {
+        let db = parse_schema(&schema(body)).expect("schema should parse");
+        TranslatorBuilder::new().build().classify(&db)[0]
+            .using_classification
+            .as_ref()
+            .expect("expected USING classification")
+            .pattern
+            .clone()
+    }
+
+    let limited = classify("SELECT current_setting(''app.user_id'', true) LIMIT 0");
+    assert!(
+        matches!(limited, PatternClass::Unknown { .. }),
+        "a body limited to no row does not name the caller, got: {limited:?}"
+    );
+
+    let plain = classify("SELECT current_setting(''app.user_id'', true)");
+    assert!(
+        matches!(&plain, PatternClass::P3DirectOwnership { column } if column == "owner"),
+        "a body that is only the read still names the caller, got: {plain:?}"
+    );
+}
+
 /// A helper naming the columns one translator classifies as owned, so a test asserting
 /// what is refused also asserts what is admitted under the same configuration.
 fn owned_columns(translator: &rls2fga::translator::Translator, sql: &str) -> Vec<String> {

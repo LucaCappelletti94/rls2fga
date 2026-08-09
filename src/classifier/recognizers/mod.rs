@@ -27,7 +27,7 @@ mod subquery;
 pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
 pub use session::recognize_session_attribute;
 use session::split_of_declared_set;
-use subquery::projected_select;
+pub(crate) use subquery::projected_select;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };

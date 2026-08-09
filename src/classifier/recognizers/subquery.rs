@@ -199,7 +199,7 @@ pub(super) fn set_limiting_clause(query: &Query) -> Option<&'static str> {
 /// WHERE false`, `LIMIT 0`, `FETCH FIRST 0 ROWS` and `HAVING false` each return no row,
 /// and a scalar subquery returning no row is NULL. `ORDER BY`, `DISTINCT` and a `WITH`
 /// binding cannot drop the single row, so they are left alone.
-pub(super) fn projected_select(query: &Query) -> Option<&Select> {
+pub(crate) fn projected_select(query: &Query) -> Option<&Select> {
     if set_limiting_clause(query).is_some() {
         return None;
     }

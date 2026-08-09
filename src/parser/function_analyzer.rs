@@ -2,13 +2,12 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{
-    Expr, FunctionArguments, FunctionSecurity, SelectItem, SetExpr, Statement, Value,
-};
+use sqlparser::ast::{Expr, FunctionArguments, FunctionSecurity, SelectItem, Statement, Value};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
@@ -588,18 +587,20 @@ fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenc
     }
 }
 
-/// The single expression a one-statement `SELECT` body projects.
+/// The single expression a one-statement `SELECT` body projects, when nothing in the
+/// body can drop that row.
 ///
 /// The one place a body is unwrapped to its expression, so a rule applied to one reader
-/// cannot be dropped by another.
-fn body_single_projection(body: &str) -> Option<Expr> {
+/// cannot be dropped by another. The narrowing check is [`projected_select`], the same
+/// one a scalar subquery in the policy goes through, because a body that yields no row
+/// returns NULL and a comparison against NULL hides the row while the model would grant
+/// it. Sharing it is what stops the two spellings of one hazard being guarded apart.
+pub(crate) fn body_single_projection(body: &str) -> Option<Expr> {
     let statements = Parser::parse_sql(&PostgreSqlDialect {}, body).ok()?;
     let [Statement::Query(query)] = statements.as_slice() else {
         return None;
     };
-    let SetExpr::Select(select) = query.body.as_ref() else {
-        return None;
-    };
+    let select = projected_select(query)?;
     let [SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }] =
         select.projection.as_slice()
     else {
