@@ -1,13 +1,13 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{
-    Expr, FunctionArguments, FunctionSecurity, SelectItem, SetExpr, Statement, Value,
-};
+use sqlparser::ast::{Expr, FunctionArguments, FunctionSecurity, SelectItem, Statement, Value};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
+use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
@@ -79,6 +79,31 @@ pub enum FunctionSemantic {
         returns: String,
     },
 
+    /// A function whose whole body reads one `current_setting` key, so calling it is
+    /// calling that key and the two spellings are one declaration.
+    #[serde(rename = "setting_reader")]
+    SettingReader {
+        /// The key the body reads.
+        key: String,
+    },
+
+    /// A function whose whole body expands one declared setting into rows, so calling it
+    /// is reading that setting as a set and the two spellings are one declaration.
+    ///
+    /// Distinct from [`FunctionSemantic::SettingReader`] because the body decides how the
+    /// setting becomes a set, and dropping that would lose the separator a split needs.
+    #[serde(rename = "set_reader")]
+    SetReader {
+        /// The key the body reads.
+        key: String,
+        /// The field path taken out of that key's value.
+        #[serde(default)]
+        path: Vec<String>,
+        /// The separator the body splits on, absent where the source is already a list.
+        #[serde(default)]
+        separator: Option<String>,
+    },
+
     /// A function whose semantics could not be determined.
     #[serde(rename = "unknown")]
     Unknown {
@@ -99,37 +124,57 @@ pub(crate) fn normalize_setting_key(key: &str) -> String {
     key.trim().to_ascii_lowercase()
 }
 
-/// The `current_setting` keys whose value is the caller's identity.
+/// The request-scoped values a deployment declared readable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessorInferenceSettings {
-    current_user_setting_keys: BTreeSet<String>,
+    session_attributes: Vec<SessionAttribute>,
 }
 
 impl AccessorInferenceSettings {
-    /// Build settings from an explicit list of keys.
+    /// Build settings naming these keys as holding the caller's identity.
     pub fn from_keys<I, S>(keys: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let current_user_setting_keys = keys
-            .into_iter()
-            .map(|key| normalize_setting_key(key.as_ref()))
-            .collect();
+        Self::from_attributes(
+            keys.into_iter()
+                .map(|key| SessionAttribute::setting(key, SessionAttributeKind::CallerId)),
+        )
+    }
+
+    /// Build settings from explicit declarations of any kind.
+    pub fn from_attributes<I>(attributes: I) -> Self
+    where
+        I: IntoIterator<Item = SessionAttribute>,
+    {
         Self {
-            current_user_setting_keys,
+            session_attributes: attributes.into_iter().collect(),
         }
     }
 
-    /// The keys naming the caller, whether the call sits inline in a policy or is the
-    /// whole body of a function the policy calls.
-    pub fn current_user_setting_keys(&self) -> &BTreeSet<String> {
-        &self.current_user_setting_keys
+    /// Every declared source, whether the call sits inline in a policy or is the whole
+    /// body of a function the policy calls.
+    pub fn session_attributes(&self) -> &[SessionAttribute] {
+        &self.session_attributes
     }
 
     fn allows_current_setting_key(&self, key: &str) -> bool {
-        self.current_user_setting_keys
-            .contains(&normalize_setting_key(key))
+        let key = normalize_setting_key(key);
+        self.session_attributes.iter().any(|attribute| {
+            attribute.kind() == SessionAttributeKind::CallerId
+                && attribute.path().is_empty()
+                && attribute.setting_key() == key
+        })
+    }
+
+    /// True when a deployment declared the value at `key` readable at all, whatever kind
+    /// it named. A wrapper function around such a key resolves to it.
+    pub(crate) fn declares_setting_key(&self, key: &str) -> bool {
+        let key = normalize_setting_key(key);
+        self.session_attributes
+            .iter()
+            .any(|attribute| attribute.setting_key() == key)
     }
 }
 
@@ -559,30 +604,38 @@ fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenc
     }
 }
 
-fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenceSettings) -> bool {
-    let Ok(statements) = Parser::parse_sql(&PostgreSqlDialect {}, body) else {
-        return false;
+/// The single expression a one-statement `SELECT` body projects, when nothing in the
+/// body can drop that row.
+///
+/// The one place a body is unwrapped to its expression, so a rule applied to one reader
+/// cannot be dropped by another. The narrowing check is [`projected_select`], the same
+/// one a scalar subquery in the policy goes through, because a body that yields no row
+/// returns NULL and a comparison against NULL hides the row while the model would grant
+/// it. Sharing it is what stops the two spellings of one hazard being guarded apart.
+pub(crate) fn body_single_projection(body: &str) -> Option<Expr> {
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, body).ok()?;
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return None;
     };
-    let [statement] = statements.as_slice() else {
-        return false;
-    };
-    let Statement::Query(query) = statement else {
-        return false;
-    };
-    let SetExpr::Select(select) = query.body.as_ref() else {
-        return false;
-    };
-    if select.projection.len() != 1 {
-        return false;
-    }
-
-    let Some(SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }) =
-        select.projection.first()
+    let select = projected_select(query)?;
+    let [SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }] =
+        select.projection.as_slice()
     else {
-        return false;
+        return None;
     };
+    Some(expr.clone())
+}
 
-    is_direct_current_user_accessor_expr(expr, settings)
+fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenceSettings) -> bool {
+    body_single_projection(body)
+        .is_some_and(|expr| is_direct_current_user_accessor_expr(&expr, settings))
+}
+
+/// The `current_setting` key a whole body reads, so a call to the function is a call to
+/// that key.
+pub(crate) fn body_setting_key(body: &str) -> Option<String> {
+    let expr = body_single_projection(body)?;
+    current_setting_literal_key(unwrap_accessor_expr(&expr))
 }
 
 impl FunctionSemantic {
@@ -600,7 +653,6 @@ impl FunctionSemantic {
     }
 
     /// Attempt to classify a function body by simple heuristic analysis.
-    /// Returns `None` if the function cannot be classified from its body alone.
     pub fn analyze_body_with_settings(
         body: &str,
         return_type: &str,

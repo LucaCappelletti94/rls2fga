@@ -196,6 +196,39 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         PatternClass::P10ConstantBool { value } => {
             format!("P10 (constant {value})")
         }
+        PatternClass::P18MembershipInCallerSet {
+            join_table,
+            member_column,
+            source,
+            ..
+        } => format!(
+            "P18 ({join_table}.{member_column} in caller set {})",
+            source.request_parameter()
+        ),
+        PatternClass::P14RowValueInCallerSet { column, source, .. } => {
+            format!(
+                "P14 ({column} in caller set {})",
+                source.request_parameter()
+            )
+        }
+        PatternClass::P15RowValueEqualsCallerScalar { column, source } => {
+            format!(
+                "P15 ({column} = caller value {})",
+                source.request_parameter()
+            )
+        }
+        PatternClass::P16ConstantInCallerSet { value, source, .. } => {
+            format!(
+                "P16 ('{value}' in caller set {})",
+                source.request_parameter()
+            )
+        }
+        PatternClass::P17CallerScalarEqualsConstant { value, source } => {
+            format!(
+                "P17 (caller value {} = '{value}')",
+                source.request_parameter()
+            )
+        }
         PatternClass::Unknown { reason, .. } => format!("Unknown: {reason}"),
     }
 }

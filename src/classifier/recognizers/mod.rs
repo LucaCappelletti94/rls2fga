@@ -19,11 +19,15 @@ use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableL
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
+/// Request-scoped values a deployment declared readable.
+mod session;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
 pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
-use subquery::query_only_projects;
+pub use session::recognize_session_attribute;
+pub(crate) use session::{caller_set, row_valued_set};
+pub(crate) use subquery::projected_select;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
 };
@@ -460,18 +464,31 @@ pub fn recognize_jsonb_field_ownership(
 
 /// The `(column, key chain)` of a jsonb text extraction, or `None` if `expr` is not one.
 fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
-    let Expr::BinaryOp {
-        left,
-        op: BinaryOperator::LongArrow,
-        right,
-    } = unwrap_cast_or_nested(expr)
-    else {
+    let (base, path) = json_text_path(expr)?;
+    Some((extract_column_name(base)?, path))
+}
+
+/// Peel an arrow chain into the value it reads, the key chain, and whether the last hop
+/// rendered text.
+///
+/// The one place an arrow chain is walked, so a rule about it cannot be applied by one
+/// reader and dropped by another. The terminator is reported rather than fixed, because
+/// the two readers need opposite ones: a value comparison needs `->>`, whose text form
+/// is what a column holds, while expanding an array needs `->`, since `jsonb_array_elements_text`
+/// takes jsonb and `PostgreSQL` refuses the text `->>` would hand it.
+fn json_path(expr: &Expr) -> Option<(&Expr, Vec<String>, bool)> {
+    let Expr::BinaryOp { left, op, right } = unwrap_cast_or_nested(expr) else {
         return None;
+    };
+    let rendered_text = match op {
+        BinaryOperator::LongArrow => true,
+        BinaryOperator::Arrow => false,
+        _ => return None,
     };
 
     let mut path = vec![json_literal_key(right)?];
     let mut node = unwrap_cast_or_nested(left);
-    // Walk the `->` hops leading up to the `->>`, innermost key last.
+    // Walk the `->` hops leading up to the last one, innermost key last.
     while let Expr::BinaryOp {
         left: inner,
         op: BinaryOperator::Arrow,
@@ -483,7 +500,23 @@ fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
     }
     path.reverse();
 
-    Some((extract_column_name(node)?, path))
+    Some((node, path, rendered_text))
+}
+
+/// A chain ending in `->>`, whose value is text.
+fn json_text_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
+    match json_path(expr)? {
+        (node, path, true) => Some((node, path)),
+        _ => None,
+    }
+}
+
+/// A chain ending in `->`, whose value is still jsonb.
+fn json_value_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
+    match json_path(expr)? {
+        (node, path, false) => Some((node, path)),
+        _ => None,
+    }
 }
 
 /// A jsonb key written as a string literal. An integer index addresses an array
@@ -667,12 +700,13 @@ pub fn extract_function_name(expr: &Expr) -> Option<String> {
 /// it answers for diagnosis rather than recognition. Widening `extract_function_name`
 /// instead would let P1 and P2 match a role function buried under an unrelated call.
 /// The skip runs on the node so `is_current_user_expr` stays the only predicate that
-/// decides what identifies the caller, keyword shape included.
+/// decides what identifies the caller, keyword shape included. A constructor is not a
+/// call either, so `ARRAY(subquery)` is left to [`subquery_set_constructors`].
 pub(crate) fn called_function_names(expr: &Expr, registry: &FunctionRegistry) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let _ = sqlparser::ast::visit_expressions(expr, |node| {
         if let Expr::Function(func) = node {
-            if !is_current_user_expr(node, registry) {
+            if !is_current_user_expr(node, registry) && !takes_a_subquery(func) {
                 let name = normalized_function_name(func);
                 if !names.contains(&name) {
                     names.push(name);
@@ -682,6 +716,33 @@ pub(crate) fn called_function_names(expr: &Expr, registry: &FunctionRegistry) ->
         core::ops::ControlFlow::<()>::Continue(())
     });
     names
+}
+
+/// Normalized names of every set constructor in `expr`, in source order, deduplicated.
+///
+/// `ARRAY(subquery)` parses as a function, so without this the blame names a registry
+/// entry an operator cannot create.
+pub(crate) fn subquery_set_constructors(expr: &Expr) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_expressions(expr, |node| {
+        if let Expr::Function(func) = node {
+            if takes_a_subquery(func) {
+                let name = normalized_function_name(func);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    names
+}
+
+/// Whether the node is a constructor spelled like a call. Under the `PostgreSQL` dialect
+/// only `ARRAY(subquery)` parses this way, since a real call's arguments are a list, so
+/// this never claims a user defined function that happens to be named `array`.
+fn takes_a_subquery(func: &sqlparser::ast::Function) -> bool {
+    matches!(func.args, FunctionArguments::Subquery(_))
 }
 
 /// Spellings of every operator in `expr` that no recognizer knows how to translate,
@@ -791,35 +852,75 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     }
 }
 
-/// The node an accessor expression bottoms out at, under parentheses, casts, and a scalar
-/// subquery that is only its projection.
+/// The value an accessor expression reads, and the field path taken out of it.
 ///
-/// One traversal so the name and the setting key an expression carries can never
-/// disagree about which call they describe.
-fn accessor_root(expr: &Expr) -> Option<&Expr> {
+/// One traversal, under parentheses, casts, a scalar subquery that is only its
+/// projection, and an arrow chain, so the name, the setting key and the field path an
+/// expression carries can never disagree about which read they describe.
+pub(crate) fn accessor_root_and_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
+    accessor_root_and_path_ending(expr, PathEnd::Text)
+}
+
+/// As [`accessor_root_and_path`], for a chain whose last hop is `->` and so is still
+/// jsonb. Expanding a jsonb array needs that, since `->>` renders the array as text and
+/// `PostgreSQL` refuses to expand text.
+pub(crate) fn accessor_root_and_value_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
+    accessor_root_and_path_ending(expr, PathEnd::JsonValue)
+}
+
+/// Which arrow the caller's read is allowed to end on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathEnd {
+    /// `->>`, whose value is the text a column holds.
+    Text,
+    /// `->`, whose value is still jsonb.
+    JsonValue,
+}
+
+fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Vec<String>)> {
     match expr {
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => accessor_root(inner),
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
+            accessor_root_and_path_ending(inner, end)
+        }
         // `(SELECT auth.uid())`, and only that: a subquery reading a table or carrying a
         // clause that can empty its result is a conjunct in disguise, and the pattern
         // keeps only a column name, so whatever it gates would vanish from the model.
         Expr::Subquery(query) => {
-            if !query_only_projects(query) {
-                return None;
-            }
-            let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() else {
-                return None;
-            };
             let [SelectItem::UnnamedExpr(inner) | SelectItem::ExprWithAlias { expr: inner, .. }] =
-                select.projection.as_slice()
+                projected_select(query)?.projection.as_slice()
             else {
                 return None;
             };
-            accessor_root(inner)
+            accessor_root_and_path_ending(inner, end)
         }
-        // A field pulled out of the value stops here: `sub` inside a token is an identity,
-        // and so is `tenant`, and nothing in the expression says which of them the caller
-        // is. Name a key holding the identity itself instead.
-        other => Some(other),
+        other => {
+            let hop = match end {
+                PathEnd::Text => json_text_path(other),
+                PathEnd::JsonValue => json_value_path(other),
+            };
+            match hop {
+                // Every hop below the last is `->`, so the walk continues on that end.
+                Some((base, mut path)) => {
+                    let (root, mut inner) =
+                        accessor_root_and_path_ending(base, PathEnd::JsonValue)?;
+                    inner.append(&mut path);
+                    Some((root, inner))
+                }
+                None => Some((other, Vec::new())),
+            }
+        }
+    }
+}
+
+/// The node an accessor expression bottoms out at, refusing a field taken out of it.
+///
+/// A field pulled out of the value is not the value: `sub` inside a token is an identity,
+/// and so is `tenant`, and nothing in the expression says which of them the caller is.
+/// Name a key holding the identity itself instead.
+fn accessor_root(expr: &Expr) -> Option<&Expr> {
+    match accessor_root_and_path(expr)? {
+        (root, path) if path.is_empty() => Some(root),
+        _ => None,
     }
 }
 
@@ -922,6 +1023,19 @@ fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
             }
             false
         }
+        _ => false,
+    }
+}
+
+/// `caller IS NOT NULL`, which says nothing a tuple does not already say.
+///
+/// A tuple exists only for a row that has an owner, and a caller with no identifier
+/// matches none, so the check is already enforced by how tuples are produced. The same
+/// test on a **row** column is a real filter and is not this: it decides which rows are
+/// granted, so dropping it would grant rows the policy refuses.
+pub fn is_redundant_caller_presence(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    match unparenthesize(expr) {
+        Expr::IsNotNull(inner) => is_current_user_expr(inner, registry),
         _ => false,
     }
 }

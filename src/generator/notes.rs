@@ -6,7 +6,7 @@
 //! unhandled, whether their own threshold dropped it, or whether the model simply says
 //! what the database says.
 
-use crate::classifier::patterns::RolePrivilege;
+use crate::classifier::patterns::{ConfidenceLevel, RolePrivilege};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use core::fmt;
@@ -112,6 +112,26 @@ pub enum TranslationNote {
         /// Commands left uncovered by the drop.
         commands: Vec<String>,
     },
+    /// A clause the caller's own threshold dropped, naming what it cost.
+    ///
+    /// The machine readable channel for a threshold drop, in either mode. The report
+    /// says the same thing in prose, and a program can only read it here.
+    ClauseBelowThreshold {
+        /// Table the policy guards.
+        table: String,
+        /// Policy carrying the clause.
+        policy: String,
+        /// `PERMISSIVE` or `RESTRICTIVE`.
+        mode: String,
+        /// `USING` or `WITH CHECK`.
+        clause: String,
+        /// Grade the clause held when it was dropped.
+        confidence: ConfidenceLevel,
+        /// Commands the clause fed.
+        commands: Vec<String>,
+        /// Action relations it directly diverged from the database.
+        relations: Vec<String>,
+    },
     /// A policy names a command without the clause that command needs.
     PolicyClauseAbsent {
         /// Policy missing the clause.
@@ -198,6 +218,41 @@ pub enum TranslationNote {
         table: String,
         /// Its direct children, whose rows fall closed on this type.
         children: Vec<String>,
+    },
+    /// No single column names a row of the table, so every tuple query keyed on one is
+    /// missing and each grant the model would carry falls closed.
+    RowsCannotBeNamed {
+        /// Table whose rows nothing can name.
+        table: String,
+        /// Why no single column identifies a row.
+        reason: String,
+        /// The tuple queries left unemitted, as the loader's script names them.
+        sources: Vec<String>,
+    },
+    /// The target caps an identifier, and this table's key can render a longer one, so
+    /// a row past the cap emits no fact and the model denies it.
+    ///
+    /// Stated as a contract rather than a list: the translator never sees the data, so
+    /// it can give the operator the exact number but not the rows. Only tables whose key
+    /// type could reach the cap get this, so a `uuid` or integer key is silent.
+    RowIdentifierBudget {
+        /// Table whose key could render too long a name.
+        table: String,
+        /// Characters the key may render, once encoded, before the row is left out.
+        budget: usize,
+    },
+    /// A condition parameter the caller has to put in every check context.
+    ///
+    /// The model is complete without it, but a check that omits the key is refused by
+    /// the service outright rather than denied, so the contract is part of using the
+    /// model at all.
+    CallerSuppliesConditionParameter {
+        /// Parameter name every check context must use.
+        parameter: String,
+        /// The session setting it mirrors, when it mirrors one.
+        setting_key: Option<String>,
+        /// Separator the policy splits that setting on, for a list parameter.
+        separator: Option<String>,
     },
     /// The membership table grants no reads, so no membership row is visible.
     MembershipTableGrantsNoReads {
@@ -295,17 +350,22 @@ impl TranslationNote {
             | Self::StandaloneAttributePolicy { .. }
             | Self::ExpressionRefused { .. }
             | Self::FunctionMissingMetadata { .. }
+            | Self::RowsCannotBeNamed { .. }
             | Self::PolicyBoundToDdlTimeRole { .. } => NoteSeverity::Unhandled,
             Self::RoleBypassesPolicies { .. } | Self::TableOwnerBypassesPolicies { .. } => {
                 NoteSeverity::Exempt
             }
-            Self::CoveringPoliciesBelowThreshold { .. } => NoteSeverity::BelowThreshold,
+            Self::CoveringPoliciesBelowThreshold { .. } | Self::ClauseBelowThreshold { .. } => {
+                NoteSeverity::BelowThreshold
+            }
             Self::MembershipTableGuarded { .. }
             | Self::AttributeNeedsRuntimeEnforcement { .. }
             | Self::InheritanceParentReadsOwnRowsOnly { .. } => NoteSeverity::Partial,
             Self::ReadsDeniedSoWritesCannotName { .. }
             | Self::PolicyRoleScope { .. }
             | Self::RoleGateScope { .. }
+            | Self::CallerSuppliesConditionParameter { .. }
+            | Self::RowIdentifierBudget { .. }
             | Self::MembershipReadScope { .. }
             | Self::RoleNameRewritten { .. }
             | Self::TypeNameCollision { .. }
@@ -323,6 +383,7 @@ impl TranslationNote {
     pub fn subject(&self) -> &str {
         match self {
             Self::OwnerBoundFunction { function } => function,
+            Self::CallerSuppliesConditionParameter { parameter, .. } => parameter,
             Self::TypeNameCollision { spelling, .. } => spelling,
             Self::RoleBypassesPolicies { role } => role,
             Self::PolicyReadRecursion { table, .. }
@@ -330,8 +391,11 @@ impl TranslationNote {
             | Self::CoveringPoliciesBelowThreshold { table, .. }
             | Self::TableOwnerBypassesPolicies { table, .. }
             | Self::InheritanceParentReadsOwnRowsOnly { table, .. }
+            | Self::RowsCannotBeNamed { table, .. }
+            | Self::RowIdentifierBudget { table, .. }
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
-            Self::UnresolvedPolicyTable { policy, .. }
+            Self::ClauseBelowThreshold { policy, .. }
+            | Self::UnresolvedPolicyTable { policy, .. }
             | Self::RestrictiveAttributeRefused { policy }
             | Self::RestrictiveBarrierBindsEveryone { policy, .. }
             | Self::PolicyClauseAbsent { policy, .. }
@@ -369,6 +433,33 @@ impl fmt::Display for TranslationNote {
                  owner's name for every caller and identifies nobody; policies calling it are \
                  dropped"
             ),
+            Self::CallerSuppliesConditionParameter {
+                parameter,
+                setting_key,
+                separator,
+            } => {
+                write!(
+                    f,
+                    "Every check context must carry '{parameter}'. Omitting it makes the \
+                     service refuse the check outright, where PostgreSQL would have hidden \
+                     the row"
+                )?;
+                match (setting_key, separator) {
+                    (Some(key), Some(separator)) => write!(
+                        f,
+                        ", so send exactly the elements string_to_array({key}, '{separator}') \
+                         would produce, and an empty list where {key} is unset. Sending your \
+                         own list instead grants a value holding '{separator}', which \
+                         PostgreSQL cannot represent in {key} and therefore refuses"
+                    ),
+                    (Some(key), None) => write!(
+                        f,
+                        ", so send the value of {key} exactly as PostgreSQL renders it, and \
+                         an empty string where {key} is unset"
+                    ),
+                    _ => write!(f, ""),
+                }
+            }
             Self::UnresolvedPolicyTable { policy, named } => write!(
                 f,
                 "Policy '{policy}' names '{named}', which does not resolve to one table in the \
@@ -409,6 +500,22 @@ impl fmt::Display for TranslationNote {
                 "Every permissive policy on '{table}' covering {} fell below the confidence \
                  threshold, so the model denies what RLS grants",
                 commands.join(", ")
+            ),
+            Self::ClauseBelowThreshold {
+                table,
+                policy,
+                mode,
+                clause,
+                confidence,
+                commands,
+                relations,
+            } => write!(
+                f,
+                "The {clause} clause of {mode} policy '{policy}' on '{table}' classified at \
+                 confidence {confidence}, below the threshold, so the model no longer answers \
+                 as the database does for {} through {}",
+                commands.join(", "),
+                relations.join(", ")
             ),
             Self::PolicyClauseAbsent {
                 policy,
@@ -492,6 +599,23 @@ impl fmt::Display for TranslationNote {
                  its own rows. Child rows are readable through '{table}' in PostgreSQL but \
                  carry no tuples here, so the model denies them.",
                 children.join(", ")
+            ),
+            Self::RowsCannotBeNamed {
+                table,
+                reason,
+                sources,
+            } => write!(
+                f,
+                "No tuple can name a row of '{table}' ({reason}), so {} cannot be loaded and \
+                 every grant on this type denies where PostgreSQL grants.",
+                sources.join(", ")
+            ),
+            Self::RowIdentifierBudget { table, budget } => write!(
+                f,
+                "A row of '{table}' is named by at most {budget} characters once encoded, \
+                 and the generated query leaves a longer one out rather than shortening it, \
+                 which would merge two rows into one object. Check whether any row exceeds \
+                 it: the model denies those rows where PostgreSQL grants them."
             ),
             Self::MembershipTableGrantsNoReads { join_table, .. } => write!(
                 f,

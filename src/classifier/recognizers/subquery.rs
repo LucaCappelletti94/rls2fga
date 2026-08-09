@@ -1,4 +1,5 @@
 use super::*;
+use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::names::unquote_identifier;
 use alloc::collections::BTreeSet;
 use sqlparser::ast::{Distinct, GroupByExpr, Ident, LimitClause, Query, SetExpr};
@@ -31,19 +32,33 @@ pub fn recognize_p5<DB: DatabaseLike>(
             fk_column,
             inner_predicates,
         } = candidate;
-        let Some(mut inner_expr) = combine_predicates_with_and(inner_predicates) else {
-            continue;
+        // No predicate of its own means the parent's own read rule is the whole
+        // requirement: "you may do this over a parent row you can already see". P5 gates
+        // on the parent's `can_select` regardless, so the inherited rule adds nothing.
+        let inner_classified = match combine_predicates_with_and(inner_predicates) {
+            Some(mut inner_expr) => {
+                // Nested queries use parent alias from outer scope.
+                strip_qualifier_from_expr_deep(
+                    &mut inner_expr,
+                    &parent_table,
+                    parent_alias.as_deref(),
+                );
+                crate::classifier::policy_classifier::classify_expr(
+                    &inner_expr,
+                    db,
+                    registry,
+                    &parent_table,
+                    command,
+                )
+            }
+            None => ClassifiedExpr {
+                pattern: PatternClass::P10ConstantBool { value: true },
+                confidence: ConfidenceLevel::A,
+            },
         };
-        // Nested queries use parent alias from outer scope.
-        strip_qualifier_from_expr_deep(&mut inner_expr, &parent_table, parent_alias.as_deref());
-        let inner_classified = crate::classifier::policy_classifier::classify_expr(
-            &inner_expr,
-            db,
-            registry,
-            &parent_table,
-            command,
-        );
-        // Only accept relationship patterns, not attribute checks.
+        // Only accept relationship patterns, not attribute checks. A constant `TRUE` is
+        // admitted because it is the bare delegation above, where the parent's gate is
+        // the entire rule.
         if !matches!(
             inner_classified.pattern,
             PatternClass::P1NumericThreshold { .. }
@@ -53,6 +68,7 @@ pub fn recognize_p5<DB: DatabaseLike>(
                 | PatternClass::P5ParentInheritance { .. }
                 | PatternClass::P7AbacAnd { .. }
                 | PatternClass::P8Composite { .. }
+                | PatternClass::P10ConstantBool { value: true }
         ) {
             continue;
         }
@@ -176,23 +192,22 @@ pub(super) fn set_limiting_clause(query: &Query) -> Option<&'static str> {
     query.fetch.is_some().then_some("FETCH")
 }
 
-/// True when `query` yields its projection and nothing narrows it, so its value is the
-/// projected expression itself.
+/// The `Select` a query projects when nothing narrows it, so its value is the projected
+/// expression itself.
 ///
 /// `PostgreSQL` empties a result with no `FROM` at all: `SELECT current_setting('k')
 /// WHERE false`, `LIMIT 0`, `FETCH FIRST 0 ROWS` and `HAVING false` each return no row,
 /// and a scalar subquery returning no row is NULL. `ORDER BY`, `DISTINCT` and a `WITH`
 /// binding cannot drop the single row, so they are left alone.
-pub(super) fn query_only_projects(query: &Query) -> bool {
+pub(crate) fn projected_select(query: &Query) -> Option<&Select> {
     if set_limiting_clause(query).is_some() {
-        return false;
+        return None;
     }
-    let Some(select) = query_select(query) else {
-        return false;
-    };
-    select.from.is_empty()
+    let select = query_select(query)?;
+    (select.from.is_empty()
         && select.selection.is_none()
-        && select_result_shaping_clause(select).is_none()
+        && select_result_shaping_clause(select).is_none())
+    .then_some(select)
 }
 
 /// Why a subquery cannot be read as the plain set of rows in the table its `FROM` names.
@@ -447,12 +462,30 @@ fn classify_membership_select<DB: DatabaseLike>(
             join_table,
             fk_column,
             user_column,
+            member_match: MemberMatch::Caller,
             extra_predicate_sql,
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership {
                 join_table,
                 fk_column,
                 user_column,
+                extra_predicate_sql,
+            },
+            confidence: ConfidenceLevel::A,
+        }),
+        MembershipSelectAnalysis::Unique {
+            join_table,
+            fk_column,
+            user_column,
+            member_match: MemberMatch::InCallerSet { source, separator },
+            extra_predicate_sql,
+        } => Some(ClassifiedExpr {
+            pattern: PatternClass::P18MembershipInCallerSet {
+                join_table,
+                fk_column,
+                member_column: user_column,
+                separator,
+                source,
                 extra_predicate_sql,
             },
             confidence: ConfidenceLevel::A,
@@ -482,6 +515,8 @@ enum MembershipSelectAnalysis {
         join_table: String,
         fk_column: String,
         user_column: String,
+        /// Whether that column holds the caller or a grant the caller may carry.
+        member_match: MemberMatch,
         extra_predicate_sql: Option<String>,
     },
     AmbiguousMultiple,
@@ -534,7 +569,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
     match matches.pop() {
-        Some((join_table, fk_column, user_column, extra_predicate_sql)) => {
+        Some((join_table, fk_column, user_column, member_match, extra_predicate_sql)) => {
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
@@ -560,6 +595,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
                 join_table,
                 fk_column,
                 user_column,
+                member_match,
                 extra_predicate_sql,
             }
         }
@@ -616,13 +652,23 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
             &columns,
             registry,
         ) {
-            MembershipEqAnalysis::UserColumn(column) if user_column.is_none() => {
+            MembershipEqAnalysis::UserColumn(column, MemberMatch::Caller)
+                if user_column.is_none() =>
+            {
                 user_column = Some(column);
                 continue;
             }
             // A second caller comparison, a link to the outer row, or a join column
-            // all mean this is not the shape.
-            MembershipEqAnalysis::UserColumn(_)
+            // all mean this is not the shape. So does a column holding a grant rather
+            // than a person, since granting the whole table to whoever appears in it
+            // needs the rows to name people.
+            //
+            // That last case is a second line rather than the one that refuses today:
+            // the caller reaches here only when the subquery references the caller, and
+            // a declared set is not the caller, so the shape stops earlier. Kept so a
+            // widening of that entry condition cannot turn grant keys into users, and
+            // pinned by `an_uncorrelated_subquery_testing_a_declared_set_is_refused`.
+            MembershipEqAnalysis::UserColumn(..)
             | MembershipEqAnalysis::FkCandidate(_)
             | MembershipEqAnalysis::OuterCorrelation => return None,
             MembershipEqAnalysis::NotRelevant => {}
@@ -841,10 +887,13 @@ pub(super) fn analyze_p5_parent_inheritance<DB: DatabaseLike>(
         let Some(fk_column) = fk_column else {
             continue;
         };
-        if inner_predicates.is_empty() {
-            continue;
-        }
-        if !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name) {
+        // The policy states the join, so a declared key adds integrity rather than
+        // meaning. It is still required wherever the subquery carries a rule of its own,
+        // because then the shape competes with a membership lookup and the key is what
+        // tells them apart. A bare correlation competes with nothing.
+        if !inner_predicates.is_empty()
+            && !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name)
+        {
             continue;
         }
 
@@ -960,7 +1009,7 @@ fn membership_matches<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
     registry: &FunctionRegistry,
-) -> Vec<(String, String, String, Option<String>)> {
+) -> Vec<(String, String, String, MemberMatch, Option<String>)> {
     let mut matches = Vec::new();
     for source in relation_sources(select) {
         let Some(table) = lookup_table(db, &source.table_name) else {
@@ -973,15 +1022,23 @@ fn membership_matches<DB: DatabaseLike>(
             .map(|c| c.stored_column_name().into_owned())
             .collect();
 
-        if let Some((fk_col, user_col, extra_predicate_sql)) = extract_membership_columns_with_db(
-            select,
-            &source.table_name,
-            source.alias.as_deref(),
-            &col_names,
-            Some(db),
-            registry,
-        ) {
-            matches.push((source.table_name, fk_col, user_col, extra_predicate_sql));
+        if let Some((fk_col, user_col, member_match, extra_predicate_sql)) =
+            extract_membership_columns_with_db(
+                select,
+                &source.table_name,
+                source.alias.as_deref(),
+                &col_names,
+                Some(db),
+                registry,
+            )
+        {
+            matches.push((
+                source.table_name,
+                fk_col,
+                user_col,
+                member_match,
+                extra_predicate_sql,
+            ));
         }
     }
     matches
@@ -1004,9 +1061,27 @@ pub(super) fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
     }
 }
 
+/// How a membership row names who it admits.
+///
+/// The two are not interchangeable: a column holding the caller is a subject a tuple can
+/// name, while a column holding a grant the caller carries is not a person at all, so
+/// reading one as the other would declare grant keys to be users.
+#[derive(Clone)]
+pub(super) enum MemberMatch {
+    /// The column holds the caller's own identity.
+    Caller,
+    /// The column holds a value the caller's declared set has to contain.
+    InCallerSet {
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+        /// Separator the policy splits the setting on.
+        separator: Option<String>,
+    },
+}
+
 enum MembershipEqAnalysis {
     NotRelevant,
-    UserColumn(String),
+    UserColumn(String, MemberMatch),
     FkCandidate(String),
     OuterCorrelation,
 }
@@ -1018,6 +1093,37 @@ fn analyze_membership_eq_predicate(
     join_cols: &[String],
     registry: &FunctionRegistry,
 ) -> MembershipEqAnalysis {
+    // `s.viewer = ANY(string_to_array(<declared set>, ','))`: the membership row holds a
+    // grant the caller may carry rather than the caller itself.
+    if let Expr::AnyOp {
+        left,
+        compare_op: BinaryOperator::Eq,
+        right,
+        ..
+    } = predicate
+    {
+        if let Some((qualifier, column)) = extract_qualified_column(left) {
+            if is_join_column_ref(
+                qualifier.as_deref(),
+                &column,
+                join_table,
+                join_alias,
+                join_cols,
+            ) {
+                if let Some((source, separator)) = caller_set(right, registry) {
+                    return MembershipEqAnalysis::UserColumn(
+                        column,
+                        MemberMatch::InCallerSet {
+                            source: source.clone(),
+                            separator,
+                        },
+                    );
+                }
+            }
+        }
+        return MembershipEqAnalysis::NotRelevant;
+    }
+
     let Expr::BinaryOp {
         left,
         op: BinaryOperator::Eq,
@@ -1034,14 +1140,14 @@ fn analyze_membership_eq_predicate(
         if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
             && is_current_user_expr(right, registry)
         {
-            return MembershipEqAnalysis::UserColumn(col);
+            return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
     }
     if let Some((qual, col)) = right_col.clone() {
         if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
             && is_current_user_expr(left, registry)
         {
-            return MembershipEqAnalysis::UserColumn(col);
+            return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
     }
 
@@ -1089,6 +1195,7 @@ pub(super) fn extract_membership_columns(
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
         select, join_table, join_alias, join_cols, None, registry,
     )
+    .map(|(fk, user, _, extra)| (fk, user, extra))
 }
 
 fn extract_membership_columns_with_db<DB: DatabaseLike>(
@@ -1098,10 +1205,10 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     join_cols: &[String],
     db: Option<&DB>,
     registry: &FunctionRegistry,
-) -> Option<(String, String, Option<String>)> {
+) -> Option<(String, String, MemberMatch, Option<String>)> {
     let mut fk_col: Option<String> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
-    let mut user_col: Option<String> = None;
+    let mut user_col: Option<(String, MemberMatch)> = None;
     let mut extras: Vec<String> = Vec::new();
     let unqualified_scope = db
         .map(|db| build_unqualified_membership_scope(select, db, join_table, join_cols))
@@ -1126,8 +1233,8 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
         for pred in predicates {
             match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry)
             {
-                MembershipEqAnalysis::UserColumn(col) => {
-                    user_col = Some(col);
+                MembershipEqAnalysis::UserColumn(col, how) => {
+                    user_col = Some((col, how));
                     continue;
                 }
                 MembershipEqAnalysis::FkCandidate(candidate) => {
@@ -1176,9 +1283,9 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             break; // FK already found; no need to scan further.
         }
         match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry) {
-            MembershipEqAnalysis::UserColumn(col) => {
+            MembershipEqAnalysis::UserColumn(col, how) => {
                 if user_col.is_none() {
-                    user_col = Some(col);
+                    user_col = Some((col, how));
                 }
             }
             MembershipEqAnalysis::FkCandidate(candidate) => {
@@ -1194,7 +1301,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
         }
     }
 
-    let user_col = user_col?;
+    let (user_col, member_match) = user_col?;
     let fk_col = fk_col?;
 
     let extra_predicate_sql = if extras.is_empty() {
@@ -1203,7 +1310,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
         Some(extras.join(" AND "))
     };
 
-    Some((fk_col, user_col, extra_predicate_sql))
+    Some((fk_col, user_col, member_match, extra_predicate_sql))
 }
 fn is_join_column_ref(
     qualifier: Option<&str>,

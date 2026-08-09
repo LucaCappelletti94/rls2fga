@@ -121,6 +121,11 @@ fn role_threshold_functions_and_resource_params(
             | PatternClass::P6BooleanFlag { .. }
             | PatternClass::P9AttributeCondition { .. }
             | PatternClass::P10ConstantBool { .. }
+            | PatternClass::P18MembershipInCallerSet { .. }
+            | PatternClass::P14RowValueInCallerSet { .. }
+            | PatternClass::P15RowValueEqualsCallerScalar { .. }
+            | PatternClass::P16ConstantInCallerSet { .. }
+            | PatternClass::P17CallerScalarEqualsConstant { .. }
             | PatternClass::Unknown { .. } => {}
         }
     }
@@ -201,7 +206,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
 
     let has_team = team_membership_table.is_some();
     let owner_col = resolve_owner_column(source_table, db);
-    let pk_col = resolve_pk_column(source_table, db);
+    let pk_cols = resolve_pk_columns(source_table, db);
 
     let user_principal = resolve_principal_info(
         db,
@@ -221,12 +226,12 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     };
 
     // --- Ownership sources ---
-    match (&owner_col, &pk_col) {
+    match (&owner_col, &pk_cols) {
         (Some(oc), Some(pk)) => {
             if let Some(upi) = user_principal.clone() {
                 table_plan.add_source(TupleSource::RoleOwnerUser {
                     table: source_table.to_string(),
-                    pk_col: pk.clone(),
+                    pk_cols: pk.clone(),
                     owner_col: oc.clone(),
                     user_table: upi.table,
                     user_pk_col: upi.pk_col,
@@ -242,7 +247,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
                 if let Some(tpi) = team_principal.clone() {
                     table_plan.add_source(TupleSource::RoleOwnerTeam {
                         table: source_table.to_string(),
-                        pk_col: pk.clone(),
+                        pk_cols: pk.clone(),
                         owner_col: oc.clone(),
                         team_table: tpi.table,
                         team_pk_col: tpi.pk_col,
@@ -313,8 +318,8 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         return;
     };
 
-    let Some(object_pk) = pk_col else {
-        add_missing_object_identifier_note(table_plan, source_table, "explicit grant tuples", db);
+    let Some(object_pk) = pk_cols else {
+        skip_source_without_row_identity(table_plan, source_table, "explicit grant tuples", db);
         return;
     };
 
@@ -341,7 +346,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
 
     table_plan.add_source(TupleSource::ExplicitGrants {
         table: source_table.to_string(),
-        pk_col: object_pk,
+        pk_cols: object_pk,
         grant_join_col: grant_join_col.to_string(),
         grant_table: grant_table.clone(),
         grant_role_col: grant_role_col.clone(),

@@ -5,8 +5,9 @@ use alloc::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::generator::model_generator::{
-    DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
+    ConditionParameter, DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
+use crate::generator::well_known::LIST_PARAMETER_TYPE;
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +41,27 @@ pub struct Condition {
 pub struct ConditionParamType {
     /// For example `TYPE_NAME_TIMESTAMP`.
     pub type_name: String,
+    /// Element type of a list parameter, absent for a single value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generic_types: Option<Vec<ConditionParamType>>,
+}
+
+/// The API shape of a condition parameter type: a list names its element type as a
+/// generic, a single value names none.
+fn condition_param_type(kind: &ConditionParameter) -> ConditionParamType {
+    match kind {
+        ConditionParameter::Scalar(type_name) => ConditionParamType {
+            type_name: (*type_name).to_string(),
+            generic_types: None,
+        },
+        ConditionParameter::ListOf(element) => ConditionParamType {
+            type_name: LIST_PARAMETER_TYPE.to_string(),
+            generic_types: Some(vec![ConditionParamType {
+                type_name: (*element).to_string(),
+                generic_types: None,
+            }]),
+        },
+    }
 }
 
 /// One type and its relations.
@@ -186,13 +208,8 @@ pub(crate) fn json_model_from_plan(plan: SchemaPlan) -> AuthorizationModel {
                         parameters: spec
                             .parameters
                             .iter()
-                            .map(|(parameter, type_name)| {
-                                (
-                                    parameter.clone(),
-                                    ConditionParamType {
-                                        type_name: type_name.clone(),
-                                    },
-                                )
+                            .map(|(parameter, kind)| {
+                                (parameter.clone(), condition_param_type(kind))
                             })
                             .collect(),
                     },

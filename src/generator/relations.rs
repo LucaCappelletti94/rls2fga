@@ -14,7 +14,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::generator::db_lookup::resolve_pk_column;
+use crate::generator::db_lookup::resolve_pk_columns;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
@@ -64,6 +64,37 @@ pub enum RowDecision {
     Any(Vec<RowDecision>),
     /// A subject every child grants.
     All(Vec<RowDecision>),
+    /// The row settles one side of a comparison the caller's own request value
+    /// completes, so a consumer holding that value decides with no round trip.
+    ///
+    /// Taking the subjects at face value is a wrong allow: the shapes here yield
+    /// `user:*`, which grants everyone until the comparison is applied.
+    RequestGated {
+        /// The direct relation whose records carry the row's side. Always on the same
+        /// type.
+        relation: String,
+        /// The shapes filling it, identical to that relation's own entry. Never empty.
+        shapes: Vec<RecordDescription>,
+        /// Context key each record carries the row's side under.
+        context_key: String,
+        /// Parameter the caller supplies its own value as, in every check context.
+        request_parameter: String,
+        /// How the two sides are compared.
+        comparison: RequestComparison,
+    },
+}
+
+/// How a request-gated relation compares the row's side against the caller's.
+///
+/// `#[non_exhaustive]`: a comparison the analysis learns adds a variant, and a caller
+/// matching this outside the crate keeps a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RequestComparison {
+    /// The caller's set has to hold the row's value.
+    CallerSetHolds,
+    /// The caller's single value has to equal the row's.
+    CallerValueEquals,
 }
 
 /// Report every relation of the emitted model.
@@ -164,6 +195,9 @@ fn relation_decision<DB: DatabaseLike>(
     }
     let answer = match find_type(plan, type_name) {
         None => None,
+        // A clause the database evaluates was lost here, so the emitted rule and the
+        // database disagree and no row can settle the difference.
+        Some(type_plan) if type_plan.narrowed_relations.contains(relation) => None,
         Some(type_plan) => match type_plan.computed_relations.get(relation) {
             Some(expr) => expr_decision(type_name, expr, plan, sources, db, visiting),
             // A relation with direct subjects is answered by the tuples loaded into
@@ -233,14 +267,51 @@ fn leaf_decision<DB: DatabaseLike>(
         return None;
     }
 
+    // A gate the request completes is decidable in a different way: the row settles one
+    // side and the consumer's own value settles the other, so the recipe carries the
+    // comparison rather than a subject set. One policy covering several commands records
+    // its gate once per command, so the distinct sources are what decides.
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let distinct: Vec<_> = feeding
+        .iter()
+        .filter(|(source, ..)| seen.insert(source.dedup_key()))
+        .collect();
+    if distinct
+        .iter()
+        .any(|(source, ..)| matches!(source, TupleSource::SessionAttributeGate { .. }))
+    {
+        // A second source beside it would be a composition this cannot describe.
+        let [(
+            source @ TupleSource::SessionAttributeGate {
+                row_parameter,
+                request_parameter,
+                comparison,
+                ..
+            },
+            owner_type,
+            only_own_rows,
+        )] = distinct.as_slice()
+        else {
+            return None;
+        };
+        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
+        return Some(RowDecision::RequestGated {
+            relation: relation.to_string(),
+            shapes: vec![description],
+            context_key: row_parameter.parameter().to_string(),
+            request_parameter: request_parameter.clone(),
+            comparison: *comparison,
+        });
+    }
+
+    let mut unique: BTreeSet<String> = BTreeSet::new();
     let mut shapes = Vec::new();
     for (source, owner_type, only_own_rows) in feeding {
         let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
         if !row_names_a_user(&description.derivation, type_name, db) {
             return None;
         }
-        if seen.insert(source.dedup_key()) {
+        if unique.insert(source.dedup_key()) {
             shapes.push(description);
         }
     }
@@ -265,15 +336,26 @@ fn row_names_a_user<DB: DatabaseLike>(
     if template.object_type != type_name {
         return false;
     }
-    // The object has to be this row's identity. A record keyed by a foreign
-    // column describes another object, which a change to this row does not own.
-    let ValueSource::Column(object_column) = &template.object_key else {
+    // The object has to be this row's identity: every key column, in declared order. A
+    // record keyed by a foreign column describes another object, which a change to this
+    // row does not own. A single-column key is a list of one, so nothing about that case
+    // moves.
+    let object_columns: Option<Vec<&str>> = template
+        .object_key
+        .parts()
+        .iter()
+        .map(|part| match part {
+            ValueSource::Column(column) => Some(column.as_str()),
+            _ => None,
+        })
+        .collect();
+    let Some(object_columns) = object_columns else {
         return false;
     };
-    let Some(primary_key) = resolve_pk_column(table, db) else {
+    let Some(primary_key) = resolve_pk_columns(table, db) else {
         return false;
     };
-    if *object_column != primary_key {
+    if object_columns != primary_key {
         return false;
     }
     // The subject has to be a user the consumer can compare against, named by
@@ -281,5 +363,5 @@ fn row_names_a_user<DB: DatabaseLike>(
     if template.subject_type != USER_TYPE {
         return false;
     }
-    !matches!(&template.subject_key, ValueSource::Literal(_))
+    !matches!(template.subject_key.part(), ValueSource::Literal(_))
 }

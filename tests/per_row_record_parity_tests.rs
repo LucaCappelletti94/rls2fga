@@ -29,8 +29,8 @@ use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
-    ValueSource,
+    records_from_row, BoundQuery, Record, RecordContextValue, RecordDerivation, RecordDescription,
+    RowValues, ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::TupleQuery;
@@ -54,6 +54,21 @@ struct TupleRow {
     relation: String,
     #[diesel(sql_type = Text)]
     subject: String,
+}
+
+/// The same, for a query whose tuples carry a condition context. A conditional record
+/// grants nobody until the request completes the comparison, so the context is part of
+/// what the two sides have to agree on.
+#[derive(QueryableByName, Debug, Clone)]
+struct ConditionalTupleRow {
+    #[diesel(sql_type = Text)]
+    object: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    subject: String,
+    #[diesel(sql_type = Jsonb)]
+    context: serde_json::Value,
 }
 
 /// A whole row as JSON, which is how a test reads columns it only learns about
@@ -149,21 +164,54 @@ async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgCo
 
 /// Records the generated query returns.
 fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Record> {
+    let failed = |error: diesel::result::Error| -> ! {
+        panic!(
+            "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
+            query.comment, query.sql
+        )
+    };
+    if query.condition.is_some() {
+        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&query.sql)
+            .load(conn)
+            .unwrap_or_else(|error| failed(error));
+        return rows
+            .into_iter()
+            .map(|row| Record {
+                object: row.object,
+                relation: row.relation,
+                subject: row.subject,
+                context: Some(context_of(&row.context, &query.sql)),
+            })
+            .collect();
+    }
     let rows: Vec<TupleRow> = diesel::sql_query(&query.sql)
         .load(conn)
-        .unwrap_or_else(|error| {
-            panic!(
-                "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
-                query.comment, query.sql
-            )
-        });
+        .unwrap_or_else(|error| failed(error));
     rows.into_iter()
         .map(|row| Record {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
+            context: None,
         })
         .collect()
+}
+
+/// The one key a conditional tuple's context carries. More than one would mean the
+/// request supplies nothing, which the model's own invariant already forbids.
+fn context_of(context: &serde_json::Value, sql: &str) -> RecordContextValue {
+    let object = context
+        .as_object()
+        .unwrap_or_else(|| panic!("a conditional tuple's context is an object:\n{sql}"));
+    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
+        panic!("a conditional tuple carries exactly one context key:\n{sql}");
+    };
+    RecordContextValue {
+        key: key.clone(),
+        value: scalar_text(value)
+            .unwrap_or_else(|| panic!("a context value renders as text:\n{sql}"))
+            .into_owned(),
+    }
 }
 
 /// Every row of `table`, as JSON.
@@ -219,20 +267,41 @@ fn records_from_bound_query(
     conn: &mut PgConnection,
     bound: &BoundQuery,
     key: &str,
+    conditional: bool,
 ) -> BTreeSet<Record> {
     let literal = format!("'{}'", key.replace('\'', "''"));
     let sql = bound.sql.replace("$1", &literal);
-    let rows: Vec<TupleRow> = diesel::sql_query(&sql).load(conn).unwrap_or_else(|error| {
+    let failed = |error: diesel::result::Error| -> ! {
         panic!(
             "a bound query failed on PostgreSQL 18 for {}.{} = {literal}\n{sql}\nError: {error}",
             bound.table, bound.key_column
         )
-    });
+    };
+    // The whole-table query and its bound replay have to agree on the context too, or a
+    // consumer replaying a change would answer differently from the loader.
+    if conditional {
+        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&sql)
+            .load(conn)
+            .unwrap_or_else(|error| failed(error));
+        return rows
+            .into_iter()
+            .map(|row| Record {
+                object: row.object,
+                relation: row.relation,
+                subject: row.subject,
+                context: Some(context_of(&row.context, &sql)),
+            })
+            .collect();
+    }
+    let rows: Vec<TupleRow> = diesel::sql_query(&sql)
+        .load(conn)
+        .unwrap_or_else(|error| failed(error));
     rows.into_iter()
         .map(|row| Record {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
+            context: None,
         })
         .collect()
 }
@@ -266,7 +335,8 @@ fn assert_bound_queries_account_for_every_record(
         let mut union = BTreeSet::new();
         let mut narrowed = false;
         for key in &keys {
-            let bound_records = records_from_bound_query(conn, bound, key);
+            let bound_records =
+                records_from_bound_query(conn, bound, key, query.condition.is_some());
             let invented: Vec<_> = bound_records.difference(&whole).collect();
             assert!(
                 invented.is_empty(),
@@ -537,6 +607,77 @@ async fn every_row_shape_description_matches_its_own_sql() {
     );
 }
 
+/// Rows chosen for what decides the answer: two teams that differ, a repeat so the
+/// record set cannot pass by being a bijection with the rows, and a NULL that must yield
+/// no record at all, since a comparison against NULL is NULL and `PostgreSQL` hides the
+/// row.
+const REQUEST_GATE_SEED: &str = "
+INSERT INTO documents (id, team_id) VALUES (1, 'team-a'), (2, 'team-b'), (3, 'team-a'), (4, NULL);
+INSERT INTO reports (id, team_id) VALUES (1, 'team-a'), (2, 'team-b'), (3, 'team-a'), (4, NULL);
+";
+
+/// The request-gated shape, which nothing else in this file produces.
+///
+/// Every other schema here reaches the caller through an accessor rather than through a
+/// declared set, so no conditional tuple from a request gate ever reached this
+/// comparison and the context a description carries went unchecked against the context
+/// its own SQL emits. Both fixtures are run because they differ in what the caller has
+/// to send, a list against a split, while the record each row yields must be identical.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_request_gated_description_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    for fixture in ["token_claim_set", "function_carried_set"] {
+        conn.batch_execute(
+            "DROP TABLE IF EXISTS documents, reports CASCADE; \
+             DROP FUNCTION IF EXISTS user_teams();",
+        )
+        .expect("failed to clear the previous fixture");
+        conn.batch_execute(&support::read_fixture_sql(fixture))
+            .unwrap_or_else(|error| panic!("failed to apply the {fixture} schema: {error}"));
+        conn.batch_execute(REQUEST_GATE_SEED)
+            .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
+
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let queries = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
+
+        // Non-vacuous: without this the comparison below could pass by comparing two
+        // empty sets, which is exactly how this shape went uncovered until now.
+        let conditional = queries
+            .iter()
+            .filter(|query| query.condition.is_some())
+            .count();
+        assert_eq!(
+            conditional, 2,
+            "{fixture}: both spellings emit a conditional query, got {conditional}"
+        );
+
+        let (pure, joined, records) =
+            assert_descriptions_match_their_sql(&mut conn, &queries, fixture);
+        assert_eq!(
+            joined, 0,
+            "{fixture}: a request gate is decided by the row alone"
+        );
+        assert_eq!(
+            pure, 2,
+            "{fixture}: one description per spelling, got {pure}"
+        );
+        assert_eq!(
+            records, 6,
+            "{fixture}: three named teams per table and none for the NULL, got {records}"
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
 async fn role_ownership_and_grant_shapes_are_marked_joining() {
@@ -689,6 +830,83 @@ async fn holder_shapes_match_their_own_sql() {
     );
 }
 
+/// A table keyed on two columns, carrying its own read policy, seeded with values the
+/// target cannot spell verbatim.
+///
+/// This is the case the encoding exists for. The whole batch is refused if one value
+/// renders wrong, and a compound name the evaluator spells differently from the SQL is
+/// drift no DSL assertion can see, so the two are compared row by row here.
+const COMPOUND_IDENTITY_SCHEMA: &str = "
+CREATE TABLE paper_shares (
+    paper_id TEXT,
+    viewer TEXT,
+    PRIMARY KEY (paper_id, viewer)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON paper_shares FOR SELECT
+    USING (viewer = auth_current_user_id());
+";
+
+/// Every member of the refused family, on both sides of the key and in the subject.
+/// `alice smith` is the ordinary one: a space in a name breaks the load today.
+const COMPOUND_IDENTITY_SEED: &str = "
+INSERT INTO paper_shares (paper_id, viewer) VALUES
+  ('p1', 'alice'),
+  ('p1', 'alice smith'),
+  ('p|2', 'bob'),
+  ('p2', 'a|b'),
+  ('p3', ''),
+  ('p4', '*'),
+  ('p5', 'carol#member'),
+  ('p6', 'ali\u{00e7}e'),
+  ('p:7', 'dave'),
+  ('', 'erin');
+";
+
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(COMPOUND_IDENTITY_SCHEMA)
+        .expect("failed to apply the compound identity schema");
+    conn.batch_execute(COMPOUND_IDENTITY_SEED)
+        .expect("failed to seed the compound identity schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        COMPOUND_IDENTITY_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let queries = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&mut conn, &queries, "compound identity");
+
+    assert_eq!(
+        pure, 1,
+        "the ownership shape follows from one row of the share table, saw {pure}"
+    );
+    assert_eq!(joined, 0, "nothing here reads a second table, saw {joined}");
+    assert_eq!(
+        records, 10,
+        "every seeded row must be named, including the ones the target refuses \
+         verbatim, saw {records}"
+    );
+}
+
 /// A schema whose reads compose all three ways a recipe can: one relation's records
 /// alone, a union of two, and an intersection a barrier makes. `can_delete` nests the
 /// union inside the intersection, since a per-row `DELETE` reads the table.
@@ -743,6 +961,7 @@ fn recipe_kind(decision: &RowDecision) -> &'static str {
         RowDecision::Leaf { .. } => "leaf",
         RowDecision::Any(_) => "any",
         RowDecision::All(_) => "all",
+        RowDecision::RequestGated { .. } => "request-gated",
         other => panic!("a recipe shape this test cannot read: {other:?}"),
     }
 }
@@ -751,7 +970,10 @@ fn recipe_kind(decision: &RowDecision) -> &'static str {
 /// leaf of the same recipe has to agree on.
 fn first_shape(decision: &RowDecision) -> &RecordDescription {
     match decision {
-        RowDecision::Leaf { relation, shapes } => shapes
+        RowDecision::Leaf { relation, shapes }
+        | RowDecision::RequestGated {
+            relation, shapes, ..
+        } => shapes
             .first()
             .unwrap_or_else(|| panic!("leaf {relation} carries no shape, so it decides nothing")),
         RowDecision::Any(children) | RowDecision::All(children) => children
@@ -767,7 +989,7 @@ fn recipe_object(decision: &RowDecision, row: &serde_json::Value) -> Option<Stri
     let RecordDerivation::FromRow { template, .. } = &first_shape(decision).derivation else {
         panic!("a leaf resolves from the row");
     };
-    let ValueSource::Column(column) = &template.object_key else {
+    let [ValueSource::Column(column)] = template.object_key.parts() else {
         panic!("a leaf keys its object on a column");
     };
     let key = scalar_text(row.get(column)?)?;
@@ -987,4 +1209,80 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
         compared > 50,
         "too few checks to be meaningful, saw {compared}"
     );
+}
+
+/// The other half of the compound identity case: the names the two renderers agree on
+/// have to be names the service actually takes, and they have to answer for the right
+/// caller.
+///
+/// The load is all or nothing, so one value the target cannot spell fails the write and
+/// the whole seed with it. That is the failure this encoding exists to remove, and the
+/// seed carries every member of the refused family.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_compound_identity_loads_and_answers_against_the_service() {
+    let (_postgres, mut conn) = start_postgres().await;
+    conn.batch_execute(COMPOUND_IDENTITY_SCHEMA)
+        .expect("failed to apply the compound identity schema");
+    conn.batch_execute(COMPOUND_IDENTITY_SEED)
+        .expect("failed to seed the compound identity schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        COMPOUND_IDENTITY_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
+    for query in &outputs.tuple_queries() {
+        tuples.extend(records_from_sql(&mut conn, query));
+    }
+    assert_eq!(
+        tuples.len(),
+        10,
+        "every seeded share must produce a fact, or the encoding lost a row: {tuples:#?}"
+    );
+
+    // The write is where an unspellable name fails, and it fails the whole batch.
+    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+
+    let mut allowed = 0usize;
+    let mut denied = 0usize;
+    for record in &tuples {
+        assert!(
+            support::openfga::check_allowed(
+                &client,
+                &record.subject,
+                &record.relation,
+                &record.object
+            )
+            .await,
+            "the viewer a share names must reach it: {record:?}"
+        );
+        allowed += 1;
+
+        // A stranger must not, or the encoding has collapsed two names into one. The
+        // wildcard spelling is the one that would: an owner of `*` renders `user:*`
+        // verbatim and grants everybody.
+        assert!(
+            !support::openfga::check_allowed(
+                &client,
+                "user:stranger",
+                &record.relation,
+                &record.object
+            )
+            .await,
+            "nobody else may reach it: {record:?}"
+        );
+        denied += 1;
+    }
+
+    assert!(allowed > 0 && denied > 0, "the case has to cut both ways");
 }

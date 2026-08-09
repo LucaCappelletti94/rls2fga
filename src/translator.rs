@@ -3,7 +3,7 @@ use crate::no_std_prelude::*;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
 use crate::generator::json_model::{json_model_from_plan, AuthorizationModel};
@@ -68,6 +68,26 @@ impl TranslatorBuilder {
         S: AsRef<str>,
     {
         self.settings = AccessorInferenceSettings::from_keys(keys);
+        self
+    }
+
+    /// Declare the request-scoped values a policy may read, of any kind.
+    ///
+    /// A source is a `current_setting` key, optionally with a field path taken out of
+    /// the value at that key. Declaring one is a contract with the caller: the condition
+    /// parameter it names has to be supplied in every check context.
+    #[must_use]
+    pub fn with_session_attributes<I>(mut self, attributes: I) -> Self
+    where
+        I: IntoIterator<Item = SessionAttribute>,
+    {
+        self.settings = AccessorInferenceSettings::from_attributes(
+            self.settings
+                .session_attributes()
+                .iter()
+                .cloned()
+                .chain(attributes),
+        );
         self
     }
 

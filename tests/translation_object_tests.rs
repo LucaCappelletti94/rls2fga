@@ -1,7 +1,7 @@
 //! Reaching the outputs, and what stops it.
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::NoteSeverity;
+use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
@@ -27,6 +27,15 @@ const CLEAN: &str = "CREATE TABLE users(id UUID PRIMARY KEY);\n\
 const REFUSED: &str = "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, bits INT);\n\
                        ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
                        CREATE POLICY docs_sel ON docs FOR SELECT USING ((bits & 2) = 2);\n";
+
+/// A RESTRICTIVE barrier the caller's own threshold drops, beside a grant that
+/// survives. `P6BooleanFlag` is confidence B by design, so requesting A drops the
+/// barrier and nothing else.
+const RESTRICTIVE_BELOW_THRESHOLD: &str =
+    "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, is_public BOOLEAN);\n\
+     ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+     CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);\n\
+     CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT USING (is_public);\n";
 
 /// An expression nobody classified means the model denies what the database grants, so
 /// the outputs are refused until the caller has seen it.
@@ -121,6 +130,57 @@ fn a_clause_the_callers_threshold_dropped_does_not_refuse() {
             .contains("fell below the confidence threshold"),
         "and the report still names it:\n{}",
         outputs.report()
+    );
+}
+
+/// The same payoff, for the mode it never covered. A RESTRICTIVE clause the caller's
+/// own threshold dropped is the same caller choice as a permissive one and must not
+/// refuse either. It used to: the stand-in denial was filed as an expression nobody
+/// classified, which is the one severity that blocks the outputs, so raising the bar
+/// made the crate refuse to answer at all. The stand-in still denies, so the model is
+/// unchanged, and the loss is now reported as what it is.
+#[test]
+fn a_restrictive_clause_the_callers_threshold_dropped_does_not_refuse() {
+    let db = db_of(RESTRICTIVE_BELOW_THRESHOLD);
+    let outputs = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .outputs()
+        .expect("the caller's own threshold is not a gap in the translation");
+
+    let dropped: Vec<&TranslationNote> = outputs
+        .notes()
+        .iter()
+        .filter(|note| matches!(note, TranslationNote::ClauseBelowThreshold { .. }))
+        .collect();
+    assert_eq!(
+        dropped.len(),
+        1,
+        "the barrier's loss is reported once: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        matches!(
+            dropped[0],
+            TranslationNote::ClauseBelowThreshold { mode, policy, .. }
+                if mode == "RESTRICTIVE" && policy == "docs_bar"
+        ),
+        "and it names the barrier and its mode: {:?}",
+        dropped[0]
+    );
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::ExpressionRefused { .. })),
+        "a clause the crate could read is not an expression nobody classified: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        outputs
+            .model()
+            .contains("define can_select: owner and no_access"),
+        "the barrier still denies, so the emitted model is unchanged:\n{}",
+        outputs.model()
     );
 }
 

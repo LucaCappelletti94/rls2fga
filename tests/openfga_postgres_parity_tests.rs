@@ -3470,3 +3470,706 @@ CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
         failures.join("\n")
     );
 }
+
+// ── Phase 3: a value the request carries, against both real services ──────────
+
+/// The connetto rows: one the owner arm admits, one only the subject arm admits, one
+/// neither admits, and one whose owner is NULL.
+///
+/// No empty-string owner, although `PostgreSQL` admits one: the ownership tuple generator
+/// renders it as the subject `user:`, which v1.11.6 refuses as malformed, aborting the
+/// whole load. That is a defect of its own and is tracked as an open lead rather than
+/// folded in here.
+const SEEDED_CONNETTO_NOTES: [(i32, Option<&str>); 4] = [
+    (1, Some("alice")),
+    (2, Some("team-a")),
+    (3, Some("bob")),
+    (4, None),
+];
+
+/// The caller states the phase 2 probes covered, as `(app.user_id, app.subjects)`.
+/// `None` means the setting is unset, which is what a caller holding nothing sends.
+const CALLER_STATES: [(Option<&str>, Option<&str>); 6] = [
+    (None, None),
+    (Some("alice"), None),
+    (Some("alice"), Some("")),
+    (Some("alice"), Some("team-a")),
+    (None, Some("team-a")),
+    (None, Some("team-a,team-a")),
+];
+
+/// Rows a `LOGIN` role reads under one caller state, which is the oracle.
+fn notes_visible_to(
+    conn: &mut PgConnection,
+    user_id: Option<&str>,
+    subjects: Option<&str>,
+) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_writer")?;
+        // `set_config` with NULL leaves the setting unset, which is the state a caller
+        // holding nothing is in.
+        diesel::sql_query("SELECT set_config('app.user_id', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(user_id)
+            .execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.subjects', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(subjects)
+            .execute(conn)?;
+        let rows: Vec<IdRow> = diesel::sql_query("SELECT id FROM notes ORDER BY id").load(conn)?;
+        seen = rows.into_iter().map(|row| row.id).collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+#[derive(QueryableByName)]
+struct IdRow {
+    #[diesel(sql_type = Integer)]
+    id: i32,
+}
+
+/// What the caller sends for a `list<string>` parameter, per the recorded contract:
+/// exactly what `string_to_array(guc, ',')` would produce, and `[]` where the setting is
+/// unset. Sending the caller's own subjects instead would grant a comma-bearing subject
+/// the database refuses.
+fn caller_subject_list(subjects: Option<&str>) -> serde_json::Value {
+    match subjects {
+        // Unset yields NULL and the empty string yields no elements, and both admit
+        // nothing, which an empty list reproduces exactly.
+        None | Some("") => serde_json::json!([]),
+        Some(text) => serde_json::Value::Array(
+            text.split(',')
+                .map(|part| serde_json::Value::String(part.to_string()))
+                .collect(),
+        ),
+    }
+}
+
+/// The `connetto_or_policy` fixture against both services, over the caller states the
+/// phase 2 probes covered.
+///
+/// Two-sided by construction: the case counts the rows only the owner arm admits and the
+/// rows only the subject arm admits, and fails when either is zero, so a model keeping
+/// one arm cannot pass. It also counts denials, so a model granting everything cannot.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn session_attribute_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("connetto_or_policy");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the connetto schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_writer LOGIN; GRANT SELECT ON notes TO app_writer;")
+        .expect("Failed to create the querying role");
+    let values: Vec<String> = SEEDED_CONNETTO_NOTES
+        .iter()
+        .map(|(id, owner)| match owner {
+            Some(owner) => format!("({id}, '{owner}')"),
+            None => format!("({id}, NULL)"),
+        })
+        .collect();
+    conn.batch_execute(&format!(
+        "INSERT INTO notes (id, owner) VALUES {};",
+        values.join(", ")
+    ))
+    .expect("Failed to seed the notes");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_or_policy");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some())
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        1,
+        "the declared set emits exactly one conditional query, got {} queries",
+        tuple_queries.len()
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    assert_eq!(
+        conditional_rows.len(),
+        3,
+        "a NULL owner matches nothing in PostgreSQL, so its row carries no tuple"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "session-attribute-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let plain: Vec<TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_none())
+        .cloned()
+        .collect();
+    writes.extend(
+        execute_tuple_queries(&mut conn, &plain)
+            .iter()
+            .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+    );
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut owner_only = 0usize;
+    let mut subject_only = 0usize;
+    let mut denied = 0usize;
+    for (user_id, subjects) in CALLER_STATES {
+        let visible = notes_visible_to(&mut conn, user_id, subjects);
+        // The two arms apart, so the case knows each one carries rows of its own.
+        let owner_arm = notes_visible_to(&mut conn, user_id, None);
+        let subject_arm = notes_visible_to(&mut conn, None, subjects);
+        owner_only += owner_arm.difference(&subject_arm).count();
+        subject_only += subject_arm.difference(&owner_arm).count();
+
+        let caller = user_id.unwrap_or("nobody");
+        for (id, _) in SEEDED_CONNETTO_NOTES {
+            let expected = visible.contains(&id);
+            if !expected {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                &format!("user:{caller}"),
+                "can_select",
+                &format!("notes:{id}"),
+                serde_json::json!({ "app_subjects": caller_subject_list(subjects) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "notes:{id} for user_id={user_id:?} subjects={subjects:?}: \
+                     postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        owner_only > 0,
+        "no row is readable through the owner arm alone, so keeping only the subject arm would pass"
+    );
+    assert!(
+        subject_only > 0,
+        "no row is readable through the subject arm alone, so keeping only the owner arm would pass"
+    );
+    assert!(
+        denied > 0,
+        "no row is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA session-attribute parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The connetto papers, one per way in: owned, shared, and neither.
+const SEEDED_PAPERS: [(i32, &str); 3] = [(1, "alice"), (2, "bob"), (3, "bob")];
+
+/// Paper 2 is shared with a key `alice` carries, paper 3 with one she does not.
+const SEEDED_SHARES: [(i32, &str); 2] = [(2, "team-a"), (3, "team-z")];
+
+/// Caller states, as `(app.user_id, app.subjects)`.
+const PAPER_CALLERS: [(Option<&str>, Option<&str>); 5] = [
+    (None, None),
+    (Some("alice"), None),
+    (None, Some("team-a")),
+    (Some("alice"), Some("team-a")),
+    (Some("alice"), Some("")),
+];
+
+/// Papers a `LOGIN` role reads under one caller state, which is the oracle.
+fn papers_visible_to(
+    conn: &mut PgConnection,
+    user_id: Option<&str>,
+    subjects: Option<&str>,
+) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_reader")?;
+        diesel::sql_query("SELECT set_config('app.user_id', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(user_id)
+            .execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.subjects', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(subjects)
+            .execute(conn)?;
+        let rows: Vec<IdRow> = diesel::sql_query("SELECT id FROM papers ORDER BY id").load(conn)?;
+        seen = rows.into_iter().map(|row| row.id).collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+/// Inventory row 3 against both services: a grant recorded on a sharing table, decided
+/// by a set the caller carries.
+///
+/// Two-sided by construction, and both counts come from `papers`: the sharing table's
+/// own rows cannot be named until compound identity exists, so exercising them here
+/// would prove nothing. The case counts papers readable only by owning them and only by
+/// holding a shared key, and fails when either is zero, so a model keeping one arm
+/// cannot pass. It counts denials too, so granting everything cannot pass.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn shared_paper_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("connetto_capability");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the connetto capability schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    let papers: Vec<String> = SEEDED_PAPERS
+        .iter()
+        .map(|(id, owner)| format!("({id}, '{owner}')"))
+        .collect();
+    let shares: Vec<String> = SEEDED_SHARES
+        .iter()
+        .map(|(paper, viewer)| format!("({paper}, '{viewer}')"))
+        .collect();
+    conn.batch_execute(&format!(
+        "INSERT INTO papers (id, owner) VALUES {}; \
+         INSERT INTO paper_shares (paper_id, viewer) VALUES {};",
+        papers.join(", "),
+        shares.join(", ")
+    ))
+    .expect("Failed to seed the papers and shares");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    // Both conditional sources are emittable since phase 4 gave `paper_shares` a row
+    // identity: the gate on `papers` that the share arm mints, and `shares_read` on
+    // `paper_shares` itself, which used to render as a comment.
+    let runnable: Vec<TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.sql.contains("SELECT "))
+        .cloned()
+        .collect();
+    let conditional: Vec<&TupleQuery> = runnable
+        .iter()
+        .filter(|query| query.condition.is_some())
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        2,
+        "the share arm gates `papers` and `shares_read` gates the share table's own \
+         rows, got {} runnable queries",
+        runnable.len()
+    );
+    let parent_gate = conditional
+        .iter()
+        .find(|query| query.sql.contains("'papers:'"))
+        .expect("the share arm keys its facts on the paper it names");
+    assert!(
+        conditional
+            .iter()
+            .any(|query| query.sql.contains("'paper_shares:'")),
+        "and the share table now names its own rows, which is what phase 4 unlocked"
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, parent_gate);
+    assert_eq!(
+        conditional_rows.len(),
+        SEEDED_SHARES.len(),
+        "one conditional fact per sharing row, keyed on the paper it names"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "shared-paper-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let plain: Vec<TupleQuery> = runnable
+        .iter()
+        .filter(|query| query.condition.is_none())
+        .cloned()
+        .collect();
+    writes.extend(
+        execute_tuple_queries(&mut conn, &plain)
+            .iter()
+            .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+    );
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut owner_only = 0usize;
+    let mut share_only = 0usize;
+    let mut denied = 0usize;
+    for (user_id, subjects) in PAPER_CALLERS {
+        let visible = papers_visible_to(&mut conn, user_id, subjects);
+        let owner_arm = papers_visible_to(&mut conn, user_id, None);
+        let share_arm = papers_visible_to(&mut conn, None, subjects);
+        owner_only += owner_arm.difference(&share_arm).count();
+        share_only += share_arm.difference(&owner_arm).count();
+
+        let caller = user_id.unwrap_or("nobody");
+        for (id, _) in SEEDED_PAPERS {
+            let expected = visible.contains(&id);
+            if !expected {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                &format!("user:{caller}"),
+                "can_select",
+                &format!("papers:{id}"),
+                serde_json::json!({ "app_subjects": caller_subject_list(subjects) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "papers:{id} for user_id={user_id:?} subjects={subjects:?}: \
+                     postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        owner_only > 0,
+        "no paper is readable by owning it alone, so keeping only the share arm would pass"
+    );
+    assert!(
+        share_only > 0,
+        "no paper is readable by a shared key alone, so keeping only the owner arm would pass"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA shared-paper parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+diesel::table! {
+    /// The `token_claim_set` fixture's guarded table.
+    ///
+    /// Typed rather than spelled as SQL text so the seed and the read are checked
+    /// against one schema, which is what stops the oracle and the fixture drifting.
+    #[sql_name = "documents"]
+    claim_documents (id) {
+        id -> Integer,
+        team_id -> Nullable<Text>,
+    }
+}
+
+/// Rows covering what the jsonb expansion has to get right: a team the claim names, one
+/// it does not, a NULL that matches nothing, and a value that looks numeric, since
+/// `jsonb_array_elements_text` renders a JSON number as text and so matches it.
+const SEEDED_CLAIM_DOCUMENTS: [(i32, Option<&str>); 4] = [
+    (1, Some("team-a")),
+    (2, Some("team-b")),
+    (3, None),
+    (4, Some("1")),
+];
+
+/// The claim states worth checking, as the raw jsonb `request.jwt.claims` holds.
+/// `None` leaves the setting unset, which is what a caller holding no token sends.
+const CLAIM_STATES: [Option<&str>; 5] = [
+    None,
+    Some(r#"{"teams": []}"#),
+    Some(r#"{"teams": ["team-a"]}"#),
+    Some(r#"{"teams": ["team-a", "team-b"]}"#),
+    Some(r#"{"teams": [1]}"#),
+];
+
+/// What the caller puts in the check context for a claim carried list.
+///
+/// The contract is the elements `jsonb_array_elements_text` would produce, which renders
+/// a JSON number as its text, and `[]` where the claim is unset.
+fn caller_team_list(claims: Option<&str>) -> serde_json::Value {
+    let Some(claims) = claims else {
+        return serde_json::json!([]);
+    };
+    let parsed: serde_json::Value = serde_json::from_str(claims).expect("claims should be JSON");
+    let teams = parsed.get("teams").and_then(serde_json::Value::as_array);
+    serde_json::Value::Array(
+        teams
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| match value {
+                        serde_json::Value::String(text) => serde_json::Value::String(text.clone()),
+                        other => serde_json::Value::String(other.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// Rows a `LOGIN` role reads under one claim state, which is the oracle.
+fn claim_documents_visible_to(conn: &mut PgConnection, claims: Option<&str>) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_reader")?;
+        // `set_config` is a vendor function the query DSL cannot express, and NULL
+        // leaves the setting unset, which is the state a caller with no token is in.
+        diesel::sql_query("SELECT set_config('request.jwt.claims', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(claims)
+            .execute(conn)?;
+        seen = claim_documents::table
+            .select(claim_documents::id)
+            .order(claim_documents::id)
+            .load::<i32>(conn)?
+            .into_iter()
+            .collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+/// Inventory row 6 against both services: the caller's set arrives as a real list inside
+/// the token, expanded by `jsonb_array_elements_text`.
+///
+/// Two sided by construction: the case counts rows admitted and rows denied across the
+/// claim states and fails when either is zero, so neither a model that grants everything
+/// nor one that grants nothing can pass. The numeric row is what makes the contract's
+/// rendering rule load bearing rather than decorative.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn token_claim_set_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    conn.batch_execute(&support::read_fixture_sql("token_claim_set"))
+        .expect("Failed to apply the token_claim_set schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_reader LOGIN; GRANT SELECT ON documents TO app_reader;")
+        .expect("Failed to create the querying role");
+    let seed: Vec<_> = SEEDED_CLAIM_DOCUMENTS
+        .iter()
+        .map(|(id, team)| {
+            (
+                claim_documents::id.eq(id),
+                claim_documents::team_id.eq(team),
+            )
+        })
+        .collect();
+    diesel::insert_into(claim_documents::table)
+        .values(&seed)
+        .execute(&mut conn)
+        .expect("Failed to seed the documents");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("token_claim_set");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some() && query.sql.contains("documents"))
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        1,
+        "the guarded table emits exactly one conditional query, got {}",
+        conditional.len()
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    assert_eq!(
+        conditional_rows.len(),
+        3,
+        "a NULL team matches nothing in PostgreSQL, so its row carries no tuple"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "token-claim-set").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut admitted = 0usize;
+    let mut denied = 0usize;
+    for claims in CLAIM_STATES {
+        let visible = claim_documents_visible_to(&mut conn, claims);
+        for (id, _) in SEEDED_CLAIM_DOCUMENTS {
+            let expected = visible.contains(&id);
+            if expected {
+                admitted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                "user:anybody",
+                "can_select",
+                &format!("documents:{id}"),
+                serde_json::json!({ "request_jwt_claims_teams": caller_team_list(claims) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "documents:{id} for claims={claims:?}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        admitted > 0,
+        "no row is readable in any claim state, so a model denying everything would pass"
+    );
+    assert!(
+        denied > 0,
+        "no row is denied anywhere, so a model granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA token claim set parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

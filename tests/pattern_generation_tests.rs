@@ -179,11 +179,11 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
     );
 
     assert!(
-        tuples.contains("'docs:' || \"doc_id\""),
+        tuples.contains(r#"'docs:' || CASE WHEN "doc_id"::text"#),
         "expected doc membership tuples, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("'tasks:' || \"task_id\""),
+        tuples.contains(r#"'tasks:' || CASE WHEN "task_id"::text"#),
         "expected task membership tuples, got:\n{tuples}"
     );
 }
@@ -353,11 +353,11 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
     );
 
     assert!(
-        tuples.contains("'docs:' || \"doc_uuid\" AS object"),
+        tuples.contains(r#"'docs:' || CASE WHEN "doc_uuid"::text"#),
         "tuple SQL should canonicalize schema-qualified table names while using real PK columns, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("'user:' || \"owner_user\" AS subject"),
+        tuples.contains(r#"'user:' || CASE WHEN "owner_user"::text"#),
         "tuple SQL should use the real owner FK column, got:\n{tuples}"
     );
     assert!(

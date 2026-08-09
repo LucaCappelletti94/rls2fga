@@ -33,8 +33,12 @@ pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
-    effective_registry.trust_current_user_setting_keys(settings.current_user_setting_keys());
-    effective_registry.enrich_from_schema_with_settings(db, settings);
+    effective_registry.declare_session_attributes(settings.session_attributes().iter().cloned());
+    // The two lists become one before anything reads either, so a declaration made on the
+    // registry and one made through the settings cannot describe the same source apart.
+    let declared: Vec<_> = effective_registry.session_attributes().cloned().collect();
+    let effective_settings = AccessorInferenceSettings::from_attributes(declared);
+    effective_registry.enrich_from_schema_with_settings(db, &effective_settings);
 
     let classified = classify_policies_with_registry(db, &effective_registry);
     (classified, effective_registry)
@@ -226,6 +230,14 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 };
             }
             BinaryOperator::And => {
+                // "the caller is known" beside a rule that already needs the caller adds
+                // nothing, so the rule stands alone rather than the pair being refused.
+                if recognizers::is_redundant_caller_presence(left, registry) {
+                    return classify_expr_depth(right, db, registry, table, command, depth + 1);
+                }
+                if recognizers::is_redundant_caller_presence(right, registry) {
+                    return classify_expr_depth(left, db, registry, table, command, depth + 1);
+                }
                 let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
                 let right_class =
                     classify_expr_depth(right, db, registry, table, command, depth + 1);
@@ -362,6 +374,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return classified;
     }
 
+    // Try P14 to P17: a value the request carries, which a deployment declared. Before
+    // P3, since a declared source is never the caller and ownership must not claim it.
+    if let Some(classified) = recognizers::recognize_session_attribute(expr, registry) {
+        return classified;
+    }
+
     // Try P3: direct ownership
     if let Some(classified) = recognizers::recognize_p3(expr, db, registry) {
         return classified;
@@ -449,10 +467,15 @@ fn classify_expr_inner<DB: DatabaseLike>(
         };
     }
 
-    let mut blamed: Vec<String> = recognizers::called_function_names(expr, registry)
+    let mut blamed: Vec<String> = recognizers::subquery_set_constructors(expr)
         .into_iter()
-        .map(|name| describe_unrecognized_function(&name, registry))
+        .map(|name| describe_set_constructor(&name))
         .collect();
+    blamed.extend(
+        recognizers::called_function_names(expr, registry)
+            .into_iter()
+            .map(|name| describe_unrecognized_function(&name, registry)),
+    );
     blamed.extend(
         recognizers::unrecognized_operators(expr)
             .into_iter()
@@ -474,6 +497,15 @@ fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) 
         None => format!("Function '{func_name}' not in registry and body not available"),
         _ => format!("Function '{func_name}' did not match any recognized translation pattern"),
     }
+}
+
+/// Why a set a constructor builds cannot be translated, and why registering a name
+/// cannot help.
+fn describe_set_constructor(name: &str) -> String {
+    format!(
+        "'{name}(subquery)' is SQL syntax rather than a function call, so no registry \
+         entry can name it, and a set built from a subquery has no translation"
+    )
 }
 
 /// Extract a human-readable description of the comparison value in a binary expression.
@@ -499,6 +531,9 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P2RoleNameInList { .. } => "role-name-in-list check",
         PatternClass::P3DirectOwnership { .. } => "direct-ownership check",
         PatternClass::P4ExistsMembership { .. } => "EXISTS membership check",
+        PatternClass::P18MembershipInCallerSet { .. } => {
+            "membership row naming a value the caller's declared set holds"
+        }
         PatternClass::P5ParentInheritance { .. } => "parent-inheritance check",
         PatternClass::P6BooleanFlag { .. } => "boolean-flag check",
         PatternClass::P7AbacAnd { .. } => "ABAC-and-relationship check",
@@ -508,6 +543,16 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P11ArrayMembership { .. } => "array-membership check",
         PatternClass::P12JsonbFieldOwnership { .. } => "jsonb-field-ownership check",
         PatternClass::P13UncorrelatedMembership { .. } => "uncorrelated membership check",
+        PatternClass::P14RowValueInCallerSet { .. } => {
+            "declared caller set holding the row's value"
+        }
+        PatternClass::P15RowValueEqualsCallerScalar { .. } => {
+            "declared caller value equal to the row's"
+        }
+        PatternClass::P16ConstantInCallerSet { .. } => "declared caller set holding a constant",
+        PatternClass::P17CallerScalarEqualsConstant { .. } => {
+            "declared caller value equal to a constant"
+        }
         PatternClass::Unknown { .. } => "unrecognized expression",
     }
 }
@@ -539,9 +584,17 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
                     .iter()
                     .all(|part| is_relationship_pattern_for_p7(&part.pattern))
         }
+        // A declared request-scoped value is not a user-resource relationship a tuple
+        // can carry, so an attribute guard beside one composes as a plain intersection
+        // rather than through the P7 shape.
         PatternClass::P6BooleanFlag { .. }
         | PatternClass::P9AttributeCondition { .. }
         | PatternClass::P10ConstantBool { .. }
+        | PatternClass::P14RowValueInCallerSet { .. }
+        | PatternClass::P18MembershipInCallerSet { .. }
+        | PatternClass::P15RowValueEqualsCallerScalar { .. }
+        | PatternClass::P16ConstantInCallerSet { .. }
+        | PatternClass::P17CallerScalarEqualsConstant { .. }
         | PatternClass::Unknown { .. } => false,
     }
 }
@@ -909,6 +962,73 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             );
             assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
         }
+    }
+
+    /// `ARRAY(subquery)` parses as a function named `array`, so blaming it as a call sent
+    /// the operator after a registry entry that cannot exist.
+    #[test]
+    fn a_set_the_array_constructor_builds_is_not_blamed_on_a_missing_function() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let claim_set = "owner_id = ANY (ARRAY(SELECT jsonb_array_elements_text(\
+                         current_setting('request.jwt.claims')::jsonb -> 'teams')))";
+        let function_set = "owner_id = ANY (ARRAY(SELECT user_teams()))";
+
+        for expr_sql in [claim_set, function_set] {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+                panic!(
+                    "`{expr_sql}`: expected Unknown, got {:?}",
+                    classified.pattern
+                );
+            };
+            assert!(
+                reason.contains("'array(subquery)'"),
+                "`{expr_sql}`: the reason must name the constructor, got: {reason}"
+            );
+            assert!(
+                !reason.contains("Function 'array'"),
+                "`{expr_sql}`: a constructor is not a call an operator can register, got: {reason}"
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+        }
+
+        // The genuine call inside the second spelling still earns its own blame, so the
+        // constructor arm cannot pass by silencing everything under it.
+        let expr = parse_expr(function_set);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got {:?}", classified.pattern);
+        };
+        assert!(
+            reason.contains("Function 'user_teams' not in registry"),
+            "an unregistered function is still named, got: {reason}"
+        );
+    }
+
+    /// The constructor is told apart by its arguments being a subquery, never by its
+    /// name, so a call that happens to be named `array` is still blamed as a call.
+    #[test]
+    fn a_function_named_array_is_still_blamed_as_a_call() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id = app.array(owner_id)");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got {:?}", classified.pattern);
+        };
+        assert!(
+            reason.contains("Function 'array' not in registry"),
+            "a call taking an argument list is a call, got: {reason}"
+        );
+        assert!(
+            !reason.contains("(subquery)"),
+            "nothing here builds a set from a subquery, got: {reason}"
+        );
     }
 
     #[test]

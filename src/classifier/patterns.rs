@@ -4,6 +4,7 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
+use crate::classifier::function_registry::SessionAttribute;
 use crate::generator::well_known::MEMBER_RELATION;
 use crate::parser::sql_parser::PolicyLike;
 
@@ -320,6 +321,65 @@ pub enum PatternClass {
         /// Any further condition the membership row has to satisfy.
         extra_predicate_sql: Option<String>,
     },
+    /// The caller's declared set holds the row's value:
+    /// `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))`.
+    P14RowValueInCallerSet {
+        /// Column whose value the set has to hold.
+        column: String,
+        /// Separator the policy splits the setting on, since it decides which elements
+        /// exist and so what the caller has to send. Absent where the source is already
+        /// a list, which has no delimiter and so no such hazard.
+        separator: Option<String>,
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+    },
+    /// The caller's declared single value equals the row's:
+    /// `tenant_id = current_setting('app.tenant_id')::uuid`.
+    P15RowValueEqualsCallerScalar {
+        /// Column the value has to equal.
+        column: String,
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+    },
+    /// The caller's declared set holds a constant the policy names, so no row takes part:
+    /// `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))`.
+    P16ConstantInCallerSet {
+        /// The constant the set has to hold.
+        value: String,
+        /// Separator the policy splits the setting on, absent for a list source.
+        separator: Option<String>,
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+    },
+    /// The caller's declared single value equals a constant the policy names, so no row
+    /// takes part: `(SELECT auth.jwt() ->> 'aal') = 'aal2'`.
+    P17CallerScalarEqualsConstant {
+        /// The constant the value has to equal.
+        value: String,
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+    },
+    /// A membership row whose member column holds a value the caller's declared set has
+    /// to contain: `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND
+    /// s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))`.
+    ///
+    /// The membership row is the table's authority and the set is the request's, so the
+    /// grant is a request-completed gate on the parent rather than a subject named by
+    /// the row: the member value is not a person.
+    P18MembershipInCallerSet {
+        /// Table whose rows record the grants.
+        join_table: String,
+        /// Column of `join_table` naming the guarded row.
+        fk_column: String,
+        /// Column of `join_table` holding the value the caller's set must contain.
+        member_column: String,
+        /// Separator the policy splits the setting on, absent for a list source.
+        separator: Option<String>,
+        /// The declared source, carrying the parameter the caller supplies.
+        source: SessionAttribute,
+        /// Residual filter on the membership row, which no tuple can express.
+        extra_predicate_sql: Option<String>,
+    },
     /// No known pattern matched.
     Unknown {
         /// The expression as written.
@@ -516,14 +576,13 @@ pub struct ClassifiedPolicy {
     pub using_classification: Option<ClassifiedExpr>,
     /// Classification of the WITH CHECK expression, if present.
     pub with_check_classification: Option<ClassifiedExpr>,
-    /// Set to `true` when `using_classification` was present but dropped by
-    /// `filter_policies_for_output` due to insufficient confidence.
-    /// Distinguishes "expression never existed" from "expression was filtered".
-    pub using_was_filtered: bool,
-    /// Set to `true` when `with_check_classification` was present but dropped
-    /// by `filter_policies_for_output` due to insufficient confidence.
-    /// When `true`, the USING→WITH CHECK mirror fallback must not be applied.
-    pub with_check_was_filtered: bool,
+    /// Grade the `USING` classification held when `filter_policies_for_output`
+    /// dropped it, `None` when it survived or never existed. One field rather than a
+    /// flag beside a grade, so the two cannot disagree.
+    pub using_filtered_at: Option<ConfidenceLevel>,
+    /// Grade the `WITH CHECK` classification held when it was dropped. While this is
+    /// set the USING to WITH CHECK mirror must not be applied.
+    pub with_check_filtered_at: Option<ConfidenceLevel>,
 }
 
 impl ClassifiedPolicy {
@@ -544,8 +603,8 @@ impl ClassifiedPolicy {
             with_check: policy.check_expression(db).cloned(),
             using_classification: None,
             with_check_classification: None,
-            using_was_filtered: false,
-            with_check_was_filtered: false,
+            using_filtered_at: None,
+            with_check_filtered_at: None,
         }
     }
 
@@ -592,11 +651,15 @@ impl ClassifiedPolicy {
 
 /// Keep only policy classifications at or above the requested confidence level.
 ///
-/// A RESTRICTIVE policy is kept even when all its classifications drop: RLS is
-/// `(permissive OR ...) AND restrictive AND ...`, so removing one grants access
-/// it forbids. The `*_was_filtered` flags tell the generator to fall closed. A policy
-/// whose reads loop needs no such retention, since the generator reads that loop off the
-/// schema rather than off the classifications.
+/// A policy whose classifications all drop is still retained, in either mode, and the
+/// `*_filtered_at` grades say what was lost. A RESTRICTIVE one has to be: RLS is
+/// `(permissive OR ...) AND restrictive AND ...`, so removing it grants access it
+/// forbids. A PERMISSIVE one has to be for the opposite reason: dropping it is pure
+/// subtraction, and a union with fewer arms is indistinguishable from one that never
+/// had more, so the generator could not say the model came out narrower than the
+/// database. Neither contributes an expression. A policy whose reads loop needs no
+/// such retention, since the generator reads that loop off the schema rather than off
+/// the classifications.
 pub fn filter_policies_for_output(
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
@@ -605,25 +668,25 @@ pub fn filter_policies_for_output(
         .iter()
         .filter_map(|cp| {
             let mut filtered = cp.clone();
-            let using_kept = cp
-                .using_classification
-                .as_ref()
-                .filter(|c| c.confidence >= min_confidence)
-                .cloned();
-            filtered.using_was_filtered = cp.using_classification.is_some() && using_kept.is_none();
+            let permissive = cp.mode() == PolicyMode::Permissive;
+
+            let (using_kept, using_dropped) =
+                apply_threshold(cp.using_classification.as_ref(), min_confidence, permissive);
+            filtered.using_filtered_at = using_dropped;
             filtered.using_classification = using_kept;
 
-            let with_check_kept = cp
-                .with_check_classification
-                .as_ref()
-                .filter(|c| c.confidence >= min_confidence)
-                .cloned();
-            filtered.with_check_was_filtered =
-                cp.with_check_classification.is_some() && with_check_kept.is_none();
-            filtered.with_check_classification = with_check_kept;
+            let (check_kept, check_dropped) = apply_threshold(
+                cp.with_check_classification.as_ref(),
+                min_confidence,
+                permissive,
+            );
+            filtered.with_check_filtered_at = check_dropped;
+            filtered.with_check_classification = check_kept;
 
             if filtered.using_classification.is_some()
                 || filtered.with_check_classification.is_some()
+                || filtered.using_filtered_at.is_some()
+                || filtered.with_check_filtered_at.is_some()
                 || filtered.mode() == PolicyMode::Restrictive
             {
                 Some(filtered)
@@ -632,6 +695,85 @@ pub fn filter_policies_for_output(
             }
         })
         .collect()
+}
+
+/// What survives the caller's bar, and the grade of the worst thing that did not.
+///
+/// For a permissive clause the bar applies to each arm of an `OR` rather than to the
+/// clause as a whole, so one weak arm no longer takes the strong ones with it and one
+/// `OR` policy lands where two policies land. The clause's own grade is never compared,
+/// which matters twice: it is capped at B, so an `OR` of two grade A arms would
+/// otherwise die at the strictest bar with nothing weak anywhere.
+fn apply_threshold(
+    classification: Option<&ClassifiedExpr>,
+    min_confidence: ConfidenceLevel,
+    permissive: bool,
+) -> (Option<ClassifiedExpr>, Option<ConfidenceLevel>) {
+    let Some(classification) = classification else {
+        return (None, None);
+    };
+    if permissive {
+        return filter_or_arms(classification, min_confidence);
+    }
+    if classification.confidence >= min_confidence {
+        (Some(classification.clone()), None)
+    } else {
+        (None, Some(classification.confidence))
+    }
+}
+
+/// Recurse through a nested `OR`, keeping the arms at or above the bar.
+///
+/// An arm that is not itself an `OR` is atomic: dropping half a conjunction would grant
+/// rows its other half refuses, so a conjunction below the bar goes whole, which its
+/// lowest arm's grade already says.
+fn filter_or_arms(
+    expr: &ClassifiedExpr,
+    min_confidence: ConfidenceLevel,
+) -> (Option<ClassifiedExpr>, Option<ConfidenceLevel>) {
+    let PatternClass::P8Composite {
+        op: BoolOp::Or,
+        parts,
+    } = &expr.pattern
+    else {
+        return if expr.confidence >= min_confidence {
+            (Some(expr.clone()), None)
+        } else {
+            (None, Some(expr.confidence))
+        };
+    };
+
+    let mut kept: Vec<ClassifiedExpr> = Vec::new();
+    let mut worst_dropped: Option<ConfidenceLevel> = None;
+    for part in parts {
+        let (survivor, dropped) = filter_or_arms(part, min_confidence);
+        if let Some(survivor) = survivor {
+            kept.push(survivor);
+        }
+        if let Some(grade) = dropped {
+            worst_dropped = Some(worst_dropped.map_or(grade, |worst| core::cmp::min(worst, grade)));
+        }
+    }
+
+    match kept.len() {
+        0 => (None, worst_dropped),
+        // One survivor is that arm, not a union of one. Keeping the wrapper would cap its
+        // grade at B, which is the difference between this and two separate policies.
+        1 => (kept.pop(), worst_dropped),
+        _ => {
+            let confidence = composite_confidence(kept.iter());
+            (
+                Some(ClassifiedExpr {
+                    pattern: PatternClass::P8Composite {
+                        op: BoolOp::Or,
+                        parts: kept,
+                    },
+                    confidence,
+                }),
+                worst_dropped,
+            )
+        }
+    }
 }
 
 #[cfg(test)]

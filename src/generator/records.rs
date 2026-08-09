@@ -11,6 +11,10 @@ use crate::no_std_prelude::*;
 use alloc::borrow::Cow;
 
 use crate::classifier::patterns::{AttributeLiteral, AttributeOperator, AttributePredicate};
+use crate::generator::identity::{
+    encode_identity, encode_part, object_name_fits, subject_name_fits,
+};
+use crate::generator::well_known::WILDCARD_SUBJECT_ID;
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
 /// SQL renders it.
@@ -22,6 +26,21 @@ pub struct Record {
     pub relation: String,
     /// `type:key`, or `user:*` for a wildcard.
     pub subject: String,
+    /// The condition context this record carries, absent for an unconditional one.
+    ///
+    /// Present means the grant is not settled by the row: the service completes it
+    /// with what the request supplies, so treating the subject as granted is a wrong
+    /// allow.
+    pub context: Option<RecordContextValue>,
+}
+
+/// One key and value a record puts in its condition context.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordContextValue {
+    /// Condition parameter the value fills.
+    pub key: String,
+    /// The value, rendered as the tuple SQL renders it.
+    pub value: String,
 }
 
 /// Where one side of a record takes its value on the row.
@@ -60,19 +79,182 @@ pub enum Guard {
     Compare(AttributePredicate),
 }
 
+/// How an object's name is built from a row.
+///
+/// Each part is encoded before the parts are joined, so `(1, "a|b")` and
+/// `("1|a", "b")` cannot render alike. A single column key is a list of one.
+/// Ask this for the name rather than assembling one: the whole-table SQL builds
+/// the same string, and two spellings of it drift silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectKey {
+    parts: Vec<ValueSource>,
+}
+
+impl ObjectKey {
+    /// A key built from `parts`, in order.
+    #[must_use]
+    pub fn new(parts: Vec<ValueSource>) -> Self {
+        Self { parts }
+    }
+
+    /// A key naming the row through one column.
+    #[must_use]
+    pub fn column(name: impl Into<String>) -> Self {
+        Self::new(vec![ValueSource::Column(name.into())])
+    }
+
+    /// The parts, so a caller can settle up front whether it reads the shape.
+    #[must_use]
+    pub fn parts(&self) -> &[ValueSource] {
+        &self.parts
+    }
+
+    /// The name this row gives the object, `None` where the row does not say.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordError::RowCannotBeNamed`] when the encoded name is longer than
+    /// the target accepts. Shortening it would merge two rows into one object,
+    /// so this refuses instead.
+    pub fn render<R: RowValues + ?Sized>(
+        &self,
+        object_type: &str,
+        row: &R,
+    ) -> Result<Option<String>, RecordError> {
+        let mut values = Vec::with_capacity(self.parts.len());
+        for part in &self.parts {
+            let Some(value) = single_value(part, row) else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        let name = format!(
+            "{object_type}:{}",
+            encode_identity(values.iter().map(String::as_str))
+        );
+        if object_name_fits(&name) {
+            Ok(Some(name))
+        } else {
+            Err(RecordError::RowCannotBeNamed(name.chars().count()))
+        }
+    }
+}
+
+/// How a subject's name is built from a row.
+///
+/// One part, which may expand into several subjects when it is a list column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubjectKey {
+    part: ValueSource,
+    /// The typed wildcard, which is the crate's own spelling for "every user"
+    /// rather than a value read out of a row.
+    ///
+    /// A row value of `*` still encodes, so only this spelling is exempt. Without
+    /// the distinction the evaluator escapes the wildcard into an ordinary name
+    /// and the grant reaches nobody, where the tuple SQL still writes `user:*`.
+    wildcard: bool,
+}
+
+impl SubjectKey {
+    /// A key reading `part`.
+    #[must_use]
+    pub fn new(part: ValueSource) -> Self {
+        Self {
+            part,
+            wildcard: false,
+        }
+    }
+
+    /// A key naming the subject through one column.
+    #[must_use]
+    pub fn column(name: impl Into<String>) -> Self {
+        Self::new(ValueSource::Column(name.into()))
+    }
+
+    /// The typed wildcard: every subject of the type, granted by the rule itself
+    /// rather than named by the row.
+    #[must_use]
+    pub fn wildcard() -> Self {
+        Self {
+            part: ValueSource::Literal(WILDCARD_SUBJECT_ID.to_string()),
+            wildcard: true,
+        }
+    }
+
+    /// Where the value comes from, so a caller can settle whether it reads it.
+    #[must_use]
+    pub const fn part(&self) -> &ValueSource {
+        &self.part
+    }
+
+    /// Every subject this row names, which is at most one except for a list.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordError::RowCannotBeNamed`] when an encoded name is longer than the
+    /// target accepts.
+    pub fn render<R: RowValues + ?Sized>(
+        &self,
+        subject_type: &str,
+        row: &R,
+    ) -> Result<Vec<String>, RecordError> {
+        if self.wildcard {
+            return Ok(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
+        }
+        expand(&self.part, row)
+            .into_iter()
+            .map(|value| {
+                let name = format!("{subject_type}:{}", encode_part(&value));
+                if subject_name_fits(&name) {
+                    Ok(name)
+                } else {
+                    Err(RecordError::RowCannotBeNamed(name.len()))
+                }
+            })
+            .collect()
+    }
+}
+
+impl From<ValueSource> for ObjectKey {
+    fn from(part: ValueSource) -> Self {
+        Self::new(vec![part])
+    }
+}
+
+impl From<ValueSource> for SubjectKey {
+    fn from(part: ValueSource) -> Self {
+        Self::new(part)
+    }
+}
+
 /// How the object, relation and subject of a record compose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordTemplate {
     /// `OpenFGA` type the object belongs to.
     pub object_type: String,
-    /// Where the object's key comes from.
-    pub object_key: ValueSource,
+    /// How the object's name is built.
+    pub object_key: ObjectKey,
     /// Relation name, always fixed.
     pub relation: String,
     /// `OpenFGA` type the subject belongs to.
     pub subject_type: String,
-    /// Where the subject's key comes from.
-    pub subject_key: ValueSource,
+    /// How the subject's name is built.
+    pub subject_key: SubjectKey,
+    /// The condition context the record carries, absent for an unconditional one.
+    ///
+    /// A conditional record grants nobody on its own: the service completes the
+    /// comparison with what the request supplies, so a reader that ignores this and
+    /// takes the subject at face value grants everyone.
+    pub context: Option<RecordContext>,
+}
+
+/// One key a record puts in its condition context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordContext {
+    /// Condition parameter the value fills.
+    pub key: String,
+    /// Where the value comes from.
+    pub value: ValueSource,
 }
 
 /// A query bound to one row of one table by its key, for a shape whose records
@@ -96,8 +278,9 @@ pub enum RecordDerivation {
     FromRow {
         /// The table the row belongs to.
         table: String,
-        /// How each record composes.
-        template: RecordTemplate,
+        /// How each record composes. Boxed to keep this variant near the size of the
+        /// joining one, which holds only a query list.
+        template: Box<RecordTemplate>,
         /// Conditions the row must satisfy, all of them.
         guards: Vec<Guard>,
     },
@@ -172,11 +355,20 @@ pub trait RowValues {
 }
 
 /// Why a description's records could not be produced from a row.
+///
+/// `#[non_exhaustive]`: every arm is a refusal, so a caller's wildarm still
+/// falls closed, and a later reason costs it no rewrite.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecordError {
     /// The description reads more than the one row, so querying is the only
     /// answer. Carries the reason the description recorded.
     NotDerivableFromOneRow(String),
+    /// The row's values render a name longer than the target accepts, carrying
+    /// that length. The whole-table SQL leaves such a row out, so no fact names
+    /// it either way. Shortening the name would merge two rows into one object
+    /// and hand each the other's access, so this refuses rather than guesses.
+    RowCannotBeNamed(usize),
 }
 
 impl core::fmt::Display for RecordError {
@@ -185,6 +377,10 @@ impl core::fmt::Display for RecordError {
             Self::NotDerivableFromOneRow(reason) => write!(
                 f,
                 "records do not follow from one row and must be queried: {reason}"
+            ),
+            Self::RowCannotBeNamed(length) => write!(
+                f,
+                "the row renders an identifier of {length}, longer than the target accepts"
             ),
         }
     }
@@ -220,17 +416,35 @@ pub fn records_from_row<R: RowValues + ?Sized>(
     }
 
     // The object side never expands, so a missing value drops the whole record
-    // exactly as the SQL's NULL guard does.
-    let Some(object_key) = single_value(&template.object_key, row) else {
+    // exactly as the SQL's NULL guard does. A name the target cannot spell is a
+    // refusal rather than an empty set, which would read as "this row grants
+    // nobody" and be believed.
+    let Some(object) = template.object_key.render(&template.object_type, row)? else {
         return Ok(Vec::new());
     };
 
-    Ok(expand(&template.subject_key, row)
+    // A context the row cannot fill yields no record at all, exactly as the tuple SQL
+    // skips a row whose carried column is NULL.
+    let context = match &template.context {
+        Some(context) => match single_value(&context.value, row) {
+            Some(value) => Some(RecordContextValue {
+                key: context.key.clone(),
+                value,
+            }),
+            None => return Ok(Vec::new()),
+        },
+        None => None,
+    };
+
+    Ok(template
+        .subject_key
+        .render(&template.subject_type, row)?
         .into_iter()
-        .map(|subject_key| Record {
-            object: format!("{}:{object_key}", template.object_type),
+        .map(|subject| Record {
+            object: object.clone(),
             relation: template.relation.clone(),
-            subject: format!("{}:{subject_key}", template.subject_type),
+            subject,
+            context: context.clone(),
         })
         .collect())
 }
@@ -311,5 +525,157 @@ fn expand<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Vec<String> {
             .map(Cow::into_owned)
             .collect(),
         other => single_value(other, row).into_iter().collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+
+    struct Row(BTreeMap<String, String>);
+
+    impl Row {
+        fn of(pairs: &[(&str, &str)]) -> Self {
+            Self(
+                pairs
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+            )
+        }
+    }
+
+    impl RowValues for Row {
+        fn text(&self, column: &str) -> Option<Cow<'_, str>> {
+            self.0.get(column).map(|v| Cow::Borrowed(v.as_str()))
+        }
+    }
+
+    #[test]
+    fn an_object_name_joins_every_key_part_encoded() {
+        let key = ObjectKey::new(vec![
+            ValueSource::Column("paper_id".to_string()),
+            ValueSource::Column("viewer".to_string()),
+        ]);
+        let row = Row::of(&[("paper_id", "1"), ("viewer", "a|b")]);
+        assert_eq!(
+            key.render("paper_shares", &row).unwrap(),
+            Some("paper_shares:1|~617c62".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missing_key_part_yields_no_record_rather_than_a_short_name() {
+        let key = ObjectKey::new(vec![
+            ValueSource::Column("paper_id".to_string()),
+            ValueSource::Column("viewer".to_string()),
+        ]);
+        let row = Row::of(&[("paper_id", "1")]);
+        assert_eq!(key.render("paper_shares", &row).unwrap(), None);
+    }
+
+    #[test]
+    fn an_object_name_past_the_cap_is_refused_rather_than_shortened() {
+        // Shortening would give two rows one name, and each the other's access.
+        let key = ObjectKey::column("id");
+        let row = Row::of(&[("id", &"a".repeat(300))]);
+        assert_eq!(
+            key.render("docs", &row),
+            Err(RecordError::RowCannotBeNamed(305))
+        );
+    }
+
+    #[test]
+    fn the_object_budget_shrinks_as_the_type_name_grows() {
+        // The cap covers the whole `type:id` string, so the same value fits one
+        // type and not another.
+        let key = ObjectKey::column("id");
+        let row = Row::of(&[("id", &"a".repeat(250))]);
+        assert!(key.render("d", &row).unwrap().is_some());
+        assert!(key.render("a_much_longer_type_name", &row).is_err());
+    }
+
+    #[test]
+    fn a_subject_name_is_encoded_and_capped_in_bytes() {
+        let key = SubjectKey::column("owner");
+        let row = Row::of(&[("owner", "alice smith")]);
+        assert_eq!(
+            key.render("user", &row).unwrap(),
+            vec!["user:~616c69636520736d697468".to_string()]
+        );
+
+        // Bytes, not characters: two-byte runes spend the budget twice as fast.
+        let long = Row::of(&[("owner", &"e".repeat(600))]);
+        assert!(matches!(
+            key.render("user", &long),
+            Err(RecordError::RowCannotBeNamed(_))
+        ));
+    }
+
+    #[test]
+    fn every_rendered_name_is_ascii_so_the_two_caps_cannot_disagree() {
+        // The service caps an object in characters and a subject in bytes, and the crate
+        // spells each guard in its own unit to match that contract. The difference is
+        // inert rather than load bearing: the safe set is ASCII and the escape is hex, so
+        // a rendered name is always ASCII and the two units coincide. Widening the safe
+        // set to non-ASCII is what would make it live, and this is the test that notices.
+        let awkward = Row::of(&[("id", "caf\u{e9} \u{1f600}"), ("owner", "\u{5317}\u{4eac}")]);
+        let object = ObjectKey::column("id")
+            .render("docs", &awkward)
+            .unwrap()
+            .expect("the row names its object");
+        let subjects = SubjectKey::column("owner")
+            .render("user", &awkward)
+            .unwrap();
+
+        assert!(object.is_ascii(), "object rendered non-ASCII: {object}");
+        assert_eq!(object.len(), object.chars().count());
+        for subject in &subjects {
+            assert!(subject.is_ascii(), "subject rendered non-ASCII: {subject}");
+            assert_eq!(subject.len(), subject.chars().count());
+        }
+    }
+
+    #[test]
+    fn the_two_caps_are_different_numbers() {
+        // 300 characters fits a subject and not an object, which is the difference that
+        // is live. Both numbers were measured against v1.11.6.
+        let long = Row::of(&[("id", &"a".repeat(300)), ("owner", &"a".repeat(300))]);
+        assert!(
+            ObjectKey::column("id").render("docs", &long).is_err(),
+            "an object is capped at 256 including its type"
+        );
+        assert!(
+            SubjectKey::column("owner").render("user", &long).is_ok(),
+            "a subject is capped at 512, so the same value fits"
+        );
+    }
+
+    #[test]
+    fn an_empty_value_still_names_its_row() {
+        // `user:` is malformed to the target, so the encoding has to give the empty
+        // string a spelling of its own rather than leave the name unspellable.
+        let row = Row::of(&[("id", ""), ("owner", "")]);
+        assert_eq!(
+            ObjectKey::column("id").render("docs", &row).unwrap(),
+            Some("docs:~".to_string())
+        );
+        assert_eq!(
+            SubjectKey::column("owner").render("user", &row).unwrap(),
+            vec!["user:~".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_wildcard_looking_owner_does_not_become_the_wildcard() {
+        // `user:*` grants every user, so a row whose owner is literally `*` would
+        // hand the row to everyone. Verified against v1.11.6, which accepts the
+        // write and answers allowed for an unrelated user.
+        let row = Row::of(&[("owner", "*")]);
+        assert_eq!(
+            SubjectKey::column("owner").render("user", &row).unwrap(),
+            vec!["user:~2a".to_string()]
+        );
     }
 }

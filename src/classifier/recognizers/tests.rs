@@ -1805,10 +1805,33 @@ fn function_has_current_user_arg_returns_false_for_no_args() {
     assert!(!function_has_current_user_arg(&expr, &registry));
 }
 
+/// One value is one projection. `(SELECT a, b FROM t)` is refused for reading a table
+/// before the count is even looked at, so the count needs its own case.
 #[test]
 fn current_user_accessor_name_subquery_with_multiple_projections_returns_none() {
-    let expr = parse_expr("(SELECT a, b FROM t)");
+    for sql in ["(SELECT a, b FROM t)", "(SELECT a, b)", "(SELECT *)"] {
+        let expr = parse_expr(sql);
+        assert!(
+            current_user_accessor_name(&expr).is_none(),
+            "`{sql}` projects more than one value, so it names nobody"
+        );
+    }
+}
+
+/// A set operation is two queries, so which row it yields is not the projection of one.
+#[test]
+fn current_user_accessor_name_set_operation_subquery_returns_none() {
+    let mut registry = FunctionRegistry::new();
+    registry.trust_current_user_setting_keys(["app.user_id"]);
+    let expr = parse_expr(
+        "(SELECT current_setting('app.user_id') UNION SELECT current_setting('app.tenant_id'))",
+    );
+
     assert!(current_user_accessor_name(&expr).is_none());
+    assert!(
+        !is_current_user_expr(&expr, &registry),
+        "a union of two settings names neither of them"
+    );
 }
 
 #[test]
@@ -2456,11 +2479,16 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
     assert!(result.is_none(), "empty sources should return None");
 }
 
-// 11b. analyze_p5: empty inner_predicates → skip
+// 11b. analyze_p5: no inner predicate is the bare delegation
+/// A correlated `EXISTS` on the parent with no predicate of its own says "you may do this
+/// over a parent row you can already see". P5 gates on the parent's `can_select` anyway,
+/// so the inherited rule is the constant and the gate is the whole requirement.
+///
+/// This replaces `analyze_p5_skips_candidate_with_only_join_predicates_and_no_inner`,
+/// which pinned the over-denial: inventory row 4 is exactly this shape and connetto
+/// writes it verbatim.
 #[test]
-fn analyze_p5_skips_candidate_with_only_join_predicates_and_no_inner() {
-    // When ALL predicates are outer↔parent join columns, inner_predicates is empty,
-    // so the candidate is skipped.
+fn analyze_p5_reads_a_bare_correlation_as_delegation_to_the_parent() {
     let db = parse_schema(
         r"
 CREATE TABLE users(id UUID PRIMARY KEY);
@@ -2469,7 +2497,6 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
 ",
     )
     .unwrap();
-    // EXISTS with only a join predicate and no inner ownership/membership predicate
     let expr = parse_expr("EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id)");
     let result = recognize_p5(
         &expr,
@@ -2478,9 +2505,91 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         "tasks",
         PolicyCommand::Select,
     );
+    let Some(classified) = result else {
+        panic!("a bare correlation delegates to the parent's own rule");
+    };
     assert!(
-        result.is_none(),
-        "P5 with no inner predicate (only join) should not match"
+        matches!(
+            &classified.pattern,
+            PatternClass::P5ParentInheritance { parent_table, fk_column, inner_pattern }
+                if parent_table == "projects"
+                    && fk_column == "project_id"
+                    && matches!(
+                        inner_pattern.pattern,
+                        PatternClass::P10ConstantBool { value: true }
+                    )
+        ),
+        "the parent's gate is the whole rule, got {:?}",
+        classified.pattern
+    );
+    assert_eq!(
+        classified.confidence,
+        ConfidenceLevel::A,
+        "nothing here is guessed"
+    );
+}
+
+/// A bare correlation is taken at the policy's word, declared key or not: the policy
+/// names the parent and says which columns join, and nothing else competes for that
+/// reading, because a membership lookup always carries a predicate naming the caller.
+///
+/// This replaces `analyze_p5_still_refuses_a_bare_correlation_with_no_declared_key`,
+/// which pinned the refusal. Requiring the key there refused a shape whose meaning the
+/// policy had already stated, and connetto declares no such key.
+#[test]
+fn analyze_p5_reads_a_bare_correlation_without_a_declared_key() {
+    let db = parse_schema(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
+",
+    )
+    .unwrap();
+    let expr = parse_expr("EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id)");
+    assert!(
+        matches!(
+            recognize_p5(
+                &expr,
+                &db,
+                &FunctionRegistry::new(),
+                "tasks",
+                PolicyCommand::Select,
+            )
+            .map(|classified| classified.pattern),
+            Some(PatternClass::P5ParentInheritance { ref parent_table, .. })
+                if parent_table == "projects"
+        ),
+        "the policy states the join, so it is the evidence"
+    );
+}
+
+/// Where the subquery carries a rule of its own, the declared key still decides: that
+/// shape competes with a lookup in a side table naming the caller, and the key is what
+/// tells the two apart. Removing it there made parent inheritance claim shapes the
+/// membership analysis correctly refuses as ambiguous.
+#[test]
+fn analyze_p5_still_requires_a_declared_key_when_the_subquery_has_its_own_rule() {
+    let db = parse_schema(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
+",
+    )
+    .unwrap();
+    let expr = parse_expr(
+        "EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id \
+         AND p.owner_id = current_user)",
+    );
+    assert!(
+        recognize_p5(
+            &expr,
+            &db,
+            &FunctionRegistry::new(),
+            "tasks",
+            PolicyCommand::Select,
+        )
+        .is_none(),
+        "a rule of its own competes with a membership lookup, so the key still decides"
     );
 }
 
@@ -2682,6 +2791,25 @@ fn nullif_wrapped_ownership_classified_as_p3() {
     assert!(
         matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
         "NULLIF-wrapped column should classify as P3, got: {classified:?}"
+    );
+}
+
+/// `PostgreSQL` does not care which side of the comparison the caller sits on, and a
+/// column reached through a default is still that column on either side.
+#[test]
+fn coalesce_wrapped_ownership_classified_as_p3_with_the_caller_on_the_left() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+    let expr = parse_expr("current_user = COALESCE(owner_id, '')");
+    let classified = recognize_p3(&expr, &db, &registry);
+    assert!(
+        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+        "the operand order says nothing about who owns the row, got: {classified:?}"
+    );
+    assert_eq!(
+        classified.unwrap().confidence,
+        ConfidenceLevel::B,
+        "COALESCE wrapping caps confidence whichever side it is on"
     );
 }
 

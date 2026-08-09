@@ -30,7 +30,7 @@ pub(super) fn render_dsl(
         let parameters = spec
             .parameters
             .iter()
-            .map(|(parameter, type_name)| format!("{parameter}: {}", dsl_parameter_type(type_name)))
+            .map(|(parameter, kind)| format!("{parameter}: {}", dsl_parameter_type(kind)))
             .collect::<Vec<_>>()
             .join(", ");
         let _ = writeln!(dsl);
@@ -43,12 +43,18 @@ pub(super) fn render_dsl(
 }
 
 /// The DSL spells a parameter type in lower case, where the JSON names it
-/// `TYPE_NAME_TIMESTAMP`.
-fn dsl_parameter_type(type_name: &str) -> String {
-    type_name
-        .strip_prefix("TYPE_NAME_")
-        .unwrap_or(type_name)
-        .to_lowercase()
+/// `TYPE_NAME_TIMESTAMP`, and spells a list's element type inside angle brackets.
+fn dsl_parameter_type(kind: &ConditionParameter) -> String {
+    fn bare(type_name: &str) -> String {
+        type_name
+            .strip_prefix("TYPE_NAME_")
+            .unwrap_or(type_name)
+            .to_lowercase()
+    }
+    match kind {
+        ConditionParameter::Scalar(type_name) => bare(type_name),
+        ConditionParameter::ListOf(element) => format!("list<{}>", bare(element)),
+    }
 }
 
 fn format_subjects(subjects: &[DirectSubject]) -> String {

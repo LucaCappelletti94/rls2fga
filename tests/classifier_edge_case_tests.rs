@@ -706,8 +706,11 @@ CREATE POLICY p ON docs FOR SELECT
     );
 }
 
+/// A read policy that only requires the parent row to exist inherits the parent's own
+/// read rule, since `SELECT` on the parent applies its policies to the subquery. It used
+/// to fall to `Unknown` and deny, which is inventory row 4's over-denial.
 #[test]
-fn p5_no_inner_predicates_skips_candidate() {
+fn p5_no_inner_predicates_delegates_to_the_parent() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
@@ -721,8 +724,16 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        !matches!(&c.pattern, PatternClass::P5ParentInheritance { .. }),
-        "No inner predicates should NOT classify as P5, got: {:?}",
+        matches!(
+            &c.pattern,
+            PatternClass::P5ParentInheritance { parent_table, inner_pattern, .. }
+                if parent_table == "orgs"
+                    && matches!(
+                        inner_pattern.pattern,
+                        PatternClass::P10ConstantBool { value: true }
+                    )
+        ),
+        "the parent's own rule is the whole requirement, got: {:?}",
         c.pattern
     );
 }
