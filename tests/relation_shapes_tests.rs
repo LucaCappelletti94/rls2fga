@@ -196,6 +196,85 @@ fn a_direct_ownership_relation_carries_one_shape_from_its_own_row() {
     );
 }
 
+/// The same schema keyed on two columns. Phase 4 taught the whole crate to name such a
+/// row, so a recipe over one is as decidable as a recipe over a single-column key: the
+/// records still follow from that row and from nothing else.
+///
+/// The guard on the object's identity kept demanding a single column after the facts
+/// started flowing, so ownership on a compound key emitted correct tuples while every
+/// relation reported that no row decides them. That is a wrong deny at a consumer
+/// answering locally, and it disagreed with the request-gated path, which accepts a
+/// compound key because it settles earlier.
+const COMPOUND_OWNERSHIP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE shares (paper_id TEXT, viewer TEXT, PRIMARY KEY (paper_id, viewer));
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_owner ON shares FOR SELECT USING (viewer = auth_current_user_id());
+";
+
+#[test]
+fn a_compound_key_ownership_relation_is_decided_by_its_own_row() {
+    let shapes = shapes_of(COMPOUND_OWNERSHIP, ACCESSOR_REGISTRY);
+
+    let owned = entry(&shapes, "shares", "viewer");
+    assert!(
+        owned.from_one_row,
+        "a key spanning two columns names a row as surely as one does: {owned:#?}"
+    );
+
+    let RecordDerivation::FromRow {
+        table, template, ..
+    } = &owned.shapes[0].derivation
+    else {
+        panic!("ownership resolves from the row: {:#?}", owned.shapes[0]);
+    };
+    assert_eq!(table, "shares");
+    assert_eq!(
+        template.object_key.parts(),
+        [
+            ValueSource::Column("paper_id".to_string()),
+            ValueSource::Column("viewer".to_string()),
+        ],
+        "the object is named by every key column, in declared order"
+    );
+    assert_eq!(
+        template.subject_key.part(),
+        &ValueSource::Column("viewer".to_string())
+    );
+
+    assert!(
+        entry(&shapes, "shares", "can_select").from_one_row,
+        "and the action relation reading it inherits that: {shapes:#?}"
+    );
+}
+
+/// The guard still has to refuse a record keyed on something that is not the row's
+/// identity, which is what it was written for. A foreign column names another object,
+/// and a change to this row does not own it.
+#[test]
+fn a_record_keyed_on_a_foreign_column_is_still_not_decided_by_the_row() {
+    let shapes = shapes_of(
+        "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE links (id TEXT PRIMARY KEY, doc_id TEXT REFERENCES docs(id), user_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_shared ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM links l WHERE l.doc_id = docs.id AND l.user_id = auth_current_user_id()));
+",
+        ACCESSOR_REGISTRY,
+    );
+
+    assert!(
+        !entry(&shapes, "docs", "can_select").from_one_row,
+        "the grant is recorded on another table, so no row of docs settles it: {shapes:#?}"
+    );
+}
+
 /// Assertion 2. A relation the model computes carries no shapes and is still answered.
 #[test]
 fn a_computed_relation_carries_no_shapes_and_keeps_its_own_answer() {

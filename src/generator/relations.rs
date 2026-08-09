@@ -14,7 +14,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::generator::db_lookup::single_pk_column;
+use crate::generator::db_lookup::resolve_pk_columns;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
@@ -336,15 +336,26 @@ fn row_names_a_user<DB: DatabaseLike>(
     if template.object_type != type_name {
         return false;
     }
-    // The object has to be this row's identity. A record keyed by a foreign
-    // column describes another object, which a change to this row does not own.
-    let [ValueSource::Column(object_column)] = template.object_key.parts() else {
+    // The object has to be this row's identity: every key column, in declared order. A
+    // record keyed by a foreign column describes another object, which a change to this
+    // row does not own. A single-column key is a list of one, so nothing about that case
+    // moves.
+    let object_columns: Option<Vec<&str>> = template
+        .object_key
+        .parts()
+        .iter()
+        .map(|part| match part {
+            ValueSource::Column(column) => Some(column.as_str()),
+            _ => None,
+        })
+        .collect();
+    let Some(object_columns) = object_columns else {
         return false;
     };
-    let Some(primary_key) = single_pk_column(table, db) else {
+    let Some(primary_key) = resolve_pk_columns(table, db) else {
         return false;
     };
-    if *object_column != primary_key {
+    if object_columns != primary_key {
         return false;
     }
     // The subject has to be a user the consumer can compare against, named by
