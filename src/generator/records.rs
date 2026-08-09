@@ -22,6 +22,21 @@ pub struct Record {
     pub relation: String,
     /// `type:key`, or `user:*` for a wildcard.
     pub subject: String,
+    /// The condition context this record carries, absent for an unconditional one.
+    ///
+    /// Present means the grant is not settled by the row: the service completes it
+    /// with what the request supplies, so treating the subject as granted is a wrong
+    /// allow.
+    pub context: Option<RecordContextValue>,
+}
+
+/// One key and value a record puts in its condition context.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordContextValue {
+    /// Condition parameter the value fills.
+    pub key: String,
+    /// The value, rendered as the tuple SQL renders it.
+    pub value: String,
 }
 
 /// Where one side of a record takes its value on the row.
@@ -73,6 +88,21 @@ pub struct RecordTemplate {
     pub subject_type: String,
     /// Where the subject's key comes from.
     pub subject_key: ValueSource,
+    /// The condition context the record carries, absent for an unconditional one.
+    ///
+    /// A conditional record grants nobody on its own: the service completes the
+    /// comparison with what the request supplies, so a reader that ignores this and
+    /// takes the subject at face value grants everyone.
+    pub context: Option<RecordContext>,
+}
+
+/// One key a record puts in its condition context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordContext {
+    /// Condition parameter the value fills.
+    pub key: String,
+    /// Where the value comes from.
+    pub value: ValueSource,
 }
 
 /// A query bound to one row of one table by its key, for a shape whose records
@@ -96,8 +126,9 @@ pub enum RecordDerivation {
     FromRow {
         /// The table the row belongs to.
         table: String,
-        /// How each record composes.
-        template: RecordTemplate,
+        /// How each record composes. Boxed to keep this variant near the size of the
+        /// joining one, which holds only a query list.
+        template: Box<RecordTemplate>,
         /// Conditions the row must satisfy, all of them.
         guards: Vec<Guard>,
     },
@@ -225,12 +256,26 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         return Ok(Vec::new());
     };
 
+    // A context the row cannot fill yields no record at all, exactly as the tuple SQL
+    // skips a row whose carried column is NULL.
+    let context = match &template.context {
+        Some(context) => match single_value(&context.value, row) {
+            Some(value) => Some(RecordContextValue {
+                key: context.key.clone(),
+                value,
+            }),
+            None => return Ok(Vec::new()),
+        },
+        None => None,
+    };
+
     Ok(expand(&template.subject_key, row)
         .into_iter()
         .map(|subject_key| Record {
             object: format!("{}:{object_key}", template.object_type),
             relation: template.relation.clone(),
             subject: format!("{}:{subject_key}", template.subject_type),
+            context: context.clone(),
         })
         .collect())
 }

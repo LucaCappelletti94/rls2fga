@@ -2,14 +2,162 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::parser::function_analyzer::{
-    normalize_setting_key, AccessorInferenceSettings, FunctionSemantic,
+    body_setting_key, normalize_setting_key, AccessorInferenceSettings, FunctionSemantic,
 };
 use crate::parser::names::{
     normalize_identifier, normalize_relation_name, split_schema_and_relation,
 };
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
 use sqlparser::ast::FunctionSecurity;
+
+/// What a declared request-scoped source holds.
+///
+/// The kind is what keeps a wrong allow impossible rather than merely checked: a set read
+/// where one value belongs, or one value read where a set belongs, finds no matching kind
+/// and stays unclassified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAttributeKind {
+    /// The caller's own identity.
+    CallerId,
+    /// One value the request carries.
+    ScalarAttribute,
+    /// A set of values the request carries.
+    SetAttribute,
+}
+
+/// One request-scoped value a deployment has declared readable.
+///
+/// A source is a `current_setting` key, optionally with a field path taken out of the
+/// value at that key. A function whose body reads the key resolves to the same source, so
+/// the two spellings are one declaration and cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(from = "SessionAttributeSpec")]
+pub struct SessionAttribute {
+    key: String,
+    path: Vec<String>,
+    kind: SessionAttributeKind,
+    parameter: String,
+}
+
+/// The written form of a declaration, so a deployment can ship its list as data.
+///
+/// Separate from [`SessionAttribute`] because the parameter name is derived when it is
+/// not given, and a directly deserialized struct could carry one that does not match its
+/// source.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionAttributeSpec {
+    /// The `current_setting` key.
+    pub key: String,
+    /// Field path taken out of the value at that key.
+    #[serde(default)]
+    pub path: Vec<String>,
+    /// What the source holds.
+    pub kind: SessionAttributeKind,
+    /// Condition parameter the caller supplies, derived from the source when absent.
+    #[serde(default)]
+    pub parameter: Option<String>,
+}
+
+impl From<SessionAttributeSpec> for SessionAttribute {
+    fn from(spec: SessionAttributeSpec) -> Self {
+        let attribute = SessionAttribute::build(&spec.key, spec.path, spec.kind);
+        match spec.parameter {
+            Some(name) => attribute.with_parameter(name),
+            None => attribute,
+        }
+    }
+}
+
+impl SessionAttribute {
+    /// Declare the value at `key`.
+    pub fn setting(key: impl AsRef<str>, kind: SessionAttributeKind) -> Self {
+        Self::build(key.as_ref(), Vec::new(), kind)
+    }
+
+    /// Declare the field at `path` inside the value at `key`.
+    ///
+    /// A field is an attribute and never the caller: `sub` inside a token is an identity
+    /// and so is `tenant`, and nothing in the expression says which the caller is. A
+    /// declaration built this way and given [`SessionAttributeKind::CallerId`] is inert,
+    /// so the identity door stays the one door configuration cannot open.
+    pub fn claim<I, S>(key: impl AsRef<str>, path: I, kind: SessionAttributeKind) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::build(
+            key.as_ref(),
+            path.into_iter().map(Into::into).collect(),
+            kind,
+        )
+    }
+
+    fn build(key: &str, path: Vec<String>, kind: SessionAttributeKind) -> Self {
+        let key = normalize_setting_key(key);
+        let parameter = default_parameter_name(&key, &path);
+        Self {
+            key,
+            path,
+            kind,
+            parameter,
+        }
+    }
+
+    /// Name the condition parameter the caller supplies for this value, which every
+    /// check context then has to use. Defaults to the source spelled as an identifier.
+    #[must_use]
+    pub fn with_parameter(mut self, name: impl Into<String>) -> Self {
+        self.parameter = name.into();
+        self
+    }
+
+    /// The `current_setting` key this source reads.
+    #[must_use]
+    pub fn setting_key(&self) -> &str {
+        &self.key
+    }
+
+    /// The field path taken out of that value, empty for the value itself.
+    #[must_use]
+    pub fn path(&self) -> &[String] {
+        &self.path
+    }
+
+    /// What this source holds, as declared.
+    #[must_use]
+    pub fn kind(&self) -> SessionAttributeKind {
+        self.kind
+    }
+
+    /// The condition parameter name the caller supplies.
+    #[must_use]
+    pub fn request_parameter(&self) -> &str {
+        &self.parameter
+    }
+}
+
+/// A source spelled as an identifier, since a condition parameter name shares a namespace
+/// with `CEL` identifiers and a setting key carries dots.
+fn default_parameter_name(key: &str, path: &[String]) -> String {
+    let mut name = String::with_capacity(key.len());
+    for segment in core::iter::once(key).chain(path.iter().map(String::as_str)) {
+        if !name.is_empty() {
+            name.push('_');
+        }
+        for ch in segment.chars() {
+            name.push(if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            });
+        }
+    }
+    name
+}
 
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
@@ -21,9 +169,9 @@ pub struct FunctionRegistry {
     /// Functions whose body describes a caller accessor their security mode
     /// invalidates, kept so the report can name the cause.
     owner_bound_accessors: BTreeSet<String>,
-    /// `current_setting` keys whose value is the caller's identity, so a call reading
-    /// one names the caller wherever it appears.
-    current_user_setting_keys: BTreeSet<String>,
+    /// Request-scoped sources a deployment declared readable, keyed on the setting key
+    /// and the field path taken out of it.
+    session_attributes: BTreeMap<(String, Vec<String>), SessionAttribute>,
 }
 
 impl FunctionRegistry {
@@ -54,7 +202,7 @@ impl FunctionRegistry {
             functions: BTreeMap::new(),
             public_flag_columns: BTreeSet::new(),
             owner_bound_accessors: BTreeSet::new(),
-            current_user_setting_keys: BTreeSet::new(),
+            session_attributes: BTreeMap::new(),
         }
     }
 
@@ -86,16 +234,53 @@ impl FunctionRegistry {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.current_user_setting_keys.extend(
+        self.declare_session_attributes(
             keys.into_iter()
-                .map(|key| normalize_setting_key(key.as_ref())),
+                .map(|key| SessionAttribute::setting(key, SessionAttributeKind::CallerId)),
         );
     }
 
+    /// Declare the request-scoped values a policy may read.
+    ///
+    /// One source holds one kind, so a set read where one value belongs finds no
+    /// declaration and stays unclassified. A source already described in the function
+    /// table keeps that description: a name cannot mean two things at once.
+    pub fn declare_session_attributes<I>(&mut self, attributes: I)
+    where
+        I: IntoIterator<Item = SessionAttribute>,
+    {
+        for attribute in attributes {
+            if self.get(attribute.setting_key()).is_some() {
+                continue;
+            }
+            self.session_attributes
+                .insert((attribute.key.clone(), attribute.path.clone()), attribute);
+        }
+    }
+
+    /// The declaration for a source, if a deployment named one.
+    pub(crate) fn session_attribute(
+        &self,
+        key: &str,
+        path: &[String],
+    ) -> Option<&SessionAttribute> {
+        self.session_attributes
+            .get(&(normalize_setting_key(key), path.to_vec()))
+    }
+
     /// True when `key` was named as holding the caller's identity.
+    ///
+    /// Only a declaration of the whole value can answer: the lookup asks for the empty
+    /// field path, so a claim path is unreachable here whatever kind it named. That is
+    /// the door configuration cannot open.
     pub(crate) fn names_caller_setting_key(&self, key: &str) -> bool {
-        self.current_user_setting_keys
-            .contains(&normalize_setting_key(key))
+        self.session_attribute(key, &[])
+            .is_some_and(|attribute| attribute.kind() == SessionAttributeKind::CallerId)
+    }
+
+    /// Every declared source, so the effective registry can carry a caller's list.
+    pub(crate) fn session_attributes(&self) -> impl Iterator<Item = &SessionAttribute> {
+        self.session_attributes.values()
     }
 
     /// Load function semantics from a JSON string.
@@ -196,6 +381,18 @@ impl FunctionRegistry {
                 // mode is what stops it identifying the caller.
                 self.owner_bound_accessors
                     .insert(function.name().to_string());
+            } else if self.get(function.name()).is_none() {
+                // A wrapper around a declared source is that source, so the inline and
+                // the wrapped spelling reach one declaration and cannot disagree.
+                if let Some(key) = body_setting_key(body)
+                    .map(|key| normalize_setting_key(&key))
+                    .filter(|key| settings.declares_setting_key(key))
+                {
+                    self.register_if_absent(
+                        function.name(),
+                        &FunctionSemantic::SettingReader { key },
+                    );
+                }
             }
         }
     }

@@ -19,10 +19,14 @@ use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableL
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
+/// Request-scoped values a deployment declared readable.
+mod session;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
 pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
+pub use session::recognize_session_attribute;
+use session::split_of_declared_set;
 use subquery::projected_select;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,
@@ -460,6 +464,16 @@ pub fn recognize_jsonb_field_ownership(
 
 /// The `(column, key chain)` of a jsonb text extraction, or `None` if `expr` is not one.
 fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+    let (base, path) = json_text_path(expr)?;
+    Some((extract_column_name(base)?, path))
+}
+
+/// Peel a `->` chain ending in `->>` into the value it reads and the key chain.
+///
+/// The one place an arrow chain is walked, so a rule about it cannot be applied by one
+/// reader and dropped by another. Only `->>` ends a chain: `->` yields jsonb, whose text
+/// form carries the quotes.
+fn json_text_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
     let Expr::BinaryOp {
         left,
         op: BinaryOperator::LongArrow,
@@ -483,7 +497,7 @@ fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
     }
     path.reverse();
 
-    Some((extract_column_name(node)?, path))
+    Some((node, path))
 }
 
 /// A jsonb key written as a string literal. An integer index addresses an array
@@ -791,14 +805,14 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
     }
 }
 
-/// The node an accessor expression bottoms out at, under parentheses, casts, and a scalar
-/// subquery that is only its projection.
+/// The value an accessor expression reads, and the field path taken out of it.
 ///
-/// One traversal so the name and the setting key an expression carries can never
-/// disagree about which call they describe.
-fn accessor_root(expr: &Expr) -> Option<&Expr> {
+/// One traversal, under parentheses, casts, a scalar subquery that is only its
+/// projection, and an arrow chain, so the name, the setting key and the field path an
+/// expression carries can never disagree about which read they describe.
+pub(crate) fn accessor_root_and_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
     match expr {
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => accessor_root(inner),
+        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => accessor_root_and_path(inner),
         // `(SELECT auth.uid())`, and only that: a subquery reading a table or carrying a
         // clause that can empty its result is a conjunct in disguise, and the pattern
         // keeps only a column name, so whatever it gates would vanish from the model.
@@ -808,12 +822,28 @@ fn accessor_root(expr: &Expr) -> Option<&Expr> {
             else {
                 return None;
             };
-            accessor_root(inner)
+            accessor_root_and_path(inner)
         }
-        // A field pulled out of the value stops here: `sub` inside a token is an identity,
-        // and so is `tenant`, and nothing in the expression says which of them the caller
-        // is. Name a key holding the identity itself instead.
-        other => Some(other),
+        other => match json_text_path(other) {
+            Some((base, mut path)) => {
+                let (root, mut inner) = accessor_root_and_path(base)?;
+                inner.append(&mut path);
+                Some((root, inner))
+            }
+            None => Some((other, Vec::new())),
+        },
+    }
+}
+
+/// The node an accessor expression bottoms out at, refusing a field taken out of it.
+///
+/// A field pulled out of the value is not the value: `sub` inside a token is an identity,
+/// and so is `tenant`, and nothing in the expression says which of them the caller is.
+/// Name a key holding the identity itself instead.
+fn accessor_root(expr: &Expr) -> Option<&Expr> {
+    match accessor_root_and_path(expr)? {
+        (root, path) if path.is_empty() => Some(root),
+        _ => None,
     }
 }
 
@@ -916,6 +946,19 @@ fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
             }
             false
         }
+        _ => false,
+    }
+}
+
+/// `caller IS NOT NULL`, which says nothing a tuple does not already say.
+///
+/// A tuple exists only for a row that has an owner, and a caller with no identifier
+/// matches none, so the check is already enforced by how tuples are produced. The same
+/// test on a **row** column is a real filter and is not this: it decides which rows are
+/// granted, so dropping it would grant rows the policy refuses.
+pub fn is_redundant_caller_presence(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    match unparenthesize(expr) {
+        Expr::IsNotNull(inner) => is_current_user_expr(inner, registry),
         _ => false,
     }
 }

@@ -11,11 +11,14 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::records::{Guard, RecordDerivation, RecordDescription, ValueSource};
 use rls2fga::generator::relations::{RelationShapes, RowDecision};
 use rls2fga::generator::well_known::{MEMBER_RELATION, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE};
 use rls2fga::parser::names::lookup_table;
-use rls2fga::parser::sql_parser::{parse_schema, ColumnLike, ParserDB, TableLike};
+use rls2fga::parser::sql_parser::{
+    parse_schema, ColumnLike, DatabaseLike, ParserDB, PolicyLike, TableLike,
+};
 use rls2fga::translator::Translation;
 
 mod support;
@@ -100,6 +103,31 @@ fn translation<'a>(
 fn shapes_of(sql: &str, registry_json: &str) -> Vec<RelationShapes> {
     let (db, registry) = parsed(sql, registry_json);
     translation(&db, &registry, &GeneratorSettings::default()).relations()
+}
+
+fn shapes_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> Vec<RelationShapes> {
+    let (db, registry) = parsed(sql, registry_json);
+    Translation::plan(
+        classify_policies(&db, &registry),
+        &db,
+        &registry,
+        level,
+        &GeneratorSettings::default(),
+    )
+    .relations()
+}
+
+fn model_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> String {
+    let (db, registry) = parsed(sql, registry_json);
+    Translation::plan(
+        classify_policies(&db, &registry),
+        &db,
+        &registry,
+        level,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .model()
 }
 
 fn entry<'a>(shapes: &'a [RelationShapes], type_name: &str, relation: &str) -> &'a RelationShapes {
@@ -724,10 +752,56 @@ fn leaf(relation: &str, shapes: &[RecordDescription]) -> RowDecision {
     }
 }
 
+/// One leaf of a recipe, and what makes it decidable.
+enum Leaf<'a> {
+    /// The subjects are the ones the row names.
+    Named {
+        relation: &'a str,
+        shapes: &'a [RecordDescription],
+    },
+    /// The row settles one side of a comparison the caller's own value completes, so the
+    /// subject is a wildcard and the context is what stops it granting everyone.
+    Gated {
+        relation: &'a str,
+        shapes: &'a [RecordDescription],
+        context_key: &'a str,
+        request_parameter: &'a str,
+    },
+}
+
+impl<'a> Leaf<'a> {
+    fn relation(&self) -> &'a str {
+        match self {
+            Self::Named { relation, .. } | Self::Gated { relation, .. } => relation,
+        }
+    }
+
+    fn shapes(&self) -> &'a [RecordDescription] {
+        match self {
+            Self::Named { shapes, .. } | Self::Gated { shapes, .. } => shapes,
+        }
+    }
+}
+
 /// Every leaf a recipe reaches, in the order it reaches them.
-fn recipe_leaves(decision: &RowDecision) -> Vec<(&str, &[RecordDescription])> {
+fn recipe_leaves(decision: &RowDecision) -> Vec<Leaf<'_>> {
     match decision {
-        RowDecision::Leaf { relation, shapes } => vec![(relation.as_str(), shapes.as_slice())],
+        RowDecision::Leaf { relation, shapes } => vec![Leaf::Named {
+            relation: relation.as_str(),
+            shapes: shapes.as_slice(),
+        }],
+        RowDecision::RequestGated {
+            relation,
+            shapes,
+            context_key,
+            request_parameter,
+            ..
+        } => vec![Leaf::Gated {
+            relation: relation.as_str(),
+            shapes: shapes.as_slice(),
+            context_key: context_key.as_str(),
+            request_parameter: request_parameter.as_str(),
+        }],
         RowDecision::Any(children) | RowDecision::All(children) => {
             children.iter().flat_map(recipe_leaves).collect()
         }
@@ -837,7 +911,7 @@ fn either_spelling_of_two_ownership_columns_composes_into_any() {
                 .expect("an ownership read decides from the row"),
         )
         .into_iter()
-        .map(|(relation, _)| relation)
+        .map(|leaf| leaf.relation())
         .collect();
         assert_eq!(
             named,
@@ -928,13 +1002,14 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                 reported.type_name,
                 reported.relation
             );
-            for (relation, shapes) in reached {
+            for leaf in reached {
+                let relation = leaf.relation();
                 assert!(
-                    !shapes.is_empty(),
+                    !leaf.shapes().is_empty(),
                     "{fixture}: leaf {}#{relation} carries no shape, so it decides nothing",
                     reported.type_name
                 );
-                for shape in shapes {
+                for shape in leaf.shapes() {
                     checked += 1;
                     let RecordDerivation::FromRow {
                         table, template, ..
@@ -963,12 +1038,50 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                          compare against",
                         reported.type_name
                     );
-                    assert!(
-                        !matches!(template.subject_key, ValueSource::Literal(_)),
-                        "{fixture}: leaf {}#{relation} carries a literal subject: {:?}",
-                        reported.type_name,
-                        template.subject_key
-                    );
+                    match &leaf {
+                        Leaf::Named { .. } => assert!(
+                            !matches!(template.subject_key, ValueSource::Literal(_)),
+                            "{fixture}: leaf {}#{relation} carries a literal subject: {:?}",
+                            reported.type_name,
+                            template.subject_key
+                        ),
+                        // A gated leaf grants the wildcard, so the context is the only
+                        // thing standing between it and granting everyone. Losing the
+                        // context or naming it differently from the recipe is a wrong
+                        // allow no DSL assertion can see.
+                        Leaf::Gated {
+                            context_key,
+                            request_parameter,
+                            ..
+                        } => {
+                            assert_eq!(
+                                template.subject_key,
+                                ValueSource::Literal("*".to_string()),
+                                "{fixture}: gated leaf {}#{relation} grants named subjects \
+                                 rather than the wildcard the condition filters",
+                                reported.type_name
+                            );
+                            let context = template.context.as_ref().unwrap_or_else(|| {
+                                panic!(
+                                    "{fixture}: gated leaf {}#{relation} carries no context, \
+                                     so its records grant everyone",
+                                    reported.type_name
+                                )
+                            });
+                            assert_eq!(
+                                context.key, *context_key,
+                                "{fixture}: gated leaf {}#{relation} fills a different \
+                                 parameter from the one the recipe names",
+                                reported.type_name
+                            );
+                            assert!(
+                                !request_parameter.is_empty(),
+                                "{fixture}: gated leaf {}#{relation} names no parameter for \
+                                 the caller to supply",
+                                reported.type_name
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -989,4 +1102,642 @@ fn primary_key_of(table: &str, db: &ParserDB) -> String {
             || "id".to_string(),
             |column| column.stored_column_name().into_owned(),
         )
+}
+
+/// An arm nothing can classify, so the threshold drops it while the ownership arm
+/// beside it survives. `opaque_gate` is deliberately unregistered and bodyless, so
+/// no later vocabulary work can make it recognizable and quietly retire these tests.
+const PARTIAL_SELECT_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_opaque ON docs FOR SELECT USING (opaque_gate(id));
+";
+
+/// The same loss spread over every command. Neither policy stores a `WITH CHECK`, so
+/// `PostgreSQL` mirrors each `USING` onto the check side and the dropped arm reaches
+/// `can_insert` only through that mirror. Storing an explicit check instead would
+/// reach `can_insert` through the check arm and leave the mirror untested.
+const FOR_ALL_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR ALL USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_opaque ON docs FOR ALL USING (opaque_gate(id));
+";
+
+/// One UPDATE policy whose USING survives and whose WITH CHECK does not.
+const WITH_CHECK_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = auth_current_user_id())
+    WITH CHECK (opaque_gate(id));
+";
+
+/// A permissive policy `PostgreSQL` resolved to the DDL runner, so a dump cannot say
+/// who it binds and the whole policy is dropped beside a surviving arm.
+const DDL_ROLE_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, team_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY docs_cu ON docs FOR SELECT TO CURRENT_USER
+    USING (team_id = auth_current_user_id());
+";
+
+/// The attribute half of a permissive conjunction is handed to the application, so
+/// the emitted relation is WIDER than the database rather than narrower.
+const GUARD_DISCARD: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, status TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT
+    USING (owner_id = auth_current_user_id() AND status = 'open');
+";
+
+/// Phase 1, test 1. A permissive arm the threshold dropped makes the emitted
+/// relation narrower than the database, so no row decides it. A consumer answering
+/// from the recipe would otherwise hide rows `PostgreSQL` shows.
+#[test]
+fn a_dropped_permissive_arm_leaves_the_relation_it_narrowed_undecidable() {
+    let shapes = shapes_at(PARTIAL_SELECT_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B);
+
+    let can_select = entry(&shapes, "docs", "can_select");
+    assert!(
+        !can_select.from_one_row,
+        "the dropped arm makes can_select narrower than the database, so one row \
+         cannot decide it: {can_select:#?}"
+    );
+    assert!(
+        can_select.decision.is_none(),
+        "and the recipe has to agree with the flag"
+    );
+    assert!(
+        entry(&shapes, "docs", "owner").from_one_row,
+        "the surviving arm still fills its own relation from the row, so the scar \
+         is targeted rather than a blanket refusal"
+    );
+}
+
+/// Phase 1, test 2. A FOR ALL pair loses every command at once, the INSERT side
+/// through the USING to WITH CHECK mirror.
+#[test]
+fn a_dropped_for_all_arm_undecides_every_action_relation_it_fed() {
+    let shapes = shapes_at(FOR_ALL_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B);
+
+    for relation in [
+        "can_select",
+        "can_insert",
+        "can_update",
+        "can_delete",
+        "can_update_without_reading",
+        "can_select_for_update",
+    ] {
+        let reported = entry(&shapes, "docs", relation);
+        assert!(
+            !reported.from_one_row,
+            "docs#{relation} lost an arm, so one row cannot decide it"
+        );
+    }
+    assert!(
+        entry(&shapes, "docs", "owner").from_one_row,
+        "the row still fills owner"
+    );
+}
+
+/// Phase 1, test 3. Losing the WITH CHECK costs the update, and nothing else. A
+/// locking read filters by the UPDATE USING alone, which survived, so it stays
+/// decidable and the scar does not spread further than the loss.
+#[test]
+fn a_dropped_with_check_undecides_the_update_but_not_the_locking_read() {
+    let shapes = shapes_at(WITH_CHECK_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B);
+
+    assert!(
+        !entry(&shapes, "docs", "can_update").from_one_row,
+        "the check half was lost, so can_update is not decidable"
+    );
+    assert!(
+        entry(&shapes, "docs", "can_select_for_update").from_one_row,
+        "a locking read filters by the surviving USING alone, so it stays decidable"
+    );
+    assert!(
+        entry(&shapes, "docs", "can_select").from_one_row,
+        "and the SELECT policy was never touched"
+    );
+}
+
+/// Phase 1, test 7. The scar is metadata. An entry naming a relation the plan never
+/// defines reaches nothing: `can_insert_returning` is folded away here because the
+/// insert rule already implies the read.
+#[test]
+fn a_scar_on_a_relation_the_plan_never_defines_is_inert() {
+    let shapes = shapes_at(FOR_ALL_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B);
+
+    assert!(
+        !shapes
+            .iter()
+            .any(|reported| reported.relation == "can_insert_returning"),
+        "a scar must not conjure a relation the model does not define"
+    );
+    assert_eq!(
+        model_at(FOR_ALL_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B),
+        "model\n  schema 1.1\n\
+         \ntype user\n\
+         \ntype docs\n  relations\n\
+         \u{20}   define owner: [user]\n\
+         \u{20}   define can_delete: owner\n\
+         \u{20}   define can_insert: owner\n\
+         \u{20}   define can_select: owner\n\
+         \u{20}   define can_select_for_update: can_update\n\
+         \u{20}   define can_update: owner\n\
+         \u{20}   define can_update_without_reading: owner\n",
+        "the scar changes no DSL byte"
+    );
+}
+
+/// Phase 1, test 8a. A policy bound to a role only the DDL knew is dropped whole,
+/// which narrows the survivor's relation exactly as a threshold drop does.
+#[test]
+fn a_policy_bound_to_a_ddl_time_role_undecides_what_it_would_have_widened() {
+    let shapes = shapes_at(DDL_ROLE_DROP, ACCESSOR_REGISTRY, ConfidenceLevel::B);
+
+    assert!(
+        !entry(&shapes, "docs", "can_select").from_one_row,
+        "the dropped TO CURRENT_USER policy granted rows the model no longer does"
+    );
+}
+
+/// Phase 1, test 8b. A policy naming a table two schemas both bear belongs to one of
+/// them and the schema cannot say which, so both candidates lost a grant. Reached
+/// through the already-classified door, since `parse_schema` refuses the spelling
+/// outright with `TableNotFoundForPolicy`.
+#[test]
+fn a_policy_whose_table_does_not_resolve_undecides_every_table_that_bears_the_name() {
+    let sql = "
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE a.docs (id TEXT PRIMARY KEY, owner_id TEXT, team_id TEXT);
+CREATE TABLE b.docs (id TEXT PRIMARY KEY, owner_id TEXT, team_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE a.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE b.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY a_owner ON a.docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY b_owner ON b.docs FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY a_team ON a.docs FOR SELECT USING (team_id = auth_current_user_id());
+";
+    let (db, registry) = parsed(sql, ACCESSOR_REGISTRY);
+    let mut classified = classify_policies(&db, &registry);
+    for cp in &mut classified {
+        if cp.name == "a_team" {
+            cp.table = "docs".to_string();
+        }
+    }
+    let shapes = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .relations();
+
+    for type_name in ["docs", "docs_09be04be"] {
+        assert!(
+            !entry(&shapes, type_name, "can_select").from_one_row,
+            "{type_name} may be the table the unresolved policy granted, so it \
+             cannot claim one row decides its reads"
+        );
+    }
+}
+
+/// Phase 1, test 8c. The one drift that widens. The attribute half is handed to the
+/// application, so the model grants rows `PostgreSQL` hides, and a consumer answering
+/// locally would allow rather than deny. The DSL is unchanged, so only the scar
+/// separates this from a faithful ownership grant.
+#[test]
+fn a_discarded_attribute_guard_undecides_the_relation_it_widened() {
+    let shapes = shapes_at(GUARD_DISCARD, ACCESSOR_REGISTRY, ConfidenceLevel::C);
+
+    assert!(
+        !entry(&shapes, "docs", "can_select").from_one_row,
+        "the discarded status guard makes the model wider than the database"
+    );
+    assert!(
+        model_at(GUARD_DISCARD, ACCESSOR_REGISTRY, ConfidenceLevel::C)
+            .contains("define can_select: owner"),
+        "and the emitted model is untouched, so the scar is the only difference"
+    );
+}
+
+/// Phase 1, test 6. The standing guard that no path can lose a clause silently.
+/// Every clause the schema declares either survives into the confidence summary or is
+/// named by a machine readable note: keyed on its own policy, or, where the loss
+/// belongs to the table's read graph rather than to any one policy, by the recursion
+/// note that names the table and the cycle.
+///
+/// Deliberately not satisfied by a note that merely mentions the table, since
+/// `TableOwnerBypassesPolicies` names every RLS-enabled table and would pass this
+/// vacuously for the whole corpus.
+#[test]
+fn every_declared_clause_reaches_the_summary_or_a_note_that_names_it() {
+    let mut checked = 0usize;
+    let mut unaccounted: Vec<String> = Vec::new();
+
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let outputs = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps();
+
+        let surviving: BTreeSet<&str> = outputs
+            .confidence_summary()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let named: BTreeSet<&str> = outputs
+            .notes()
+            .iter()
+            .map(TranslationNote::subject)
+            .collect();
+        let looping: BTreeSet<&str> = outputs
+            .notes()
+            .iter()
+            .filter_map(|note| match note {
+                TranslationNote::PolicyReadRecursion { table, .. } => Some(table.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        for policy in db.policies() {
+            let name = policy.name().to_string();
+            let table = policy.target_table_name().to_string();
+            for (label, stored) in [
+                ("USING", policy.using_expression(&db).is_some()),
+                ("WITH CHECK", policy.check_expression(&db).is_some()),
+            ] {
+                if !stored {
+                    continue;
+                }
+                checked += 1;
+                let survivor = if label == "USING" {
+                    name.clone()
+                } else {
+                    format!("{name} (WITH CHECK)")
+                };
+                if surviving.contains(survivor.as_str())
+                    || named.contains(name.as_str())
+                    || looping.contains(table.as_str())
+                {
+                    continue;
+                }
+                unaccounted.push(format!("{fixture}: {name} ({label})"));
+            }
+        }
+    }
+
+    assert!(
+        checked > 20,
+        "the corpus should not have shrunk, only {checked} clauses seen"
+    );
+    assert!(
+        unaccounted.is_empty(),
+        "a clause the database evaluates reaches no machine readable surface: {unaccounted:#?}"
+    );
+}
+
+/// A barrier the threshold dropped, beside a surviving ownership grant.
+const RESTRICTIVE_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, is_public BOOLEAN);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT USING (is_public);
+";
+
+/// Nothing survives, so the command falls closed outright.
+const TOTAL_DROP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_opaque ON docs FOR SELECT USING (opaque_gate(id));
+";
+
+/// Phase 1, test 9. Shapes already non decidable before any scar existed, pinned so
+/// the scar is not the only thing holding them up. Three different mechanisms: a
+/// barrier that fell closed, a command left with nothing to grant it, and an arm kept
+/// at a threshold low enough that it translates into a denial instead of vanishing.
+#[test]
+fn the_shapes_that_were_already_undecidable_stay_undecidable() {
+    for (label, sql, level) in [
+        ("a dropped barrier", RESTRICTIVE_DROP, ConfidenceLevel::A),
+        ("every arm dropped", TOTAL_DROP, ConfidenceLevel::B),
+        (
+            "an unrecognized arm kept",
+            PARTIAL_SELECT_DROP,
+            ConfidenceLevel::D,
+        ),
+    ] {
+        let shapes = shapes_at(sql, ACCESSOR_REGISTRY, level);
+        assert!(
+            !entry(&shapes, "docs", "can_select").from_one_row,
+            "{label}: the model and the database disagree, so no row decides the read"
+        );
+    }
+}
+
+/// Phase 3, test 6. Where the six session-attribute fixtures stand once the request
+/// vocabulary exists: each declares the values its deployment carries, and each is
+/// translated or scarred accordingly.
+///
+/// This replaces `the_session_attribute_fixtures_are_refused_and_scarred_today`, phase
+/// 2's declared flip target, which pinned all six as refused. Four now translate whole,
+/// and `connetto_capability` keeps the two shapes phase 3 did not reach, so the
+/// replacement asserts more than the pin it removes rather than less.
+#[test]
+fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
+    let expected: [(&str, &[&str], &[&str]); 6] = [
+        (
+            "connetto_or_policy",
+            &[],
+            &[
+                "notes#can_delete",
+                "notes#can_insert",
+                "notes#can_select",
+                "notes#can_select_for_update",
+                "notes#can_update",
+                "notes#can_update_without_reading",
+                "notes#gate_notes_p_dbaa5e0d",
+                "notes#owner",
+            ],
+        ),
+        (
+            "connetto_two_policy",
+            &[],
+            &[
+                "notes#can_delete",
+                "notes#can_insert",
+                "notes#can_select",
+                "notes#can_select_for_update",
+                "notes#can_update",
+                "notes#can_update_without_reading",
+                "notes#gate_notes_subject_c7ba450d",
+                "notes#owner",
+            ],
+        ),
+        // `papers_p` translates whole, the ownership arm and the share arm both, and
+        // `shares_insert` translates as delegation to the parent even though connetto
+        // declares no key, because the policy states the join itself. `paper_shares` has
+        // a two-column key, so no tuple can name its rows until compound identity lands,
+        // and that is now the only thing this fixture reports losing.
+        //
+        // `papers` reads are decidable only through ownership: the share arm is recorded
+        // on another table, so no row of `papers` settles it.
+        (
+            "connetto_capability",
+            &["RowsCannotBeNamed paper_shares"],
+            &["papers#owner"],
+        ),
+        (
+            "tenant_setting",
+            &[],
+            &[
+                "documents#can_delete",
+                "documents#can_insert",
+                "documents#can_select",
+                "documents#can_select_for_update",
+                "documents#can_update",
+                "documents#can_update_without_reading",
+                "documents#gate_documents_tenant_78bd68be",
+            ],
+        ),
+        (
+            "supabase_mfa_restrictive",
+            &[],
+            &[
+                "documents#can_select",
+                "documents#gate_documents_mfa_e65d3d44",
+                "documents#owner",
+            ],
+        ),
+        (
+            "claims_role_gate",
+            &[],
+            &[
+                "audit_log#can_select",
+                "audit_log#gate_audit_admin_02ce9ca4",
+            ],
+        ),
+    ];
+
+    for (fixture, scars, decidable) in expected {
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let planned = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+
+        let reported: Vec<String> = planned
+            .relations()
+            .iter()
+            .filter(|shape| shape.from_one_row)
+            .map(|shape| format!("{}#{}", shape.type_name, shape.relation))
+            .collect();
+        assert_eq!(
+            reported, decidable,
+            "{fixture}: the relations the model fills from one row"
+        );
+
+        let outputs = planned.outputs_accepting_gaps();
+        let mut named: Vec<String> = outputs
+            .notes()
+            .iter()
+            .filter_map(|note| match note {
+                TranslationNote::ClauseBelowThreshold { policy, .. } => {
+                    Some(format!("ClauseBelowThreshold {policy}"))
+                }
+                TranslationNote::RowsCannotBeNamed { table, .. } => {
+                    Some(format!("RowsCannotBeNamed {table}"))
+                }
+                _ => None,
+            })
+            .collect();
+        named.sort();
+        named.dedup();
+        assert_eq!(
+            named, scars,
+            "{fixture}: what the translation says it lost, and about which policy"
+        );
+    }
+}
+
+/// A grant recorded on a sharing table is not answerable from the guarded row: the
+/// deciding fact lives elsewhere. The shape has to say so and carry a query bound to the
+/// sharing table, because a consumer that read it as row-derived would take the
+/// wildcard subject at face value and grant everyone.
+#[test]
+fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let reported = planned.relations();
+    let gate = reported
+        .iter()
+        .find(|shape| shape.type_name == "papers" && shape.relation.starts_with("gate_"))
+        .expect("the share arm mints a gate relation on papers");
+
+    assert!(
+        !gate.from_one_row,
+        "a paper row does not carry its own shares, so no row settles this"
+    );
+    let [shape] = gate.shapes.as_slice() else {
+        panic!(
+            "the gate is filled by exactly one shape, got {:?}",
+            gate.shapes
+        );
+    };
+    assert_eq!(
+        shape.tables,
+        vec!["paper_shares".to_string()],
+        "the deciding rows live on the sharing table"
+    );
+    let RecordDerivation::Joined { queries, reason } = &shape.derivation else {
+        panic!(
+            "a share recorded on another table has to be queried, got {:?}",
+            shape.derivation
+        );
+    };
+    assert!(
+        reason.contains("paper_shares"),
+        "the reason names where the grant is recorded: {reason}"
+    );
+    let [query] = queries.as_slice() else {
+        panic!("one bound query, one table a change may arrive on: {queries:?}");
+    };
+    assert_eq!(query.table, "paper_shares");
+    assert_eq!(
+        query.key_column, "paper_id",
+        "a changed share row is replayed by the paper it names"
+    );
+}
+
+/// A value the caller supplies per request is a contract the model itself cannot carry,
+/// and getting it wrong is the one place in this feature where a mistake grants rather
+/// than denies. Every declared source that reaches the model says so.
+#[test]
+fn every_request_scoped_gate_states_its_contract_with_the_caller() {
+    let mut checked = 0usize;
+    for (fixture, expected) in [
+        ("connetto_or_policy", vec![("app_subjects", Some(","))]),
+        ("connetto_capability", vec![("app_subjects", Some(","))]),
+        ("tenant_setting", vec![("app_tenant_id", None)]),
+        ("claims_role_gate", vec![("app_roles", Some(","))]),
+        (
+            "supabase_mfa_restrictive",
+            vec![("request_jwt_claims_aal", None)],
+        ),
+    ] {
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let outputs = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps();
+
+        let mut stated: Vec<(String, Option<String>)> = outputs
+            .notes()
+            .iter()
+            .filter_map(|note| match note {
+                TranslationNote::CallerSuppliesConditionParameter {
+                    parameter,
+                    separator,
+                    ..
+                } => Some((parameter.clone(), separator.clone())),
+                _ => None,
+            })
+            .collect();
+        stated.sort();
+        stated.dedup();
+        let want: Vec<(String, Option<String>)> = expected
+            .iter()
+            .map(|(p, s)| ((*p).to_string(), s.map(str::to_string)))
+            .collect();
+        assert_eq!(
+            stated, want,
+            "{fixture}: the parameters a caller has to send, and how each is split"
+        );
+        checked += stated.len();
+
+        // The parameter the note names is the one the model declares, or a caller
+        // following the note would still have every check refused.
+        let json = serde_json::to_string(&outputs.json_model()).expect("the model serializes");
+        for (parameter, _) in &stated {
+            assert!(
+                json.contains(&format!("\"{parameter}\"")),
+                "{fixture}: the model declares no parameter named {parameter}"
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "no fixture states a contract, so this checks nothing"
+    );
+}
+
+/// The clock has carried the same contract since it was built and never announced it.
+#[test]
+fn the_clock_parameter_states_its_contract_too() {
+    let sql = "
+CREATE TABLE docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
+";
+    let (classified, db, registry) = support::classify_sql(sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::CallerSuppliesConditionParameter { parameter, setting_key, .. }
+                if parameter == "request_time" && setting_key.is_none()
+        )),
+        "the clock is a request value like any other: {:?}",
+        outputs.notes()
+    );
 }

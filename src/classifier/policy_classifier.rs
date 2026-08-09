@@ -33,8 +33,12 @@ pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
-    effective_registry.trust_current_user_setting_keys(settings.current_user_setting_keys());
-    effective_registry.enrich_from_schema_with_settings(db, settings);
+    effective_registry.declare_session_attributes(settings.session_attributes().iter().cloned());
+    // The two lists become one before anything reads either, so a declaration made on the
+    // registry and one made through the settings cannot describe the same source apart.
+    let declared: Vec<_> = effective_registry.session_attributes().cloned().collect();
+    let effective_settings = AccessorInferenceSettings::from_attributes(declared);
+    effective_registry.enrich_from_schema_with_settings(db, &effective_settings);
 
     let classified = classify_policies_with_registry(db, &effective_registry);
     (classified, effective_registry)
@@ -226,6 +230,14 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 };
             }
             BinaryOperator::And => {
+                // "the caller is known" beside a rule that already needs the caller adds
+                // nothing, so the rule stands alone rather than the pair being refused.
+                if recognizers::is_redundant_caller_presence(left, registry) {
+                    return classify_expr_depth(right, db, registry, table, command, depth + 1);
+                }
+                if recognizers::is_redundant_caller_presence(right, registry) {
+                    return classify_expr_depth(left, db, registry, table, command, depth + 1);
+                }
                 let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
                 let right_class =
                     classify_expr_depth(right, db, registry, table, command, depth + 1);
@@ -359,6 +371,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
 
     // Try P2: role name IN-list
     if let Some(classified) = recognizers::recognize_p2(expr, db, registry) {
+        return classified;
+    }
+
+    // Try P14 to P17: a value the request carries, which a deployment declared. Before
+    // P3, since a declared source is never the caller and ownership must not claim it.
+    if let Some(classified) = recognizers::recognize_session_attribute(expr, registry) {
         return classified;
     }
 
@@ -499,6 +517,9 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P2RoleNameInList { .. } => "role-name-in-list check",
         PatternClass::P3DirectOwnership { .. } => "direct-ownership check",
         PatternClass::P4ExistsMembership { .. } => "EXISTS membership check",
+        PatternClass::P18MembershipInCallerSet { .. } => {
+            "membership row naming a value the caller's declared set holds"
+        }
         PatternClass::P5ParentInheritance { .. } => "parent-inheritance check",
         PatternClass::P6BooleanFlag { .. } => "boolean-flag check",
         PatternClass::P7AbacAnd { .. } => "ABAC-and-relationship check",
@@ -508,6 +529,16 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P11ArrayMembership { .. } => "array-membership check",
         PatternClass::P12JsonbFieldOwnership { .. } => "jsonb-field-ownership check",
         PatternClass::P13UncorrelatedMembership { .. } => "uncorrelated membership check",
+        PatternClass::P14RowValueInCallerSet { .. } => {
+            "declared caller set holding the row's value"
+        }
+        PatternClass::P15RowValueEqualsCallerScalar { .. } => {
+            "declared caller value equal to the row's"
+        }
+        PatternClass::P16ConstantInCallerSet { .. } => "declared caller set holding a constant",
+        PatternClass::P17CallerScalarEqualsConstant { .. } => {
+            "declared caller value equal to a constant"
+        }
         PatternClass::Unknown { .. } => "unrecognized expression",
     }
 }
@@ -539,9 +570,17 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
                     .iter()
                     .all(|part| is_relationship_pattern_for_p7(&part.pattern))
         }
+        // A declared request-scoped value is not a user-resource relationship a tuple
+        // can carry, so an attribute guard beside one composes as a plain intersection
+        // rather than through the P7 shape.
         PatternClass::P6BooleanFlag { .. }
         | PatternClass::P9AttributeCondition { .. }
         | PatternClass::P10ConstantBool { .. }
+        | PatternClass::P14RowValueInCallerSet { .. }
+        | PatternClass::P18MembershipInCallerSet { .. }
+        | PatternClass::P15RowValueEqualsCallerScalar { .. }
+        | PatternClass::P16ConstantInCallerSet { .. }
+        | PatternClass::P17CallerScalarEqualsConstant { .. }
         | PatternClass::Unknown { .. } => false,
     }
 }

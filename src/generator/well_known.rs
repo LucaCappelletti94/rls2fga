@@ -25,6 +25,12 @@ pub const REQUEST_TIME_PARAMETER: &str = "request_time";
 /// `OpenFGA` name for a timestamp condition parameter.
 pub const TIMESTAMP_PARAMETER_TYPE: &str = "TYPE_NAME_TIMESTAMP";
 
+/// `OpenFGA` name for a string condition parameter.
+pub const STRING_PARAMETER_TYPE: &str = "TYPE_NAME_STRING";
+
+/// `OpenFGA` name for a list condition parameter, whose element type is a generic.
+pub const LIST_PARAMETER_TYPE: &str = "TYPE_NAME_LIST";
+
 /// Relation holding the users a membership row attaches to its parent object.
 pub const MEMBER_RELATION: &str = "member";
 

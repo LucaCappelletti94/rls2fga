@@ -5,7 +5,7 @@ pub(crate) mod openfga;
 
 use std::path::PathBuf;
 
-use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::sql_parser::{self, ParserDB};
@@ -56,7 +56,17 @@ pub(crate) fn try_load_fixture_registry(fixture: &str) -> FunctionRegistry {
             .load_from_json(&json)
             .expect("fixture registry should parse");
     }
+    registry.declare_session_attributes(fixture_session_attributes(fixture));
     registry
+}
+
+/// The request-scoped values a fixture's deployment declares, none when it declares none.
+pub(crate) fn fixture_session_attributes(fixture: &str) -> Vec<SessionAttribute> {
+    let path = fixture_dir(fixture).join("session_attributes.json");
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&json).expect("fixture session attributes should parse")
 }
 
 pub(crate) fn classify_sql(

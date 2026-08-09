@@ -18,10 +18,10 @@ struct BitFlagIsPublic;
 impl PolicyOracle for BitFlagIsPublic {
     fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
         if refused.sql_text().contains('&') {
-            OracleAnswer::Classified(ClassifiedExpr {
+            OracleAnswer::Classified(Box::new(ClassifiedExpr {
                 pattern: PatternClass::P10ConstantBool { value: true },
                 confidence: ConfidenceLevel::A,
-            })
+            }))
         } else {
             OracleAnswer::Bailed
         }
@@ -177,10 +177,10 @@ fn an_oracle_answer_below_the_threshold_is_still_dropped() {
 
     impl PolicyOracle for Unsure {
         fn classify(&self, _refused: &RefusedExpr<'_>) -> OracleAnswer {
-            OracleAnswer::Classified(ClassifiedExpr {
+            OracleAnswer::Classified(Box::new(ClassifiedExpr {
                 pattern: PatternClass::P10ConstantBool { value: true },
                 confidence: ConfidenceLevel::C,
-            })
+            }))
         }
     }
 

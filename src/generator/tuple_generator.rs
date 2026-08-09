@@ -6,6 +6,7 @@ use crate::no_std_prelude::*;
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_column;
 use crate::generator::ir::TupleSource;
+use crate::generator::model_generator::RowParameter;
 use crate::generator::model_generator::SchemaPlan;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::records::RecordDescription;
@@ -496,6 +497,45 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             })
         }
 
+        // The facts are read from the join table while the objects are named after the
+        // parent, so one membership row grants one parent object, conditionally.
+        TupleSource::SessionAttributeMembershipGate {
+            join_table,
+            fk_col,
+            member_col,
+            parent_type,
+            relation,
+            condition,
+            row_parameter,
+            extra_predicate_sql,
+            ..
+        } => {
+            let join_table_sql = quote_sql_identifier(join_table);
+            let fk_col_sql = quote_sql_identifier(fk_col);
+            let member_col_sql = quote_sql_identifier(member_col);
+            let parameter_sql = quote_sql_string_literal(row_parameter);
+            let null_guards = format!("{fk_col_sql} IS NOT NULL AND {member_col_sql} IS NOT NULL");
+            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+                || format!("\nWHERE {null_guards}"),
+                |e| format!("\nWHERE {null_guards}\nAND ({e})"),
+            );
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Request-scoped gate on {parent_type} carrying {join_table}.{member_col}, \
+                     evaluated by condition {condition}"
+                ),
+                sql: format!(
+                    "SELECT '{parent_type}:' || {fk_col_sql} AS object, '{relation}' AS relation, \
+                     'user:*' AS subject,\n\
+                     \x20 '{condition}' AS condition, \
+                     jsonb_build_object({parameter_sql}, {member_col_sql}::text) AS context\n\
+                     FROM {join_table_sql}{where_clause};"
+                ),
+                description: None,
+                condition: Some(condition.clone()),
+            })
+        }
+
         TupleSource::HolderMembers {
             holder_type,
             member_table,
@@ -655,6 +695,51 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                      FROM {table_sql}\n\
                      WHERE {pk_col_sql} IS NOT NULL\n\
                      AND {column_sql} IS NOT NULL;"
+                ),
+                description: None,
+                condition: Some(condition.clone()),
+            })
+        }
+
+        TupleSource::SessionAttributeGate {
+            table,
+            pk_col,
+            relation,
+            condition,
+            row_parameter,
+            ..
+        } => {
+            let table_type = owner_type;
+            let table_sql = owner_table_reference(table, only_own_rows);
+            let pk_col_sql = quote_sql_identifier(pk_col);
+            let parameter_sql = quote_sql_string_literal(row_parameter.parameter());
+            // A NULL row value matches nothing in PostgreSQL, so it needs no tuple.
+            let (carried_sql, carried_filter, what) = match row_parameter {
+                RowParameter::Column { column, .. } => {
+                    let column_sql = quote_sql_identifier(column);
+                    (
+                        format!("{column_sql}::text"),
+                        format!("\nAND {column_sql} IS NOT NULL"),
+                        format!("the row's {column}"),
+                    )
+                }
+                RowParameter::Literal { value, .. } => (
+                    quote_sql_string_literal(value),
+                    String::new(),
+                    format!("the constant {value}"),
+                ),
+            };
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Request-scoped gate carrying {what}, evaluated by condition {condition}"
+                ),
+                sql: format!(
+                    "SELECT '{table_type}:' || {pk_col_sql} AS object, '{relation}' AS relation, \
+                     'user:*' AS subject,\n\
+                     \x20 '{condition}' AS condition, \
+                     jsonb_build_object({parameter_sql}, {carried_sql}) AS context\n\
+                     FROM {table_sql}\n\
+                     WHERE {pk_col_sql} IS NOT NULL{carried_filter};"
                 ),
                 description: None,
                 condition: Some(condition.clone()),

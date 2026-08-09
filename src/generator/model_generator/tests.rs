@@ -907,8 +907,9 @@ fn action_target_helpers_cover_empty_arms() {
 #[test]
 fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     // UPDATE policy: USING has high-confidence P3, WITH CHECK has low-confidence (would
-    // normally be filtered).  After confidence filtering, with_check_was_filtered = true
-    // → the USING→WITH CHECK mirror must NOT be applied.
+    // normally be filtered). After confidence filtering the WITH CHECK carries the grade
+    // it was dropped at, and the USING to WITH CHECK mirror must not be applied at
+    // either level: not per policy, and not through the composed bucket.
     let db = docs_db_with_policy(
         "CREATE POLICY docs_upd ON docs FOR UPDATE \
              USING (owner_id = current_user) WITH CHECK (owner_id = current_user);",
@@ -927,12 +928,13 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
         pattern: p3.clone(),
         confidence: ConfidenceLevel::B,
     });
-    // Filter at level A: WITH CHECK (B) gets filtered out → with_check_was_filtered = true.
+    // Filter at level A: WITH CHECK (B) is dropped, and the grade it held is retained.
     let filtered = filter_policies_for_output(&[classified.clone()], ConfidenceLevel::A);
     let filtered_cp = filtered.first().expect("USING should survive at A");
-    assert!(
-        filtered_cp.with_check_was_filtered,
-        "with_check_was_filtered should be true after filtering"
+    assert_eq!(
+        filtered_cp.with_check_filtered_at,
+        Some(ConfidenceLevel::B),
+        "the filter records the grade the WITH CHECK was dropped at"
     );
     assert!(
         filtered_cp.with_check_classification.is_none(),
@@ -957,18 +959,26 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
         docs.computed_relations.contains_key("can_update"),
         "can_update relation should exist from USING expression"
     );
-    // WITH CHECK was filtered, NOT mirrored → can_insert or can_update_check should NOT
-    // exist (we don't mirror low-confidence USING into WITH CHECK slot).
-    // For UPDATE the check target is can_update_check, it should be absent.
-    assert!(
-        !docs.computed_relations.contains_key("can_update_check"),
-        "can_update_check must not be silently mirrored from USING when with_check was filtered; \
-             relations present: {:?}",
+    // The check half has no surviving arm, so it falls closed. Asserting its absence
+    // instead was the vacuous reading this test used to carry: the per-policy mirror was
+    // indeed suppressed, but the composed check then came out empty and the bucket-level
+    // fallback handed it the composed USING, so `can_update` granted the owner through
+    // exactly the clause that had been refused, and no `can_update_check` was emitted to
+    // show it.
+    assert_eq!(
+        docs.computed_relations.get("can_update_check"),
+        Some(&UsersetExpr::Computed(DENY_RELATION.to_string())),
+        "a filtered WITH CHECK with no surviving arm denies, relations present: {:?}",
         docs.computed_relations.keys().collect::<Vec<_>>()
+    );
+    assert_ne!(
+        docs.computed_relations.get("can_update"),
+        Some(&UsersetExpr::Computed("owner".to_string())),
+        "and the update must not be granted by the resurrected USING"
     );
     // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
     classified.with_check_classification = None; // never present
-    classified.with_check_was_filtered = false;
+    classified.with_check_filtered_at = None;
     let plan2 = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
     let docs2 = plan2
         .types
@@ -978,6 +988,10 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     assert!(
         docs2.computed_relations.contains_key("can_update"),
         "mirror should still apply when with_check was never present"
+    );
+    assert!(
+        !docs2.computed_relations.contains_key("can_update_check"),
+        "and an absent check still mirrors the USING rather than denying"
     );
 }
 
@@ -1057,19 +1071,20 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
         .any(|t| t.message().contains("unknown inner rule")));
 }
 
+/// A public flag grants through a wildcard tuple keyed on the row, so a table nothing
+/// names has no such tuple and the flag must deny rather than declare a grant.
 #[test]
-fn pattern_to_expr_p6_missing_pk_generates_note() {
+fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
     let registry = FunctionRegistry::new();
     let mut table_plan = TypePlan::new("items");
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
-    // items table has no PK in this context -- pattern_to_expr won't find one
     let p6 = PatternClass::P6BooleanFlag {
         column: "is_public".to_string(),
     };
 
-    let _expr = pattern_to_expr(
+    let expr = pattern_to_expr_without_row_identity(
         &p6,
         "test_policy",
         &mut table_plan,
@@ -1077,9 +1092,18 @@ fn pattern_to_expr_p6_missing_pk_generates_note() {
         &registry,
         &mut notes,
     );
-    // The table "items" doesn't exist in the empty DB, so PK can't be resolved.
-    // The public_expr is still returned but a TODO is added about missing object identifier.
-    // Check that no panic occurred -- the function should handle gracefully.
+
+    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+    assert!(
+        table_plan.table_tuple_sources.iter().any(|source| matches!(
+            source,
+            TupleSource::Skipped {
+                reason: SkippedTuples::NoObjectIdentifier { what, .. }
+            } if what == "public-flag tuples"
+        )),
+        "the loader's script says which query is missing: {:?}",
+        table_plan.table_tuple_sources
+    );
 }
 
 #[test]
@@ -1515,10 +1539,12 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
     }
 }
 
-// scoped_roles missing PK → TODO
+/// A `TO` clause narrows a permissive grant by intersecting a `pg_role` scope, and the
+/// scope's tuples name the guarded row. With no row identity neither the rule nor the
+/// scope can be filled, so the whole grant denies and nothing may ask the operator to
+/// load memberships no rule reads.
 #[test]
-fn build_schema_plan_emits_note_for_scoped_roles_missing_pk() {
-    // Table with no PK and no `id` column
+fn a_scoped_policy_on_a_table_with_no_row_identity_mints_no_scope() {
     let db = parse_schema(
         r"
 CREATE TABLE things(name TEXT, value INT);
@@ -1539,29 +1565,52 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     let registry = FunctionRegistry::new();
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
-    // The role-scope code should emit a TODO about missing PK for policy scope tuples
-    let has_pk_note = plan
-        .notes
+    let things = plan
+        .types
         .iter()
-        .any(|t| t.message().contains("Policy role scope TO"));
+        .find(|t| t.type_name == "things")
+        .expect("the table gets a type");
+    assert_eq!(
+        things.computed_relations.get(CAN_SELECT_RELATION),
+        Some(&UsersetExpr::Computed(DENY_RELATION.to_string())),
+        "nothing names a row, so the read denies: {:?}",
+        things.computed_relations
+    );
     assert!(
-        has_pk_note,
-        "scoped roles should produce a TODO; notes: {:?}",
+        things
+            .direct_relations
+            .keys()
+            .all(|relation| !relation.starts_with("scope_")),
+        "and no scope relation is declared: {:?}",
+        things.direct_relations
+    );
+    assert!(
+        !plan
+            .notes
+            .iter()
+            .any(|note| note.message().contains("Policy role scope TO")),
+        "nor a note asking for memberships no rule reads: {:?}",
         plan.notes
     );
 
-    // Also check that table_tuple_sources contains a Todo about missing object identifier
-    let things_type = plan.types.iter().find(|t| t.type_name == "things");
-    if let Some(things) = things_type {
-        let has_missing_pk_source = things.table_tuple_sources.iter().any(|s| {
-                matches!(s, TupleSource::Skipped { reason } if reason.comment().contains("missing object identifier"))
-            });
-        assert!(
-            has_missing_pk_source,
-            "should emit TupleSource::Todo for missing object identifier; sources: {:?}",
-            things.table_tuple_sources
-        );
-    }
+    assert!(
+        things.table_tuple_sources.iter().any(|source| matches!(
+            source,
+            TupleSource::Skipped {
+                reason: SkippedTuples::NoObjectIdentifier { what, .. }
+            } if what == "ownership tuples"
+        )),
+        "the loader's script still says which query is missing: {:?}",
+        things.table_tuple_sources
+    );
+    assert!(
+        plan.notes.iter().any(
+            |note| matches!(note, TranslationNote::RowsCannotBeNamed { table, .. }
+                if table == "things")
+        ),
+        "and the model says the grant cannot be filled: {:?}",
+        plan.notes
+    );
 }
 
 // P5 inner pattern results in no_access → TODO

@@ -3,7 +3,7 @@ use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
 
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
@@ -11,14 +11,15 @@ use crate::generator::db_lookup::{
 };
 use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::notes::{SkippedTuples, TranslationNote};
+use crate::generator::relations::RequestComparison;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::well_known::{
     CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION,
     CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
     CAN_UPDATE_RELATION, CAN_UPDATE_USING_RELATION, CAN_UPDATE_WITHOUT_READING_RELATION,
     CAN_UPSERT_RELATION, DENY_RELATION, MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION,
-    PG_ROLE_TYPE, PUBLIC_RELATION, REQUEST_TIME_PARAMETER, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE,
-    USER_TYPE,
+    PG_ROLE_TYPE, PUBLIC_RELATION, REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TEAM_TYPE,
+    TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
 };
 use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
@@ -68,10 +69,55 @@ pub(crate) enum DirectSubject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConditionSpec {
     pub expression: String,
-    /// Parameter name to its `OpenFGA` type name, sorted so emission is stable.
-    pub parameters: BTreeMap<String, String>,
-    /// The parameter each tuple supplies from its own row, and the column it reads.
-    pub row_parameter: (String, String),
+    /// Parameter name to its `OpenFGA` type, sorted so emission is stable.
+    pub parameters: BTreeMap<String, ConditionParameter>,
+    /// The parameter each tuple supplies, and where its value comes from.
+    pub row_parameter: RowParameter,
+}
+
+/// A condition parameter's type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConditionParameter {
+    /// One value, named as the API names it.
+    Scalar(&'static str),
+    /// A list of values of the named element type.
+    ListOf(&'static str),
+}
+
+/// What a tuple puts in the context under the parameter the request cannot supply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RowParameter {
+    /// Read from this column of the row.
+    Column {
+        /// The condition parameter the value fills.
+        parameter: String,
+        /// The column the value comes from.
+        column: String,
+    },
+    /// A constant the policy named, so every row of the table carries the same one.
+    Literal {
+        /// The condition parameter the value fills.
+        parameter: String,
+        /// The constant.
+        value: String,
+    },
+}
+
+impl RowParameter {
+    /// The parameter this tuple side fills.
+    pub(crate) fn parameter(&self) -> &str {
+        match self {
+            Self::Column { parameter, .. } | Self::Literal { parameter, .. } => parameter,
+        }
+    }
+
+    /// The column a row reads it from, `None` for a constant.
+    pub(crate) fn column(&self) -> Option<&str> {
+        match self {
+            Self::Column { column, .. } => Some(column),
+            Self::Literal { .. } => None,
+        }
+    }
 }
 
 /// Structural identity of a subject list, stable against `Debug` formatting.
@@ -145,6 +191,12 @@ pub(crate) struct TypePlan {
     /// `FROM ONLY`: the key does not span child rows, and a shared value would merge
     /// two rows into one object.
     pub reads_only_its_own_rows: bool,
+    /// Action relations whose emitted rule came out narrower, or wider, than the
+    /// database because a clause `PostgreSQL` evaluates was lost. Read where
+    /// decidability is answered, so a consumer answering reads from the recipe
+    /// delegates instead of guessing. An entry naming a relation this plan never
+    /// defines is inert.
+    pub narrowed_relations: BTreeSet<String>,
 }
 
 /// Subjects the generator's own structural relations hold, or `None` when the
@@ -448,16 +500,28 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         }
     }
 
+    // Types a policy may have narrowed that no name resolved to. Applied after the
+    // loop, since a bearer may be built after the group that named it.
+    let mut unresolved_losses: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
         // the schema cannot resolve carries the policy nowhere, so say so.
         let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
             if lookup_table(db, &source_table_name).is_none() {
+                let bearers = types_bearing_name(db, &source_table_name, &table_types);
                 for cp in &table_policies {
                     notes.push(TranslationNote::UnresolvedPolicyTable {
                         policy: cp.name().to_string(),
                         named: source_table_name.clone(),
                     });
+                    let lost: BTreeSet<String> = narrowed_by(&targets_a_policy_feeds(cp));
+                    for bearer in &bearers {
+                        unresolved_losses
+                            .entry(bearer.clone())
+                            .or_default()
+                            .extend(lost.iter().cloned());
+                    }
                 }
             }
             continue;
@@ -501,12 +565,56 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 )
         });
 
+        // Every clause PostgreSQL evaluates that the model does not carry leaves the
+        // relations it fed diverged from the database. Collected before anything is
+        // translated, so a partial drop scars exactly like a total one rather than
+        // resting on `no_access` happening to have no feeding sources. The note and
+        // the scar are built from the same targets, so the two cannot disagree.
+        let mut update_check_was_filtered = false;
+        for cp in &table_policies {
+            for (clause, confidence, targets) in clauses_lost_to_the_threshold(cp) {
+                // A target the read loop already blocks is denied by PostgreSQL too, so
+                // the model is not narrower there and nothing may claim a divergence.
+                let targets: Vec<ActionTarget> = targets
+                    .into_iter()
+                    .filter(|target| !recursive_targets.contains_key(target))
+                    .collect();
+                if targets.is_empty() {
+                    continue;
+                }
+                if cp.mode() == PolicyMode::Permissive
+                    && targets.contains(&ActionTarget::UpdateCheck)
+                {
+                    update_check_was_filtered = true;
+                }
+                mark_narrowed(&mut table_plan, &targets);
+                notes.push(TranslationNote::ClauseBelowThreshold {
+                    table: source_table_name.clone(),
+                    policy: cp.name().to_string(),
+                    mode: cp.mode().to_string(),
+                    clause: clause.to_string(),
+                    confidence,
+                    commands: commands_fed_by(&targets),
+                    relations: narrowed_by(&targets).into_iter().collect(),
+                });
+            }
+        }
+
         let mut action_buckets: BTreeMap<ActionTarget, ModeBuckets> = BTreeMap::new();
 
         for cp in table_policies {
             // A policy the schema gives no clause constrains nothing, so it must not
             // mint a scope relation or ask for tuples either.
             if cp.using.is_none() && cp.with_check.is_none() {
+                continue;
+            }
+            // The threshold emptied this one, so it contributes no expression and must
+            // not mint a scope relation, a note or a summary entry either. What it cost
+            // is already recorded above.
+            if cp.mode() == PolicyMode::Permissive
+                && cp.using_classification.is_none()
+                && cp.with_check_classification.is_none()
+            {
                 continue;
             }
             // A clause PostgreSQL refuses to store never came out of a database, so
@@ -549,6 +657,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                     spellings: cp.ddl_time_roles().to_vec(),
                 });
                 if cp.mode() == PolicyMode::Permissive {
+                    mark_narrowed(&mut table_plan, &targets_a_policy_feeds(cp));
                     continue;
                 }
             }
@@ -582,7 +691,11 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 None
             } else {
                 let relation = policy_scope_relation_name(cp.name());
-                register_pg_role_scope(
+                // An unfillable scope mints nothing, and the rule it would have narrowed
+                // denies for want of the same row identity, so there is no grant left to
+                // narrow. Naming it anyway would ask the operator to load memberships
+                // nothing reads.
+                let filled = register_pg_role_scope(
                     &mut table_plan,
                     &mut all_types,
                     &source_table_name,
@@ -599,7 +712,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                     &mut notes,
                     "policy scope tuples",
                 );
-                Some(relation)
+                filled.then_some(relation)
             };
 
             // A policy covering several phases is translated once per phase, so the
@@ -640,6 +753,12 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                     });
                     UsersetExpr::Intersection(vec![expr, deny_expr(&mut table_plan)])
                 } else {
+                    // A permissive conjunct handed to the application is enforced
+                    // nowhere in this model, so the rule grants rows the database
+                    // refuses. The one drift that widens rather than narrows.
+                    if !guards.is_empty() {
+                        mark_narrowed(&mut table_plan, &[target]);
+                    }
                     expr
                 };
                 push_action_expr(
@@ -652,6 +771,79 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 );
             });
             dedup_notes_added_since(&mut notes, notes_before);
+        }
+
+        // A grant whose facts cannot be written is a permission nothing can satisfy, so
+        // each one above fell closed. Read the losses back off the skips they recorded,
+        // rather than collecting them a second time, so the note and the loader's script
+        // cannot describe different losses. Nothing here is minted for a target the read
+        // loop blocks: PostgreSQL raises there rather than granting, so the policy loop
+        // never translated it and no skip exists to read.
+        let unfillable: BTreeSet<String> = table_plan
+            .table_tuple_sources
+            .iter()
+            .filter_map(|source| match source {
+                TupleSource::Skipped {
+                    reason: SkippedTuples::NoObjectIdentifier { what, .. },
+                } => Some(what.clone()),
+                TupleSource::Skipped {
+                    reason: SkippedTuples::NoBridge { parent_type, .. },
+                } => Some(format!("bridge tuples to '{parent_type}'")),
+                _ => None,
+            })
+            .collect();
+        if !unfillable.is_empty() {
+            notes.push(TranslationNote::RowsCannotBeNamed {
+                table: source_table_name.clone(),
+                reason: missing_object_identifier_reason(&source_table_name, db),
+                sources: unfillable.into_iter().collect(),
+            });
+        }
+
+        // Every request-scoped gate is a contract with the caller, and the model itself
+        // has nowhere to carry it. Read the parameters back off the sources the arms
+        // recorded, so the note and the emitted conditions cannot name different ones.
+        let mut contracts: BTreeSet<(String, Option<String>, Option<String>)> = BTreeSet::new();
+        for source in &table_plan.table_tuple_sources {
+            match source {
+                TupleSource::SessionAttributeGate {
+                    request_parameter,
+                    setting_key,
+                    separator,
+                    ..
+                } => {
+                    contracts.insert((
+                        request_parameter.clone(),
+                        Some(setting_key.clone()),
+                        separator.clone(),
+                    ));
+                }
+                TupleSource::SessionAttributeMembershipGate {
+                    request_parameter,
+                    setting_key,
+                    separator,
+                    ..
+                } => {
+                    contracts.insert((
+                        request_parameter.clone(),
+                        Some(setting_key.clone()),
+                        Some(separator.clone()),
+                    ));
+                }
+                // The clock has had the same contract since it was built and never
+                // announced it either.
+                TupleSource::ConditionalAttributeGate { .. } => {
+                    contracts.insert((settings.request_time_parameter.clone(), None, None));
+                }
+                _ => {}
+            }
+        }
+        for (parameter, setting_key, separator) in contracts {
+            notes.push(TranslationNote::CallerSuppliesConditionParameter {
+                parameter,
+                setting_key,
+                separator,
+            });
         }
 
         let mut select_expr =
@@ -722,10 +914,18 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         }
 
         if let Some(using_expr) = update_using_expr.take() {
-            let check_expr = update_check_expr
-                .take()
-                .flatten()
-                .unwrap_or_else(|| using_expr.clone());
+            // A permissive check the threshold dropped must not come back as the USING.
+            // `for_each_policy_target_expr` suppresses the mirror per policy, but this
+            // fallback would resurrect exactly the clause that was refused. With no
+            // surviving check arm the check half denies, while `can_update_using` keeps
+            // the surviving USING so a locking read stays precise.
+            let check_expr = update_check_expr.take().flatten().unwrap_or_else(|| {
+                if update_check_was_filtered {
+                    deny_expr(&mut table_plan)
+                } else {
+                    using_expr.clone()
+                }
+            });
             // An update that names no row reads nothing, so `PostgreSQL` applies the
             // UPDATE policies to it and not the SELECT policies. Check this relation
             // only for `UPDATE t SET c = ...` with no WHERE: pick it for a statement
@@ -801,6 +1001,14 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         }
 
         all_types.insert(canonical_table_name, table_plan);
+    }
+
+    // A policy whose table did not resolve may have been the one granting any table
+    // bearing that name, and a dump does not record which, so each carries the loss.
+    for (type_name, relations) in unresolved_losses {
+        if let Some(plan) = all_types.get_mut(&type_name) {
+            plan.narrowed_relations.extend(relations);
+        }
     }
 
     all_types
@@ -1245,6 +1453,97 @@ fn with_check_targets(command: PolicyCommand) -> Vec<ActionTarget> {
     }
 }
 
+/// Targets the `USING` feeds, the mirror included: a command that mirrors and stores
+/// no `WITH CHECK` of its own has its check side answered by this clause too. The one
+/// place that rule is spelled outside the translator itself.
+fn using_targets_with_mirror(cp: &ClassifiedPolicy) -> Vec<ActionTarget> {
+    let mut targets = using_targets(cp.command());
+    if cp.with_check.is_none() && policy_uses_using_for_missing_with_check(cp.command()) {
+        targets.extend(with_check_targets(cp.command()));
+    }
+    targets
+}
+
+/// Each clause the threshold dropped, the grade it held, and the targets it fed.
+///
+/// The single source for both halves of the disclosure: what the note says and what
+/// the scar marks are the same targets, read once.
+fn clauses_lost_to_the_threshold(
+    cp: &ClassifiedPolicy,
+) -> Vec<(&'static str, ConfidenceLevel, Vec<ActionTarget>)> {
+    let mut lost = Vec::new();
+    if let Some(confidence) = cp.using_filtered_at {
+        lost.push(("USING", confidence, using_targets_with_mirror(cp)));
+    }
+    if let Some(confidence) = cp.with_check_filtered_at {
+        lost.push(("WITH CHECK", confidence, with_check_targets(cp.command())));
+    }
+    lost
+}
+
+/// Every target this policy's stored clauses feed, for one dropped whole.
+fn targets_a_policy_feeds(cp: &ClassifiedPolicy) -> Vec<ActionTarget> {
+    let mut targets = Vec::new();
+    if cp.using.is_some() {
+        targets.extend(using_targets_with_mirror(cp));
+    }
+    if cp.with_check.is_some() {
+        targets.extend(with_check_targets(cp.command()));
+    }
+    targets
+}
+
+/// Action relations that read this bucket, so losing it diverges them.
+fn relations_fed_by(target: ActionTarget) -> &'static [&'static str] {
+    match target {
+        ActionTarget::Select => &[CAN_SELECT_RELATION],
+        ActionTarget::Insert => &[CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION],
+        ActionTarget::UpdateUsing => &[
+            CAN_UPDATE_RELATION,
+            CAN_UPDATE_USING_RELATION,
+            CAN_UPDATE_WITHOUT_READING_RELATION,
+        ],
+        ActionTarget::UpdateCheck => &[
+            CAN_UPDATE_RELATION,
+            CAN_UPDATE_CHECK_RELATION,
+            CAN_UPDATE_WITHOUT_READING_RELATION,
+        ],
+        ActionTarget::Delete => &[CAN_DELETE_RELATION],
+    }
+}
+
+/// Relation names these targets diverge, deduplicated: the two UPDATE targets feed
+/// `can_update` and `can_update_without_reading` in common, so a policy losing both
+/// would otherwise name each of them twice. The scar is a set, so the note has to be
+/// one too, or the two surfaces disagree about what was lost.
+fn narrowed_by(targets: &[ActionTarget]) -> BTreeSet<String> {
+    targets
+        .iter()
+        .flat_map(|target| relations_fed_by(*target))
+        .map(|relation| (*relation).to_string())
+        .collect()
+}
+
+/// Record that the rule these targets feed no longer answers as the database does.
+fn mark_narrowed(plan: &mut TypePlan, targets: &[ActionTarget]) {
+    plan.narrowed_relations.extend(narrowed_by(targets));
+}
+
+/// Every type whose table may be the one an unresolvable name denotes. `PostgreSQL`
+/// picked one through the search path and a dump does not record it, so each of them
+/// may be the table that lost the clause. A qualified name resolving to nothing bears
+/// on no table at all, which is what `same_identifier` answers for it.
+fn types_bearing_name<DB: DatabaseLike>(
+    db: &DB,
+    named: &str,
+    table_types: &TableTypes,
+) -> Vec<String> {
+    db.tables()
+        .filter(|table| same_identifier(named, table.table_name()))
+        .filter_map(|table| table_types.by_identity.get(&table_identity(table)).cloned())
+        .collect()
+}
+
 /// Whether a missing `WITH CHECK` reads the `USING` instead, which is what `PostgreSQL`
 /// does for the commands that may store both. A bare `INSERT` policy cannot store a
 /// `USING` at all, so it has no arm here.
@@ -1254,19 +1553,26 @@ fn policy_uses_using_for_missing_with_check(command: PolicyCommand) -> bool {
 
 /// Stand-in expression for a RESTRICTIVE clause dropped by confidence filtering:
 /// `PostgreSQL` ANDs it onto the permissive union, so it must deny.
-fn dropped_restrictive_expr(cp: &ClassifiedPolicy, clause_sql: Option<String>) -> ClassifiedExpr {
+///
+/// An explicit constant false rather than an unreadable expression, which is the same
+/// substitution the oracle's `Denied` answer makes. It denies exactly as before, and
+/// it keeps the caller's own threshold from being reported as a gap in the
+/// translation: `ClauseBelowThreshold` says what happened, and `outputs()` answers
+/// instead of refusing.
+fn dropped_restrictive_expr() -> ClassifiedExpr {
     ClassifiedExpr {
-        pattern: PatternClass::Unknown {
-            sql_text: clause_sql.unwrap_or_default(),
-            reason: format!(
-                "RESTRICTIVE policy '{}' could not be translated at the requested confidence \
-                 level; PostgreSQL ANDs it onto every other policy, so the command is denied \
-                 rather than left unconstrained",
-                cp.name()
-            ),
-        },
-        confidence: ConfidenceLevel::D,
+        pattern: PatternClass::P10ConstantBool { value: false },
+        confidence: ConfidenceLevel::A,
     }
+}
+
+/// SQL commands these targets feed, in command order.
+fn commands_fed_by(targets: &[ActionTarget]) -> Vec<String> {
+    ACTION_RELATION_COMMANDS
+        .into_iter()
+        .filter(|(_, _, needed)| needed.iter().any(|target| targets.contains(target)))
+        .map(|(_, command, _)| command.to_string())
+        .collect()
 }
 
 /// Attribute guards this pattern discards, which widens whatever it guards.
@@ -1381,8 +1687,8 @@ where
 {
     let restrictive = cp.mode() == PolicyMode::Restrictive;
 
-    let dropped_using = (restrictive && cp.using_was_filtered)
-        .then(|| dropped_restrictive_expr(cp, cp.using.as_ref().map(ToString::to_string)));
+    let dropped_using =
+        (restrictive && cp.using_filtered_at.is_some()).then(dropped_restrictive_expr);
     if let Some(using) = cp.using_classification.as_ref().or(dropped_using.as_ref()) {
         for target in using_targets(cp.command()) {
             f(target, using);
@@ -1391,14 +1697,15 @@ where
 
     // Mirror USING → WITH CHECK only when the SQL had no WITH CHECK at all. A filtered
     // one falls closed instead.
-    let dropped_with_check = (restrictive && cp.with_check_was_filtered)
-        .then(|| dropped_restrictive_expr(cp, cp.with_check.as_ref().map(ToString::to_string)));
+    let dropped_with_check =
+        (restrictive && cp.with_check_filtered_at.is_some()).then(dropped_restrictive_expr);
     let with_check_pattern = cp
         .with_check_classification
         .as_ref()
         .or(dropped_with_check.as_ref())
         .or_else(|| {
-            if !cp.with_check_was_filtered && policy_uses_using_for_missing_with_check(cp.command())
+            if cp.with_check_filtered_at.is_none()
+                && policy_uses_using_for_missing_with_check(cp.command())
             {
                 cp.using_classification.as_ref()
             } else {
@@ -1441,6 +1748,12 @@ fn push_action_expr(
     }
 }
 
+/// Declare the `pg_role` scope a policy's `TO` clause narrows by, and load it.
+///
+/// Returns whether a tuple can name a row of the table. Where none can, the scope is
+/// left unminted rather than declared empty: a scope relation nothing can fill asks the
+/// operator for `pg_role` memberships no rule reads, and a caller whose whole grant
+/// rides on the scope falls closed on the answer.
 #[allow(clippy::too_many_arguments)]
 fn register_pg_role_scope<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
@@ -1456,16 +1769,14 @@ fn register_pg_role_scope<DB: DatabaseLike>(
     db: &DB,
     notes: &mut Vec<TranslationNote>,
     missing_object_what: &str,
-) {
-    ensure_pg_role_relation(all_types, walked);
-
-    table_plan.ensure_direct(
-        scope_relation.to_string(),
-        vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
-    );
-    notes.push(scope_note);
-
+) -> bool {
     if let Some(pk_col) = resolve_pk_column(source_table, db) {
+        ensure_pg_role_relation(all_types, walked);
+        table_plan.ensure_direct(
+            scope_relation.to_string(),
+            vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
+        );
+        notes.push(scope_note);
         for role in role_names {
             let pg_role = canonical_fga_type_name(role);
             // A quoted role can rewrite onto a different existing role, which
@@ -1484,8 +1795,10 @@ fn register_pg_role_scope<DB: DatabaseLike>(
                 pg_role,
             });
         }
+        true
     } else {
-        add_missing_object_identifier_note(table_plan, source_table, missing_object_what, db);
+        skip_source_without_row_identity(table_plan, source_table, missing_object_what, db);
+        false
     }
 }
 
@@ -1939,7 +2252,7 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
 
     let scope_relation = policy_scope_relation_name(policy_name);
     let held_by = privilege.relation_name();
-    register_pg_role_scope(
+    let scope_can_be_filled = register_pg_role_scope(
         table_plan,
         all_types,
         source_table,
@@ -1957,6 +2270,11 @@ fn handle_p2_role_gate<DB: DatabaseLike>(
         notes,
         "role gate tuples",
     );
+    // The whole grant is the scope, so an unfillable one is a permission nothing can
+    // satisfy rather than a narrower one.
+    if !scope_can_be_filled {
+        return deny_expr(table_plan);
+    }
 
     // The scope relation holds `[pg_role]` subjects, so a `user:` subject can never satisfy
     // it directly. Walking it to the role's holders is what admits them, and it is what
@@ -1983,6 +2301,151 @@ fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     UsersetExpr::Computed(PUBLIC_RELATION.to_string())
 }
 
+/// Mint the relation, the condition and the tuple source a declared request-scoped
+/// value needs.
+///
+/// The authority split: the tuple carries what only the row or the rule knows, the
+/// request carries what only the caller knows, and the condition relates them. Returns
+/// `None` when no tuple can name the row, so the caller falls back to closing the
+/// policy.
+fn session_attribute_expr<DB: DatabaseLike>(
+    declared: RequestSide<'_>,
+    carried: RowParameterSource<'_>,
+    policy_name: &str,
+    source_table: &str,
+    table_plan: &mut TypePlan,
+    db: &DB,
+) -> Option<UsersetExpr> {
+    let RequestSide {
+        source,
+        comparison,
+        separator,
+    } = declared;
+    let pk_col = resolve_pk_column(source_table, db)?;
+
+    let request_parameter = source.request_parameter().to_string();
+    // Two parameters cannot share one name, and the caller's is the one a deployment
+    // chose, so the tuple's yields.
+    let mut row_parameter = normalize_relation_name(carried.parameter_base());
+    if row_parameter == request_parameter {
+        row_parameter = format!(
+            "{row_parameter}_{}",
+            stable_hex_suffix(carried.parameter_base())
+        );
+    }
+    let row_parameter = match carried {
+        RowParameterSource::Column(column) => RowParameter::Column {
+            parameter: row_parameter,
+            column: column.to_string(),
+        },
+        RowParameterSource::Constant(value) => RowParameter::Literal {
+            parameter: row_parameter,
+            value: value.to_string(),
+        },
+    };
+
+    let (request_type, operator) = match comparison {
+        RequestComparison::CallerSetHolds => {
+            (ConditionParameter::ListOf(STRING_PARAMETER_TYPE), "in")
+        }
+        RequestComparison::CallerValueEquals => {
+            (ConditionParameter::Scalar(STRING_PARAMETER_TYPE), "==")
+        }
+    };
+    let expression = format!(
+        "{} {operator} {request_parameter}",
+        row_parameter.parameter()
+    );
+    let spec = ConditionSpec {
+        expression,
+        parameters: [
+            (
+                row_parameter.parameter().to_string(),
+                ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
+            ),
+            (request_parameter.clone(), request_type),
+        ]
+        .into_iter()
+        .collect(),
+        row_parameter: row_parameter.clone(),
+    };
+    let condition = declare_condition(table_plan, policy_name, spec);
+
+    let relation = table_plan.ensure_direct(
+        conditional_gate_relation_name(policy_name),
+        vec![DirectSubject::ConditionalWildcard {
+            type_name: USER_TYPE.to_string(),
+            condition: condition.clone(),
+        }],
+    );
+    table_plan.add_source(TupleSource::SessionAttributeGate {
+        table: source_table.to_string(),
+        pk_col,
+        relation: relation.clone(),
+        condition,
+        row_parameter,
+        request_parameter,
+        setting_key: source.setting_key().to_string(),
+        separator: separator.map(str::to_string),
+        comparison,
+    });
+    Some(UsersetExpr::Computed(relation))
+}
+
+/// The request's half of the comparison, as the policy declared it.
+#[derive(Clone, Copy)]
+struct RequestSide<'a> {
+    /// The declared source, carrying the parameter the caller supplies.
+    source: &'a SessionAttribute,
+    /// How the two sides are compared.
+    comparison: RequestComparison,
+    /// Separator the policy splits the setting on, for a set.
+    separator: Option<&'a str>,
+}
+
+/// Where the tuple's side of the comparison comes from.
+#[derive(Debug, Clone, Copy)]
+enum RowParameterSource<'a> {
+    /// A column of the guarded row.
+    Column(&'a str),
+    /// A constant the policy named, so every row carries the same one.
+    Constant(&'a str),
+}
+
+impl RowParameterSource<'_> {
+    fn parameter_base(&self) -> &str {
+        match self {
+            Self::Column(column) => column,
+            // The rule supplies it, so it is named after what it is rather than after
+            // its value, which may be any text at all.
+            Self::Constant(_) => "required_value",
+        }
+    }
+}
+
+/// Declare `spec` under a name free in this type plan, and answer with that name.
+///
+/// A policy name is unique only per table and a condition name is global to the model, so
+/// the base is keyed on both. One policy covering several commands mints the same guard
+/// once per command, which is why an identical spec reuses its name: only a **different**
+/// guard inside one policy takes the suffix.
+fn declare_condition(table_plan: &mut TypePlan, policy_name: &str, spec: ConditionSpec) -> String {
+    let base = gate_condition_name(&table_plan.type_name, policy_name);
+    // One more candidate than there are conditions, so one is always free.
+    let ceiling = table_plan.conditions.len() + 2;
+    let name = core::iter::once(base.clone())
+        .chain((2..=ceiling).map(|nth| format!("{base}_{nth}")))
+        .find(|candidate| {
+            table_plan
+                .conditions
+                .get(candidate)
+                .is_none_or(|existing| *existing == spec)
+        })
+        .unwrap_or(base);
+    table_plan.conditions.insert(name.clone(), spec);
+    name
+}
+
 /// Mint the relation, the condition and the tuple source a request-time guard needs.
 ///
 /// Returns `None` when the row cannot be identified or the column's type has no
@@ -1998,7 +2461,6 @@ fn conditional_gate_expr<DB: DatabaseLike>(
     let pk_col = resolve_pk_column(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, &request.column, db)?;
 
-    let condition = gate_condition_name(&table_plan.type_name, policy_name);
     // A column named like the request's parameter yields, since two parameters cannot
     // share one name.
     let request_parameter = request_time_parameter.to_string();
@@ -2008,17 +2470,27 @@ fn conditional_gate_expr<DB: DatabaseLike>(
     }
     let operator = condition_operator(request.operator);
 
-    table_plan.conditions.insert(
-        condition.clone(),
+    let condition = declare_condition(
+        table_plan,
+        policy_name,
         ConditionSpec {
             expression: format!("{row_parameter} {operator} {request_parameter}"),
             parameters: [
-                (row_parameter.clone(), parameter_type.to_string()),
-                (request_parameter, TIMESTAMP_PARAMETER_TYPE.to_string()),
+                (
+                    row_parameter.clone(),
+                    ConditionParameter::Scalar(parameter_type),
+                ),
+                (
+                    request_parameter,
+                    ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
+                ),
             ]
             .into_iter()
             .collect(),
-            row_parameter: (row_parameter.clone(), request.column.clone()),
+            row_parameter: RowParameter::Column {
+                parameter: row_parameter.clone(),
+                column: request.column.clone(),
+            },
         },
     );
 
@@ -2095,7 +2567,8 @@ fn combine_intersection(exprs: Vec<UsersetExpr>) -> Option<UsersetExpr> {
     combine_exprs(exprs, UsersetExpr::Intersection)
 }
 
-/// Translate a pattern with schema-independent defaults.
+/// Translate a pattern against a table whose rows a tuple can name, which is what the
+/// pattern arms assume. Use [`pattern_to_expr_without_row_identity`] for the other case.
 #[cfg(test)]
 fn pattern_to_expr(
     pattern: &PatternClass,
@@ -2105,7 +2578,51 @@ fn pattern_to_expr(
     registry: &FunctionRegistry,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
-    let db = crate::parser::sql_parser::parse_schema("").expect("empty schema should parse");
+    pattern_to_expr_against(
+        "CREATE TABLE test_table(id UUID PRIMARY KEY);
+CREATE TABLE projects(id UUID PRIMARY KEY);",
+        pattern,
+        policy_name,
+        table_plan,
+        all_types,
+        registry,
+        notes,
+    )
+}
+
+/// Translate a pattern against a table no schema declares, so nothing names its rows.
+#[cfg(test)]
+fn pattern_to_expr_without_row_identity(
+    pattern: &PatternClass,
+    policy_name: &str,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    registry: &FunctionRegistry,
+    notes: &mut Vec<TranslationNote>,
+) -> UsersetExpr {
+    pattern_to_expr_against(
+        "",
+        pattern,
+        policy_name,
+        table_plan,
+        all_types,
+        registry,
+        notes,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn pattern_to_expr_against(
+    schema: &str,
+    pattern: &PatternClass,
+    policy_name: &str,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
+    registry: &FunctionRegistry,
+    notes: &mut Vec<TranslationNote>,
+) -> UsersetExpr {
+    let db = crate::parser::sql_parser::parse_schema(schema).expect("schema should parse");
     translate_pattern(
         pattern,
         policy_name,
@@ -2163,6 +2680,9 @@ fn translate_pattern<DB: DatabaseLike>(
             ) else {
                 return deny_expr(table_plan);
             };
+            if !prepared.rows_can_be_named {
+                return deny_expr(table_plan);
+            }
 
             let min_level = match operator {
                 ThresholdOperator::Gte => *threshold,
@@ -2205,6 +2725,9 @@ fn translate_pattern<DB: DatabaseLike>(
                     notes,
                 );
             };
+            if !prepared.rows_can_be_named {
+                return deny_expr(table_plan);
+            }
 
             // Matched by name, not by level, so `viewer=1` and `guest=1` stay
             // distinct. A numeric item means every role at that level.
@@ -2251,12 +2774,8 @@ fn translate_pattern<DB: DatabaseLike>(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_note(
-                    table_plan,
-                    source_table,
-                    "ownership tuples",
-                    db,
-                );
+                skip_source_without_row_identity(table_plan, source_table, "ownership tuples", db);
+                return deny_expr(table_plan);
             }
             UsersetExpr::Computed(relation)
         }
@@ -2274,12 +2793,13 @@ fn translate_pattern<DB: DatabaseLike>(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_note(
+                skip_source_without_row_identity(
                     table_plan,
                     source_table,
                     "array membership tuples",
                     db,
                 );
+                return deny_expr(table_plan);
             }
             UsersetExpr::Computed(relation)
         }
@@ -2300,12 +2820,13 @@ fn translate_pattern<DB: DatabaseLike>(
                     relation: relation.clone(),
                 });
             } else {
-                add_missing_object_identifier_note(
+                skip_source_without_row_identity(
                     table_plan,
                     source_table,
                     "jsonb field ownership tuples",
                     db,
                 );
+                return deny_expr(table_plan);
             }
             UsersetExpr::Computed(relation)
         }
@@ -2332,6 +2853,20 @@ fn translate_pattern<DB: DatabaseLike>(
                 }
                 JoinTableReadability::Open => {}
             }
+            // Before any note or any minting: the grant hangs off a bridge from this row
+            // to the holder, so with no row identity there is nothing to hang it on, a
+            // holder type minted here would outlive the expression that justified it,
+            // and advice about the tuple SQL names a query nothing will emit.
+            let Some(pk_col) = resolve_pk_column(source_table, db) else {
+                skip_source_without_row_identity(
+                    table_plan,
+                    source_table,
+                    "membership holder tuples",
+                    db,
+                );
+                return deny_expr(table_plan);
+            };
+
             if let Some(extra) = extra_predicate_sql {
                 notes.push(TranslationNote::MembershipExtraPredicate {
                     policy: policy_name.to_string(),
@@ -2363,25 +2898,116 @@ fn translate_pattern<DB: DatabaseLike>(
                     extra_predicate_sql: extra_predicate_sql.clone(),
                 });
             }
-            if let Some(pk_col) = resolve_pk_column(source_table, db) {
-                table_plan.add_source(TupleSource::HolderBridge {
-                    table: source_table.to_string(),
-                    pk_col,
-                    relation: holder_relation.clone(),
-                    holder_type,
-                });
-            } else {
-                add_missing_object_identifier_note(
-                    table_plan,
-                    source_table,
-                    "membership holder tuples",
-                    db,
-                );
-            }
+            table_plan.add_source(TupleSource::HolderBridge {
+                table: source_table.to_string(),
+                pk_col,
+                relation: holder_relation.clone(),
+                holder_type,
+            });
             UsersetExpr::TupleToUserset {
                 tupleset: holder_relation,
                 computed: MEMBER_RELATION.to_string(),
             }
+        }
+        // A membership row naming a grant the caller may carry. The row is the table's
+        // authority and the set is the request's, so the object is the guarded row named
+        // by the join table's own column and no bridge is needed: the grant is a gate the
+        // request completes rather than a subject the row names.
+        PatternClass::P18MembershipInCallerSet {
+            join_table,
+            fk_column,
+            member_column,
+            separator,
+            source,
+            extra_predicate_sql,
+        } => {
+            // The subquery reads `join_table` as the caller, so its own RLS decides which
+            // membership rows count, exactly as it does for a membership naming a person.
+            let read_scope_roles = match join_table_readability(join_table, db, readability) {
+                JoinTableReadability::Unreadable => {
+                    notes.push(TranslationNote::MembershipTableGrantsNoReads {
+                        policy: policy_name.to_string(),
+                        join_table: join_table.clone(),
+                    });
+                    return deny_expr(table_plan);
+                }
+                JoinTableReadability::Guarded { roles } => {
+                    notes.push(TranslationNote::MembershipTableGuarded {
+                        policy: policy_name.to_string(),
+                        join_table: join_table.clone(),
+                    });
+                    roles
+                }
+                JoinTableReadability::Open => Vec::new(),
+            };
+            if !read_scope_roles.is_empty() {
+                // Only those roles see the membership rows, so only they inherit the
+                // grant. This shape has no rule for intersecting a role scope with a
+                // request-completed gate, so it falls closed rather than widening.
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!(
+                        "only {} may read {join_table}, and a request-scoped gate cannot \
+                         yet be narrowed to a role scope",
+                        read_scope_roles.join(", ")
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
+
+            if let Some(extra) = extra_predicate_sql {
+                notes.push(TranslationNote::MembershipExtraPredicate {
+                    policy: policy_name.to_string(),
+                    predicate: extra.clone(),
+                });
+            }
+
+            let request_parameter = source.request_parameter().to_string();
+            let mut row_parameter = normalize_relation_name(member_column);
+            if row_parameter == request_parameter {
+                row_parameter = format!("{row_parameter}_{}", stable_hex_suffix(member_column));
+            }
+            let spec = ConditionSpec {
+                expression: format!("{row_parameter} in {request_parameter}"),
+                parameters: [
+                    (
+                        row_parameter.clone(),
+                        ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
+                    ),
+                    (
+                        request_parameter.clone(),
+                        ConditionParameter::ListOf(STRING_PARAMETER_TYPE),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                row_parameter: RowParameter::Column {
+                    parameter: row_parameter.clone(),
+                    column: member_column.clone(),
+                },
+            };
+            let condition = declare_condition(table_plan, policy_name, spec);
+            let relation = table_plan.ensure_direct(
+                conditional_gate_relation_name(policy_name),
+                vec![DirectSubject::ConditionalWildcard {
+                    type_name: USER_TYPE.to_string(),
+                    condition: condition.clone(),
+                }],
+            );
+            table_plan.add_source(TupleSource::SessionAttributeMembershipGate {
+                join_table: join_table.clone(),
+                fk_col: fk_column.clone(),
+                member_col: member_column.clone(),
+                parent_type: table_plan.type_name.clone(),
+                relation: relation.clone(),
+                condition,
+                row_parameter,
+                request_parameter,
+                setting_key: source.setting_key().to_string(),
+                separator: separator.clone(),
+                extra_predicate_sql: extra_predicate_sql.clone(),
+            });
+            UsersetExpr::Computed(relation)
         }
         PatternClass::P4ExistsMembership {
             join_table,
@@ -2418,6 +3044,14 @@ fn translate_pattern<DB: DatabaseLike>(
                 || parent_type_from_fk_column(fk_column),
                 |referenced| table_types.resolve(db, referenced),
             );
+
+            // Before anything is minted: the grant hangs off a bridge from this row to
+            // its parent object, so with no row identity there is nothing to hang it on
+            // and a parent type minted here would outlive the expression justifying it.
+            if resolve_pk_column(source_table, db).is_none() {
+                skip_bridge_without_row_identity(table_plan, source_table, &parent_type, db);
+                return deny_expr(table_plan);
+            }
 
             // The relation is named after the parent type, but relation names have a
             // tighter length limit, so use the name the plan actually registered.
@@ -2458,19 +3092,14 @@ fn translate_pattern<DB: DatabaseLike>(
                 parent_plan.add_source(membership_source);
             }
 
-            // Bridge rows link each source-table row to its parent.
-            // The pk_col is resolved at render time via resolve_bridge_columns;
-            // we emit a Todo here only if the table has no identifiable PK at all.
-            if resolve_pk_column(source_table, db).is_some() {
-                table_plan.add_source(TupleSource::ParentBridge {
-                    table: source_table.to_string(),
-                    fk_col: fk_column.clone(),
-                    parent_type: parent_type.clone(),
-                    relation: parent_relation.clone(),
-                });
-            } else {
-                add_missing_bridge_note(table_plan, source_table, &parent_type, db);
-            }
+            // Bridge rows link each source-table row to its parent. The pk column is
+            // resolved again at render time by `resolve_bridge_columns`.
+            table_plan.add_source(TupleSource::ParentBridge {
+                table: source_table.to_string(),
+                fk_col: fk_column.clone(),
+                parent_type: parent_type.clone(),
+                relation: parent_relation.clone(),
+            });
 
             let membership = UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
@@ -2530,7 +3159,17 @@ fn translate_pattern<DB: DatabaseLike>(
             // `all_types`, so writing it there would be dropped by the re-insert at
             // the end of the table loop.
             let inherits_from_self = parent_type == table_plan.type_name;
-            let inner_expr = if inherits_from_self {
+            // A bare delegation adds nothing to the parent's own read rule, so the gate
+            // below is the whole rule. Translating the constant would mint a
+            // `public_viewer` relation on the parent and ask an operator for a tuple per
+            // parent row that no rule reads.
+            let bare_delegation = matches!(
+                &inner_pattern.pattern,
+                PatternClass::P10ConstantBool { value: true }
+            );
+            let inner_expr = if bare_delegation {
+                UsersetExpr::Computed(CAN_SELECT_RELATION.to_string())
+            } else if inherits_from_self {
                 translate_pattern(
                     &inner_pattern.pattern,
                     policy_name,
@@ -2579,6 +3218,7 @@ fn translate_pattern<DB: DatabaseLike>(
             // A row the parent hides cannot satisfy the rule, self references included.
             // Gating narrows the rule, so an unreadable RLS state gates.
             let gate_on_parent = !rule_is_denial
+                && !bare_delegation
                 && lookup_table(db, parent_table)
                     .is_some_and(|table| table.has_row_level_security(db) != Ok(false));
             let rule_expr = if gate_on_parent {
@@ -2624,7 +3264,8 @@ fn translate_pattern<DB: DatabaseLike>(
                     relation: parent_relation.clone(),
                 });
             } else {
-                add_missing_bridge_note(table_plan, source_table, &parent_type, db);
+                skip_bridge_without_row_identity(table_plan, source_table, &parent_type, db);
+                return deny_expr(table_plan);
             }
 
             UsersetExpr::TupleToUserset {
@@ -2640,12 +3281,13 @@ fn translate_pattern<DB: DatabaseLike>(
                     flag_col: column.clone(),
                 });
             } else {
-                add_missing_object_identifier_note(
+                skip_source_without_row_identity(
                     table_plan,
                     source_table,
                     "public-flag tuples",
                     db,
                 );
+                return deny_expr(table_plan);
             }
             public_expr(table_plan)
         }
@@ -2740,12 +3382,13 @@ fn translate_pattern<DB: DatabaseLike>(
                         predicate: predicate.clone(),
                     });
                 } else {
-                    add_missing_object_identifier_note(
+                    skip_source_without_row_identity(
                         table_plan,
                         source_table,
                         "attribute-gate tuples",
                         db,
                     );
+                    return deny_expr(table_plan);
                 }
                 return public_expr(table_plan);
             }
@@ -2769,18 +3412,114 @@ fn translate_pattern<DB: DatabaseLike>(
                         pk_col,
                     });
                 } else {
-                    add_missing_object_identifier_note(
+                    skip_source_without_row_identity(
                         table_plan,
                         source_table,
                         "constant-TRUE tuples",
                         db,
                     );
+                    return deny_expr(table_plan);
                 }
                 public_expr(table_plan)
             } else {
                 deny_expr(table_plan)
             }
         }
+        // The four declared request-scoped shapes. They differ only in what the tuple
+        // carries and how the caller's value is compared, so one emitter answers all
+        // four and the model cannot describe two of them apart.
+        PatternClass::P14RowValueInCallerSet {
+            column,
+            source,
+            separator,
+        } => session_attribute_expr(
+            RequestSide {
+                source,
+                comparison: RequestComparison::CallerSetHolds,
+                separator: Some(separator),
+            },
+            RowParameterSource::Column(column),
+            policy_name,
+            source_table,
+            table_plan,
+            db,
+        )
+        .unwrap_or_else(|| {
+            skip_source_without_row_identity(
+                table_plan,
+                source_table,
+                "request-scoped gate tuples",
+                db,
+            );
+            deny_expr(table_plan)
+        }),
+        PatternClass::P15RowValueEqualsCallerScalar { column, source } => session_attribute_expr(
+            RequestSide {
+                source,
+                comparison: RequestComparison::CallerValueEquals,
+                separator: None,
+            },
+            RowParameterSource::Column(column),
+            policy_name,
+            source_table,
+            table_plan,
+            db,
+        )
+        .unwrap_or_else(|| {
+            skip_source_without_row_identity(
+                table_plan,
+                source_table,
+                "request-scoped gate tuples",
+                db,
+            );
+            deny_expr(table_plan)
+        }),
+        PatternClass::P16ConstantInCallerSet {
+            value,
+            source,
+            separator,
+        } => session_attribute_expr(
+            RequestSide {
+                source,
+                comparison: RequestComparison::CallerSetHolds,
+                separator: Some(separator),
+            },
+            RowParameterSource::Constant(value),
+            policy_name,
+            source_table,
+            table_plan,
+            db,
+        )
+        .unwrap_or_else(|| {
+            skip_source_without_row_identity(
+                table_plan,
+                source_table,
+                "request-scoped gate tuples",
+                db,
+            );
+            deny_expr(table_plan)
+        }),
+        PatternClass::P17CallerScalarEqualsConstant { value, source } => session_attribute_expr(
+            RequestSide {
+                source,
+                comparison: RequestComparison::CallerValueEquals,
+                separator: None,
+            },
+            RowParameterSource::Constant(value),
+            policy_name,
+            source_table,
+            table_plan,
+            db,
+        )
+        .unwrap_or_else(|| {
+            skip_source_without_row_identity(
+                table_plan,
+                source_table,
+                "request-scoped gate tuples",
+                db,
+            );
+            deny_expr(table_plan)
+        }),
         PatternClass::Unknown { reason, .. } => {
             notes.push(TranslationNote::ExpressionRefused {
                 policy: policy_name.to_string(),
@@ -2801,6 +3540,9 @@ fn translate_pattern<DB: DatabaseLike>(
 struct RoleThresholdPrepared {
     sorted_roles: Vec<RoleRelationName>,
     has_team_support: bool,
+    /// Whether a tuple can name a row of the guarded table. Every grant a role
+    /// threshold mints is keyed on one, so without it the whole rule falls closed.
+    rows_can_be_named: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2846,6 +3588,7 @@ fn prepare_role_threshold_translation<DB: DatabaseLike>(
     Some(RoleThresholdPrepared {
         sorted_roles,
         has_team_support,
+        rows_can_be_named: resolve_pk_column(source_table, db).is_some(),
     })
 }
 
@@ -2865,7 +3608,11 @@ fn missing_object_identifier_reason<DB: DatabaseLike>(source_table: &str, db: &D
     "missing object identifier column".to_string()
 }
 
-fn add_missing_object_identifier_note<DB: DatabaseLike>(
+/// Record that a tuple query cannot be emitted, because no single column names a row.
+///
+/// The grant it would have filled falls closed at the call site, and one note per table
+/// is derived from the skips recorded here so the two cannot describe different losses.
+fn skip_source_without_row_identity<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
     what: &str,
@@ -2880,7 +3627,8 @@ fn add_missing_object_identifier_note<DB: DatabaseLike>(
     });
 }
 
-fn add_missing_bridge_note<DB: DatabaseLike>(
+/// The same, for the bridge linking a row to its parent object.
+fn skip_bridge_without_row_identity<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
     parent_type: &str,

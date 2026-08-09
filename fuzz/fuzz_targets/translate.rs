@@ -24,12 +24,12 @@ impl PolicyOracle for TextOracle {
         match len % 3 {
             0 => OracleAnswer::Bailed,
             1 => OracleAnswer::Denied,
-            _ => OracleAnswer::Classified(ClassifiedExpr {
+            _ => OracleAnswer::Classified(Box::new(ClassifiedExpr {
                 pattern: PatternClass::P10ConstantBool {
                     value: len.is_multiple_of(2),
                 },
                 confidence: ConfidenceLevel::B,
-            }),
+            })),
         }
     }
 }

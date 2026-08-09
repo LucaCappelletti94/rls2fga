@@ -29,8 +29,8 @@ use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
-    ValueSource,
+    records_from_row, BoundQuery, Record, RecordContextValue, RecordDerivation, RecordDescription,
+    RowValues, ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::TupleQuery;
@@ -54,6 +54,21 @@ struct TupleRow {
     relation: String,
     #[diesel(sql_type = Text)]
     subject: String,
+}
+
+/// The same, for a query whose tuples carry a condition context. A conditional record
+/// grants nobody until the request completes the comparison, so the context is part of
+/// what the two sides have to agree on.
+#[derive(QueryableByName, Debug, Clone)]
+struct ConditionalTupleRow {
+    #[diesel(sql_type = Text)]
+    object: String,
+    #[diesel(sql_type = Text)]
+    relation: String,
+    #[diesel(sql_type = Text)]
+    subject: String,
+    #[diesel(sql_type = Jsonb)]
+    context: serde_json::Value,
 }
 
 /// A whole row as JSON, which is how a test reads columns it only learns about
@@ -149,21 +164,54 @@ async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgCo
 
 /// Records the generated query returns.
 fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Record> {
+    let failed = |error: diesel::result::Error| -> ! {
+        panic!(
+            "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
+            query.comment, query.sql
+        )
+    };
+    if query.condition.is_some() {
+        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&query.sql)
+            .load(conn)
+            .unwrap_or_else(|error| failed(error));
+        return rows
+            .into_iter()
+            .map(|row| Record {
+                object: row.object,
+                relation: row.relation,
+                subject: row.subject,
+                context: Some(context_of(&row.context, &query.sql)),
+            })
+            .collect();
+    }
     let rows: Vec<TupleRow> = diesel::sql_query(&query.sql)
         .load(conn)
-        .unwrap_or_else(|error| {
-            panic!(
-                "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
-                query.comment, query.sql
-            )
-        });
+        .unwrap_or_else(|error| failed(error));
     rows.into_iter()
         .map(|row| Record {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
+            context: None,
         })
         .collect()
+}
+
+/// The one key a conditional tuple's context carries. More than one would mean the
+/// request supplies nothing, which the model's own invariant already forbids.
+fn context_of(context: &serde_json::Value, sql: &str) -> RecordContextValue {
+    let object = context
+        .as_object()
+        .unwrap_or_else(|| panic!("a conditional tuple's context is an object:\n{sql}"));
+    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
+        panic!("a conditional tuple carries exactly one context key:\n{sql}");
+    };
+    RecordContextValue {
+        key: key.clone(),
+        value: scalar_text(value)
+            .unwrap_or_else(|| panic!("a context value renders as text:\n{sql}"))
+            .into_owned(),
+    }
 }
 
 /// Every row of `table`, as JSON.
@@ -219,20 +267,41 @@ fn records_from_bound_query(
     conn: &mut PgConnection,
     bound: &BoundQuery,
     key: &str,
+    conditional: bool,
 ) -> BTreeSet<Record> {
     let literal = format!("'{}'", key.replace('\'', "''"));
     let sql = bound.sql.replace("$1", &literal);
-    let rows: Vec<TupleRow> = diesel::sql_query(&sql).load(conn).unwrap_or_else(|error| {
+    let failed = |error: diesel::result::Error| -> ! {
         panic!(
             "a bound query failed on PostgreSQL 18 for {}.{} = {literal}\n{sql}\nError: {error}",
             bound.table, bound.key_column
         )
-    });
+    };
+    // The whole-table query and its bound replay have to agree on the context too, or a
+    // consumer replaying a change would answer differently from the loader.
+    if conditional {
+        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&sql)
+            .load(conn)
+            .unwrap_or_else(|error| failed(error));
+        return rows
+            .into_iter()
+            .map(|row| Record {
+                object: row.object,
+                relation: row.relation,
+                subject: row.subject,
+                context: Some(context_of(&row.context, &sql)),
+            })
+            .collect();
+    }
+    let rows: Vec<TupleRow> = diesel::sql_query(&sql)
+        .load(conn)
+        .unwrap_or_else(|error| failed(error));
     rows.into_iter()
         .map(|row| Record {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
+            context: None,
         })
         .collect()
 }
@@ -266,7 +335,8 @@ fn assert_bound_queries_account_for_every_record(
         let mut union = BTreeSet::new();
         let mut narrowed = false;
         for key in &keys {
-            let bound_records = records_from_bound_query(conn, bound, key);
+            let bound_records =
+                records_from_bound_query(conn, bound, key, query.condition.is_some());
             let invented: Vec<_> = bound_records.difference(&whole).collect();
             assert!(
                 invented.is_empty(),
@@ -743,6 +813,7 @@ fn recipe_kind(decision: &RowDecision) -> &'static str {
         RowDecision::Leaf { .. } => "leaf",
         RowDecision::Any(_) => "any",
         RowDecision::All(_) => "all",
+        RowDecision::RequestGated { .. } => "request-gated",
         other => panic!("a recipe shape this test cannot read: {other:?}"),
     }
 }
@@ -751,7 +822,10 @@ fn recipe_kind(decision: &RowDecision) -> &'static str {
 /// leaf of the same recipe has to agree on.
 fn first_shape(decision: &RowDecision) -> &RecordDescription {
     match decision {
-        RowDecision::Leaf { relation, shapes } => shapes
+        RowDecision::Leaf { relation, shapes }
+        | RowDecision::RequestGated {
+            relation, shapes, ..
+        } => shapes
             .first()
             .unwrap_or_else(|| panic!("leaf {relation} carries no shape, so it decides nothing")),
         RowDecision::Any(children) | RowDecision::All(children) => children

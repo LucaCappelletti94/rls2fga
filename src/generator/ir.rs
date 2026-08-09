@@ -5,7 +5,9 @@
 //! cannot drift apart.
 
 use crate::classifier::patterns::AttributePredicate;
+use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
+use crate::generator::relations::RequestComparison;
 use crate::generator::well_known::{
     MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PUBLIC_RELATION, TEAM_TYPE,
 };
@@ -155,6 +157,55 @@ pub(crate) enum TupleSource {
         column: String,
     },
 
+    /// A declared request-scoped value the service compares per check. Produces
+    /// `(type:pk, relation, user:*, condition, context)` where the context carries what
+    /// only the row or the rule knows: the row's own value, or the constant the policy
+    /// named.
+    SessionAttributeGate {
+        table: String,
+        pk_col: String,
+        relation: String,
+        condition: String,
+        /// Condition parameter the tuple supplies, and where its value comes from.
+        row_parameter: RowParameter,
+        /// Condition parameter the caller supplies in every check context.
+        request_parameter: String,
+        /// Session setting the caller's value mirrors, so the contract can name it.
+        setting_key: String,
+        /// Separator the policy splits that setting on, for a list parameter.
+        separator: Option<String>,
+        /// How the two sides are compared.
+        comparison: RequestComparison,
+    },
+
+    /// A membership row whose member column holds a value the caller's declared set has
+    /// to contain. Produces `(parent_type:fk, relation, user:*, condition, context)` per
+    /// **membership** row, so the objects are named after the parent while the facts are
+    /// read from the join table.
+    SessionAttributeMembershipGate {
+        /// Table whose rows record the grants.
+        join_table: String,
+        /// Column of `join_table` naming the guarded row, which the object is keyed on.
+        fk_col: String,
+        /// Column of `join_table` holding the value the caller's set must contain.
+        member_col: String,
+        /// Type the objects belong to, named here because the facts are read from the
+        /// join table rather than from the type's own rows.
+        parent_type: String,
+        relation: String,
+        condition: String,
+        /// Condition parameter the membership row supplies.
+        row_parameter: String,
+        /// Condition parameter the caller supplies in every check context.
+        request_parameter: String,
+        /// Session setting the caller's value mirrors, so the contract can name it.
+        setting_key: String,
+        /// Separator the policy splits that setting on.
+        separator: String,
+        /// Residual filter on the membership row.
+        extra_predicate_sql: Option<String>,
+    },
+
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
     ConstantTrue { table: String, pk_col: String },
 
@@ -207,11 +258,13 @@ impl TupleSource {
             | Self::PublicFlag { .. }
             | Self::AttributeGate { .. }
             | Self::ConditionalAttributeGate { .. }
+            | Self::SessionAttributeGate { .. }
             | Self::ConstantTrue { .. }
             | Self::PolicyScope { .. }
             | Self::HolderBridge { .. } => true,
             Self::TeamMembership { .. }
             | Self::ExistsMembership { .. }
+            | Self::SessionAttributeMembershipGate { .. }
             | Self::HolderMembers { .. }
             | Self::Skipped { .. } => false,
         }
@@ -227,6 +280,8 @@ impl TupleSource {
             | Self::JsonbFieldOwnership { relation, .. }
             | Self::ParentBridge { relation, .. }
             | Self::ConditionalAttributeGate { relation, .. }
+            | Self::SessionAttributeGate { relation, .. }
+            | Self::SessionAttributeMembershipGate { relation, .. }
             | Self::HolderBridge { relation, .. } => own(relation),
             Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
             Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
@@ -374,6 +429,44 @@ impl TupleSource {
                 column,
             } => {
                 format!("p9c:{table}:{pk_col}:{relation}:{condition}:{row_parameter}:{column}")
+            }
+            Self::SessionAttributeGate {
+                table,
+                pk_col,
+                relation,
+                condition,
+                row_parameter,
+                request_parameter,
+                setting_key,
+                separator,
+                comparison,
+            } => {
+                let _ = (setting_key, separator);
+                format!(
+                    "sess:{table}:{pk_col}:{relation}:{condition}:{}:{}:{request_parameter}:{comparison:?}",
+                    row_parameter.parameter(),
+                    row_parameter.column().unwrap_or_default()
+                )
+            }
+            Self::SessionAttributeMembershipGate {
+                join_table,
+                fk_col,
+                member_col,
+                parent_type,
+                relation,
+                condition,
+                row_parameter,
+                request_parameter,
+                setting_key,
+                separator,
+                extra_predicate_sql,
+            } => {
+                let _ = (setting_key, separator);
+                format!(
+                    "sessmem:{parent_type}:{join_table}:{fk_col}:{member_col}:{relation}:\
+                     {condition}:{row_parameter}:{request_parameter}:{}",
+                    extra_predicate_sql.as_deref().unwrap_or_default()
+                )
             }
             Self::ConstantTrue { table, pk_col } => {
                 format!("p10_true:{table}:{pk_col}")

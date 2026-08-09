@@ -1,6 +1,7 @@
 //! Regression tests for inputs where the generated model or tuple SQL diverged
 //! from `PostgreSQL` RLS semantics.
 
+use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
@@ -52,6 +53,44 @@ fn relation_denies(dsl: &str, type_name: &str, relation: &str) -> bool {
         name = body;
     }
     false
+}
+
+/// Whether an action relation grants nobody, allowing for a `TO` scope: an intersection
+/// one of whose parts is `no_access` denies whatever the other parts admit.
+fn action_relation_denies(dsl: &str, type_name: &str, relation: &str) -> bool {
+    let mut name = relation.to_string();
+    for _ in 0..4 {
+        let Some(body) = relation_definition(dsl, type_name, &name) else {
+            return false;
+        };
+        if body.split(" and ").any(|part| part.trim() == "no_access") {
+            return true;
+        }
+        if body.contains(' ') {
+            return false;
+        }
+        name = body;
+    }
+    false
+}
+
+/// Every type the model declares with no relation under it, in declaration order.
+fn types_declaring_no_relation(dsl: &str) -> Vec<String> {
+    let mut empty = Vec::new();
+    let mut current: Option<String> = None;
+    for line in dsl.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("type ") {
+            if let Some(previous) = current.take() {
+                empty.push(previous);
+            }
+            current = Some(name.trim().to_string());
+        } else if trimmed.starts_with("define ") {
+            current = None;
+        }
+    }
+    empty.extend(current);
+    empty
 }
 
 /// Every relation `type_name` defines, paired with its body, in declaration order.
@@ -8321,5 +8360,589 @@ CREATE POLICY p ON docs FOR SELECT
             .collect::<Vec<_>>(),
         ["owner_id"],
         "a subquery that is only its projection is still the caller"
+    );
+}
+
+/// Phase 1, test 4. A permissive `WITH CHECK` the threshold dropped must not come
+/// back through the bucket-level mirror. `for_each_policy_target_expr` honours the
+/// suppression per policy, but the composed check falls back to the composed
+/// `USING` when the bucket ends up empty, which resurrects exactly the clause that
+/// was refused and grants the update the model meant to deny. Only the check half
+/// falls closed: the surviving `USING` still answers a locking read.
+#[test]
+fn a_filtered_with_check_does_not_resurrect_through_the_bucket_mirror() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user)
+  WITH CHECK (opaque_gate(id));
+",
+    );
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps()
+        .model();
+
+    assert_ne!(
+        relation_definition(&dsl, "docs", "can_update").as_deref(),
+        Some("owner"),
+        "the dropped WITH CHECK came back as the USING:\n{dsl}"
+    );
+    assert!(
+        relation_denies(&dsl, "docs", "can_update_check"),
+        "a check with no surviving arm has to fall closed:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select_for_update").as_deref(),
+        Some("can_update_using"),
+        "a locking read filters by the USING alone, which survived:\n{dsl}"
+    );
+}
+
+/// Phase 1, test 5. A clause the caller's threshold dropped is named by a typed note
+/// carrying what it cost, which is the only machine readable channel for it: the
+/// surviving-policy summary is built from the filtered set by design, and prose in
+/// the report is not something a program reads.
+#[test]
+fn a_clause_the_threshold_dropped_is_named_by_a_typed_note() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_opaque ON docs FOR SELECT USING (opaque_gate(id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let dropped: Vec<&TranslationNote> = outputs
+        .notes()
+        .iter()
+        .filter(|note| matches!(note, TranslationNote::ClauseBelowThreshold { .. }))
+        .collect();
+    assert_eq!(
+        dropped.len(),
+        1,
+        "one note per dropped clause: {:?}",
+        outputs.notes()
+    );
+    let TranslationNote::ClauseBelowThreshold {
+        table,
+        policy,
+        mode,
+        clause,
+        confidence,
+        commands,
+        relations,
+    } = dropped[0]
+    else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(
+        (
+            table.as_str(),
+            policy.as_str(),
+            mode.as_str(),
+            clause.as_str(),
+            *confidence
+        ),
+        (
+            "docs",
+            "docs_opaque",
+            "PERMISSIVE",
+            "USING",
+            ConfidenceLevel::D
+        )
+    );
+    assert_eq!(commands, &["SELECT".to_string()]);
+    assert_eq!(relations, &["can_select".to_string()]);
+    assert_eq!(
+        dropped[0].severity(),
+        NoteSeverity::BelowThreshold,
+        "the caller's own threshold is not an unhandled expression"
+    );
+}
+
+/// Phase 1, test 5, second half. A `FOR ALL` policy is translated once per phase, so
+/// the note has to be one per lost clause rather than one per phase it fed.
+#[test]
+fn a_dropped_for_all_policy_reports_one_note_per_clause_not_per_phase() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR ALL USING (owner_id = current_user)
+  WITH CHECK (owner_id = current_user);
+CREATE POLICY docs_opaque ON docs FOR ALL USING (opaque_gate(id))
+  WITH CHECK (opaque_gate(id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let clauses: Vec<(&str, &[String])> = outputs
+        .notes()
+        .iter()
+        .filter_map(|note| match note {
+            TranslationNote::ClauseBelowThreshold {
+                clause, commands, ..
+            } => Some((clause.as_str(), commands.as_slice())),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        clauses,
+        vec![
+            (
+                "USING",
+                ["SELECT", "UPDATE", "DELETE"].map(String::from).as_slice()
+            ),
+            (
+                "WITH CHECK",
+                ["INSERT", "UPDATE"].map(String::from).as_slice()
+            ),
+        ],
+        "two stored clauses, two notes, each naming the commands it fed"
+    );
+
+    // A FOR ALL USING feeds both UPDATE targets, which share `can_update` and
+    // `can_update_without_reading`, so an undeduplicated list names each twice and
+    // stops matching the scar it is supposed to describe.
+    for note in outputs.notes() {
+        let TranslationNote::ClauseBelowThreshold { relations, .. } = note else {
+            continue;
+        };
+        let mut unique = relations.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            &unique, relations,
+            "the note names each diverged relation once: {relations:?}"
+        );
+    }
+}
+
+/// A permissive policy the threshold empties is now retained through the filter, so
+/// the generator can say what was lost. Retaining it must not resurrect its side
+/// effects: registration runs before translation, so a policy contributing no
+/// expression would otherwise still mint a role scope relation and ask the operator
+/// to load `pg_role` memberships that nothing consults.
+#[test]
+fn a_policy_the_threshold_emptied_mints_no_scope_relation() {
+    let db = db_of(
+        "CREATE ROLE auditor;
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY docs_scoped ON docs FOR SELECT TO auditor USING (opaque_gate(id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    assert!(
+        !dsl.contains("scope_"),
+        "the emptied policy contributes no expression, so nothing may reference a \
+         scope relation for it:\n{dsl}"
+    );
+    assert!(
+        !dsl.contains("type pg_role"),
+        "and no role type is minted for it:\n{dsl}"
+    );
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::PolicyRoleScope { .. })),
+        "nor a note asking for memberships nothing reads: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::ClauseBelowThreshold { policy, .. } if policy == "docs_scoped"
+        )),
+        "but the loss itself is still reported: {:?}",
+        outputs.notes()
+    );
+}
+
+/// Phase 2, test 7. A table whose rows no tuple can name still carried its policy's
+/// grant into the model, so `OpenFGA` denied everyone where `PostgreSQL` grants the
+/// viewer and the only place that said so was a comment in the tuple SQL.
+#[test]
+fn a_grant_no_tuple_can_fill_denies_and_is_reported() {
+    for (cause, declaration, expected_reason) in [
+        (
+            "a composite primary key",
+            "CREATE TABLE shares(paper_id UUID, viewer TEXT, PRIMARY KEY (paper_id, viewer));",
+            "composite primary key (paper_id, viewer) leaves no single-column object identifier",
+        ),
+        (
+            "no primary key and an 'id' that identifies no row",
+            "CREATE TABLE shares(id UUID, viewer TEXT);",
+            "no primary key, and 'id' is nullable or not uniquely constrained, so it does \
+             not identify a row",
+        ),
+        (
+            "no primary key and no 'id'",
+            "CREATE TABLE shares(paper_id UUID, viewer TEXT);",
+            "missing object identifier column",
+        ),
+    ] {
+        let db = db_of(&format!(
+            "{declaration}
+ALTER TABLE shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON shares FOR SELECT USING (viewer = current_user);
+"
+        ));
+        let outputs = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        assert_eq!(
+            relation_definition(&dsl, "shares", "can_select").as_deref(),
+            Some("no_access"),
+            "{cause}: no fact can name a row, so the read denies rather than standing as \
+             a permission nothing can satisfy:\n{dsl}"
+        );
+        let named: Vec<&TranslationNote> = outputs
+            .notes()
+            .iter()
+            .filter(|note| matches!(note, TranslationNote::RowsCannotBeNamed { .. }))
+            .collect();
+        let [note] = named.as_slice() else {
+            panic!(
+                "{cause}: the model denies what PostgreSQL grants, so exactly one note \
+                 has to say so: {:#?}",
+                outputs.notes()
+            );
+        };
+        let TranslationNote::RowsCannotBeNamed {
+            table,
+            reason,
+            sources,
+        } = note
+        else {
+            unreachable!("filtered above")
+        };
+        assert_eq!(
+            (table.as_str(), sources.as_slice()),
+            ("shares", &["ownership tuples".to_string()][..])
+        );
+        assert_eq!(
+            reason, expected_reason,
+            "{cause}: the note names the cause the tuple script names"
+        );
+        assert!(
+            note.severity().diverges_from_database(),
+            "{cause}: a grant nothing can fill is a disagreement with the database"
+        );
+    }
+}
+
+/// Phase 2, test 7, corpus shaped. An `OpenFGA` grant names an object, so every pattern
+/// that grants needs a row identity, and a pattern arm that forgets leaves a permission
+/// nothing can satisfy. This ranges over every arm that emits a tuple source keyed on
+/// the guarded table's rows, so a new arm forgetting the check fails here.
+#[test]
+fn no_pattern_grants_on_a_table_whose_rows_cannot_be_named() {
+    // Each case names the tuple query its arm would have emitted, so a denial reached
+    // through some other refusal cannot pass for the guard under test.
+    const GRANT_SCHEMA: &str = "CREATE TABLE owner_grants(grantee_owner_id UUID,
+  granted_owner_id UUID, role_id INTEGER);
+CREATE FUNCTION get_owner_role(u TEXT, t TEXT) RETURNS INTEGER LANGUAGE sql STABLE
+AS 'SELECT 0';";
+    const GRANT_REGISTRY: &str = r#"{"get_owner_role": {"kind": "role_threshold",
+        "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3},
+        "grant_table": "owner_grants", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id"}}"#;
+    let cases: [(&str, &str, &str, Option<&str>); 13] = [
+        ("ownership", "", "USING (viewer = current_user)", None),
+        (
+            "array membership",
+            "",
+            "USING (current_user = ANY (editors))",
+            None,
+        ),
+        (
+            "jsonb field ownership",
+            "",
+            "USING (meta ->> 'owner' = current_user)",
+            None,
+        ),
+        ("public-flag", "", "USING (is_public)", None),
+        ("constant-TRUE", "", "USING (true)", None),
+        ("attribute-gate", "", "USING (status = 'open')", None),
+        (
+            "policy scope",
+            "CREATE ROLE auditor;",
+            "TO auditor USING (viewer = current_user)",
+            None,
+        ),
+        (
+            "bridge tuples to 'link'",
+            "CREATE TABLE links(link_id UUID, user_id TEXT);",
+            "USING (EXISTS (SELECT 1 FROM links l WHERE l.link_id = shares.paper_id \
+             AND l.user_id = current_user))",
+            None,
+        ),
+        (
+            "bridge tuples to 'papers'",
+            "",
+            "USING (EXISTS (SELECT 1 FROM papers p WHERE p.id = shares.paper_id \
+             AND p.owner = current_user))",
+            None,
+        ),
+        (
+            "membership holder",
+            "CREATE TABLE staff(user_id TEXT);",
+            "USING (EXISTS (SELECT 1 FROM staff s WHERE s.user_id = current_user))",
+            None,
+        ),
+        (
+            "role gate",
+            "",
+            "USING (pg_has_role(current_user, 'editor', 'MEMBER'))",
+            None,
+        ),
+        (
+            "explicit grant",
+            GRANT_SCHEMA,
+            "USING (get_owner_role(current_user, viewer) >= 2)",
+            Some(GRANT_REGISTRY),
+        ),
+        (
+            "explicit grant",
+            GRANT_SCHEMA,
+            "USING (get_owner_role(current_user, viewer) IN (2, 3))",
+            Some(GRANT_REGISTRY),
+        ),
+    ];
+
+    for (what, extra_schema, policy_tail, registry_json) in cases {
+        let db = db_of(&format!(
+            "CREATE TABLE papers(id UUID PRIMARY KEY, owner TEXT);
+{extra_schema}
+CREATE TABLE shares(paper_id UUID REFERENCES papers(id), viewer TEXT, editors TEXT[],
+  meta JSONB, is_public BOOLEAN, status TEXT, PRIMARY KEY (paper_id, viewer));
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_own ON papers FOR SELECT USING (owner = current_user);
+CREATE POLICY shares_read ON shares FOR SELECT {policy_tail};
+"
+        ));
+        let mut builder = TranslatorBuilder::new().with_min_confidence(ConfidenceLevel::C);
+        if let Some(json) = registry_json {
+            builder = builder.with_registry_json(json).expect("registry json");
+        }
+        let outputs = builder.build().translate(&db).outputs_accepting_gaps();
+        let dsl = outputs.model();
+
+        let sources: Vec<String> = outputs
+            .notes()
+            .iter()
+            .filter_map(|note| match note {
+                TranslationNote::RowsCannotBeNamed { table, sources, .. } if table == "shares" => {
+                    Some(sources.clone())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            sources.iter().any(|source| source.starts_with(what)),
+            "{what}: the arm has to say which tuple query it could not emit, got \
+             {sources:?} from {:#?}",
+            outputs.notes()
+        );
+
+        for relation in [
+            "can_select",
+            "can_insert",
+            "can_update",
+            "can_delete",
+            "can_update_without_reading",
+            "can_select_for_update",
+        ] {
+            assert!(
+                action_relation_denies(&dsl, "shares", relation),
+                "{what}: nothing can name a row of 'shares', so '{relation}' grants \
+                 nobody:\n{dsl}"
+            );
+        }
+
+        // Whatever the arm minted before it fell closed has to go with it. A scope
+        // relation nothing can fill asks the operator for `pg_role` memberships no rule
+        // reads, and a type left with no relation is a holder or a parent the grant no
+        // longer reaches.
+        assert!(
+            !dsl.contains("scope_"),
+            "{what}: no tuple can fill a scope on 'shares', so none may be declared:\n{dsl}"
+        );
+        for empty in types_declaring_no_relation(&dsl) {
+            assert_eq!(
+                empty, "user",
+                "{what}: '{empty}' outlived the expression that minted it:\n{dsl}"
+            );
+        }
+    }
+}
+
+/// Phase 2, test 7, the trap. `PostgreSQL` raises on a looping read rather than
+/// granting, so the model denying is faithful and nothing may claim a divergence. A
+/// table whose rows also cannot be named must not scar for the commands the loop
+/// already blocks, since the policy loop never translates them and no tuple query was
+/// ever going to be emitted.
+#[test]
+fn a_table_whose_reads_loop_does_not_scar_for_rows_it_cannot_name() {
+    let db = db_of(
+        "CREATE TABLE a(k UUID, viewer TEXT, PRIMARY KEY (k, viewer));
+CREATE TABLE b(k UUID, viewer TEXT, PRIMARY KEY (k, viewer));
+ALTER TABLE a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY a_read ON a FOR SELECT USING (EXISTS (SELECT 1 FROM b WHERE b.k = a.k));
+CREATE POLICY b_read ON b FOR SELECT USING (EXISTS (SELECT 1 FROM a WHERE a.k = b.k));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    assert!(
+        outputs
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::PolicyReadRecursion { .. })),
+        "the loop itself is still reported: {:#?}",
+        outputs.notes()
+    );
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| note.severity().diverges_from_database()),
+        "PostgreSQL raises here rather than granting, so nothing may claim the model \
+         denies what RLS grants, got {:#?}",
+        outputs.notes()
+    );
+}
+
+/// A write rule that only requires the parent row to exist inherits the parent's own
+/// read rule and nothing more. Translating the constant instead would mint a
+/// `public_viewer` relation on the parent and ask an operator to load a wildcard tuple
+/// per parent row that no rule reads, which is an unreferenced grant on the parent.
+#[test]
+fn a_bare_delegation_emits_the_parent_gate_and_nothing_else() {
+    let sql = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (id INT PRIMARY KEY, paper_id INT REFERENCES papers(id), viewer TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_own ON papers FOR SELECT USING (owner = auth_uid());
+CREATE POLICY shares_insert ON paper_shares FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM papers p WHERE p.id = paper_id));
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new().build();
+    let (classified, registry) = translator.classify_with_effective_registry(&db);
+    let outputs = rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.model();
+
+    assert!(
+        model.contains("define can_insert: can_select from papers"),
+        "the parent's read rule is the whole requirement:\n{model}"
+    );
+    assert!(
+        !model.contains("public_viewer"),
+        "a constant inner rule adds no relation to the parent:\n{model}"
+    );
+    assert!(
+        !model.contains("inherited_"),
+        "there is no rule to name beyond the parent's own:\n{model}"
+    );
+    assert!(
+        !outputs
+            .tuple_queries()
+            .iter()
+            .any(|query| query.sql.contains("public_viewer")),
+        "no operator is asked for a wildcard tuple no rule reads"
+    );
+}
+
+/// The sharing subquery reads its table as the caller, so that table's own rules decide
+/// which sharing rows count. A sharing table nobody can read leaves the subquery nothing
+/// to find, so the parent grants nobody. Emitting facts from rows the caller cannot see
+/// would grant through shares that do not exist for them.
+#[test]
+fn a_share_table_nobody_can_read_grants_nothing_through_it() {
+    let sql = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (paper_id INT, viewer TEXT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_hidden ON paper_shares FOR SELECT USING (false);
+CREATE POLICY papers_shared ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    )
+);
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build();
+    let (classified, registry) = translator.classify_with_effective_registry(&db);
+    let outputs = rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.model();
+
+    assert!(
+        model.contains("define can_select: no_access"),
+        "a sharing table nobody reads grants nobody:\n{model}"
+    );
+    assert!(
+        !outputs
+            .tuple_queries()
+            .iter()
+            .any(|query| query.sql.contains("FROM \"paper_shares\"")),
+        "no facts are read from a table the caller cannot see"
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::MembershipTableGrantsNoReads { join_table, .. }
+                if join_table == "paper_shares"
+        )),
+        "the reason the grant vanished is named: {:?}",
+        outputs.notes()
     );
 }

@@ -10,8 +10,10 @@ use crate::no_std_prelude::*;
 use alloc::collections::BTreeSet;
 
 use crate::generator::ir::TupleSource;
+use crate::generator::model_generator::RowParameter;
 use crate::generator::records::{
-    BoundQuery, Guard, RecordDerivation, RecordDescription, RecordTemplate, ValueSource,
+    BoundQuery, Guard, RecordContext, RecordDerivation, RecordDescription, RecordTemplate,
+    ValueSource,
 };
 use crate::generator::tuple_generator::{render_tuple_source_inner, resolve_bridge_columns};
 use crate::generator::well_known::{
@@ -39,17 +41,41 @@ fn from_row(
     subject_key: ValueSource,
     guards: Vec<Guard>,
 ) -> RecordDescription {
+    with_context(
+        table,
+        object_type,
+        object_key,
+        relation,
+        subject_type,
+        subject_key,
+        guards,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn with_context(
+    table: &str,
+    object_type: &str,
+    object_key: ValueSource,
+    relation: &str,
+    subject_type: &str,
+    subject_key: ValueSource,
+    guards: Vec<Guard>,
+    context: Option<RecordContext>,
+) -> RecordDescription {
     RecordDescription {
         tables: tables(&[table]),
         derivation: RecordDerivation::FromRow {
             table: table.to_string(),
-            template: RecordTemplate {
+            template: Box::new(RecordTemplate {
                 object_type: object_type.to_string(),
                 object_key,
                 relation: relation.to_string(),
                 subject_type: subject_type.to_string(),
                 subject_key,
-            },
+                context,
+            }),
             guards,
         },
     }
@@ -372,6 +398,66 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     reason: format!(
                         "the guard on {column} is evaluated by condition {condition} at check \
                          time, so the row alone does not decide the grant"
+                    ),
+                },
+            })
+        }
+
+        // The row carries its side of the comparison, so the description carries the
+        // same key the tuple SQL puts in the context. The request supplies the rest, and
+        // the recipe rather than the record says how the two meet.
+        TupleSource::SessionAttributeGate {
+            table,
+            pk_col,
+            relation,
+            row_parameter,
+            ..
+        } => {
+            let (value, mut guards) = match row_parameter {
+                RowParameter::Column { column, .. } => (
+                    ValueSource::Column(column.clone()),
+                    vec![Guard::NotNull(column.clone())],
+                ),
+                RowParameter::Literal { value, .. } => {
+                    (ValueSource::Literal(value.clone()), Vec::new())
+                }
+            };
+            guards.insert(0, Guard::NotNull(pk_col.clone()));
+            Some(with_context(
+                table,
+                owner_type,
+                ValueSource::Column(pk_col.clone()),
+                relation,
+                USER_TYPE,
+                ValueSource::Literal("*".to_string()),
+                guards,
+                Some(RecordContext {
+                    key: row_parameter.parameter().to_string(),
+                    value,
+                }),
+            ))
+        }
+
+        // The deciding row lives in the join table, not in the object's own row, so no
+        // change to the guarded table settles this and the flag downstream says so.
+        TupleSource::SessionAttributeMembershipGate {
+            join_table,
+            fk_col,
+            member_col,
+            condition,
+            ..
+        } => {
+            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+            Some(RecordDescription {
+                tables: tables(&[join_table]),
+                derivation: RecordDerivation::Joined {
+                    queries: bind(&sql, join_table, fk_col, &format!("\"{fk_col}\" = $1"))
+                        .into_iter()
+                        .collect(),
+                    reason: format!(
+                        "the grant is recorded on {join_table}, whose {member_col} the \
+                         request compares against at check time through condition \
+                         {condition}, so no row of the guarded table decides it"
                     ),
                 },
             })

@@ -148,3 +148,160 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
         "attribute-only policies should not emit IS NOT NULL tuple filters, got:\n{tuples}"
     );
 }
+
+// ── Per arm thresholding: one OR policy and two policies are the same database ──
+
+const OR_INSIDE: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_a TEXT, owner_b TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_a = auth_uid() OR owner_b = auth_uid());
+";
+
+const TWO_POLICIES: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_a TEXT, owner_b TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY pa ON docs FOR SELECT USING (owner_a = auth_uid());
+CREATE POLICY pb ON docs FOR SELECT USING (owner_b = auth_uid());
+";
+
+/// An arm nothing can read, beside an arm at the top grade.
+const OR_WITH_UNKNOWN_ARM: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_a TEXT, owner_b TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_a = auth_uid() OR unreadable(owner_b));
+";
+
+const TWO_POLICIES_ONE_UNKNOWN: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_a TEXT, owner_b TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY pa ON docs FOR SELECT USING (owner_a = auth_uid());
+CREATE POLICY pb ON docs FOR SELECT USING (unreadable(owner_b));
+";
+
+fn can_select_of(sql: &str, min: ConfidenceLevel) -> String {
+    let (classified, db, registry) = support::classify_sql(sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        min,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    outputs
+        .model()
+        .lines()
+        .find(|line| line.contains("define can_select:"))
+        .unwrap_or("    define can_select: <absent>")
+        .trim()
+        .to_string()
+}
+
+/// Principle 6, first breach: one weak arm must not take the strong one with it.
+#[test]
+fn a_weak_arm_does_not_drag_the_strong_one_out_of_the_model() {
+    assert_eq!(
+        can_select_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::B),
+        can_select_of(TWO_POLICIES_ONE_UNKNOWN, ConfidenceLevel::B),
+        "the same database written two ways must land in the same behaviour"
+    );
+    assert_eq!(
+        can_select_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::B),
+        "define can_select: owner_a",
+        "the arm the caller's bar admits stays in the model"
+    );
+}
+
+/// Principle 6, second breach: two strong arms must survive the strictest bar, which the
+/// cap on a composite's grade used to prevent with nothing weak anywhere.
+#[test]
+fn two_strong_arms_survive_the_strictest_bar() {
+    assert_eq!(
+        can_select_of(OR_INSIDE, ConfidenceLevel::A),
+        can_select_of(TWO_POLICIES, ConfidenceLevel::A),
+        "the same database written two ways must land in the same behaviour"
+    );
+    assert_eq!(
+        can_select_of(OR_INSIDE, ConfidenceLevel::A),
+        "define can_select: owner_a or owner_b",
+        "nothing here is below the bar, so nothing may be dropped"
+    );
+}
+
+/// Dropping an arm of an `AND` would widen, so it never happens: the whole conjunction
+/// goes, exactly as its lowest arm's grade already said.
+#[test]
+fn a_weak_arm_of_a_conjunction_takes_the_whole_conjunction() {
+    let sql = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_a TEXT, owner_b TEXT);
+CREATE FUNCTION auth_uid() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_a = auth_uid() AND unreadable(owner_b));
+";
+    assert_eq!(
+        can_select_of(sql, ConfidenceLevel::B),
+        "define can_select: no_access",
+        "keeping half a conjunction would grant rows the other half refuses"
+    );
+}
+
+/// One survivor is that arm, not a union of one. A composite's grade is capped at second
+/// best, so wrapping the survivor would drop it at the strictest bar while the same
+/// database written as two policies keeps it.
+#[test]
+fn one_surviving_arm_keeps_its_own_grade() {
+    assert_eq!(
+        can_select_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::A),
+        can_select_of(TWO_POLICIES_ONE_UNKNOWN, ConfidenceLevel::A),
+        "the same database written two ways must land in the same behaviour"
+    );
+    assert_eq!(
+        can_select_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::A),
+        "define can_select: owner_a",
+        "the surviving arm is what the model carries"
+    );
+    // The grade is the observable that separates the two: a union of one is capped at
+    // second best, so reporting B here would tell an operator the ownership arm was
+    // guessed at when it was read exactly.
+    assert_eq!(
+        summary_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::A),
+        summary_of(TWO_POLICIES_ONE_UNKNOWN, ConfidenceLevel::A),
+        "the same database reports the same grade whichever way it is written"
+    );
+    assert_eq!(
+        summary_of(OR_WITH_UNKNOWN_ARM, ConfidenceLevel::A),
+        vec![ConfidenceLevel::A],
+        "the surviving arm is graded as itself, not as a union of one"
+    );
+}
+
+/// The grades the report says are in the model.
+fn summary_of(sql: &str, min: ConfidenceLevel) -> Vec<ConfidenceLevel> {
+    let (classified, db, registry) = support::classify_sql(sql, None);
+    Translation::plan(
+        classified,
+        &db,
+        &registry,
+        min,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .confidence_summary()
+    .iter()
+    .map(|(_, level)| *level)
+    .collect()
+}

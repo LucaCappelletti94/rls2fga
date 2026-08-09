@@ -31,10 +31,10 @@
 //!         // `&` has no translation in this crate, but the deployment knows bit 4 marks
 //!         // a row readable by anyone.
 //!         if refused.sql_text().contains("flags & 4") {
-//!             OracleAnswer::Classified(ClassifiedExpr {
+//!             OracleAnswer::Classified(Box::new(ClassifiedExpr {
 //!                 pattern: PatternClass::P10ConstantBool { value: true },
 //!                 confidence: ConfidenceLevel::A,
-//!             })
+//!             }))
 //!         } else {
 //!             OracleAnswer::Bailed
 //!         }
@@ -133,7 +133,10 @@ pub enum OracleAnswer {
     /// The oracle knows it and it grants nobody. A decision, not a gap.
     Denied,
     /// The oracle's own classification, whose grade still faces `min_confidence`.
-    Classified(ClassifiedExpr),
+    ///
+    /// Boxed to keep this enum near the size of its two empty variants, since a
+    /// classification carries every field the widest pattern needs.
+    Classified(Box<ClassifiedExpr>),
 }
 
 /// Supplies a classification for an expression this crate refused.
@@ -245,7 +248,7 @@ where
                 pattern: PatternClass::P10ConstantBool { value: false },
                 confidence: ConfidenceLevel::A,
             },
-            OracleAnswer::Classified(supplied) => supplied,
+            OracleAnswer::Classified(supplied) => *supplied,
         };
         answered.push(OracleSubstitution {
             policy_name: policy_name.to_string(),
@@ -275,7 +278,14 @@ where
             }
             any
         }
-        PatternClass::P1NumericThreshold { .. }
+        // The declared request-scoped shapes nest no expression, so nothing inside them
+        // can hold a refusal the oracle has not seen.
+        PatternClass::P18MembershipInCallerSet { .. }
+        | PatternClass::P14RowValueInCallerSet { .. }
+        | PatternClass::P15RowValueEqualsCallerScalar { .. }
+        | PatternClass::P16ConstantInCallerSet { .. }
+        | PatternClass::P17CallerScalarEqualsConstant { .. }
+        | PatternClass::P1NumericThreshold { .. }
         | PatternClass::P2RoleNameInList { .. }
         | PatternClass::P3DirectOwnership { .. }
         | PatternClass::P4ExistsMembership { .. }

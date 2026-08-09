@@ -121,6 +121,11 @@ fn role_threshold_functions_and_resource_params(
             | PatternClass::P6BooleanFlag { .. }
             | PatternClass::P9AttributeCondition { .. }
             | PatternClass::P10ConstantBool { .. }
+            | PatternClass::P18MembershipInCallerSet { .. }
+            | PatternClass::P14RowValueInCallerSet { .. }
+            | PatternClass::P15RowValueEqualsCallerScalar { .. }
+            | PatternClass::P16ConstantInCallerSet { .. }
+            | PatternClass::P17CallerScalarEqualsConstant { .. }
             | PatternClass::Unknown { .. } => {}
         }
     }
@@ -314,7 +319,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     };
 
     let Some(object_pk) = pk_col else {
-        add_missing_object_identifier_note(table_plan, source_table, "explicit grant tuples", db);
+        skip_source_without_row_identity(table_plan, source_table, "explicit grant tuples", db);
         return;
     };
 

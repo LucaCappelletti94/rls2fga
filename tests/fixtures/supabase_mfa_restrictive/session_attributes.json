@@ -1,0 +1,3 @@
+[
+  { "key": "request.jwt.claims", "path": ["aal"], "kind": "scalar_attribute" }
+]
