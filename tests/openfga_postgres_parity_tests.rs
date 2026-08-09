@@ -3947,3 +3947,229 @@ async fn shared_paper_parity_postgres18_and_openfga() {
         failures.join("\n")
     );
 }
+
+diesel::table! {
+    /// The `token_claim_set` fixture's guarded table.
+    ///
+    /// Typed rather than spelled as SQL text so the seed and the read are checked
+    /// against one schema, which is what stops the oracle and the fixture drifting.
+    #[sql_name = "documents"]
+    claim_documents (id) {
+        id -> Integer,
+        team_id -> Nullable<Text>,
+    }
+}
+
+/// Rows covering what the jsonb expansion has to get right: a team the claim names, one
+/// it does not, a NULL that matches nothing, and a value that looks numeric, since
+/// `jsonb_array_elements_text` renders a JSON number as text and so matches it.
+const SEEDED_CLAIM_DOCUMENTS: [(i32, Option<&str>); 4] = [
+    (1, Some("team-a")),
+    (2, Some("team-b")),
+    (3, None),
+    (4, Some("1")),
+];
+
+/// The claim states worth checking, as the raw jsonb `request.jwt.claims` holds.
+/// `None` leaves the setting unset, which is what a caller holding no token sends.
+const CLAIM_STATES: [Option<&str>; 5] = [
+    None,
+    Some(r#"{"teams": []}"#),
+    Some(r#"{"teams": ["team-a"]}"#),
+    Some(r#"{"teams": ["team-a", "team-b"]}"#),
+    Some(r#"{"teams": [1]}"#),
+];
+
+/// What the caller puts in the check context for a claim carried list.
+///
+/// The contract is the elements `jsonb_array_elements_text` would produce, which renders
+/// a JSON number as its text, and `[]` where the claim is unset.
+fn caller_team_list(claims: Option<&str>) -> serde_json::Value {
+    let Some(claims) = claims else {
+        return serde_json::json!([]);
+    };
+    let parsed: serde_json::Value = serde_json::from_str(claims).expect("claims should be JSON");
+    let teams = parsed.get("teams").and_then(serde_json::Value::as_array);
+    serde_json::Value::Array(
+        teams
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| match value {
+                        serde_json::Value::String(text) => serde_json::Value::String(text.clone()),
+                        other => serde_json::Value::String(other.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// Rows a `LOGIN` role reads under one claim state, which is the oracle.
+fn claim_documents_visible_to(conn: &mut PgConnection, claims: Option<&str>) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_reader")?;
+        // `set_config` is a vendor function the query DSL cannot express, and NULL
+        // leaves the setting unset, which is the state a caller with no token is in.
+        diesel::sql_query("SELECT set_config('request.jwt.claims', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(claims)
+            .execute(conn)?;
+        seen = claim_documents::table
+            .select(claim_documents::id)
+            .order(claim_documents::id)
+            .load::<i32>(conn)?
+            .into_iter()
+            .collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+/// Inventory row 6 against both services: the caller's set arrives as a real list inside
+/// the token, expanded by `jsonb_array_elements_text`.
+///
+/// Two sided by construction: the case counts rows admitted and rows denied across the
+/// claim states and fails when either is zero, so neither a model that grants everything
+/// nor one that grants nothing can pass. The numeric row is what makes the contract's
+/// rendering rule load bearing rather than decorative.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn token_claim_set_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    conn.batch_execute(&support::read_fixture_sql("token_claim_set"))
+        .expect("Failed to apply the token_claim_set schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_reader LOGIN; GRANT SELECT ON documents TO app_reader;")
+        .expect("Failed to create the querying role");
+    let seed: Vec<_> = SEEDED_CLAIM_DOCUMENTS
+        .iter()
+        .map(|(id, team)| {
+            (
+                claim_documents::id.eq(id),
+                claim_documents::team_id.eq(team),
+            )
+        })
+        .collect();
+    diesel::insert_into(claim_documents::table)
+        .values(&seed)
+        .execute(&mut conn)
+        .expect("Failed to seed the documents");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("token_claim_set");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some() && query.sql.contains("documents"))
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        1,
+        "the guarded table emits exactly one conditional query, got {}",
+        conditional.len()
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    assert_eq!(
+        conditional_rows.len(),
+        3,
+        "a NULL team matches nothing in PostgreSQL, so its row carries no tuple"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "token-claim-set").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut admitted = 0usize;
+    let mut denied = 0usize;
+    for claims in CLAIM_STATES {
+        let visible = claim_documents_visible_to(&mut conn, claims);
+        for (id, _) in SEEDED_CLAIM_DOCUMENTS {
+            let expected = visible.contains(&id);
+            if expected {
+                admitted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                "user:anybody",
+                "can_select",
+                &format!("documents:{id}"),
+                serde_json::json!({ "request_jwt_claims_teams": caller_team_list(claims) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "documents:{id} for claims={claims:?}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        admitted > 0,
+        "no row is readable in any claim state, so a model denying everything would pass"
+    );
+    assert!(
+        denied > 0,
+        "no row is denied anywhere, so a model granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA token claim set parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

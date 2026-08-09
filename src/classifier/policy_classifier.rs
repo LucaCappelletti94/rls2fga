@@ -467,10 +467,15 @@ fn classify_expr_inner<DB: DatabaseLike>(
         };
     }
 
-    let mut blamed: Vec<String> = recognizers::called_function_names(expr, registry)
+    let mut blamed: Vec<String> = recognizers::subquery_set_constructors(expr)
         .into_iter()
-        .map(|name| describe_unrecognized_function(&name, registry))
+        .map(|name| describe_set_constructor(&name))
         .collect();
+    blamed.extend(
+        recognizers::called_function_names(expr, registry)
+            .into_iter()
+            .map(|name| describe_unrecognized_function(&name, registry)),
+    );
     blamed.extend(
         recognizers::unrecognized_operators(expr)
             .into_iter()
@@ -492,6 +497,15 @@ fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) 
         None => format!("Function '{func_name}' not in registry and body not available"),
         _ => format!("Function '{func_name}' did not match any recognized translation pattern"),
     }
+}
+
+/// Why a set a constructor builds cannot be translated, and why registering a name
+/// cannot help.
+fn describe_set_constructor(name: &str) -> String {
+    format!(
+        "'{name}(subquery)' is SQL syntax rather than a function call, so no registry \
+         entry can name it, and a set built from a subquery has no translation"
+    )
 }
 
 /// Extract a human-readable description of the comparison value in a binary expression.
@@ -948,6 +962,73 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             );
             assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
         }
+    }
+
+    /// `ARRAY(subquery)` parses as a function named `array`, so blaming it as a call sent
+    /// the operator after a registry entry that cannot exist.
+    #[test]
+    fn a_set_the_array_constructor_builds_is_not_blamed_on_a_missing_function() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+
+        let claim_set = "owner_id = ANY (ARRAY(SELECT jsonb_array_elements_text(\
+                         current_setting('request.jwt.claims')::jsonb -> 'teams')))";
+        let function_set = "owner_id = ANY (ARRAY(SELECT user_teams()))";
+
+        for expr_sql in [claim_set, function_set] {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+                panic!(
+                    "`{expr_sql}`: expected Unknown, got {:?}",
+                    classified.pattern
+                );
+            };
+            assert!(
+                reason.contains("'array(subquery)'"),
+                "`{expr_sql}`: the reason must name the constructor, got: {reason}"
+            );
+            assert!(
+                !reason.contains("Function 'array'"),
+                "`{expr_sql}`: a constructor is not a call an operator can register, got: {reason}"
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+        }
+
+        // The genuine call inside the second spelling still earns its own blame, so the
+        // constructor arm cannot pass by silencing everything under it.
+        let expr = parse_expr(function_set);
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got {:?}", classified.pattern);
+        };
+        assert!(
+            reason.contains("Function 'user_teams' not in registry"),
+            "an unregistered function is still named, got: {reason}"
+        );
+    }
+
+    /// The constructor is told apart by its arguments being a subquery, never by its
+    /// name, so a call that happens to be named `array` is still blamed as a call.
+    #[test]
+    fn a_function_named_array_is_still_blamed_as_a_call() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr("owner_id = app.array(owner_id)");
+
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+
+        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            panic!("expected Unknown, got {:?}", classified.pattern);
+        };
+        assert!(
+            reason.contains("Function 'array' not in registry"),
+            "a call taking an argument list is a call, got: {reason}"
+        );
+        assert!(
+            !reason.contains("(subquery)"),
+            "nothing here builds a set from a subquery, got: {reason}"
+        );
     }
 
     #[test]

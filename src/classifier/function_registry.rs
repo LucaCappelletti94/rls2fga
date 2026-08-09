@@ -4,8 +4,10 @@ use alloc::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::classifier::recognizers::row_valued_set;
 use crate::parser::function_analyzer::{
-    body_setting_key, normalize_setting_key, AccessorInferenceSettings, FunctionSemantic,
+    body_setting_key, body_single_projection, normalize_setting_key, AccessorInferenceSettings,
+    FunctionSemantic,
 };
 use crate::parser::names::{
     normalize_identifier, normalize_relation_name, split_schema_and_relation,
@@ -348,9 +350,9 @@ impl FunctionRegistry {
             let Some(body) = function.body() else {
                 continue;
             };
-            // A set of identities is not one identity. `returns_one_identity` also reads
-            // the declaration for this, but only as text, so it turns on how the catalog
-            // spells a set. This asks the catalog.
+            // A set of identities is not one identity, so a set returning function is
+            // never an accessor. It is the only thing that can be a set reader, which
+            // the pass below mints once every wrapper it might read is registered.
             if function.returns_set() {
                 continue;
             }
@@ -394,6 +396,35 @@ impl FunctionRegistry {
                     );
                 }
             }
+        }
+
+        // A set returning wrapper whose whole body expands a declared setting is a
+        // spelling of that setting. Minted after the loop above, so a body reading
+        // another declared wrapper resolves rather than falling closed on ordering.
+        let mut set_readers = Vec::new();
+        for function in db.functions() {
+            if !function.returns_set() || self.get(function.name()).is_some() {
+                continue;
+            }
+            let Some(source) = function
+                .body()
+                .and_then(body_single_projection)
+                .and_then(|expr| row_valued_set(&expr, self))
+                .filter(|source| settings.declares_setting_key(&source.key))
+            else {
+                continue;
+            };
+            set_readers.push((function.name().to_string(), source));
+        }
+        for (name, source) in set_readers {
+            self.register_if_absent(
+                &name,
+                &FunctionSemantic::SetReader {
+                    key: normalize_setting_key(&source.key),
+                    path: source.path,
+                    separator: source.separator,
+                },
+            );
         }
     }
 }

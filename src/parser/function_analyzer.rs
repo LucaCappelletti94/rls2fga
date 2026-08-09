@@ -87,6 +87,23 @@ pub enum FunctionSemantic {
         key: String,
     },
 
+    /// A function whose whole body expands one declared setting into rows, so calling it
+    /// is reading that setting as a set and the two spellings are one declaration.
+    ///
+    /// Distinct from [`FunctionSemantic::SettingReader`] because the body decides how the
+    /// setting becomes a set, and dropping that would lose the separator a split needs.
+    #[serde(rename = "set_reader")]
+    SetReader {
+        /// The key the body reads.
+        key: String,
+        /// The field path taken out of that key's value.
+        #[serde(default)]
+        path: Vec<String>,
+        /// The separator the body splits on, absent where the source is already a list.
+        #[serde(default)]
+        separator: Option<String>,
+    },
+
     /// A function whose semantics could not be determined.
     #[serde(rename = "unknown")]
     Unknown {

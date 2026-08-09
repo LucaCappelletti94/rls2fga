@@ -11,8 +11,9 @@
 //! supplies what only it knows, and a condition relates them.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
-use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Value};
+use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem, Value};
 
 use crate::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
@@ -23,7 +24,8 @@ use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::normalized_function_name;
 
 use super::{
-    accessor_root_and_path, current_setting_literal_key, extract_column_name, unwrap_cast_or_nested,
+    accessor_root_and_path, accessor_root_and_value_path, current_setting_literal_key,
+    extract_column_name, projected_select, unwrap_cast_or_nested,
 };
 
 /// A value the request carries, compared against a row column or against a constant.
@@ -35,10 +37,12 @@ pub fn recognize_session_attribute(
     expr: &Expr,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    set_membership(expr, registry).or_else(|| scalar_equality(expr, registry))
+    set_membership(expr, registry)
+        .or_else(|| set_membership_in_subquery(expr, registry))
+        .or_else(|| scalar_equality(expr, registry))
 }
 
-/// `<row column or constant> = ANY (string_to_array(<declared set>, <separator>))`.
+/// `<row column or constant> = ANY (<the caller's set>)`.
 fn set_membership(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
     let Expr::AnyOp {
         left,
@@ -49,9 +53,36 @@ fn set_membership(expr: &Expr, registry: &FunctionRegistry) -> Option<Classified
     else {
         return None;
     };
+    let (source, separator) = caller_set(right, registry)?;
+    tested_against_set(left, source, separator)
+}
 
-    let (source, separator) = split_of_declared_set(right, registry)?;
-    let pattern = match tested_value(left) {
+/// `<row column or constant> IN (SELECT <the caller's set>)`.
+///
+/// The same database as the `= ANY` spelling, so it routes through the same reader and
+/// lands on the same pattern. The subquery has to be only its projection, which is what
+/// keeps this away from a membership subquery: that one always reads a `FROM`.
+fn set_membership_in_subquery(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
+    let Expr::InSubquery {
+        expr: left,
+        subquery,
+        negated: false,
+    } = expr
+    else {
+        return None;
+    };
+    let (source, separator) = caller_row_set(sole_projection(subquery)?, registry)?;
+    tested_against_set(left, source, separator)
+}
+
+/// What the caller's set is compared against decides which pattern it is, and both
+/// spellings answer that the same way.
+fn tested_against_set(
+    tested: &Expr,
+    source: &SessionAttribute,
+    separator: Option<String>,
+) -> Option<ClassifiedExpr> {
+    let pattern = match tested_value(tested) {
         TestedValue::Column(column) => PatternClass::P14RowValueInCallerSet {
             column,
             separator,
@@ -141,18 +172,33 @@ fn declared_scalar<'r>(
         .filter(|source| source.kind() == SessionAttributeKind::ScalarAttribute)
 }
 
-/// The declared set `expr` splits, and the separator it splits on.
+/// A source the caller's set comes from, named rather than resolved, so one reader
+/// answers both while classifying a policy and while the registry is still being built.
+#[derive(Debug, Clone)]
+pub(crate) struct SetSource {
+    /// The `current_setting` key behind it.
+    pub(crate) key: String,
+    /// The field path taken out of that key's value.
+    pub(crate) path: Vec<String>,
+    /// The separator the policy splits on, absent where the source is already a list.
+    pub(crate) separator: Option<String>,
+}
+
+/// An **array valued** expression yielding the caller's set, which is what `= ANY (...)`
+/// takes.
 ///
-/// Only `string_to_array` reaches a set. A cast to an array type is a different split,
-/// with a different contract for the caller, so it stays unclassified rather than
-/// borrowing this one.
-pub(super) fn split_of_declared_set<'r>(
-    expr: &Expr,
-    registry: &'r FunctionRegistry,
-) -> Option<(&'r SessionAttribute, String)> {
+/// Kept apart from the row valued reader because `PostgreSQL` keeps them apart: `= ANY`
+/// refuses a set returning argument and `IN (SELECT ...)` refuses an array, so merging
+/// the two would classify shapes the database rejects. A cast to an array type is a
+/// different split, with a different contract for the caller, so it stays unclassified.
+pub(super) fn array_valued_set(expr: &Expr, registry: &FunctionRegistry) -> Option<SetSource> {
     let Expr::Function(function) = unwrap_cast_or_nested(expr) else {
         return None;
     };
+    // `ARRAY(SELECT ...)` collects rows into an array, so its projection is read as one.
+    if let FunctionArguments::Subquery(query) = &function.args {
+        return row_valued_set(sole_projection(query)?, registry);
+    }
     if normalized_function_name(function) != "string_to_array" {
         return None;
     }
@@ -165,9 +211,109 @@ pub(super) fn split_of_declared_set<'r>(
         return None;
     };
     let separator = string_literal(function_arg_expr(separator)?)?;
-    let source = declared_source(function_arg_expr(value)?, registry)
-        .filter(|source| source.kind() == SessionAttributeKind::SetAttribute)?;
-    Some((source, separator))
+    let (key, path) = source_read_by(function_arg_expr(value)?, registry)?;
+    Some(SetSource {
+        key,
+        path,
+        separator: Some(separator),
+    })
+}
+
+/// A **row valued** expression yielding the caller's set, which is what `IN (SELECT ...)`
+/// takes and what the body of a set returning wrapper is.
+pub(crate) fn row_valued_set(expr: &Expr, registry: &FunctionRegistry) -> Option<SetSource> {
+    let Expr::Function(function) = unwrap_cast_or_nested(expr) else {
+        return None;
+    };
+    let name = normalized_function_name(function);
+    // A wrapper whose whole body reads a declared setting is a spelling of that setting,
+    // which is the one route a function reaches a source by.
+    if let Some(FunctionSemantic::SetReader {
+        key,
+        path,
+        separator,
+    }) = registry.get(&name)
+    {
+        return Some(SetSource {
+            key: key.clone(),
+            path: path.clone(),
+            separator: separator.clone(),
+        });
+    }
+    let FunctionArguments::List(list) = &function.args else {
+        return None;
+    };
+    let [argument] = list.args.as_slice() else {
+        return None;
+    };
+    let argument = function_arg_expr(argument)?;
+    match name.as_str() {
+        // A jsonb array yielded as text is the caller's list itself, so no separator
+        // exists and the contract is simply to send the list.
+        "jsonb_array_elements_text" => {
+            let (key, path) = source_read_by(argument, registry)?;
+            Some(SetSource {
+                key,
+                path,
+                separator: None,
+            })
+        }
+        // Expanding a split is the same database as the split, separator included.
+        "unnest" => array_valued_set(argument, registry),
+        _ => None,
+    }
+}
+
+/// The single expression a subquery projects, when nothing in it can drop that row.
+fn sole_projection(query: &Query) -> Option<&Expr> {
+    let [SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. }] =
+        projected_select(query)?.projection.as_slice()
+    else {
+        return None;
+    };
+    Some(expr)
+}
+
+/// The key and field path an expression reads.
+///
+/// A jsonb array is reached through a chain ending in `->`, since `->>` renders the
+/// array as text and `PostgreSQL` refuses to expand text, so this accepts either ending
+/// while the scalar reader accepts only `->>`.
+fn source_read_by(expr: &Expr, registry: &FunctionRegistry) -> Option<(String, Vec<String>)> {
+    let (root, path) = accessor_root_and_value_path(expr)
+        .filter(|(_, path)| !path.is_empty())
+        .or_else(|| accessor_root_and_path(expr))?;
+    Some((setting_key_read_by(root, registry)?, path))
+}
+
+/// The declared set an array valued expression yields.
+pub(crate) fn caller_set<'r>(
+    expr: &Expr,
+    registry: &'r FunctionRegistry,
+) -> Option<(&'r SessionAttribute, Option<String>)> {
+    resolve_declared_set(array_valued_set(expr, registry)?, registry)
+}
+
+/// The declared set a row valued expression yields.
+fn caller_row_set<'r>(
+    expr: &Expr,
+    registry: &'r FunctionRegistry,
+) -> Option<(&'r SessionAttribute, Option<String>)> {
+    resolve_declared_set(row_valued_set(expr, registry)?, registry)
+}
+
+/// The declaration a named source resolves to, when the deployment declared it a set.
+///
+/// The kind check is what makes the two wrong allows impossible rather than checked: a
+/// single value read in set position finds no set declaration and stays unclassified.
+fn resolve_declared_set(
+    source: SetSource,
+    registry: &FunctionRegistry,
+) -> Option<(&SessionAttribute, Option<String>)> {
+    let attribute = registry
+        .session_attribute(&source.key, &source.path)
+        .filter(|attribute| attribute.kind() == SessionAttributeKind::SetAttribute)?;
+    Some((attribute, source.separator))
 }
 
 /// The declaration behind whatever `expr` reads, however the deployment spelled it.
@@ -283,7 +429,8 @@ mod tests {
         assert!(
             matches!(
                 recognize_session_attribute(&expr, &registry).map(|c| c.pattern),
-                Some(PatternClass::P14RowValueInCallerSet { separator, .. }) if separator == ";"
+                Some(PatternClass::P14RowValueInCallerSet { separator, .. })
+                    if separator.as_deref() == Some(";")
             ),
             "the separator decides which elements exist"
         );

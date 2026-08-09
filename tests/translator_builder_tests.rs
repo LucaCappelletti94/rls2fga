@@ -605,6 +605,91 @@ CREATE POLICY p ON notes FOR SELECT USING (
     );
 }
 
+/// Inventory row 6: the caller's set arrives as a real list inside the token rather than
+/// as a delimited string. Both spellings are the same database, so both must land alike.
+#[test]
+fn a_declared_set_inside_the_token_holds_the_rows_value() {
+    fn schema(clause: &str) -> String {
+        format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY p ON documents FOR SELECT USING ({clause});\n"
+        )
+    }
+    const CLAIM: &str = "jsonb_array_elements_text(\
+                         current_setting('request.jwt.claims')::jsonb -> 'teams')";
+
+    for (label, clause) in [
+        ("6a", format!("team_id IN (SELECT {CLAIM})")),
+        ("6c", format!("team_id = ANY (ARRAY(SELECT {CLAIM}))")),
+    ] {
+        let classified = declared(
+            &schema(&clause),
+            vec![SessionAttribute::claim(
+                "request.jwt.claims",
+                ["teams"],
+                SessionAttributeKind::SetAttribute,
+            )],
+        );
+        assert!(
+            matches!(
+                &classified[0].1,
+                PatternClass::P14RowValueInCallerSet { column, source, separator }
+                    if column == "team_id"
+                    && source.request_parameter() == "request_jwt_claims_teams"
+                    && separator.is_none()
+            ),
+            "{label}: a real list has no separator to send, got {:?}",
+            classified[0].1
+        );
+        assert_eq!(
+            classified[0].2,
+            ConfidenceLevel::B,
+            "{label}: a claim path is indirection and caps at B"
+        );
+    }
+}
+
+/// Inventory row 8: the caller's set arrives from a set returning function, admitted
+/// only because that function's whole body expands a declared setting. Both spellings
+/// are the same database, so both must land alike.
+#[test]
+fn a_set_returning_wrapper_over_a_declared_setting_holds_the_rows_value() {
+    fn schema(clause: &str) -> String {
+        format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+             CREATE FUNCTION user_teams() RETURNS SETOF TEXT LANGUAGE sql STABLE\n\
+               AS 'SELECT unnest(string_to_array(current_setting(''app.teams'', true), '','')) ';\n\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY p ON documents FOR SELECT USING ({clause});\n"
+        )
+    }
+
+    for (label, clause) in [
+        ("8b", "team_id IN (SELECT user_teams())"),
+        ("8a", "team_id = ANY (ARRAY(SELECT user_teams()))"),
+    ] {
+        let classified = declared(
+            &schema(clause),
+            vec![SessionAttribute::setting(
+                "app.teams",
+                SessionAttributeKind::SetAttribute,
+            )],
+        );
+        assert!(
+            matches!(
+                &classified[0].1,
+                PatternClass::P14RowValueInCallerSet { column, source, separator }
+                    if column == "team_id"
+                    && source.request_parameter() == "app_teams"
+                    && separator.as_deref() == Some(",")
+            ),
+            "{label}: the wrapper carries the split its body performs, got {:?}",
+            classified[0].1
+        );
+    }
+}
+
 /// Inventory row 5: one request value against a row column.
 #[test]
 fn a_declared_scalar_equals_the_rows_value() {

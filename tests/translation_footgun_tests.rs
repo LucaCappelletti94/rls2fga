@@ -9064,3 +9064,171 @@ CREATE POLICY papers_shared ON papers FOR SELECT USING (
         outputs.notes()
     );
 }
+
+/// One database written two ways must not land in two behaviours, so the two spellings
+/// of each caller carried set emit byte identical DSL.
+///
+/// Asserted per database rather than across the family: jsonb containment is a different
+/// predicate, which the probe behind D6 established, so nothing here compares against it.
+#[test]
+fn one_caller_carried_set_written_two_ways_emits_one_model() {
+    fn model(clause: &str, preamble: &str, attribute: SessionAttribute) -> String {
+        let db = db_of(&format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+             {preamble}\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY p ON documents FOR SELECT USING ({clause});\n"
+        ));
+        TranslatorBuilder::new()
+            .with_min_confidence(ConfidenceLevel::B)
+            .with_session_attributes(vec![attribute])
+            .build()
+            .translate(&db)
+            .outputs_accepting_gaps()
+            .model()
+            .clone()
+    }
+
+    const CLAIM: &str = "jsonb_array_elements_text(\
+                         current_setting('request.jwt.claims')::jsonb -> 'teams')";
+    const WRAPPER: &str = "CREATE FUNCTION user_teams() RETURNS SETOF TEXT LANGUAGE sql STABLE\n\
+          AS 'SELECT unnest(string_to_array(current_setting(''app.teams'', true), '','')) ';\n";
+    let token = || {
+        SessionAttribute::claim(
+            "request.jwt.claims",
+            ["teams"],
+            SessionAttributeKind::SetAttribute,
+        )
+    };
+    let in_form = model(&format!("team_id IN (SELECT {CLAIM})"), "", token());
+    let array_form = model(
+        &format!("team_id = ANY (ARRAY(SELECT {CLAIM}))"),
+        "",
+        token(),
+    );
+    assert_eq!(
+        in_form, array_form,
+        "a token carried list must not answer differently for being spelled with ARRAY"
+    );
+    assert!(
+        in_form.contains("define can_select: gate_p_"),
+        "the shape must actually translate rather than agreeing on a denial: {in_form}"
+    );
+
+    let setting = || SessionAttribute::setting("app.teams", SessionAttributeKind::SetAttribute);
+    let in_form = model("team_id IN (SELECT user_teams())", WRAPPER, setting());
+    let array_form = model(
+        "team_id = ANY (ARRAY(SELECT user_teams()))",
+        WRAPPER,
+        setting(),
+    );
+    assert_eq!(
+        in_form, array_form,
+        "a function carried set must not answer differently for being spelled with ARRAY"
+    );
+    assert!(
+        in_form.contains("define can_select: gate_p_"),
+        "the shape must actually translate rather than agreeing on a denial: {in_form}"
+    );
+}
+
+/// The two shapes D6 and D7 refuse, pinned so admitting either needs a red test first.
+///
+/// Containment matches only the string elements of a jsonb array, so a claim of `[1,2]`
+/// against `'1'` answers false where the two admitted spellings answer true. A function
+/// body reading a table puts the authority in that table, where a value the caller sends
+/// would let it assert its own membership.
+#[test]
+fn a_set_the_authority_does_not_supply_is_refused() {
+    fn classify(preamble: &str, clause: &str, attribute: SessionAttribute) -> PatternClass {
+        let db = db_of(&format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+             CREATE TABLE members(user_id TEXT, team_id TEXT);\n\
+             {preamble}\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY p ON documents FOR SELECT USING ({clause});\n"
+        ));
+        TranslatorBuilder::new()
+            .with_session_attributes(vec![attribute])
+            .build()
+            .classify(&db)[0]
+            .using_classification
+            .as_ref()
+            .expect("expected a USING classification")
+            .pattern
+            .clone()
+    }
+
+    let containment = classify(
+        "",
+        "current_setting('request.jwt.claims')::jsonb -> 'teams' ? team_id",
+        SessionAttribute::claim(
+            "request.jwt.claims",
+            ["teams"],
+            SessionAttributeKind::SetAttribute,
+        ),
+    );
+    assert!(
+        matches!(containment, PatternClass::Unknown { .. }),
+        "containment is a different predicate, not a third spelling, got {containment:?}"
+    );
+
+    let from_a_table = classify(
+        "CREATE FUNCTION user_teams() RETURNS SETOF TEXT LANGUAGE sql STABLE\n\
+           AS 'SELECT team_id FROM members WHERE user_id = current_setting(''app.teams'', true)';\n",
+        "team_id IN (SELECT user_teams())",
+        SessionAttribute::setting("app.teams", SessionAttributeKind::SetAttribute),
+    );
+    assert!(
+        matches!(from_a_table, PatternClass::Unknown { .. }),
+        "a table owns its own facts, so the caller may not assert them, got {from_a_table:?}"
+    );
+}
+
+/// A real list has no delimiter, so nothing may synthesise one into the caller contract.
+///
+/// The delimited string contract tells the caller to send what `string_to_array` would
+/// produce, which is the one reachable wrong allow in the feature. Leaking that sentence
+/// onto a shape with no delimiter would state a hazard that does not exist and name a
+/// separator the policy never wrote.
+#[test]
+fn a_list_source_states_no_separator_in_its_caller_contract() {
+    let db = db_of(
+        "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+         ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+         CREATE POLICY p ON documents FOR SELECT USING (team_id IN (SELECT \
+         jsonb_array_elements_text(current_setting('request.jwt.claims')::jsonb -> 'teams')));\n",
+    );
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes(vec![SessionAttribute::claim(
+            "request.jwt.claims",
+            ["teams"],
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build()
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let contract = outputs
+        .notes()
+        .iter()
+        .find_map(|note| match note {
+            TranslationNote::CallerSuppliesConditionParameter {
+                parameter,
+                separator,
+                ..
+            } => Some((parameter.clone(), separator.clone())),
+            _ => None,
+        })
+        .expect("every request scoped gate states its contract with the caller");
+    assert_eq!(contract.0, "request_jwt_claims_teams");
+    assert_eq!(
+        contract.1, None,
+        "a list carries no separator, so none may be invented"
+    );
+    assert!(
+        !outputs.report().contains("string_to_array"),
+        "the delimited string contract must not leak onto a shape with no delimiter"
+    );
+}

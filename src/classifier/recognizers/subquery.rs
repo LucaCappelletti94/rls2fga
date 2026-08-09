@@ -1075,7 +1075,7 @@ pub(super) enum MemberMatch {
         /// The declared source, carrying the parameter the caller supplies.
         source: SessionAttribute,
         /// Separator the policy splits the setting on.
-        separator: String,
+        separator: Option<String>,
     },
 }
 
@@ -1110,7 +1110,7 @@ fn analyze_membership_eq_predicate(
                 join_alias,
                 join_cols,
             ) {
-                if let Some((source, separator)) = split_of_declared_set(right, registry) {
+                if let Some((source, separator)) = caller_set(right, registry) {
                     return MembershipEqAnalysis::UserColumn(
                         column,
                         MemberMatch::InCallerSet {

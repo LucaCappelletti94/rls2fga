@@ -607,6 +607,77 @@ async fn every_row_shape_description_matches_its_own_sql() {
     );
 }
 
+/// Rows chosen for what decides the answer: two teams that differ, a repeat so the
+/// record set cannot pass by being a bijection with the rows, and a NULL that must yield
+/// no record at all, since a comparison against NULL is NULL and `PostgreSQL` hides the
+/// row.
+const REQUEST_GATE_SEED: &str = "
+INSERT INTO documents (id, team_id) VALUES (1, 'team-a'), (2, 'team-b'), (3, 'team-a'), (4, NULL);
+INSERT INTO reports (id, team_id) VALUES (1, 'team-a'), (2, 'team-b'), (3, 'team-a'), (4, NULL);
+";
+
+/// The request-gated shape, which nothing else in this file produces.
+///
+/// Every other schema here reaches the caller through an accessor rather than through a
+/// declared set, so no conditional tuple from a request gate ever reached this
+/// comparison and the context a description carries went unchecked against the context
+/// its own SQL emits. Both fixtures are run because they differ in what the caller has
+/// to send, a list against a split, while the record each row yields must be identical.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_request_gated_description_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    for fixture in ["token_claim_set", "function_carried_set"] {
+        conn.batch_execute(
+            "DROP TABLE IF EXISTS documents, reports CASCADE; \
+             DROP FUNCTION IF EXISTS user_teams();",
+        )
+        .expect("failed to clear the previous fixture");
+        conn.batch_execute(&support::read_fixture_sql(fixture))
+            .unwrap_or_else(|error| panic!("failed to apply the {fixture} schema: {error}"));
+        conn.batch_execute(REQUEST_GATE_SEED)
+            .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
+
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let queries = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries();
+
+        // Non-vacuous: without this the comparison below could pass by comparing two
+        // empty sets, which is exactly how this shape went uncovered until now.
+        let conditional = queries
+            .iter()
+            .filter(|query| query.condition.is_some())
+            .count();
+        assert_eq!(
+            conditional, 2,
+            "{fixture}: both spellings emit a conditional query, got {conditional}"
+        );
+
+        let (pure, joined, records) =
+            assert_descriptions_match_their_sql(&mut conn, &queries, fixture);
+        assert_eq!(
+            joined, 0,
+            "{fixture}: a request gate is decided by the row alone"
+        );
+        assert_eq!(
+            pure, 2,
+            "{fixture}: one description per spelling, got {pure}"
+        );
+        assert_eq!(
+            records, 6,
+            "{fixture}: three named teams per table and none for the NULL, got {records}"
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
 async fn role_ownership_and_grant_shapes_are_marked_joining() {

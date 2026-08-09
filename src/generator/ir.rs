@@ -200,8 +200,8 @@ pub(crate) enum TupleSource {
         request_parameter: String,
         /// Session setting the caller's value mirrors, so the contract can name it.
         setting_key: String,
-        /// Separator the policy splits that setting on.
-        separator: String,
+        /// Separator the policy splits that setting on, absent for a list source.
+        separator: Option<String>,
         /// Residual filter on the membership row.
         extra_predicate_sql: Option<String>,
     },

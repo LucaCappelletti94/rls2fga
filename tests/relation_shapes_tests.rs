@@ -1768,6 +1768,11 @@ fn every_request_scoped_gate_states_its_contract_with_the_caller() {
             "supabase_mfa_restrictive",
             vec![("request_jwt_claims_aal", None)],
         ),
+        // A real list carries no delimiter, so the contract states none rather than
+        // leaking the delimited string hazard onto a shape that cannot have it.
+        ("token_claim_set", vec![("request_jwt_claims_teams", None)]),
+        // The wrapper's body does the splitting, so the separator survives the hop.
+        ("function_carried_set", vec![("app_teams", Some(","))]),
     ] {
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
         let outputs = Translation::plan(

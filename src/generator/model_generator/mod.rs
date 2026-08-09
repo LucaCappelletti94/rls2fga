@@ -823,7 +823,15 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         let mut contracts: BTreeSet<(String, Option<String>, Option<String>)> = BTreeSet::new();
         for source in &table_plan.table_tuple_sources {
             match source {
+                // One arm for both, because a set carried against a row column and one
+                // carried against a membership row state the same contract.
                 TupleSource::SessionAttributeGate {
+                    request_parameter,
+                    setting_key,
+                    separator,
+                    ..
+                }
+                | TupleSource::SessionAttributeMembershipGate {
                     request_parameter,
                     setting_key,
                     separator,
@@ -833,18 +841,6 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                         request_parameter.clone(),
                         Some(setting_key.clone()),
                         separator.clone(),
-                    ));
-                }
-                TupleSource::SessionAttributeMembershipGate {
-                    request_parameter,
-                    setting_key,
-                    separator,
-                    ..
-                } => {
-                    contracts.insert((
-                        request_parameter.clone(),
-                        Some(setting_key.clone()),
-                        Some(separator.clone()),
                     ));
                 }
                 // The clock has had the same contract since it was built and never
@@ -3453,7 +3449,7 @@ fn translate_pattern<DB: DatabaseLike>(
             RequestSide {
                 source,
                 comparison: RequestComparison::CallerSetHolds,
-                separator: Some(separator),
+                separator: separator.as_deref(),
             },
             RowParameterSource::Column(column),
             policy_name,
@@ -3499,7 +3495,7 @@ fn translate_pattern<DB: DatabaseLike>(
             RequestSide {
                 source,
                 comparison: RequestComparison::CallerSetHolds,
-                separator: Some(separator),
+                separator: separator.as_deref(),
             },
             RowParameterSource::Constant(value),
             policy_name,

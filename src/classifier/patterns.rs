@@ -327,8 +327,9 @@ pub enum PatternClass {
         /// Column whose value the set has to hold.
         column: String,
         /// Separator the policy splits the setting on, since it decides which elements
-        /// exist and so what the caller has to send.
-        separator: String,
+        /// exist and so what the caller has to send. Absent where the source is already
+        /// a list, which has no delimiter and so no such hazard.
+        separator: Option<String>,
         /// The declared source, carrying the parameter the caller supplies.
         source: SessionAttribute,
     },
@@ -345,8 +346,8 @@ pub enum PatternClass {
     P16ConstantInCallerSet {
         /// The constant the set has to hold.
         value: String,
-        /// Separator the policy splits the setting on.
-        separator: String,
+        /// Separator the policy splits the setting on, absent for a list source.
+        separator: Option<String>,
         /// The declared source, carrying the parameter the caller supplies.
         source: SessionAttribute,
     },
@@ -372,8 +373,8 @@ pub enum PatternClass {
         fk_column: String,
         /// Column of `join_table` holding the value the caller's set must contain.
         member_column: String,
-        /// Separator the policy splits the setting on.
-        separator: String,
+        /// Separator the policy splits the setting on, absent for a list source.
+        separator: Option<String>,
         /// The declared source, carrying the parameter the caller supplies.
         source: SessionAttribute,
         /// Residual filter on the membership row, which no tuple can express.

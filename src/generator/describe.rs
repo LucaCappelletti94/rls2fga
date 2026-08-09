@@ -440,6 +440,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             ..
         } => {
             let (value, guards) = match row_parameter {
+                // The guard is subsumed: `records_from_row` already yields no record
+                // when the context value is missing, so removing it kills no test.
+                // Kept only because five sibling shapes state the same guard, and
+                // dropping one of six would read as an exception rather than a rule.
                 RowParameter::Column { column, .. } => (
                     ValueSource::Column(column.clone()),
                     vec![Guard::NotNull(column.clone())],

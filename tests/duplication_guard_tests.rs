@@ -473,6 +473,11 @@ fn blaming_an_unrecognized_clause_has_a_single_source_of_truth() {
         "fn called_function_names(",
         "fn unrecognized_operators(",
         "fn describe_unrecognized_function(",
+        // A constructor is told apart from a call in one place, and described in one
+        // place. A second copy would let the two disagree about what can be registered.
+        "fn takes_a_subquery(",
+        "fn subquery_set_constructors(",
+        "fn describe_set_constructor(",
         // One recognizer decides which array spellings name the caller, and one reads a
         // jsonb key chain. A second copy would let the classifier and the renderer
         // disagree about what the clause says.
@@ -492,6 +497,7 @@ fn blaming_an_unrecognized_clause_has_a_single_source_of_truth() {
         "not in registry and body not available",
         "did not match any recognized translation pattern",
         "is registered as Unknown",
+        "is SQL syntax rather than a function call",
     ] {
         let uses = definition_count(&modules, fragment);
         assert_eq!(
