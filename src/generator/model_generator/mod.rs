@@ -424,6 +424,24 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
 ) -> SchemaPlan {
+    build_plan_typing(policies, db, registry, settings, TypeScope::WithPolicies)
+}
+
+/// Which tables earn a type, which is the schema's row-level security everywhere except
+/// on the term route, where a subscription filter guards a table that needs no policy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TypeScope<'a> {
+    WithPolicies,
+    AndAlso(&'a str),
+}
+
+pub(crate) fn build_plan_typing<DB: DatabaseLike>(
+    policies: &[ClassifiedPolicy],
+    db: &DB,
+    registry: &FunctionRegistry,
+    settings: &GeneratorSettings,
+    scope: TypeScope<'_>,
+) -> SchemaPlan {
     // Pre-compute resource column hints for P1/P2 role-threshold patterns.
     // This walks the raw policy Expr AST once up-front so that
     // pattern_to_expr_for_target can use the resolved column during translation.
@@ -480,7 +498,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         declared_permissive.entry(key).or_default().push(policy);
     }
 
-    let table_types = TableTypes::assign(db, &mut notes);
+    let table_types = TableTypes::assign(db, scope, &mut notes);
     let recursion = PolicyReadRecursion::detect(db, &table_types);
     // Resolved once for the whole plan, like the recursion graph above it: asking per
     // table went through `lookup_table`, which walks every table.
@@ -1955,13 +1973,17 @@ impl TableTypes {
 }
 
 impl TableTypes {
-    /// One type name per RLS-enabled table, collisions suffixed with a hash of the
-    /// qualified name.
+    /// One type name per table the plan constrains, collisions suffixed with a hash of
+    /// the qualified name.
     ///
     /// Derived from the schema alone, never from which policies survived filtering,
     /// so names do not move with the confidence threshold. Tables carrying policies
     /// claim their canonical name first.
-    fn assign<DB: DatabaseLike>(db: &DB, notes: &mut Vec<TranslationNote>) -> Self {
+    fn assign<DB: DatabaseLike>(
+        db: &DB,
+        scope: TypeScope<'_>,
+        notes: &mut Vec<TranslationNote>,
+    ) -> Self {
         let mut types = Self::default();
         let mut policied: BTreeSet<(Option<String>, String)> = BTreeSet::new();
         for policy in db.policies() {
@@ -1969,10 +1991,19 @@ impl TableTypes {
                 policied.insert(table_identity(table));
             }
         }
+        // A subscription filter guards a table that carries no policy, so its type
+        // cannot wait for row-level security to be switched on.
+        let forced = match scope {
+            TypeScope::WithPolicies => None,
+            TypeScope::AndAlso(table) => lookup_table(db, table).map(table_identity),
+        };
 
         let mut names: Vec<(bool, String)> = db
             .tables()
-            .filter(|table| table.has_row_level_security(db) != Ok(false))
+            .filter(|table| {
+                table.has_row_level_security(db) != Ok(false)
+                    || forced.as_ref() == Some(&table_identity(table))
+            })
             .map(|table| {
                 (
                     !policied.contains(&table_identity(table)),

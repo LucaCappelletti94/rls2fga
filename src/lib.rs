@@ -42,5 +42,7 @@ pub mod generator;
 pub mod output;
 /// SQL schema parsing and function body analysis.
 pub mod parser;
+/// Compiling one subscription filter, rather than a whole schema's policies.
+pub mod term;
 /// High-level builder/facade for classification and `OpenFGA` translation.
 pub mod translator;

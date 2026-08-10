@@ -1,0 +1,520 @@
+//! Compiling one subscription filter, rather than a whole schema's policies.
+//!
+//! The assertions come from the request in `plans/membership-term-surface.md`, and the
+//! refusals from the decisions recorded there.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::generator::records::{RecordDerivation, ValueSource};
+use rls2fga::generator::relations::RelationShapes;
+use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
+use rls2fga::term::{describe_membership_term, TermChain, TermShapes};
+use sqlparser::ast::Expr;
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
+
+/// The request's own three-table shop, with no row-level security anywhere, which is
+/// what a subscription engine's catalog holds.
+const SHOP: &str = "
+CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT REFERENCES customers(id), status TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), sku TEXT);
+";
+
+const CALLER: &str = "current_setting('app.user_id', true)";
+
+fn parse_term(sql: &str) -> Expr {
+    Parser::new(&PostgreSqlDialect {})
+        .try_with_sql(sql)
+        .expect("the term should tokenize")
+        .parse_expr()
+        .expect("the term should parse")
+}
+
+fn registry() -> FunctionRegistry {
+    let mut registry = FunctionRegistry::new();
+    registry.trust_current_user_setting_keys(["app.user_id"]);
+    registry
+}
+
+fn compile_on(schema: &str, table: &str, term: &str, min: ConfidenceLevel) -> TermShapes {
+    let db: ParserDB = parse_schema(schema).expect("the schema should parse");
+    describe_membership_term(&parse_term(term), &db, &registry(), table, min)
+        .unwrap_or_else(|refusal| panic!("the term should compile, refused: {}", refusal.reason))
+}
+
+fn refuse_on(schema: &str, table: &str, term: &str, min: ConfidenceLevel) -> String {
+    let db: ParserDB = parse_schema(schema).expect("the schema should parse");
+    match describe_membership_term(&parse_term(term), &db, &registry(), table, min) {
+        Ok(shapes) => panic!("the term should be refused, compiled to {:?}", shapes.chain),
+        Err(refusal) => refusal.reason,
+    }
+}
+
+fn compile(term: &str) -> TermShapes {
+    compile_on(SHOP, "line_items", term, ConfidenceLevel::B)
+}
+
+fn refuse(term: &str) -> String {
+    refuse_on(SHOP, "line_items", term, ConfidenceLevel::B)
+}
+
+/// The one shape a relation's records are read from, as `(table, subject column)`.
+fn row_shape(entry: &RelationShapes) -> (String, String) {
+    let shape = match entry.shapes.as_slice() {
+        [only] => only,
+        other => panic!("one shape fills {}, found {}", entry.relation, other.len()),
+    };
+    let RecordDerivation::FromRow {
+        table, template, ..
+    } = &shape.derivation
+    else {
+        panic!("{} is not filled from one row", entry.relation);
+    };
+    let ValueSource::Column(subject) = template.subject_key.part() else {
+        panic!(
+            "{} names its subject from something other than a column",
+            entry.relation
+        );
+    };
+    (table.clone(), subject.clone())
+}
+
+fn entry<'a>(shapes: &'a TermShapes, type_name: &str, relation: &str) -> &'a RelationShapes {
+    shapes
+        .relations
+        .iter()
+        .find(|entry| entry.type_name == type_name && entry.relation == relation)
+        .unwrap_or_else(|| {
+            panic!(
+                "{type_name}#{relation} is missing, got {:?}",
+                shapes
+                    .relations
+                    .iter()
+                    .map(|entry| format!("{}#{}", entry.type_name, entry.relation))
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Assertion 1: the two links, and the shapes behind each of them.
+#[test]
+fn a_membership_term_names_both_links() {
+    let shapes = compile(&format!(
+        "order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+
+    assert_eq!(shapes.object_type, "line_items");
+    let TermChain::Through {
+        link,
+        through_type,
+        member,
+    } = &shapes.chain
+    else {
+        panic!("a membership term reaches the caller through a second row: {shapes:?}");
+    };
+    assert_eq!(through_type, "orders");
+
+    // The link out of the filtered row is keyed on the column the term compares.
+    assert_eq!(
+        row_shape(entry(&shapes, "line_items", link)),
+        ("line_items".to_string(), "order_id".to_string())
+    );
+    // The second link names the caller from the related row.
+    assert_eq!(
+        row_shape(entry(&shapes, "orders", member)),
+        ("orders".to_string(), "customer_id".to_string())
+    );
+    assert_eq!(
+        shapes.relations.len(),
+        2,
+        "only the chain's own relations are returned, got {:?}",
+        shapes
+            .relations
+            .iter()
+            .map(|entry| format!("{}#{}", entry.type_name, entry.relation))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Assertion 2: the refusal carries the wording the classifier already produces.
+#[test]
+fn a_negated_membership_term_is_refused() {
+    let reason = refuse(&format!(
+        "order_id NOT IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    assert!(
+        reason.contains("negation requires runtime filtering"),
+        "the refusal keeps the classifier's own wording, got: {reason}"
+    );
+}
+
+/// Assertion 3: a term naming no caller admits rows nobody can be checked against.
+#[test]
+fn a_term_naming_no_caller_is_refused() {
+    let reason = refuse("order_id IN (SELECT id FROM orders WHERE customer_id = 'x')");
+    assert!(
+        !reason.is_empty(),
+        "a refusal states why, since it reaches an operator"
+    );
+}
+
+/// Assertion 4: a residual no tuple can express refuses, whatever confidence the caller
+/// asked for. At `C` the shapes are otherwise identical to the term without it, so
+/// serving them would admit every order of the caller whatever its status.
+#[test]
+fn a_residual_no_tuple_can_express_is_refused() {
+    for min in [ConfidenceLevel::C, ConfidenceLevel::D] {
+        let reason = refuse_on(
+            SHOP,
+            "line_items",
+            &format!(
+                "order_id IN (SELECT id FROM orders \
+                 WHERE customer_id = {CALLER} AND status = 'open')"
+            ),
+            min,
+        );
+        assert!(
+            reason.contains("status"),
+            "the refusal names the condition left unenforced at {min:?}, got: {reason}"
+        );
+    }
+}
+
+/// Assertion 6: the flag and the recipe agree, as they do for a whole translation.
+#[test]
+fn a_decision_is_reported_exactly_when_one_row_decides() {
+    let shapes = compile(&format!(
+        "order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    for entry in &shapes.relations {
+        assert_eq!(
+            entry.decision.is_some(),
+            entry.from_one_row,
+            "{}#{} disagrees about whether one row decides it",
+            entry.type_name,
+            entry.relation
+        );
+    }
+}
+
+/// Assertion 7: two spellings of one membership compile to one answer.
+#[test]
+fn the_two_spellings_of_one_membership_agree() {
+    let in_form = compile(&format!(
+        "order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    let any_form = compile(&format!(
+        "order_id = ANY (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    assert_eq!(in_form, any_form);
+}
+
+/// D2: a subscription filter is not a policy, so the filtered table needs no row-level
+/// security switched on. Every other test here relies on this, and this one states it.
+#[test]
+fn a_term_over_a_table_without_row_level_security_is_served() {
+    let shapes = compile(&format!(
+        "order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    assert!(
+        !shapes.relations.is_empty(),
+        "a plain table still yields the term's relations"
+    );
+}
+
+/// D3: run as SQL by a reader exempt from the related table's own rules, the filter
+/// returns rows the compiled form would deny, so the term is refused instead.
+#[test]
+fn a_term_whose_related_table_has_its_own_read_rules_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT REFERENCES customers(id));
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id));
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+",
+        "line_items",
+        &format!("order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("orders"),
+        "the refusal names the table whose own rules decide it, got: {reason}"
+    );
+}
+
+/// D5: a filter satisfied by a column of the filtered row alone is one link.
+#[test]
+fn an_ownership_term_names_one_link() {
+    let shapes = compile_on(
+        "CREATE TABLE notes (id TEXT PRIMARY KEY, owner_id TEXT);",
+        "notes",
+        &format!("owner_id = {CALLER}"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Direct { relation } = &shapes.chain else {
+        panic!("ownership reaches the caller from the row itself: {shapes:?}");
+    };
+    assert_eq!(
+        row_shape(entry(&shapes, "notes", relation)),
+        ("notes".to_string(), "owner_id".to_string())
+    );
+}
+
+/// D5: a filter that admits every row narrows nothing and would cost one stored record
+/// per row of the filtered table.
+#[test]
+fn a_term_that_admits_every_row_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE staff (user_id TEXT);
+",
+        "docs",
+        &format!("EXISTS (SELECT 1 FROM staff WHERE user_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        !reason.is_empty(),
+        "a refusal states why, since it reaches an operator"
+    );
+}
+
+/// F5: reading the filtered table inside its own filter is the shape `PostgreSQL` refuses
+/// to plan, and the classifier already says so.
+#[test]
+fn a_term_reading_the_filtered_table_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT, parent_id TEXT);",
+        "docs",
+        &format!("parent_id IN (SELECT id FROM docs WHERE owner_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("recursion"),
+        "the refusal keeps the classifier's own wording, got: {reason}"
+    );
+}
+
+/// F4: a row named by two key columns is named the same way on the link out of it.
+#[test]
+fn a_term_over_a_composite_key_names_every_key_column() {
+    let shapes = compile_on(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT REFERENCES customers(id));
+CREATE TABLE line_items (order_id INTEGER REFERENCES orders(id), line_no INTEGER, PRIMARY KEY (order_id, line_no));
+",
+        "line_items",
+        &format!("order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Through { link, .. } = &shapes.chain else {
+        panic!("a membership term reaches the caller through a second row: {shapes:?}");
+    };
+    let shape = &entry(&shapes, "line_items", link).shapes[0];
+    let RecordDerivation::FromRow { template, .. } = &shape.derivation else {
+        panic!("the link is filled from one row");
+    };
+    let key: Vec<String> = template
+        .object_key
+        .parts()
+        .iter()
+        .map(|part| match part {
+            ValueSource::Column(name) => name.clone(),
+            other => panic!("a key column is a column, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(key, vec!["order_id".to_string(), "line_no".to_string()]);
+}
+
+/// A filter is not enforced by row-level security, so the notes it hands back must not
+/// describe the database's own enforcement of a policy nobody wrote.
+#[test]
+fn the_notes_describe_the_filter_rather_than_a_policy() {
+    let shapes = compile_on(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE doc_members (doc_id TEXT REFERENCES docs(id), user_id TEXT);
+",
+        "docs",
+        &format!("id IN (SELECT doc_id FROM doc_members WHERE user_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    for note in &shapes.notes {
+        let text = note.to_string();
+        assert!(
+            !text.contains("permissive policy") && !text.contains("exempt from every policy"),
+            "a filter reports nothing about policy enforcement, got: {text}"
+        );
+        assert!(
+            !note.severity().diverges_from_database(),
+            "a note saying the model disagrees with the database refuses instead: {text}"
+        );
+    }
+}
+
+/// A filter two different chains satisfy is not one chain. Returning either alone admits
+/// fewer rows than the filter's own SQL, which is the wrong-deny direction of the same
+/// divergence the surface exists to remove.
+#[test]
+fn a_filter_with_two_chains_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT);
+CREATE TABLE teams (id INTEGER PRIMARY KEY, lead TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), team_id INTEGER REFERENCES teams(id));
+",
+        "line_items",
+        &format!(
+            "order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER}) \
+             OR team_id IN (SELECT id FROM teams WHERE lead = {CALLER})"
+        ),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("more than one"),
+        "the refusal says the filter is satisfied more than one way, got: {reason}"
+    );
+}
+
+/// The same, where one of the two is satisfied by the row itself. The single link reads
+/// as a complete answer, which is what makes dropping the other arm silent.
+#[test]
+fn a_filter_answered_by_a_row_or_a_relationship_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), picker TEXT);
+",
+        "line_items",
+        &format!(
+            "picker = {CALLER} OR order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+        ),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("more than one"),
+        "the refusal says the filter is satisfied more than one way, got: {reason}"
+    );
+}
+
+/// A related table carrying policies of its own makes the plan report a confidence
+/// threshold, because this surface never classified those policies. The refusal has to
+/// name the table whose rules actually decide it, or an operator reads the wrong cause.
+#[test]
+fn a_related_table_with_a_clean_policy_is_refused_by_name() {
+    let reason = refuse_on(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id));
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY o ON orders FOR SELECT USING (customer_id = current_setting('app.user_id', true));
+",
+        "line_items",
+        &format!("order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("'orders' carries its own read rules"),
+        "the refusal names the table whose rules decide it, got: {reason}"
+    );
+}
+
+/// The membership table carries its own read rules while the chain's related type is the
+/// filtered type itself, so the rules that decide the filter belong to a table the
+/// filtered type does not name.
+#[test]
+fn a_membership_table_with_its_own_read_rules_is_refused_by_name() {
+    let reason = refuse_on(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE doc_members (doc_id TEXT REFERENCES docs(id), user_id TEXT);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY m ON doc_members FOR SELECT USING (user_id = current_setting('app.user_id', true));
+",
+        "docs",
+        &format!("id IN (SELECT doc_id FROM doc_members WHERE user_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("'doc_members' carries its own read rules"),
+        "the refusal names the membership table rather than the filtered one, got: {reason}"
+    );
+}
+
+/// The canonical membership: the filtered row names a parent, and a third table lists
+/// who belongs to it. This is the shape the request was written for.
+#[test]
+fn a_membership_through_a_third_table_names_both_links() {
+    let shapes = compile_on(
+        "CREATE TABLE projects (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id));
+CREATE TABLE project_members (project_id TEXT REFERENCES projects(id), user_id TEXT);
+",
+        "docs",
+        &format!("project_id IN (SELECT project_id FROM project_members WHERE user_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Through {
+        link,
+        through_type,
+        member,
+    } = &shapes.chain
+    else {
+        panic!("the filtered row reaches the caller through its project: {shapes:?}");
+    };
+    assert_eq!(through_type, "projects");
+    assert_eq!(
+        row_shape(entry(&shapes, "docs", link)),
+        ("docs".to_string(), "project_id".to_string())
+    );
+    assert_eq!(
+        row_shape(entry(&shapes, "projects", member)),
+        ("project_members".to_string(), "user_id".to_string())
+    );
+}
+
+/// A value the row carries in a JSON field is still a value the row carries, so the
+/// filter compiles. Only a value the row does not carry at all cannot be a link.
+#[test]
+fn a_filter_reading_a_json_field_names_one_link() {
+    let shapes = compile_on(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY, meta JSONB);",
+        "docs",
+        &format!("meta ->> 'owner' = {CALLER}"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Direct { relation } = &shapes.chain else {
+        panic!("the row itself names the caller: {shapes:?}");
+    };
+    let shape = &entry(&shapes, "docs", relation).shapes[0];
+    let RecordDerivation::FromRow { template, .. } = &shape.derivation else {
+        panic!("the link is filled from one row");
+    };
+    assert!(
+        matches!(
+            template.subject_key.part(),
+            ValueSource::JsonPath { column, path } if column == "meta" && path == &["owner".to_string()]
+        ),
+        "the subject is read from the JSON field the filter names, got {:?}",
+        template.subject_key.part()
+    );
+}
+
+/// The caller's own threshold still applies. The residual filter grades `C`, so at `B`
+/// it is dropped before anything is compiled, and the refusal says so rather than
+/// reporting the residual it never reached.
+#[test]
+fn the_callers_threshold_still_refuses() {
+    let reason = refuse_on(
+        SHOP,
+        "line_items",
+        &format!(
+            "order_id IN (SELECT id FROM orders \
+             WHERE customer_id = {CALLER} AND status = 'open')"
+        ),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("below the threshold"),
+        "the refusal names the threshold that dropped it, got: {reason}"
+    );
+}
