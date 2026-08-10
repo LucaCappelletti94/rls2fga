@@ -17,9 +17,7 @@ use crate::generator::well_known::{
     ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE,
     TEAM_TYPE, USER_TYPE,
 };
-use crate::parser::names::{
-    lookup_table, split_qualified_identifier_parts, split_schema_and_relation,
-};
+use crate::parser::names::{lookup_table, split_qualified_identifier_parts};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
@@ -1114,63 +1112,16 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
 /// The columns naming the bridge's two ends: every column identifying a row of `table`,
 /// and the one whose value names the parent.
 ///
-/// The parent side stays a single column because a subject is named by one value.
+/// The parent side stays a single column because a subject is named by one value, and it
+/// has to be a column of `table`, since the policy compares it against the membership
+/// row. A name the schema does not carry is a bridge nobody can write.
 pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     table: &str,
     fk_column: &str,
     db: &DB,
 ) -> Option<(Vec<String>, String)> {
     let object_cols = resolve_pk_columns(table, db)?;
-    if table_has_column(db, table, fk_column) {
-        return Some((object_cols, fk_column.to_string()));
-    }
-
-    // The FK column isn't a real column of this table, but the inferred parent
-    // type matches the table's own name.  Emit the sentinel self-reference tuple
-    // (`project:X  project  project:X`) that OpenFGA needs for tuple-to-userset
-    // when the membership table FK points back to the same resource type. It names
-    // the parent by the row's own key, so it needs that key to be one column.
-    match object_cols.as_slice() {
-        [object_col] if is_self_parent_bridge(table, fk_column) => {
-            Some((vec![object_col.clone()], object_col.clone()))
-        }
-        _ => None,
-    }
-}
-
-fn is_self_parent_bridge(table: &str, fk_column: &str) -> bool {
-    let parent_type = fk_column.strip_suffix("_id").unwrap_or(fk_column);
-    let relation = split_schema_and_relation(table)
-        .map_or_else(|| table.to_string(), |(_, relation)| relation);
-    let relation = relation.to_ascii_lowercase();
-    let parent_type = parent_type.to_ascii_lowercase();
-    singular_candidates(&relation)
-        .iter()
-        .any(|candidate| candidate == &parent_type)
-}
-
-fn singular_candidates(relation: &str) -> Vec<String> {
-    let mut candidates = vec![relation.to_string()];
-
-    if let Some(stem) = relation.strip_suffix("ies") {
-        if !stem.is_empty() {
-            candidates.push(format!("{stem}y"));
-        }
-    }
-    if let Some(stem) = relation.strip_suffix("es") {
-        if !stem.is_empty() {
-            candidates.push(stem.to_string());
-        }
-    }
-    if let Some(stem) = relation.strip_suffix('s') {
-        if !stem.is_empty() {
-            candidates.push(stem.to_string());
-        }
-    }
-
-    candidates.sort();
-    candidates.dedup();
-    candidates
+    table_has_column(db, table, fk_column).then(|| (object_cols, fk_column.to_string()))
 }
 
 /// The `FROM` reference for a query minting this type's objects.
@@ -1310,6 +1261,7 @@ CREATE TABLE projects(id uuid primary key);
 CREATE TABLE status(status uuid primary key);
 CREATE TABLE events(label text, event_uuid uuid primary key, project_id uuid);
 CREATE TABLE categories(id uuid primary key);
+CREATE TABLE 日本(id uuid primary key);
 ",
         )
         .expect("schema should parse");
@@ -1319,23 +1271,28 @@ CREATE TABLE categories(id uuid primary key);
             resolve_bridge_columns("docs", "project_id", &db),
             Some((vec!["id".to_string()], "project_id".to_string()))
         );
-        // Sentinel self-reference: fk_col not in table columns but parent type
-        // matches table name → used for OpenFGA tuple-to-userset navigation.
+        // A column the table does not carry is a bridge nobody writes, whatever the name
+        // suggests about the parent.
+        assert_eq!(resolve_bridge_columns("projects", "project_id", &db), None);
+        assert_eq!(resolve_bridge_columns("status", "status_id", &db), None);
         assert_eq!(
-            resolve_bridge_columns("projects", "project_id", &db),
-            Some((vec!["id".to_string()], "id".to_string()))
+            resolve_bridge_columns("categories", "category_id", &db),
+            None
+        );
+        // Both names canonicalize to `resource`, which used to be enough to bridge one
+        // table to another it has nothing to do with. The `id` case beside it keeps the
+        // refusal from resting on an unparsed table.
+        assert_eq!(
+            resolve_bridge_columns("\u{65e5}\u{672c}", "\u{4e2d}\u{6587}", &db),
+            None
         );
         assert_eq!(
-            resolve_bridge_columns("status", "status_id", &db),
-            Some((vec!["status".to_string()], "status".to_string()))
+            resolve_bridge_columns("\u{65e5}\u{672c}", "id", &db),
+            Some((vec!["id".to_string()], "id".to_string()))
         );
         assert_eq!(
             resolve_bridge_columns("events", "project_id", &db),
             Some((vec!["event_uuid".to_string()], "project_id".to_string()))
-        );
-        assert_eq!(
-            resolve_bridge_columns("categories", "category_id", &db),
-            Some((vec!["id".to_string()], "id".to_string()))
         );
         assert_eq!(resolve_bridge_columns("links", "project_id", &db), None);
     }
@@ -1727,24 +1684,6 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
             !membership_query.sql.contains("dm."),
             "join-table alias should not leak into tuple SQL when FROM has no alias, got:\n{}",
             membership_query.sql
-        );
-    }
-
-    /// `is_self_parent_bridge` compares in lowercase, never through
-    /// `canonical_fga_type_name`, and that is load bearing rather than an oversight.
-    ///
-    /// Canonicalizing folds every name outside `[a-z0-9_]` onto `resource`, so two
-    /// unrelated non-ASCII names would compare equal and mint a self-reference tuple for
-    /// tables that have nothing to do with each other.
-    #[test]
-    fn two_unrelated_non_ascii_names_do_not_bridge() {
-        assert!(
-            is_self_parent_bridge("projects", "project_id"),
-            "a table named for its own foreign key still bridges"
-        );
-        assert!(
-            !is_self_parent_bridge("\u{65e5}\u{672c}", "\u{4e2d}\u{6587}"),
-            "two names that both canonicalize to 'resource' are not the same table"
         );
     }
 

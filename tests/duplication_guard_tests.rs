@@ -144,10 +144,8 @@ fn p5_inheritance_analysis_has_single_source_of_truth() {
 /// stripping the suffix itself, so a change to the rule cannot move a parent type while
 /// leaving an ownership relation on the old spelling.
 ///
-/// `is_self_parent_bridge` in the tuple generator deliberately stays outside this: it
-/// compares a column name against a table name in lowercase, and canonicalizing either
-/// side would fold every non-ASCII name onto `resource`. That is pinned by
-/// `two_unrelated_non_ascii_names_do_not_bridge`.
+/// The tuple generator no longer names a parent from a column name at all: a bridge
+/// reads the column the policy correlates, or it is not written.
 #[test]
 fn the_name_an_id_column_references_has_a_single_source_of_truth() {
     let definitions = fn_definitions(&["src/parser/names.rs"], "parent_type_from_fk_column");

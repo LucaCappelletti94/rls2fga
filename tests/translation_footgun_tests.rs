@@ -9406,3 +9406,36 @@ CREATE POLICY p ON paper_shares FOR SELECT USING (
         bridge.sql
     );
 }
+
+/// A correlated column the schema does not have is a missing column whatever it is
+/// called. Naming it after the guarded table used to buy a self-reference bridge, so
+/// the one spelling `projects.project_id` granted where every other spelling refused.
+#[test]
+fn a_bridge_column_named_after_its_table_is_still_missing() {
+    let db = db_of(
+        "CREATE TABLE projects(id TEXT PRIMARY KEY);
+CREATE TABLE project_members(project_id TEXT, user_id TEXT);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON projects FOR SELECT USING (EXISTS (
+  SELECT 1 FROM project_members m WHERE m.project_id = projects.project_id
+    AND m.user_id = current_user));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    assert!(
+        outputs.notes().iter().any(|note| {
+            matches!(note, TranslationNote::BridgeColumnMissing { table, column, .. }
+                if table == "projects" && column == "project_id")
+        }),
+        "the missing bridge column has to be a note: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        relation_denies(&outputs.model(), "projects", "can_select"),
+        "a grant whose bridge nobody writes has to fall closed:\n{}",
+        outputs.model()
+    );
+}
