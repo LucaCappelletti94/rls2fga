@@ -569,8 +569,11 @@ CREATE POLICY p ON docs FOR SELECT
     );
 }
 
+/// A policy whose membership subquery reads the guarded table is a read `PostgreSQL`
+/// refuses to plan, raising `infinite recursion detected in policy` (verified on
+/// `PostgreSQL` 18), and the inner scan names its own rows rather than the guarded one.
 #[test]
-fn p4_with_join_on_clause_extracts_fk_and_user_from_on() {
+fn p4_reading_the_guarded_table_in_the_join_is_refused() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID, member_id UUID);
@@ -586,8 +589,9 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P4ExistsMembership { .. }),
-        "JOIN ON FK should classify as P4, got: {:?}",
+        matches!(&c.pattern, PatternClass::Unknown { reason, .. }
+            if reason.contains("infinite recursion")),
+        "reading 'docs' inside its own policy must be refused, got: {:?}",
         c.pattern
     );
 }
@@ -611,7 +615,7 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 #[test]
-fn p4_on_clause_reversed_fk_extraction() {
+fn p4_reversed_correlation_names_the_guarded_column() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_access(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
@@ -619,16 +623,17 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (EXISTS (
         SELECT 1 FROM doc_access a
-        JOIN docs d ON d.id = a.doc_id
-        WHERE a.user_id = current_user
+        WHERE docs.id = a.doc_id
+          AND a.user_id = current_user
     ));
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P4ExistsMembership { .. }),
-        "Reversed ON-clause FK should classify as P4, got: {:?}",
+        matches!(&c.pattern, PatternClass::P4ExistsMembership { fk_column, outer_column, .. }
+            if fk_column == "doc_id" && outer_column == "id"),
+        "the guarded side of the correlation is docs.id, got: {:?}",
         c.pattern
     );
 }

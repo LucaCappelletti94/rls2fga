@@ -242,6 +242,8 @@ pub enum PatternClass {
         join_table: String,
         /// Column of `join_table` identifying the parent entity.
         fk_column: String,
+        /// Column of the guarded table the policy compares against `fk_column`.
+        outer_column: String,
         /// Column of `join_table` identifying the user.
         user_column: String,
         /// Residual filter such as `role = 'admin'`, which no tuple can express.
@@ -371,6 +373,8 @@ pub enum PatternClass {
         join_table: String,
         /// Column of `join_table` naming the guarded row.
         fk_column: String,
+        /// Column of the guarded table the policy compares against `fk_column`.
+        outer_column: String,
         /// Column of `join_table` holding the value the caller's set must contain.
         member_column: String,
         /// Separator the policy splits the setting on, absent for a list source.

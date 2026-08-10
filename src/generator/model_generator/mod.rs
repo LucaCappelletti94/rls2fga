@@ -14,7 +14,7 @@ use crate::generator::ir::{PrincipalInfo, TupleSource};
 use crate::generator::notes::{SkippedTuples, TranslationNote};
 use crate::generator::relations::RequestComparison;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
-use crate::generator::tuple_generator::UnboundedColumns;
+use crate::generator::tuple_generator::{resolve_bridge_columns, UnboundedColumns};
 use crate::generator::well_known::{
     CAN_DELETE_RELATION, CAN_INSERT_RELATION, CAN_INSERT_RETURNING_RELATION,
     CAN_SELECT_FOR_UPDATE_RELATION, CAN_SELECT_RELATION, CAN_UPDATE_CHECK_RELATION,
@@ -802,6 +802,30 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
                 table: source_table_name.clone(),
                 reason: missing_object_identifier_reason(&source_table_name, db),
                 sources: unfillable.into_iter().collect(),
+            });
+        }
+        // The same reading, for a bridge whose column the schema does not have: the row
+        // is nameable, so it is a different loss and says so.
+        let unbridged: BTreeSet<(String, String)> = table_plan
+            .table_tuple_sources
+            .iter()
+            .filter_map(|source| match source {
+                TupleSource::Skipped {
+                    reason:
+                        SkippedTuples::BridgeColumnMissing {
+                            parent_type,
+                            fk_col,
+                            ..
+                        },
+                } => Some((parent_type.clone(), fk_col.clone())),
+                _ => None,
+            })
+            .collect();
+        for (parent_type, column) in unbridged {
+            notes.push(TranslationNote::BridgeColumnMissing {
+                table: source_table_name.clone(),
+                parent_type,
+                column,
             });
         }
 
@@ -2592,8 +2616,8 @@ fn pattern_to_expr(
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
     pattern_to_expr_against(
-        "CREATE TABLE test_table(id UUID PRIMARY KEY);
-CREATE TABLE projects(id UUID PRIMARY KEY);",
+        "CREATE TABLE projects(id UUID PRIMARY KEY);
+CREATE TABLE test_table(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));",
         pattern,
         policy_name,
         table_plan,
@@ -2929,11 +2953,25 @@ fn translate_pattern<DB: DatabaseLike>(
         PatternClass::P18MembershipInCallerSet {
             join_table,
             fk_column,
+            outer_column,
             member_column,
             separator,
             source,
             extra_predicate_sql,
         } => {
+            // The gate names the guarded row by the join table's own column, so that
+            // column has to hold the row's identifier. Correlated against anything else,
+            // the object named is another row's, or no row at all.
+            if single_pk_column(source_table, db).as_deref() != Some(outer_column.as_str()) {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!(
+                        "the policy correlates '{outer_column}', which does not identify a \
+                         row of {source_table}, so no tuple can name the row the grant is on"
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
             // The subquery reads `join_table` as the caller, so its own RLS decides which
             // membership rows count, exactly as it does for a membership naming a person.
             let read_scope_roles = match join_table_readability(join_table, db, readability) {
@@ -3025,9 +3063,9 @@ fn translate_pattern<DB: DatabaseLike>(
         PatternClass::P4ExistsMembership {
             join_table,
             fk_column,
+            outer_column,
             user_column,
             extra_predicate_sql,
-            ..
         } => {
             // The subquery reads `join_table` as the user, so its own RLS decides which
             // membership rows count.
@@ -3059,10 +3097,9 @@ fn translate_pattern<DB: DatabaseLike>(
             );
 
             // Before anything is minted: the grant hangs off a bridge from this row to
-            // its parent object, so with no row identity there is nothing to hang it on
-            // and a parent type minted here would outlive the expression justifying it.
-            if resolve_pk_columns(source_table, db).is_none() {
-                skip_bridge_without_row_identity(table_plan, source_table, &parent_type, db);
+            // its parent object, so with no bridge there is nothing to hang it on and a
+            // parent type minted here would outlive the expression justifying it.
+            if !bridge_is_buildable(table_plan, source_table, outer_column, &parent_type, db) {
                 return deny_expr(table_plan);
             }
 
@@ -3105,11 +3142,12 @@ fn translate_pattern<DB: DatabaseLike>(
                 parent_plan.add_source(membership_source);
             }
 
-            // Bridge rows link each source-table row to its parent. The pk column is
-            // resolved again at render time by `resolve_bridge_columns`.
+            // Bridge rows link each source-table row to its parent, through the column
+            // the policy compares. The pk column is resolved again at render time by
+            // `resolve_bridge_columns`.
             table_plan.add_source(TupleSource::ParentBridge {
                 table: source_table.to_string(),
-                fk_col: fk_column.clone(),
+                fk_col: outer_column.clone(),
                 parent_type: parent_type.clone(),
                 relation: parent_relation.clone(),
             });
@@ -3269,17 +3307,15 @@ fn translate_pattern<DB: DatabaseLike>(
                 });
             }
 
-            if resolve_pk_columns(source_table, db).is_some() {
-                table_plan.add_source(TupleSource::ParentBridge {
-                    table: source_table.to_string(),
-                    fk_col: fk_column.clone(),
-                    parent_type: parent_type.clone(),
-                    relation: parent_relation.clone(),
-                });
-            } else {
-                skip_bridge_without_row_identity(table_plan, source_table, &parent_type, db);
+            if !bridge_is_buildable(table_plan, source_table, fk_column, &parent_type, db) {
                 return deny_expr(table_plan);
             }
+            table_plan.add_source(TupleSource::ParentBridge {
+                table: source_table.to_string(),
+                fk_col: fk_column.clone(),
+                parent_type: parent_type.clone(),
+                relation: parent_relation.clone(),
+            });
 
             UsersetExpr::TupleToUserset {
                 tupleset: parent_relation,
@@ -3658,20 +3694,37 @@ fn skip_source_without_row_identity<DB: DatabaseLike>(
     });
 }
 
-/// The same, for the bridge linking a row to its parent object.
-fn skip_bridge_without_row_identity<DB: DatabaseLike>(
+/// Whether the bridge linking a row of `source_table` to its parent can be written,
+/// recording the loss when it cannot.
+///
+/// Asked here rather than left to the renderer, which has only a comment to carry the
+/// answer: a bridge nobody writes leaves the grant above it satisfiable by no one, and
+/// the caller falls closed on `false`.
+fn bridge_is_buildable<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
+    fk_col: &str,
     parent_type: &str,
     db: &DB,
-) {
-    table_plan.add_source(TupleSource::Skipped {
-        reason: SkippedTuples::NoBridge {
+) -> bool {
+    if resolve_bridge_columns(source_table, fk_col, db).is_some() {
+        return true;
+    }
+    let reason = if resolve_pk_columns(source_table, db).is_none() {
+        SkippedTuples::NoBridge {
             table: source_table.to_string(),
             parent_type: parent_type.to_string(),
             reason: missing_object_identifier_reason(source_table, db),
-        },
-    });
+        }
+    } else {
+        SkippedTuples::BridgeColumnMissing {
+            table: source_table.to_string(),
+            parent_type: parent_type.to_string(),
+            fk_col: fk_col.to_string(),
+        }
+    };
+    table_plan.add_source(TupleSource::Skipped { reason });
+    false
 }
 
 fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &str) {

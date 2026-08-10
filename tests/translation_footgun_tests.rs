@@ -2264,8 +2264,8 @@ CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), u
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY docs_del ON docs FOR DELETE USING (
-  EXISTS (SELECT 1 FROM docs d2 JOIN doc_members dm ON dm.doc_id = d2.id
-          WHERE d2.id = docs.id AND dm.user_id = current_user));
+  EXISTS (SELECT 1 FROM doc_members dm
+          WHERE dm.doc_id = docs.id AND dm.user_id = current_user));
 ",
     );
     let dsl = translator(ConfidenceLevel::A)
@@ -9230,5 +9230,179 @@ fn a_list_source_states_no_separator_in_its_caller_contract() {
     assert!(
         !outputs.report().contains("string_to_array"),
         "the delimited string contract must not leak onto a shape with no delimiter"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The correlated column.
+// ---------------------------------------------------------------------------
+
+/// The column of `table` a bridge shape on it reads to name the parent.
+fn bridge_subject_column(relations: &[RelationShapes], table: &str) -> Option<String> {
+    relations
+        .iter()
+        .flat_map(|entry| &entry.shapes)
+        .find_map(|shape| match &shape.derivation {
+            RecordDerivation::FromRow {
+                table: from,
+                template,
+                ..
+            } if from == table => match template.subject_key.part() {
+                ValueSource::Column(name) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+const CORRELATION_SCHEMA: &str = "
+CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT REFERENCES customers(id), status TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), sku TEXT, status TEXT);
+";
+
+fn correlated_relations(using: &str) -> Vec<RelationShapes> {
+    let db = db_of(&format!(
+        "{CORRELATION_SCHEMA}
+ALTER TABLE line_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON line_items FOR SELECT USING ({using});
+"
+    ));
+    TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_current_user_setting_keys(["app.user_id"])
+        .build()
+        .translate(&db)
+        .relations()
+}
+
+/// The membership bridge used to be keyed on the membership table's own column name,
+/// which the guarded table may also carry under a different meaning. A row was then
+/// granted through a value the policy never compared.
+#[test]
+fn a_membership_bridge_reads_the_column_the_policy_correlates() {
+    let correlates_sku = correlated_relations(
+        "sku IN (SELECT status FROM orders \
+         WHERE customer_id = current_setting('app.user_id', true))",
+    );
+    let correlates_status = correlated_relations(
+        "status IN (SELECT status FROM orders \
+         WHERE customer_id = current_setting('app.user_id', true))",
+    );
+
+    assert_eq!(
+        bridge_subject_column(&correlates_sku, "line_items").as_deref(),
+        Some("sku"),
+        "the policy compares line_items.sku, so the bridge reads sku"
+    );
+    assert_eq!(
+        bridge_subject_column(&correlates_status, "line_items").as_deref(),
+        Some("status"),
+        "the policy compares line_items.status, so the bridge reads status"
+    );
+}
+
+/// A bridge the schema cannot write leaves the grant above it satisfiable by nobody.
+/// The renderer can only say so in a comment, so the loss is settled while the plan is
+/// built and reaches `notes`.
+#[test]
+fn a_bridge_the_schema_cannot_write_is_reported() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
+  SELECT 1 FROM doc_members dm WHERE dm.doc_id = nonexistent AND dm.user_id = current_user));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let reported = outputs.notes().iter().any(|note| {
+        matches!(note, TranslationNote::BridgeColumnMissing { table, column, .. }
+            if table == "docs" && column == "nonexistent")
+    });
+    assert!(
+        reported,
+        "the missing bridge column has to be a note: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        relation_denies(&outputs.model(), "docs", "can_select"),
+        "a grant whose bridge nobody writes has to fall closed:\n{}",
+        outputs.model()
+    );
+}
+
+/// The request-scoped gate names the guarded row by the join table's own column, so
+/// that column has to hold the row's identifier. Correlated against anything else it
+/// names another row, or none.
+#[test]
+fn a_request_gate_correlated_on_a_non_key_column_is_refused() {
+    let db = db_of(
+        "CREATE TABLE papers(id INT PRIMARY KEY, batch TEXT);
+CREATE TABLE shares(paper_batch TEXT, viewer TEXT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM shares s WHERE s.paper_batch = papers.batch
+    AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+    );
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes(vec![SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build()
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    assert!(
+        outputs.notes().iter().any(|note| {
+            matches!(note, TranslationNote::ExpressionRefused { reason, .. }
+                if reason.contains("does not identify a row"))
+        }),
+        "the refusal has to name the column that decides it: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        relation_denies(&outputs.model(), "papers", "can_select"),
+        "a gate keyed on a value that names no row has to fall closed:\n{}",
+        outputs.model()
+    );
+}
+
+/// A row named by a two-column key is named the same way on both ends of a bridge. The
+/// bridge used to demand a single-column key and vanish into a comment without one.
+#[test]
+fn a_bridge_names_a_row_by_its_whole_key() {
+    let db = db_of(
+        "CREATE TABLE papers(id INT PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id INT REFERENCES papers(id), viewer TEXT, PRIMARY KEY (paper_id, viewer));
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON paper_shares FOR SELECT USING (
+  EXISTS (SELECT 1 FROM papers p WHERE p.id = paper_id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .outputs_accepting_gaps();
+
+    let bridge = outputs
+        .tuple_queries()
+        .into_iter()
+        .find(|query| query.comment.contains("bridge"))
+        .expect("the delegation to the parent needs a bridge");
+    assert!(
+        !bridge.sql.trim_start().starts_with("--"),
+        "the bridge has to be a query, not a comment: {}",
+        bridge.sql
+    );
+    assert!(
+        bridge.sql.contains("\"paper_id\"") && bridge.sql.contains("\"viewer\""),
+        "both key columns name the row: {}",
+        bridge.sql
     );
 }

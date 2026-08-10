@@ -229,6 +229,16 @@ pub enum TranslationNote {
         /// The tuple queries left unemitted, as the loader's script names them.
         sources: Vec<String>,
     },
+    /// The column linking a row to its parent object is not in the schema, so the bridge
+    /// carrying the grant cannot be written and the grant falls closed.
+    BridgeColumnMissing {
+        /// Table the bridge would have read.
+        table: String,
+        /// Type the bridge would have pointed at.
+        parent_type: String,
+        /// Column the bridge would have read, absent from `table`.
+        column: String,
+    },
     /// The target caps an identifier, and this table's key can render a longer one, so
     /// a row past the cap emits no fact and the model denies it.
     ///
@@ -351,6 +361,7 @@ impl TranslationNote {
             | Self::ExpressionRefused { .. }
             | Self::FunctionMissingMetadata { .. }
             | Self::RowsCannotBeNamed { .. }
+            | Self::BridgeColumnMissing { .. }
             | Self::PolicyBoundToDdlTimeRole { .. } => NoteSeverity::Unhandled,
             Self::RoleBypassesPolicies { .. } | Self::TableOwnerBypassesPolicies { .. } => {
                 NoteSeverity::Exempt
@@ -392,6 +403,7 @@ impl TranslationNote {
             | Self::TableOwnerBypassesPolicies { table, .. }
             | Self::InheritanceParentReadsOwnRowsOnly { table, .. }
             | Self::RowsCannotBeNamed { table, .. }
+            | Self::BridgeColumnMissing { table, .. }
             | Self::RowIdentifierBudget { table, .. }
             | Self::ReadsDeniedSoWritesCannotName { table } => table,
             Self::ClauseBelowThreshold { policy, .. }
@@ -609,6 +621,16 @@ impl fmt::Display for TranslationNote {
                 "No tuple can name a row of '{table}' ({reason}), so {} cannot be loaded and \
                  every grant on this type denies where PostgreSQL grants.",
                 sources.join(", ")
+            ),
+            Self::BridgeColumnMissing {
+                table,
+                parent_type,
+                column,
+            } => write!(
+                f,
+                "'{table}' has no column '{column}' linking a row to '{parent_type}', so the \
+                 bridge cannot be loaded and the grant it carries denies where PostgreSQL \
+                 grants."
             ),
             Self::RowIdentifierBudget { table, budget } => write!(
                 f,

@@ -4,7 +4,7 @@ use crate::no_std_prelude::*;
 
 #[cfg(test)]
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
-use crate::generator::db_lookup::single_pk_column;
+use crate::generator::db_lookup::{resolve_pk_columns, table_has_column};
 use crate::generator::identity::{
     typed_name_literal, typed_name_sql, MAX_OBJECT_NAME_CHARS, MAX_SUBJECT_NAME_BYTES,
 };
@@ -870,7 +870,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             relation,
         } => {
             let table_type = owner_type;
-            let Some((object_col, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
+            let Some((object_cols, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
             else {
                 return Some(skipped_query(&SkippedTuples::BridgeColumnMissing {
                     table: table.clone(),
@@ -879,19 +879,24 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 }));
             };
             let table_sql = owner_table_reference(table, only_own_rows);
-            let object_col_sql = quote_sql_identifier(&object_col);
+            let object_parts = quoted_key_parts(&object_cols);
             let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
-            let object_sql = typed_name_sql(table_type, [object_col_sql.as_str()]);
+            let object_sql = typed_name_sql(table_type, object_parts.iter().map(String::as_str));
             let subject_sql = typed_name_sql(parent_type, [parent_ref_col_sql.as_str()]);
             let bridge_guards = join_row_is_nameable(
                 "",
                 &object_sql,
                 Some(&subject_sql),
                 table,
-                core::slice::from_ref(&object_col),
+                &object_cols,
                 core::slice::from_ref(&parent_ref_col),
                 names,
             );
+            let object_not_null = object_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .collect::<Vec<_>>()
+                .join("\nAND ");
             Some(TupleQuery {
                 comment: format!("-- {table} to {parent_type} bridge for tuple-to-userset"),
                 sql: format!(
@@ -899,7 +904,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                      '{relation}' AS relation, \
                      {subject_sql} AS subject\n\
                      FROM {table_sql}\n\
-                     WHERE {object_col_sql} IS NOT NULL\n\
+                     WHERE {object_not_null}\n\
                      AND {parent_ref_col_sql} IS NOT NULL{bridge_guards};"
                 ),
                 description: None,
@@ -1106,34 +1111,31 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
     }
 }
 
+/// The columns naming the bridge's two ends: every column identifying a row of `table`,
+/// and the one whose value names the parent.
+///
+/// The parent side stays a single column because a subject is named by one value.
 pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     table: &str,
     fk_column: &str,
     db: &DB,
-) -> Option<(String, String)> {
-    let table_info = lookup_table(db, table)?;
-    let cols: Vec<String> = table_info
-        .columns(db)
-        .into_iter()
-        .flatten()
-        .map(|c| c.stored_column_name().into_owned())
-        .collect();
-
-    let object_col = single_pk_column(table, db)?;
-
-    if cols.iter().any(|c| c == fk_column) {
-        return Some((object_col, fk_column.to_string()));
+) -> Option<(Vec<String>, String)> {
+    let object_cols = resolve_pk_columns(table, db)?;
+    if table_has_column(db, table, fk_column) {
+        return Some((object_cols, fk_column.to_string()));
     }
 
     // The FK column isn't a real column of this table, but the inferred parent
     // type matches the table's own name.  Emit the sentinel self-reference tuple
     // (`project:X  project  project:X`) that OpenFGA needs for tuple-to-userset
-    // when the membership table FK points back to the same resource type.
-    if is_self_parent_bridge(table, fk_column) {
-        return Some((object_col.clone(), object_col));
+    // when the membership table FK points back to the same resource type. It names
+    // the parent by the row's own key, so it needs that key to be one column.
+    match object_cols.as_slice() {
+        [object_col] if is_self_parent_bridge(table, fk_column) => {
+            Some((vec![object_col.clone()], object_col.clone()))
+        }
+        _ => None,
     }
-
-    None
 }
 
 fn is_self_parent_bridge(table: &str, fk_column: &str) -> bool {
@@ -1315,25 +1317,25 @@ CREATE TABLE categories(id uuid primary key);
         assert_eq!(resolve_bridge_columns("missing", "project_id", &db), None);
         assert_eq!(
             resolve_bridge_columns("docs", "project_id", &db),
-            Some(("id".to_string(), "project_id".to_string()))
+            Some((vec!["id".to_string()], "project_id".to_string()))
         );
         // Sentinel self-reference: fk_col not in table columns but parent type
         // matches table name → used for OpenFGA tuple-to-userset navigation.
         assert_eq!(
             resolve_bridge_columns("projects", "project_id", &db),
-            Some(("id".to_string(), "id".to_string()))
+            Some((vec!["id".to_string()], "id".to_string()))
         );
         assert_eq!(
             resolve_bridge_columns("status", "status_id", &db),
-            Some(("status".to_string(), "status".to_string()))
+            Some((vec!["status".to_string()], "status".to_string()))
         );
         assert_eq!(
             resolve_bridge_columns("events", "project_id", &db),
-            Some(("event_uuid".to_string(), "project_id".to_string()))
+            Some((vec!["event_uuid".to_string()], "project_id".to_string()))
         );
         assert_eq!(
             resolve_bridge_columns("categories", "category_id", &db),
-            Some(("id".to_string(), "id".to_string()))
+            Some((vec!["id".to_string()], "id".to_string()))
         );
         assert_eq!(resolve_bridge_columns("links", "project_id", &db), None);
     }

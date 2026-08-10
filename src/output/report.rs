@@ -312,6 +312,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
                 PatternClass::P4ExistsMembership {
                     join_table: "doc_members".to_string(),
                     fk_column: "doc_id".to_string(),
+                    outer_column: "id".to_string(),
                     user_column: "user_id".to_string(),
                     extra_predicate_sql: None,
                 },

@@ -460,14 +460,19 @@ fn classify_membership_select<DB: DatabaseLike>(
     match analyze_membership_select(select, db, registry, outer_table) {
         MembershipSelectAnalysis::Unique {
             join_table,
-            fk_column,
-            user_column,
-            member_match: MemberMatch::Caller,
-            extra_predicate_sql,
+            columns:
+                MembershipColumns {
+                    fk_column,
+                    outer_column,
+                    user_column,
+                    member_match: MemberMatch::Caller,
+                    extra_predicate_sql,
+                },
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership {
                 join_table,
                 fk_column,
+                outer_column,
                 user_column,
                 extra_predicate_sql,
             },
@@ -475,14 +480,19 @@ fn classify_membership_select<DB: DatabaseLike>(
         }),
         MembershipSelectAnalysis::Unique {
             join_table,
-            fk_column,
-            user_column,
-            member_match: MemberMatch::InCallerSet { source, separator },
-            extra_predicate_sql,
+            columns:
+                MembershipColumns {
+                    fk_column,
+                    outer_column,
+                    user_column,
+                    member_match: MemberMatch::InCallerSet { source, separator },
+                    extra_predicate_sql,
+                },
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P18MembershipInCallerSet {
                 join_table,
                 fk_column,
+                outer_column,
                 member_column: user_column,
                 separator,
                 source,
@@ -506,6 +516,7 @@ fn classify_membership_select<DB: DatabaseLike>(
         | MembershipSelectAnalysis::AmbiguousNoUniqueJoin
         | MembershipSelectAnalysis::JoinsAnotherTable { .. }
         | MembershipSelectAnalysis::ScansEntityByOwnKey { .. }
+        | MembershipSelectAnalysis::RescansGuardedTable
         | MembershipSelectAnalysis::NoMatch => None,
     }
 }
@@ -513,11 +524,7 @@ fn classify_membership_select<DB: DatabaseLike>(
 enum MembershipSelectAnalysis {
     Unique {
         join_table: String,
-        fk_column: String,
-        user_column: String,
-        /// Whether that column holds the caller or a grant the caller may carry.
-        member_match: MemberMatch,
-        extra_predicate_sql: Option<String>,
+        columns: MembershipColumns,
     },
     AmbiguousMultiple,
     AmbiguousNoUniqueJoin,
@@ -538,6 +545,10 @@ enum MembershipSelectAnalysis {
         user_column: String,
         extra_predicate_sql: Option<String>,
     },
+    /// The subquery scans the guarded table itself, which `PostgreSQL` refuses to plan:
+    /// reading it re-enters the policy being evaluated. Verified on `PostgreSQL` 18, which
+    /// raises `infinite recursion detected in policy`.
+    RescansGuardedTable,
     NoMatch,
 }
 
@@ -564,28 +575,36 @@ fn analyze_membership_select<DB: DatabaseLike>(
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
 
-    let mut matches = membership_matches(select, db, registry);
+    // Scanning the guarded table inside its own policy is a read PostgreSQL refuses to
+    // plan, and the scan is a fresh one either way, so nothing in the subquery names the
+    // guarded row.
+    if all_sources
+        .iter()
+        .any(|source| same_identifier(&source.table_name, outer_table))
+    {
+        return MembershipSelectAnalysis::RescansGuardedTable;
+    }
+
+    let mut matches = membership_matches(select, db, registry, outer_table);
     if matches.len() > 1 {
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
     match matches.pop() {
-        Some((join_table, fk_column, user_column, member_match, extra_predicate_sql)) => {
+        Some((join_table, columns)) => {
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
-            if scans_root_entity_by_its_key(db, &join_table, &fk_column) {
+            if scans_root_entity_by_its_key(db, &join_table, &columns.fk_column) {
                 return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
             }
             // A third table in the subquery carries conditions that no single
             // membership relation can express, and keeping only the matching side
-            // would drop them. A join back to the policy's own table stays translatable.
+            // would drop them.
             let foreign: Vec<String> = all_sources
                 .iter()
                 .map(|source| source.table_name.clone())
                 .filter(|name| {
-                    let normalized = normalize_relation_name(name);
-                    normalized != normalize_relation_name(&join_table)
-                        && normalized != normalize_relation_name(outer_table)
+                    normalize_relation_name(name) != normalize_relation_name(&join_table)
                 })
                 .collect();
             if !foreign.is_empty() {
@@ -593,10 +612,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
             }
             MembershipSelectAnalysis::Unique {
                 join_table,
-                fk_column,
-                user_column,
-                member_match,
-                extra_predicate_sql,
+                columns,
             }
         }
         None if selection_references_current_user(select, registry) => {
@@ -669,7 +685,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
             // widening of that entry condition cannot turn grant keys into users, and
             // pinned by `an_uncorrelated_subquery_testing_a_declared_set_is_refused`.
             MembershipEqAnalysis::UserColumn(..)
-            | MembershipEqAnalysis::FkCandidate(_)
+            | MembershipEqAnalysis::FkCandidate { .. }
             | MembershipEqAnalysis::OuterCorrelation => return None,
             MembershipEqAnalysis::NotRelevant => {}
         }
@@ -746,6 +762,12 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
                  '{join_table}' entities rather than membership rows; declare the foreign key \
                  from the policy's table to '{join_table}' so the link translates as parent \
                  inheritance"
+            )),
+            MembershipSelectAnalysis::RescansGuardedTable => Some(format!(
+                "Subquery reads '{outer_table}', the table the policy guards, so PostgreSQL \
+                 raises infinite recursion on every read and no reference in it names the \
+                 guarded row; drop the inner scan and correlate against '{outer_table}' \
+                 directly"
             )),
             MembershipSelectAnalysis::Unique { .. }
             | MembershipSelectAnalysis::Uncorrelated { .. }
@@ -1009,7 +1031,8 @@ fn membership_matches<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
     registry: &FunctionRegistry,
-) -> Vec<(String, String, String, MemberMatch, Option<String>)> {
+    outer_table: &str,
+) -> Vec<(String, MembershipColumns)> {
     let mut matches = Vec::new();
     for source in relation_sources(select) {
         let Some(table) = lookup_table(db, &source.table_name) else {
@@ -1022,23 +1045,16 @@ fn membership_matches<DB: DatabaseLike>(
             .map(|c| c.stored_column_name().into_owned())
             .collect();
 
-        if let Some((fk_col, user_col, member_match, extra_predicate_sql)) =
-            extract_membership_columns_with_db(
-                select,
-                &source.table_name,
-                source.alias.as_deref(),
-                &col_names,
-                Some(db),
-                registry,
-            )
-        {
-            matches.push((
-                source.table_name,
-                fk_col,
-                user_col,
-                member_match,
-                extra_predicate_sql,
-            ));
+        if let Some(columns) = extract_membership_columns_with_db(
+            select,
+            &source.table_name,
+            source.alias.as_deref(),
+            &col_names,
+            outer_table,
+            Some(db),
+            registry,
+        ) {
+            matches.push((source.table_name, columns));
         }
     }
     matches
@@ -1079,10 +1095,30 @@ pub(super) enum MemberMatch {
     },
 }
 
+/// The columns one membership subquery names, once the analysis has read every predicate.
+struct MembershipColumns {
+    /// Column of the scanned table naming the parent entity.
+    fk_column: String,
+    /// Column of the guarded table the policy compares against `fk_column`.
+    outer_column: String,
+    /// Column of the scanned table naming who the row admits.
+    user_column: String,
+    member_match: MemberMatch,
+    extra_predicate_sql: Option<String>,
+}
+
+/// A qualified or bare column reference, as the subquery spells it.
+type ColumnRef = (Option<String>, String);
+
 enum MembershipEqAnalysis {
     NotRelevant,
     UserColumn(String, MemberMatch),
-    FkCandidate(String),
+    /// A correlation between a column of the scanned table and another reference, which
+    /// reaches the guarded row directly or through the subquery's other equalities.
+    FkCandidate {
+        join_column: String,
+        correlated: ColumnRef,
+    },
     OuterCorrelation,
 }
 
@@ -1172,10 +1208,16 @@ fn analyze_membership_eq_predicate(
     );
 
     if left_is_join && !right_is_join {
-        return MembershipEqAnalysis::FkCandidate(left_name);
+        return MembershipEqAnalysis::FkCandidate {
+            join_column: left_name,
+            correlated: (right_qual, right_name),
+        };
     }
     if right_is_join && !left_is_join {
-        return MembershipEqAnalysis::FkCandidate(right_name);
+        return MembershipEqAnalysis::FkCandidate {
+            join_column: right_name,
+            correlated: (left_qual, left_name),
+        };
     }
     if !left_is_join && !right_is_join {
         return MembershipEqAnalysis::OuterCorrelation;
@@ -1184,18 +1226,45 @@ fn analyze_membership_eq_predicate(
     MembershipEqAnalysis::NotRelevant
 }
 
+/// The guarded table's column this reference names.
+///
+/// `None` means the value compared is some other scan's, so a bridge keyed on it would
+/// grant rows the correlation never admitted. A bare name is the guarded row's, since a
+/// column of the scanned table would have been read as the join side.
+fn guarded_row_column(reference: ColumnRef, outer_table: &str) -> Option<String> {
+    let (qualifier, column) = reference;
+    match qualifier {
+        Some(qualifier) if !qualifier_matches_table(&qualifier, outer_table, None) => None,
+        _ => Some(column),
+    }
+}
+
 #[cfg(test)]
 pub(super) fn extract_membership_columns(
     select: &Select,
     join_table: &str,
     join_alias: Option<&str>,
     join_cols: &[String],
+    outer_table: &str,
     registry: &FunctionRegistry,
-) -> Option<(String, String, Option<String>)> {
+) -> Option<(String, String, String, Option<String>)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
-        select, join_table, join_alias, join_cols, None, registry,
+        select,
+        join_table,
+        join_alias,
+        join_cols,
+        outer_table,
+        None,
+        registry,
     )
-    .map(|(fk, user, _, extra)| (fk, user, extra))
+    .map(|columns| {
+        (
+            columns.fk_column,
+            columns.outer_column,
+            columns.user_column,
+            columns.extra_predicate_sql,
+        )
+    })
 }
 
 fn extract_membership_columns_with_db<DB: DatabaseLike>(
@@ -1203,10 +1272,11 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     join_table: &str,
     join_alias: Option<&str>,
     join_cols: &[String],
+    outer_table: &str,
     db: Option<&DB>,
     registry: &FunctionRegistry,
-) -> Option<(String, String, MemberMatch, Option<String>)> {
-    let mut fk_col: Option<String> = None;
+) -> Option<MembershipColumns> {
+    let mut correlated: Option<(String, String)> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<(String, MemberMatch)> = None;
     let mut extras: Vec<String> = Vec::new();
@@ -1237,12 +1307,16 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                     user_col = Some((col, how));
                     continue;
                 }
-                MembershipEqAnalysis::FkCandidate(candidate) => {
-                    if fk_col
+                MembershipEqAnalysis::FkCandidate {
+                    join_column,
+                    correlated: reference,
+                } => {
+                    let candidate = (join_column, guarded_row_column(reference, outer_table)?);
+                    if correlated
                         .as_ref()
                         .is_none_or(|existing| existing == &candidate)
                     {
-                        fk_col = Some(candidate);
+                        correlated = Some(candidate);
                         fk_col_is_explicit = true;
                         continue;
                     }
@@ -1288,12 +1362,16 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                     user_col = Some((col, how));
                 }
             }
-            MembershipEqAnalysis::FkCandidate(candidate) => {
-                if fk_col
+            MembershipEqAnalysis::FkCandidate {
+                join_column,
+                correlated: reference,
+            } => {
+                let candidate = (join_column, guarded_row_column(reference, outer_table)?);
+                if correlated
                     .as_ref()
                     .is_none_or(|existing| existing == &candidate)
                 {
-                    fk_col = Some(candidate);
+                    correlated = Some(candidate);
                     fk_col_is_explicit = true;
                 }
             }
@@ -1301,8 +1379,8 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
         }
     }
 
-    let (user_col, member_match) = user_col?;
-    let fk_col = fk_col?;
+    let (user_column, member_match) = user_col?;
+    let (fk_column, outer_column) = correlated?;
 
     let extra_predicate_sql = if extras.is_empty() {
         None
@@ -1310,7 +1388,13 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
         Some(extras.join(" AND "))
     };
 
-    Some((fk_col, user_col, member_match, extra_predicate_sql))
+    Some(MembershipColumns {
+        fk_column,
+        outer_column,
+        user_column,
+        member_match,
+        extra_predicate_sql,
+    })
 }
 fn is_join_column_ref(
     qualifier: Option<&str>,

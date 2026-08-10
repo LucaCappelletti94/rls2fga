@@ -231,7 +231,7 @@ CREATE POLICY p ON tasks FOR SELECT
 }
 
 #[test]
-fn p4_joined_unqualified_extra_fails_closed_without_invalid_membership_sql() {
+fn p4_reading_the_guarded_table_fails_closed_without_invalid_membership_sql() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
@@ -256,8 +256,8 @@ CREATE POLICY p ON docs FOR SELECT
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")),
-        "joined unqualified extra should fail closed to Unknown ambiguity, got: {:?}",
+        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("infinite recursion")),
+        "a subquery reading the guarded table should fail closed, got: {:?}",
         using.pattern
     );
 

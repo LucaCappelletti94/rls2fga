@@ -815,7 +815,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     }
 
     #[test]
-    fn classify_joined_membership_with_unqualified_extra_is_ambiguous() {
+    fn classify_membership_reading_the_guarded_table_is_refused() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
         let expr = parse_expr(
@@ -831,10 +831,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
-        assert!(matches!(
-            &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
-        ));
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::Unknown { reason, .. } if reason.contains("infinite recursion")
+            ),
+            "reading the guarded table is a read PostgreSQL refuses to plan, got {:?}",
+            classified.pattern
+        );
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
 
@@ -1556,6 +1560,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 PatternClass::P4ExistsMembership {
                     join_table: "t".into(),
                     fk_column: "c".into(),
+                    outer_column: "o".into(),
                     user_column: "u".into(),
                     extra_predicate_sql: None,
                 },
@@ -1652,6 +1657,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             &PatternClass::P4ExistsMembership {
                 join_table: "t".into(),
                 fk_column: "c".into(),
+                outer_column: "o".into(),
                 user_column: "u".into(),
                 extra_predicate_sql: None,
             }
@@ -1697,6 +1703,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                     pattern: PatternClass::P4ExistsMembership {
                         join_table: "t".into(),
                         fk_column: "c".into(),
+                        outer_column: "o".into(),
                         user_column: "u".into(),
                         extra_predicate_sql: None,
                     },

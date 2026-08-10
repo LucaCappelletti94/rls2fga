@@ -339,15 +339,17 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => {
             // The renderer emits a TODO comment rather than a query here, so
             // there are no records to describe.
-            let (object_col, parent_ref_col) = resolve_bridge_columns(table, fk_col, db)?;
+            let (object_cols, parent_ref_col) = resolve_bridge_columns(table, fk_col, db)?;
+            let mut guards: Vec<Guard> = object_cols.iter().cloned().map(Guard::NotNull).collect();
+            guards.push(Guard::NotNull(parent_ref_col.clone()));
             Some(from_row(
                 table,
                 owner_type,
-                ValueSource::Column(object_col.clone()),
+                ObjectKey::new(key_parts(&object_cols)),
                 relation,
                 parent_type,
-                ValueSource::Column(parent_ref_col.clone()),
-                vec![Guard::NotNull(object_col), Guard::NotNull(parent_ref_col)],
+                SubjectKey::column(parent_ref_col),
+                guards,
             ))
         }
 

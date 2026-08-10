@@ -552,8 +552,10 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
     ));
 }
 
+/// Reading the guarded table inside its own policy is a read `PostgreSQL` refuses to plan,
+/// and the scan is a fresh one regardless, so the join correlates nothing.
 #[test]
-fn recognize_p4_exists_supports_joined_membership_tables() {
+fn recognize_p4_exists_refuses_a_subquery_reading_the_guarded_table() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
 
@@ -567,16 +569,10 @@ fn recognize_p4_exists_supports_joined_membership_tables() {
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
-    assert!(matches!(
-        &classified.pattern,
-        PatternClass::P4ExistsMembership {
-            join_table,
-            fk_column,
-            user_column,
-            ..
-        } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
-    ));
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "a subquery scanning 'docs' cannot name the guarded row"
+    );
 }
 
 #[test]
@@ -847,7 +843,7 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
 }
 
 #[test]
-fn recognize_p4_in_subquery_supports_joined_membership_tables() {
+fn recognize_p4_in_subquery_refuses_a_subquery_reading_the_guarded_table() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
 
@@ -860,18 +856,11 @@ fn recognize_p4_in_subquery_supports_joined_membership_tables() {
              )",
     );
 
-    let classified =
+    assert!(
         recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .expect("expected P4 match");
-    assert!(matches!(
-        &classified.pattern,
-        PatternClass::P4ExistsMembership {
-            join_table,
-            fk_column,
-            user_column,
-            ..
-        } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
-    ));
+            .is_none(),
+        "a subquery scanning 'docs' cannot name the guarded row"
+    );
 }
 
 #[test]
@@ -1117,7 +1106,8 @@ fn membership_column_extraction_requires_explicit_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
+            .is_none(),
         "membership without user predicate must fail closed"
     );
 }
@@ -1240,10 +1230,11 @@ fn extract_membership_columns_detects_reversed_predicates() {
     ];
 
     let extracted =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry)
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("reversed predicates should still infer membership columns");
     assert_eq!(extracted.0, "doc_id");
-    assert_eq!(extracted.1, "user_id");
+    assert_eq!(extracted.1, "id");
+    assert_eq!(extracted.2, "user_id");
 }
 
 #[test]
@@ -1434,12 +1425,12 @@ fn recognize_p4_multi_from_requires_user_predicate() {
         "EXISTS with no user predicate is an 'exists any row' false positive"
     );
 
-    // IN-subquery with an explicit user predicate over one of the sources
-    // should still be accepted; the second source just provides a FK join.
+    // An IN-subquery with an explicit user predicate is accepted, correlated by the
+    // column the projection names.
     let in_with_user = parse_expr(
         "doc_id IN (
                SELECT dm.doc_id
-               FROM doc_members dm, docs d
+               FROM doc_members dm
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
@@ -1485,12 +1476,13 @@ fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
     ];
 
     let extracted =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry)
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("columns should still be inferred");
     assert_eq!(extracted.0, "doc_id");
-    assert_eq!(extracted.1, "user_id");
+    assert_eq!(extracted.1, "id");
+    assert_eq!(extracted.2, "user_id");
     assert!(extracted
-        .2
+        .3
         .as_deref()
         .is_some_and(|s| s.contains("role > 'a'")));
 }
@@ -1507,7 +1499,8 @@ fn extract_membership_columns_returns_none_without_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
+            .is_none(),
         "membership without any WHERE must fail closed"
     );
 }
@@ -1530,7 +1523,8 @@ fn membership_column_extraction_requires_user_predicate_not_just_role() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry).is_none(),
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
+            .is_none(),
         "membership with only a role predicate must fail closed"
     );
 }
@@ -1550,7 +1544,8 @@ fn membership_column_extraction_fails_when_fk_remains_ambiguous() {
         "role".to_string(),
     ];
 
-    let extracted = extract_membership_columns(&select, "memberships", Some("m"), &cols, &registry);
+    let extracted =
+        extract_membership_columns(&select, "memberships", Some("m"), &cols, "docs", &registry);
     assert!(
         extracted.is_none(),
         "ambiguous membership FK should fail closed"
@@ -1573,7 +1568,8 @@ fn extract_membership_columns_fails_when_join_predicates_conflict() {
         "user_id".to_string(),
     ];
 
-    let extracted = extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry);
+    let extracted =
+        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry);
     assert!(
         extracted.is_none(),
         "conflicting join predicates should fail closed"
@@ -2029,7 +2025,7 @@ fn extract_membership_columns_via_join_on_clause() {
     // This exercises the ON-clause FK extraction path.
     let select = parse_select(
         "SELECT m.doc_id FROM doc_members m
-             JOIN docs d ON m.doc_id = d.id
+             JOIN doc_labels l ON m.doc_id = docs.id
              WHERE m.user_id = auth_current_user_id()
                AND m.role >= 2",
     );
@@ -2039,12 +2035,13 @@ fn extract_membership_columns_via_join_on_clause() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("m"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause fk_col and WHERE user_col should be extracted"
     );
-    let (fk, user, _extras) = result.unwrap();
+    let (fk, _outer, user, _extras) = result.unwrap();
     assert_eq!(fk, "doc_id");
     assert_eq!(user, "user_id");
 }
@@ -2163,8 +2160,9 @@ fn join_on_expr_returns_none_for_using_constraint() {
 fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
     // ON clause: dm.user_id = auth_current_user_id() (left is join, right is current_user)
     let select = parse_select(
-        "SELECT dm.doc_id FROM docs d
-             JOIN doc_members dm ON dm.user_id = auth_current_user_id() AND dm.doc_id = d.id",
+        "SELECT dm.doc_id FROM doc_labels l
+             JOIN doc_members dm ON dm.user_id = auth_current_user_id()
+                 AND dm.doc_id = docs.id",
     );
     let registry = registry_with_role_level();
     let cols = vec![
@@ -2172,12 +2170,13 @@ fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (left=join) should be extracted"
     );
-    let (fk, user, _extras) = result.unwrap();
+    let (fk, _outer, user, _extras) = result.unwrap();
     assert_eq!(fk, "doc_id");
     assert_eq!(user, "user_id");
 }
@@ -2186,8 +2185,9 @@ fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
 fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
     // ON clause: auth_current_user_id() = dm.user_id (right is join, left is current_user)
     let select = parse_select(
-        "SELECT dm.doc_id FROM docs d
-             JOIN doc_members dm ON auth_current_user_id() = dm.user_id AND dm.doc_id = d.id",
+        "SELECT dm.doc_id FROM doc_labels l
+             JOIN doc_members dm ON auth_current_user_id() = dm.user_id
+                 AND dm.doc_id = docs.id",
     );
     let registry = registry_with_role_level();
     let cols = vec![
@@ -2195,12 +2195,13 @@ fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (right=join) should be extracted"
     );
-    let (fk, user, _extras) = result.unwrap();
+    let (fk, _outer, user, _extras) = result.unwrap();
     assert_eq!(fk, "doc_id");
     assert_eq!(user, "user_id");
 }
@@ -2209,8 +2210,8 @@ fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
 fn extract_membership_columns_on_clause_fk_right_is_join() {
     // ON clause: d.id = dm.doc_id (right is join, left is not join)
     let select = parse_select(
-        "SELECT dm.doc_id FROM docs d
-             JOIN doc_members dm ON d.id = dm.doc_id
+        "SELECT dm.doc_id FROM doc_labels l
+             JOIN doc_members dm ON docs.id = dm.doc_id
              WHERE dm.user_id = auth_current_user_id()",
     );
     let registry = registry_with_role_level();
@@ -2219,12 +2220,13 @@ fn extract_membership_columns_on_clause_fk_right_is_join() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause FK (right_is_join) should be extracted"
     );
-    let (fk, user, _extras) = result.unwrap();
+    let (fk, _outer, user, _extras) = result.unwrap();
     assert_eq!(fk, "doc_id");
     assert_eq!(user, "user_id");
 }
@@ -2247,7 +2249,8 @@ fn extract_membership_columns_where_right_is_join_fk_conflict_returns_none() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_none(),
         "conflicting right_is_join FK columns should return None"
@@ -2688,8 +2691,9 @@ fn selection_references_current_user_returns_false_without_selection() {
 fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
     // Both WHERE and ON have user predicates; the first one wins.
     let select = parse_select(
-        "SELECT dm.doc_id FROM docs d
-             JOIN doc_members dm ON dm.user_id = auth_current_user_id() AND dm.doc_id = d.id
+        "SELECT dm.doc_id FROM doc_labels l
+             JOIN doc_members dm ON dm.user_id = auth_current_user_id()
+                 AND dm.doc_id = docs.id
              WHERE dm.user_id = auth_current_user_id()",
     );
     let registry = registry_with_role_level();
@@ -2698,9 +2702,10 @@ fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result = extract_membership_columns(&select, "doc_members", Some("dm"), &cols, &registry);
+    let result =
+        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(result.is_some());
-    let (fk, user, _) = result.unwrap();
+    let (fk, _outer, user, _) = result.unwrap();
     assert_eq!(fk, "doc_id");
     assert_eq!(user, "user_id");
 }
