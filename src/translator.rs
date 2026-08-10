@@ -12,6 +12,7 @@ use crate::generator::model_generator::{
 };
 use crate::generator::notes::{NoteSeverity, TranslationNote};
 use crate::generator::relations::{relation_shapes, RelationShapes};
+use crate::generator::row_naming::{row_naming, RowNaming};
 use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, TupleQuery};
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
@@ -231,6 +232,16 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     #[must_use]
     pub fn relations(&self) -> Vec<RelationShapes> {
         relation_shapes(&self.plan, self.db)
+    }
+
+    /// How rows of each table the model names are named as objects, which is what a
+    /// consumer asking the authorization service about one changed row has to spell.
+    ///
+    /// Beside [`Translation::relations`] and read with it: the relations say what a type
+    /// grants, this says which table's rows that type is.
+    #[must_use]
+    pub fn row_naming(&self) -> Vec<RowNaming> {
+        row_naming(&self.plan, self.db)
     }
 
     /// The outputs, refused while any expression went unhandled.

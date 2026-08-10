@@ -19,6 +19,7 @@ pub mod records;
 pub mod relations;
 /// Shared helpers for stable and valid role-based relation naming.
 pub(crate) mod role_relations;
+pub mod row_naming;
 /// SQL queries that populate `OpenFGA` relationship tuples from live data.
 pub mod tuple_generator;
 pub mod well_known;

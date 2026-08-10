@@ -29,11 +29,14 @@ use crate::classifier::patterns::{
     PolicyCommand, PolicyMode,
 };
 use crate::classifier::policy_classifier::classify_expr;
-use crate::generator::model_generator::{build_plan_typing, GeneratorSettings, TypeScope};
+use crate::generator::model_generator::{
+    build_plan_typing, GeneratorSettings, SchemaPlan, TypeScope, UsersetExpr,
+};
 use crate::generator::notes::TranslationNote;
 use crate::generator::records::{RecordDerivation, RecordTemplate, ValueSource};
 use crate::generator::relations::{relation_shapes, RelationShapes};
-use crate::generator::well_known::USER_TYPE;
+use crate::generator::row_naming::row_naming;
+use crate::generator::well_known::{CAN_SELECT_RELATION, USER_TYPE};
 use crate::parser::names::{lookup_table, same_identifier};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 
@@ -132,28 +135,38 @@ pub fn describe_membership_term<DB: DatabaseLike>(
     );
 
     let relations = relation_shapes(&plan, db);
-    let derived = derive_chain(&relations, guarded_table);
+    // One source for "what is this table called", shared with `Translation::row_naming`,
+    // so the type this reports and the type a consumer names the row with cannot differ.
+    // A table the model names no row of has no chain either, which is the same refusal.
+    let derived = row_naming(&plan, db)
+        .into_iter()
+        .find(|entry| same_table(db, &entry.table, guarded_table))
+        .map_or(Err(0), |entry| {
+            derive_chain(&relations, guarded_table, &entry.type_name)
+                .map(|chain| (entry.type_name, chain))
+        });
 
     // Asked before the notes, since a related table carrying policies of its own makes
     // the plan report a threshold that had nothing to do with it: this surface never
     // classified that table's policies, and under this rule it never has to.
-    if let Ok((object_type, chain)) = &derived {
-        if let TermChain::Through {
+    if let Ok((
+        object_type,
+        chain @ TermChain::Through {
             through_type,
             member,
             ..
-        } = chain
-        {
-            let named = chain_relations(&relations, object_type, chain);
-            if let Some(table) = caller_side_table(&named, through_type, member) {
-                if lookup_table(db, &table)
-                    .is_some_and(|found| found.has_row_level_security(db) != Ok(false))
-                {
-                    return Err(refuse(format!(
-                        "'{table}' carries its own read rules, so the same filter run as SQL \
-                         answers differently for a reader exempt from them"
-                    )));
-                }
+        },
+    )) = &derived
+    {
+        let named = chain_relations(&relations, object_type, chain);
+        if let Some(table) = caller_side_table(&named, through_type, member) {
+            if lookup_table(db, &table)
+                .is_some_and(|found| found.has_row_level_security(db) != Ok(false))
+            {
+                return Err(refuse(format!(
+                    "'{table}' carries its own read rules, so the same filter run as SQL answers \
+                     differently for a reader exempt from them"
+                )));
             }
         }
     }
@@ -181,6 +194,13 @@ pub fn describe_membership_term<DB: DatabaseLike>(
             )
         })
     })?;
+
+    // The chain answers the filter only when it is the whole rule. An intersection asks
+    // for more than the chain reaches, and a union is satisfied without it, so serving
+    // the chain alone is a wrong allow in one direction or a wrong deny in the other.
+    if let Some(reason) = rule_beyond_the_chain(&plan, &object_type, &chain) {
+        return Err(refuse(reason));
+    }
     let named = chain_relations(&relations, &object_type, &chain);
     Ok(TermShapes {
         object_type,
@@ -226,7 +246,56 @@ fn synthetic_policy(table: &str, expr: &Expr, classified: &ClassifiedExpr) -> Cl
     }
 }
 
-/// The type the filtered table maps to, and the chain out of one of its rows.
+/// Why the compiled rule asks for something the chain does not answer, or `None` when the
+/// chain is the whole rule.
+///
+/// Read off the plan's own expression rather than counted off the shapes: a half of the
+/// filter that compiles to a gate rather than to a record leaves the shapes looking
+/// complete while the rule says otherwise.
+fn rule_beyond_the_chain(
+    plan: &SchemaPlan,
+    object_type: &str,
+    chain: &TermChain,
+) -> Option<String> {
+    let rule = plan
+        .types
+        .iter()
+        .find(|type_plan| type_plan.type_name == object_type)
+        .and_then(|type_plan| type_plan.computed_relations.get(CAN_SELECT_RELATION))?;
+    let answered = match (rule, chain) {
+        (UsersetExpr::Computed(name), TermChain::Direct { relation }) => name == relation,
+        (
+            UsersetExpr::TupleToUserset { tupleset, computed },
+            TermChain::Through { link, member, .. },
+        ) => tupleset == link && computed == member,
+        _ => false,
+    };
+    if answered {
+        return None;
+    }
+    Some(
+        match rule {
+            UsersetExpr::Intersection(_) => {
+                "this filter narrows further than one chain of records answers, so the chain \
+             alone admits rows the filter refuses"
+            }
+            UsersetExpr::Union(_) => {
+                "a row satisfies this filter more than one way, and no single chain of records \
+             answers it"
+            }
+            UsersetExpr::Exclusion { .. } => {
+                "this filter subtracts from what the chain reaches, and no record can carry a \
+             subtraction"
+            }
+            UsersetExpr::Computed(_) | UsersetExpr::TupleToUserset { .. } => {
+                "the rule this filter compiles to is not the chain of records beside it"
+            }
+        }
+        .to_string(),
+    )
+}
+
+/// The chain out of one row of the filtered table, whose type the caller already knows.
 ///
 /// Read off the shapes the plan produced rather than off the pattern, so the chain and the
 /// shapes returned beside it cannot describe different filters. The link out of the
@@ -237,9 +306,13 @@ fn synthetic_policy(table: &str, expr: &Expr, classified: &ClassifiedExpr) -> Cl
 fn derive_chain(
     relations: &[RelationShapes],
     guarded_table: &str,
-) -> Result<(String, TermChain), usize> {
-    let mut links: Vec<(String, String, String)> = Vec::new();
+    object_type: &str,
+) -> Result<TermChain, usize> {
+    let mut links: Vec<(String, String)> = Vec::new();
     for entry in relations {
+        if entry.type_name != object_type {
+            continue;
+        }
         for shape in &entry.shapes {
             let RecordDerivation::FromRow {
                 table, template, ..
@@ -251,34 +324,35 @@ fn derive_chain(
             {
                 continue;
             }
-            links.push((
-                template.object_type.clone(),
-                entry.relation.clone(),
-                template.subject_type.clone(),
-            ));
+            links.push((entry.relation.clone(), template.subject_type.clone()));
         }
     }
 
-    let [(object_type, relation, subject_type)] = links.as_slice() else {
+    let [(relation, subject_type)] = links.as_slice() else {
         return Err(links.len());
     };
     if subject_type == USER_TYPE {
-        return Ok((
-            object_type.clone(),
-            TermChain::Direct {
-                relation: relation.clone(),
-            },
-        ));
+        return Ok(TermChain::Direct {
+            relation: relation.clone(),
+        });
     }
     let member = member_relation(relations, subject_type).ok_or(0_usize)?;
-    Ok((
-        object_type.clone(),
-        TermChain::Through {
-            link: relation.clone(),
-            through_type: subject_type.clone(),
-            member,
-        },
-    ))
+    Ok(TermChain::Through {
+        link: relation.clone(),
+        through_type: subject_type.clone(),
+        member,
+    })
+}
+
+/// Whether two names resolve to one table of `db`, falling back to comparing the
+/// spellings when neither resolves.
+fn same_table<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> bool {
+    match (lookup_table(db, left), lookup_table(db, right)) {
+        (Some(one), Some(other)) => {
+            one.table_schema() == other.table_schema() && one.table_name() == other.table_name()
+        }
+        _ => same_identifier(left, right),
+    }
 }
 
 /// Whether a shape names an object of the type its relation is defined on, from a value

@@ -218,7 +218,12 @@ fn context_of(context: &serde_json::Value, sql: &str) -> RecordContextValue {
 fn rows_of(conn: &mut PgConnection, table: &str) -> Vec<serde_json::Value> {
     // The table is discovered from the description at runtime, so the typed DSL
     // cannot name it. `to_jsonb` keeps every column without a per-table struct.
-    let sql = format!("SELECT to_jsonb(t) AS row FROM \"{table}\" t");
+    let quoted = table
+        .split('.')
+        .map(|part| format!("\"{part}\""))
+        .collect::<Vec<_>>()
+        .join(".");
+    let sql = format!("SELECT to_jsonb(t) AS row FROM {quoted} t");
     let rows: Vec<JsonRow> = diesel::sql_query(&sql)
         .load(conn)
         .unwrap_or_else(|error| panic!("failed to read rows of {table}: {error}"));
@@ -1285,4 +1290,124 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     }
 
     assert!(allowed > 0 && denied > 0, "the case has to cut both ways");
+}
+
+/// A schema whose naming is not the obvious one: two tables canonicalise alike, so one
+/// takes a suffix, and a third is keyed by two columns.
+const NAMING_SCHEMA: &str = "
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE a.notes (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE b.notes (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE parts (order_id TEXT, line_no INT, owner_id TEXT, PRIMARY KEY (order_id, line_no));
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE a.notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE b.notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE parts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON a.notes FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY q ON b.notes FOR SELECT USING (owner_id = auth_current_user_id());
+CREATE POLICY r ON parts FOR SELECT USING (owner_id = auth_current_user_id());
+";
+
+/// Keys chosen for what the encoder has to survive: a separator inside a value, a space,
+/// and a non-ASCII character, each of which the object name escapes rather than passes on.
+const NAMING_SEED: &str = "
+INSERT INTO a.notes (id, owner_id) VALUES ('n1', 'alice'), ('a|b', 'bob');
+INSERT INTO b.notes (id, owner_id) VALUES ('n1', 'carol'), ('two words', 'dave');
+INSERT INTO parts (order_id, line_no, owner_id) VALUES ('o|1', 2, 'alice'), ('\u{00e9}', 3, 'bob');
+";
+
+/// The name a row-naming entry renders is the name the table's own SQL writes.
+///
+/// A consumer asking the authorization service about one changed row spells the name from
+/// the entry, and the store holds the names the generated SQL loaded. Derived apart, the
+/// two can disagree on the collision suffix, on the key, or on the encoding, and every
+/// question about that row would then be asked about nothing.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(NAMING_SCHEMA)
+        .expect("failed to apply the naming schema");
+    conn.batch_execute(NAMING_SEED)
+        .expect("failed to seed the naming schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        NAMING_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let translation = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let naming = translation.row_naming();
+    assert_eq!(
+        naming.len(),
+        3,
+        "every guarded table is named, got {naming:?}"
+    );
+    // The case is only worth running while the naming is not the obvious one.
+    assert!(
+        naming
+            .iter()
+            .any(|entry| entry.type_name != entry.table && entry.type_name.contains('_')),
+        "one table has to take a collision suffix: {naming:?}"
+    );
+    assert!(
+        naming.iter().any(|entry| entry.key.parts().len() > 1),
+        "one table has to be keyed by two columns: {naming:?}"
+    );
+
+    let queries = translation.outputs_accepting_gaps().tuple_queries();
+    let written: BTreeSet<String> = queries
+        .iter()
+        .filter(|query| !query.sql.trim_start().starts_with("--"))
+        .flat_map(|query| records_from_sql(&mut conn, query))
+        .map(|record| record.object)
+        .collect();
+
+    let mut compared = 0usize;
+    for entry in &naming {
+        let rendered: BTreeSet<String> = rows_of(&mut conn, &entry.table)
+            .iter()
+            .filter_map(|row| {
+                entry
+                    .key
+                    .render(&entry.type_name, &JsonRowValues(row))
+                    .unwrap_or_else(|error| {
+                        panic!("a row of {} cannot be named: {error:?}", entry.table)
+                    })
+            })
+            .collect();
+        let prefix = format!("{}:", entry.type_name);
+        let mine: Vec<&String> = written
+            .iter()
+            .filter(|object| object.starts_with(&prefix))
+            .collect();
+        assert!(
+            !mine.is_empty(),
+            "the SQL wrote no object for {}, so the comparison is vacuous",
+            entry.table
+        );
+        for object in mine {
+            assert!(
+                rendered.contains(object),
+                "the SQL wrote {object} for {}, which the entry's key never renders: {rendered:?}",
+                entry.table
+            );
+            compared += 1;
+        }
+    }
+
+    // A naming that rendered nothing, or a seed that loaded nothing, would pass silently.
+    assert_eq!(
+        compared, 6,
+        "every seeded row is named on both sides, compared {compared}"
+    );
 }

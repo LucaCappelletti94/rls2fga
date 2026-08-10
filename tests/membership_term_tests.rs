@@ -4,12 +4,15 @@
 //! refusals from the decisions recorded there.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::function_registry::{
+    FunctionRegistry, SessionAttribute, SessionAttributeKind,
+};
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::records::{RecordDerivation, ValueSource};
 use rls2fga::generator::relations::RelationShapes;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::term::{describe_membership_term, TermChain, TermShapes};
+use rls2fga::translator::TranslatorBuilder;
 use sqlparser::ast::Expr;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -516,5 +519,121 @@ fn the_callers_threshold_still_refuses() {
     assert!(
         reason.contains("below the threshold"),
         "the refusal names the threshold that dropped it, got: {reason}"
+    );
+}
+
+/// The type a filter reports and the type a consumer names the row with come from one
+/// place, so a schema where the name is not the table's own still agrees.
+#[test]
+fn the_filter_and_the_row_naming_agree_on_the_type() {
+    let sql = "CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE a.notes (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE b.notes (id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE a.notes ENABLE ROW LEVEL SECURITY;
+";
+    let db: ParserDB = parse_schema(sql).expect("the schema should parse");
+    let registry = registry();
+    let compiled = describe_membership_term(
+        &parse_term(&format!("owner_id = {CALLER}")),
+        &db,
+        &registry,
+        "b.notes",
+        ConfidenceLevel::B,
+    )
+    .expect("the filter compiles");
+
+    let named = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_current_user_setting_keys(["app.user_id"])
+        .build()
+        .translate(&db)
+        .row_naming();
+    let entry = named
+        .iter()
+        .find(|entry| entry.table == "a.notes")
+        .expect("the guarded table is named");
+    assert_ne!(
+        compiled.object_type, entry.type_name,
+        "two tables canonicalising alike must not share a type"
+    );
+    assert_eq!(
+        compiled.object_type, "notes_4ad706ae",
+        "the filter reports the suffixed type the model assigned b.notes"
+    );
+}
+
+/// A filter that also narrows on the row's own value is not answered by the chain alone.
+/// Serving the chain admits every row the relationship reaches, whatever the other half
+/// says, which is the wrong-allow direction.
+#[test]
+fn a_filter_that_narrows_further_is_refused() {
+    let db: ParserDB = parse_schema(
+        "CREATE TABLE customers (id TEXT PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id TEXT);
+CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), tenant TEXT);
+",
+    )
+    .expect("the schema should parse");
+    let mut registry = registry();
+    registry.declare_session_attributes([SessionAttribute::setting(
+        "app.tenant_id",
+        SessionAttributeKind::ScalarAttribute,
+    )]);
+
+    let term = parse_term(&format!(
+        "tenant = current_setting('app.tenant_id', true) \
+         AND order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"
+    ));
+    let refusal = describe_membership_term(&term, &db, &registry, "line_items", ConfidenceLevel::B)
+        .expect_err("half the filter cannot be dropped");
+    assert!(
+        refusal.reason.contains("narrows"),
+        "the refusal says the filter asks for more than the chain, got: {}",
+        refusal.reason
+    );
+}
+
+/// Assertion 5 of the filter request: a correlation the bridge cannot honour is refused
+/// rather than compiled against a column the filter never mentioned.
+#[test]
+fn a_correlation_the_bridge_cannot_honour_is_refused() {
+    let reason = refuse_on(
+        "CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE doc_members(doc_id TEXT, user_id TEXT);
+",
+        "docs",
+        &format!(
+            "EXISTS (SELECT 1 FROM doc_members m \
+             WHERE m.doc_id = nonexistent AND m.user_id = {CALLER})"
+        ),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("has no column 'nonexistent'"),
+        "the refusal names the column the filter correlates, got: {reason}"
+    );
+}
+
+/// The correlation that can be honoured is keyed on the column the filter compares, even
+/// where the filtered table carries a column named like the subquery's projection.
+#[test]
+fn a_correlation_the_bridge_honours_reads_the_compared_column() {
+    let shapes = compile_on(
+        "CREATE TABLE customers(id TEXT PRIMARY KEY);
+CREATE TABLE orders(id INTEGER PRIMARY KEY, customer_id TEXT, status TEXT);
+CREATE TABLE line_items(id INTEGER PRIMARY KEY, sku TEXT, status TEXT);
+",
+        "line_items",
+        &format!("sku IN (SELECT status FROM orders WHERE customer_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Through { link, .. } = &shapes.chain else {
+        panic!("the filter reaches the caller through the order's status: {shapes:?}");
+    };
+    assert_eq!(
+        row_shape(entry(&shapes, "line_items", link)),
+        ("line_items".to_string(), "sku".to_string()),
+        "the link reads the column the filter compares, not the one it is named after"
     );
 }

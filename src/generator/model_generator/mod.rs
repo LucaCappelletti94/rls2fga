@@ -199,6 +199,11 @@ pub(crate) struct TypePlan {
     /// delegates instead of guessing. An entry naming a relation this plan never
     /// defines is inert.
     pub narrowed_relations: BTreeSet<String>,
+    /// Table whose rows this type names, in the schema's own spelling, absent for a
+    /// type nothing keys on a row (`user`, a team, a holder). Written where the type
+    /// name is bound to the table, so nothing has to re-derive the association from
+    /// the shapes, where two tables can key a row alike.
+    pub source_table: Option<String>,
 }
 
 /// Subjects the generator's own structural relations hold, or `None` when the
@@ -227,6 +232,15 @@ impl TypePlan {
         Self {
             type_name: type_name.into(),
             ..Self::default()
+        }
+    }
+
+    /// Record which table's rows this type names, keeping the first spelling bound to
+    /// it: a parent reached from a child is bound before the parent's own group is
+    /// built, and both name one table.
+    fn names_rows_of(&mut self, table: &str) {
+        if self.source_table.is_none() {
+            self.source_table = Some(table.to_string());
         }
     }
 
@@ -554,6 +568,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         let mut table_plan = all_types
             .remove(&canonical_table_name)
             .unwrap_or_else(|| TypePlan::new(&canonical_table_name));
+        table_plan.names_rows_of(&source_table_name);
 
         // Once per table: `by_table` holds each table exactly once.
         let children = lookup_table(db, &source_table_name)
@@ -3150,6 +3165,11 @@ fn translate_pattern<DB: DatabaseLike>(
                 );
             } else {
                 ensure_member_type(all_types, &parent_type);
+                // Only a declared reference names a table. The fallback derives the type
+                // from the column's name, and no row of any table is named by it.
+                if let Some(referenced) = referenced_table_for_fk_col(db, join_table, fk_column) {
+                    bind_row_source(all_types, &parent_type, referenced, db);
+                }
             }
 
             if let Some(extra) = extra_predicate_sql {
@@ -3289,6 +3309,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 *all_types
                     .entry(parent_type.clone())
                     .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
+                bind_row_source(all_types, &parent_type, parent_table, db);
                 expr
             };
 
@@ -3774,6 +3795,22 @@ fn ensure_pg_role_relation(all_types: &mut BTreeMap<String, TypePlan>, relation:
         .entry(PG_ROLE_TYPE.to_string())
         .or_insert_with(|| TypePlan::new(PG_ROLE_TYPE))
         .ensure_direct(relation, vec![DirectSubject::Type(USER_TYPE.to_string())]);
+}
+
+/// Bind a parent type to the table whose rows it names, in the spelling the plan groups
+/// tables under, so an entry the loop writes and one a parent reference writes agree.
+fn bind_row_source<DB: DatabaseLike>(
+    all_types: &mut BTreeMap<String, TypePlan>,
+    type_name: &str,
+    table: &str,
+    db: &DB,
+) {
+    let Some(spelling) = lookup_table(db, table).map(qualified_table_name) else {
+        return;
+    };
+    if let Some(plan) = all_types.get_mut(type_name) {
+        plan.names_rows_of(&spelling);
+    }
 }
 
 fn ensure_role_threshold_scaffold(
