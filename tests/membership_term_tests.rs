@@ -10,6 +10,7 @@ use rls2fga::classifier::function_registry::{
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::records::{RecordDerivation, ValueSource};
 use rls2fga::generator::relations::RelationShapes;
+use rls2fga::parser::identifiers::RelationName;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::term::{describe_membership_term, TermChain, TermShapes};
 use rls2fga::translator::TranslatorBuilder;
@@ -81,14 +82,18 @@ fn row_shape(entry: &RelationShapes) -> (String, String) {
             entry.relation
         );
     };
-    (table.clone(), subject.clone())
+    (table.clone(), subject.clone().to_string())
 }
 
-fn entry<'a>(shapes: &'a TermShapes, type_name: &str, relation: &str) -> &'a RelationShapes {
+fn entry<'a>(
+    shapes: &'a TermShapes,
+    type_name: &str,
+    relation: &RelationName,
+) -> &'a RelationShapes {
     shapes
         .relations
         .iter()
-        .find(|entry| entry.type_name == type_name && entry.relation == relation)
+        .find(|entry| entry.type_name.as_str() == type_name && entry.relation == *relation)
         .unwrap_or_else(|| {
             panic!(
                 "{type_name}#{relation} is missing, got {:?}",
@@ -323,7 +328,7 @@ CREATE TABLE line_items (order_id INTEGER REFERENCES orders(id), line_no INTEGER
         .parts()
         .iter()
         .map(|part| match part {
-            ValueSource::Column(name) => name.clone(),
+            ValueSource::Column(name) => name.to_string(),
             other => panic!("a key column is a column, got {other:?}"),
         })
         .collect();

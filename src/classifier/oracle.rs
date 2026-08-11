@@ -20,7 +20,9 @@
 //!
 //! ```
 //! use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
-//! use rls2fga::classifier::patterns::{ClassifiedExpr, ConfidenceLevel, PatternClass};
+//! use rls2fga::classifier::patterns::{
+//!     ClassifiedExpr, ConfidenceLevel, ConstantBool, PatternClass,
+//! };
 //! use rls2fga::parser::sql_parser::parse_schema;
 //! use rls2fga::translator::TranslatorBuilder;
 //!
@@ -32,7 +34,7 @@
 //!         // a row readable by anyone.
 //!         if refused.sql_text().contains("flags & 4") {
 //!             OracleAnswer::Classified(Box::new(ClassifiedExpr {
-//!                 pattern: PatternClass::P10ConstantBool { value: true },
+//!                 pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
 //!                 confidence: ConfidenceLevel::A,
 //!             }))
 //!         } else {
@@ -63,7 +65,11 @@
 use crate::no_std_prelude::*;
 
 use crate::classifier::patterns::{
-    composite_confidence, ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, PatternClass,
+    composite_confidence, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
+    CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
+    ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, JsonbFieldOwnership,
+    MembershipInCallerSet, NumericThreshold, ParentInheritance, PatternClass, RoleNameInList,
+    RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
 };
 
 /// Which clause of a policy an expression came from.
@@ -222,7 +228,7 @@ where
 /// Apply `oracle` to `expr` and everything nested in it, regrading on the way out.
 ///
 /// Returns `true` when anything below `expr` changed, which is what tells the caller to
-/// regrade.
+/// regrade in its turn.
 fn consult_expr<O>(
     expr: &mut ClassifiedExpr,
     policy_name: &str,
@@ -233,7 +239,7 @@ fn consult_expr<O>(
 where
     O: PolicyOracle + ?Sized,
 {
-    if let PatternClass::Unknown { sql_text, reason } = &expr.pattern {
+    if let PatternClass::Unknown(UnclassifiedExpr { sql_text, reason }) = &expr.pattern {
         let refused = RefusedExpr {
             policy_name,
             clause,
@@ -245,7 +251,7 @@ where
             // A denial nobody doubts, so it passes any threshold and composes as the
             // false branch of whatever encloses it.
             OracleAnswer::Denied => ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: false },
+                pattern: PatternClass::P10ConstantBool(ConstantBool { value: false }),
                 confidence: ConfidenceLevel::A,
             },
             OracleAnswer::Classified(supplied) => *supplied,
@@ -263,57 +269,51 @@ where
 
     // Every variant holding a `ClassifiedExpr`. Matched exhaustively on purpose: a new
     // nesting variant must fail to compile here rather than hide a refusal from the
-    // oracle.
-    let changed = match &mut expr.pattern {
-        PatternClass::P5ParentInheritance { inner_pattern, .. } => {
+    // oracle. Each nesting arm yields the grade it now earns, so the recursion and the
+    // regrade are one decision: a second match deciding the grade would keep the arms
+    // compiler-checked while letting a new one silently hold the grade its refused part
+    // dragged it to.
+    let regraded = match &mut expr.pattern {
+        PatternClass::P5ParentInheritance(ParentInheritance { inner_pattern, .. }) => {
             consult_expr(inner_pattern, policy_name, clause, oracle, answered)
+                .then(|| composite_confidence([inner_pattern.as_ref()]))
         }
-        PatternClass::P7AbacAnd {
+        PatternClass::P7AbacAnd(AbacAnd {
             relationship_part, ..
-        } => consult_expr(relationship_part, policy_name, clause, oracle, answered),
-        PatternClass::P8Composite { parts, .. } => {
+        }) => consult_expr(relationship_part, policy_name, clause, oracle, answered)
+            .then(|| composite_confidence([relationship_part.as_ref()])),
+        PatternClass::P8Composite(Composite { parts, .. }) => {
             let mut any = false;
             for part in parts.iter_mut() {
                 any |= consult_expr(part, policy_name, clause, oracle, answered);
             }
-            any
+            any.then(|| composite_confidence(parts.iter()))
         }
         // The declared request-scoped shapes nest no expression, so nothing inside them
         // can hold a refusal the oracle has not seen.
-        PatternClass::P18MembershipInCallerSet { .. }
-        | PatternClass::P14RowValueInCallerSet { .. }
-        | PatternClass::P15RowValueEqualsCallerScalar { .. }
-        | PatternClass::P16ConstantInCallerSet { .. }
-        | PatternClass::P17CallerScalarEqualsConstant { .. }
-        | PatternClass::P1NumericThreshold { .. }
-        | PatternClass::P2RoleNameInList { .. }
-        | PatternClass::P3DirectOwnership { .. }
-        | PatternClass::P4ExistsMembership { .. }
-        | PatternClass::P6BooleanFlag { .. }
-        | PatternClass::P9AttributeCondition { .. }
-        | PatternClass::P10ConstantBool { .. }
-        | PatternClass::P11ArrayMembership { .. }
-        | PatternClass::P12JsonbFieldOwnership { .. }
-        | PatternClass::P13UncorrelatedMembership { .. }
-        | PatternClass::Unknown { .. } => false,
+        PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
+        | PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { .. })
+        | PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { .. })
+        | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
+        | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
+        | PatternClass::P1NumericThreshold(NumericThreshold { .. })
+        | PatternClass::P2RoleNameInList(RoleNameInList { .. })
+        | PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P6BooleanFlag(BooleanFlag { .. })
+        | PatternClass::P9AttributeCondition(AttributeCondition { .. })
+        | PatternClass::P10ConstantBool(ConstantBool { .. })
+        | PatternClass::P11ArrayMembership(ArrayMembership { .. })
+        | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. })
+        | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
+        | PatternClass::Unknown(UnclassifiedExpr { .. }) => None,
     };
 
-    if changed {
-        expr.confidence = regraded(&expr.pattern, expr.confidence);
-    }
-    changed
-}
-
-/// The grade an enclosing pattern earns once a part below it was answered.
-fn regraded(pattern: &PatternClass, current: ConfidenceLevel) -> ConfidenceLevel {
-    match pattern {
-        PatternClass::P8Composite { parts, .. } => composite_confidence(parts.iter()),
-        PatternClass::P5ParentInheritance { inner_pattern, .. } => {
-            composite_confidence([inner_pattern.as_ref()])
+    match regraded {
+        Some(confidence) => {
+            expr.confidence = confidence;
+            true
         }
-        PatternClass::P7AbacAnd {
-            relationship_part, ..
-        } => composite_confidence([relationship_part.as_ref()]),
-        _ => current,
+        None => false,
     }
 }

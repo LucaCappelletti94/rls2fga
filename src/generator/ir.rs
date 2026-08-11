@@ -9,17 +9,18 @@ use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::relations::RequestComparison;
 use crate::generator::well_known::{
-    MEMBER_RELATION, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PUBLIC_RELATION, TEAM_TYPE,
+    member_relation, owner_team_relation, owner_user_relation, public_relation, TEAM_TYPE,
 };
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use crate::parser::identifiers::{ColumnName, RelationName, TypeName};
 
 /// Principal table (users or teams) named by a role-threshold function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrincipalInfo {
     /// Table that stores the principal entities.
     pub table: String,
-    pub pk_col: String,
+    pub pk_col: ColumnName,
 }
 
 /// One kind of access-control fact, expressible as a static SQL query.
@@ -30,11 +31,11 @@ pub(crate) enum TupleSource {
     /// P3 ownership. Produces `(type:pk, relation, user:owner_col)`.
     DirectOwnership {
         table: String,
-        pk_cols: Vec<String>,
-        owner_col: String,
+        pk_cols: Vec<ColumnName>,
+        owner_col: ColumnName,
         /// One relation per column, so two ownership columns cannot union their
         /// principals.
-        relation: String,
+        relation: RelationName,
     },
 
     /// P11 array membership. Produces `(type:pk, relation, user:element)` by
@@ -42,56 +43,56 @@ pub(crate) enum TupleSource {
     /// `= ANY` refuses it.
     ArrayMembership {
         table: String,
-        pk_cols: Vec<String>,
-        array_col: String,
-        relation: String,
+        pk_cols: Vec<ColumnName>,
+        array_col: ColumnName,
+        relation: RelationName,
     },
 
     /// P12 jsonb field ownership. Produces `(type:pk, relation, user:field)` by
     /// extracting `path` as text, dropping the NULL a missing key yields.
     JsonbFieldOwnership {
         table: String,
-        pk_cols: Vec<String>,
-        column: String,
+        pk_cols: Vec<ColumnName>,
+        column: ColumnName,
         path: Vec<String>,
-        relation: String,
+        relation: RelationName,
     },
 
     /// P1/P2 user-side ownership. Produces `(type:pk, owner_user, user:owner_col)`
     /// filtered to the user principal table.
     RoleOwnerUser {
         table: String,
-        pk_cols: Vec<String>,
-        owner_col: String,
+        pk_cols: Vec<ColumnName>,
+        owner_col: ColumnName,
         user_table: String,
-        user_pk_col: String,
+        user_pk_col: ColumnName,
     },
 
     /// P1/P2 team-side ownership. Produces `(type:pk, owner_team, team:owner_col)`
     /// filtered to the team principal table.
     RoleOwnerTeam {
         table: String,
-        pk_cols: Vec<String>,
-        owner_col: String,
+        pk_cols: Vec<ColumnName>,
+        owner_col: ColumnName,
         team_table: String,
-        team_pk_col: String,
+        team_pk_col: ColumnName,
     },
 
     /// P1/P2 explicit grants. Produces one
     /// `(type:resource_col, grant_relation, user:grantee_col)` query per role case.
     ExplicitGrants {
         table: String,
-        pk_cols: Vec<String>,
+        pk_cols: Vec<ColumnName>,
         /// Column of `table` joined to the grant table.
-        grant_join_col: String,
+        grant_join_col: ColumnName,
         grant_table: String,
         /// Column of `grant_table` holding the integer role level.
-        grant_role_col: String,
-        grant_grantee_col: String,
-        grant_resource_col: String,
+        grant_role_col: ColumnName,
+        grant_grantee_col: ColumnName,
+        grant_resource_col: ColumnName,
         /// `(level, grant_relation, original_name)`. The relation goes into the SQL
         /// `CASE`, the original name into the comment.
-        role_cases: Vec<(i32, String, String)>,
+        role_cases: Vec<(i32, RelationName, String)>,
         user_principal: Option<PrincipalInfo>,
         team_principal: Option<PrincipalInfo>,
     },
@@ -99,8 +100,8 @@ pub(crate) enum TupleSource {
     /// P1/P2 team membership. Produces `(team:team_col, member, user:user_col)`.
     TeamMembership {
         membership_table: String,
-        team_col: String,
-        user_col: String,
+        team_col: ColumnName,
+        user_col: ColumnName,
     },
 
     /// P4 membership, from `EXISTS` or an `IN` subquery.
@@ -108,8 +109,8 @@ pub(crate) enum TupleSource {
     ExistsMembership {
         join_table: String,
         /// Column of `join_table` referencing the parent resource.
-        fk_col: String,
-        user_col: String,
+        fk_col: ColumnName,
+        user_col: ColumnName,
         /// Resolved from the table `fk_col` references, not from its name.
         parent_type: String,
         /// Residual predicate no tuple can express.
@@ -122,25 +123,25 @@ pub(crate) enum TupleSource {
     /// lookups.
     ParentBridge {
         table: String,
-        fk_col: String,
+        fk_col: ColumnName,
         parent_type: String,
         /// Named after `parent_type` but subject to the shorter relation-name limit,
         /// so the two can differ.
-        relation: String,
+        relation: RelationName,
     },
 
     /// P6 public flag. Produces `(type:pk, public_viewer, user:*)` where the flag holds.
     PublicFlag {
         table: String,
-        pk_cols: Vec<String>,
-        flag_col: String,
+        pk_cols: Vec<ColumnName>,
+        flag_col: ColumnName,
     },
 
     /// P9 attribute guard over a literal constant. Produces
     /// `(type:pk, public_viewer, user:*)` for the rows the guard admits.
     AttributeGate {
         table: String,
-        pk_cols: Vec<String>,
+        pk_cols: Vec<ColumnName>,
         predicate: AttributePredicate,
     },
 
@@ -149,12 +150,12 @@ pub(crate) enum TupleSource {
     /// row's own value for the parameter the request cannot supply.
     ConditionalAttributeGate {
         table: String,
-        pk_cols: Vec<String>,
-        relation: String,
+        pk_cols: Vec<ColumnName>,
+        relation: RelationName,
         condition: String,
         /// Condition parameter the row supplies, and the column it reads.
         row_parameter: String,
-        column: String,
+        column: ColumnName,
     },
 
     /// A declared request-scoped value the service compares per check. Produces
@@ -163,8 +164,8 @@ pub(crate) enum TupleSource {
     /// named.
     SessionAttributeGate {
         table: String,
-        pk_cols: Vec<String>,
-        relation: String,
+        pk_cols: Vec<ColumnName>,
+        relation: RelationName,
         condition: String,
         /// Condition parameter the tuple supplies, and where its value comes from.
         row_parameter: RowParameter,
@@ -186,13 +187,13 @@ pub(crate) enum TupleSource {
         /// Table whose rows record the grants.
         join_table: String,
         /// Column of `join_table` naming the guarded row, which the object is keyed on.
-        fk_col: String,
+        fk_col: ColumnName,
         /// Column of `join_table` holding the value the caller's set must contain.
-        member_col: String,
+        member_col: ColumnName,
         /// Type the objects belong to, named here because the facts are read from the
         /// join table rather than from the type's own rows.
         parent_type: String,
-        relation: String,
+        relation: RelationName,
         condition: String,
         /// Condition parameter the membership row supplies.
         row_parameter: String,
@@ -207,13 +208,16 @@ pub(crate) enum TupleSource {
     },
 
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
-    ConstantTrue { table: String, pk_cols: Vec<String> },
+    ConstantTrue {
+        table: String,
+        pk_cols: Vec<ColumnName>,
+    },
 
     /// Role-scoped policy. Produces `(type:pk, scope_relation, pg_role:pg_role)`.
     PolicyScope {
         table: String,
-        pk_cols: Vec<String>,
-        scope_relation: String,
+        pk_cols: Vec<ColumnName>,
+        scope_relation: RelationName,
         pg_role: String,
     },
 
@@ -221,8 +225,8 @@ pub(crate) enum TupleSource {
     /// holder reaches all of them.
     HolderBridge {
         table: String,
-        pk_cols: Vec<String>,
-        relation: String,
+        pk_cols: Vec<ColumnName>,
+        relation: RelationName,
         holder_type: String,
     },
 
@@ -230,7 +234,7 @@ pub(crate) enum TupleSource {
     HolderMembers {
         holder_type: String,
         member_table: String,
-        user_col: String,
+        user_col: ColumnName,
         extra_predicate_sql: Option<String>,
     },
 
@@ -272,8 +276,8 @@ impl TupleSource {
 
     /// The `(type, relation)` pairs this source populates. Empty means it carries no
     /// tuples, so it is never dropped as unreachable.
-    pub(crate) fn feeds(&self, owner_type: &str) -> Vec<(String, String)> {
-        let own = |relation: &str| vec![(owner_type.to_string(), relation.to_string())];
+    pub(crate) fn feeds(&self, owner_type: &TypeName) -> Vec<(String, RelationName)> {
+        let own = |relation: &RelationName| vec![(owner_type.to_string(), relation.clone())];
         match self {
             Self::DirectOwnership { relation, .. }
             | Self::ArrayMembership { relation, .. }
@@ -283,23 +287,23 @@ impl TupleSource {
             | Self::SessionAttributeGate { relation, .. }
             | Self::SessionAttributeMembershipGate { relation, .. }
             | Self::HolderBridge { relation, .. } => own(relation),
-            Self::RoleOwnerUser { .. } => own(OWNER_USER_RELATION),
-            Self::RoleOwnerTeam { .. } => own(OWNER_TEAM_RELATION),
+            Self::RoleOwnerUser { .. } => own(&owner_user_relation()),
+            Self::RoleOwnerTeam { .. } => own(&owner_team_relation()),
             Self::ExplicitGrants { role_cases, .. } => role_cases
                 .iter()
                 .map(|(_, relation, _)| (owner_type.to_string(), relation.clone()))
                 .collect(),
             Self::TeamMembership { .. } => {
-                vec![(TEAM_TYPE.to_string(), MEMBER_RELATION.to_string())]
+                vec![(TEAM_TYPE.to_string(), member_relation())]
             }
             Self::ExistsMembership { parent_type, .. } => {
-                vec![(parent_type.clone(), MEMBER_RELATION.to_string())]
+                vec![(parent_type.clone(), member_relation())]
             }
             Self::HolderMembers { holder_type, .. } => {
-                vec![(holder_type.clone(), MEMBER_RELATION.to_string())]
+                vec![(holder_type.clone(), member_relation())]
             }
             Self::PublicFlag { .. } | Self::AttributeGate { .. } | Self::ConstantTrue { .. } => {
-                own(PUBLIC_RELATION)
+                own(&public_relation())
             }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
             Self::Skipped { .. } => Vec::new(),
@@ -449,7 +453,7 @@ impl TupleSource {
                 format!(
                     "sess:{table}:{pk_cols:?}:{relation}:{condition}:{}:{}:{request_parameter}:{comparison:?}",
                     row_parameter.parameter(),
-                    row_parameter.column().unwrap_or_default()
+                    row_parameter.column().map_or("", ColumnName::as_str)
                 )
             }
             Self::SessionAttributeMembershipGate {
@@ -517,25 +521,33 @@ mod tests {
     fn dedup_key_differentiates_explicit_grants_across_tables() {
         let grants_a = TupleSource::ExplicitGrants {
             table: "table_a".to_string(),
-            pk_cols: vec!["id".to_string()],
-            grant_join_col: "resource_id".to_string(),
+            pk_cols: vec![ColumnName::from_stored("id")],
+            grant_join_col: ColumnName::from_stored("resource_id"),
             grant_table: "grants".to_string(),
-            grant_role_col: "role".to_string(),
-            grant_grantee_col: "grantee".to_string(),
-            grant_resource_col: "resource_id".to_string(),
-            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            grant_role_col: ColumnName::from_stored("role"),
+            grant_grantee_col: ColumnName::from_stored("grantee"),
+            grant_resource_col: ColumnName::from_stored("resource_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("viewer"),
+                "viewer".to_string(),
+            )],
             user_principal: None,
             team_principal: None,
         };
         let grants_b = TupleSource::ExplicitGrants {
             table: "table_b".to_string(),
-            pk_cols: vec!["id".to_string()],
-            grant_join_col: "resource_id".to_string(),
+            pk_cols: vec![ColumnName::from_stored("id")],
+            grant_join_col: ColumnName::from_stored("resource_id"),
             grant_table: "grants".to_string(),
-            grant_role_col: "role".to_string(),
-            grant_grantee_col: "grantee".to_string(),
-            grant_resource_col: "resource_id".to_string(),
-            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            grant_role_col: ColumnName::from_stored("role"),
+            grant_grantee_col: ColumnName::from_stored("grantee"),
+            grant_resource_col: ColumnName::from_stored("resource_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("viewer"),
+                "viewer".to_string(),
+            )],
             user_principal: None,
             team_principal: None,
         };
@@ -550,13 +562,13 @@ mod tests {
     fn dedup_key_differentiates_team_membership_by_columns() {
         let mem_a = TupleSource::TeamMembership {
             membership_table: "team_members".to_string(),
-            team_col: "team_id".to_string(),
-            user_col: "user_id".to_string(),
+            team_col: ColumnName::from_stored("team_id"),
+            user_col: ColumnName::from_stored("user_id"),
         };
         let mem_b = TupleSource::TeamMembership {
             membership_table: "team_members".to_string(),
-            team_col: "group_id".to_string(),
-            user_col: "member_id".to_string(),
+            team_col: ColumnName::from_stored("group_id"),
+            user_col: ColumnName::from_stored("member_id"),
         };
         assert_ne!(
             mem_a.dedup_key(),
@@ -569,22 +581,22 @@ mod tests {
     fn dedup_key_differentiates_exists_membership_by_user_col_and_predicate() {
         let base = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: "project_id".to_string(),
-            user_col: "user_id".to_string(),
+            fk_col: ColumnName::from_stored("project_id"),
+            user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
             extra_predicate_sql: None,
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: "project_id".to_string(),
-            user_col: "member_id".to_string(),
+            fk_col: ColumnName::from_stored("project_id"),
+            user_col: ColumnName::from_stored("member_id"),
             parent_type: "projects".to_string(),
             extra_predicate_sql: None,
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: "project_id".to_string(),
-            user_col: "user_id".to_string(),
+            fk_col: ColumnName::from_stored("project_id"),
+            user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
             extra_predicate_sql: Some("role = 'admin'".to_string()),
         };

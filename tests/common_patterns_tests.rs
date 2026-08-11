@@ -61,7 +61,7 @@ fn tenant_isolation_is_classified() {
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::P3DirectOwnership { column } => {
+        PatternClass::P3DirectOwnership(DirectOwnership { column }) => {
             assert_eq!(column, "tenant_id");
             assert_eq!(classification.confidence, ConfidenceLevel::A);
         }
@@ -90,16 +90,19 @@ fn compound_or_owner_or_public() {
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::P8Composite { op, parts } => {
+        PatternClass::P8Composite(Composite { op, parts }) => {
             assert_eq!(*op, BoolOp::Or, "Should be an OR composite");
             assert_eq!(parts.len(), 2, "Should have two sub-patterns");
 
-            let has_p3 = parts
-                .iter()
-                .any(|p| matches!(p.pattern, PatternClass::P3DirectOwnership { .. }));
+            let has_p3 = parts.iter().any(|p| {
+                matches!(
+                    p.pattern,
+                    PatternClass::P3DirectOwnership(DirectOwnership { .. })
+                )
+            });
             let has_p6 = parts
                 .iter()
-                .any(|p| matches!(p.pattern, PatternClass::P6BooleanFlag { .. }));
+                .any(|p| matches!(p.pattern, PatternClass::P6BooleanFlag(BooleanFlag { .. })));
             assert!(has_p3, "Should contain P3 (ownership)");
             assert!(has_p6, "Should contain P6 (boolean flag)");
         }
@@ -161,7 +164,7 @@ fn supabase_auth_uid_pattern() {
         assert!(
             matches!(
                 classification.pattern,
-                PatternClass::P3DirectOwnership { ref column } if column == "user_id"
+                PatternClass::P3DirectOwnership(DirectOwnership { ref column }) if column == "user_id"
             ),
             "auth.uid() should classify as direct ownership, got: {:?}",
             classification.pattern
@@ -188,7 +191,7 @@ fn in_subquery_membership() {
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::P4ExistsMembership { join_table, .. } => {
+        PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. }) => {
             assert_eq!(join_table, "team_members");
             assert_eq!(classification.confidence, ConfidenceLevel::A);
         }
@@ -216,12 +219,12 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
     assert!(
         matches!(
             &classification.pattern,
-            PatternClass::P4ExistsMembership {
+            PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
                 fk_column,
                 user_column,
                 ..
-            } if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+            }) if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
         ),
         "wrapped membership policy should classify as P4, got: {:?}",
         classification.pattern
@@ -266,7 +269,7 @@ fn fixture_wrapped_outer_table_membership_predicate_fails_closed_with_unknown_re
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::Unknown { reason, .. } => {
+        PatternClass::Unknown(UnclassifiedExpr { reason, .. }) => {
             assert!(
                 reason.contains("Ambiguous membership pattern"),
                 "unsafe wrapped predicate should fail closed with unknown reason, got: {reason}"
@@ -290,7 +293,7 @@ fn current_user_keyword_equality() {
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::P3DirectOwnership { column } => {
+        PatternClass::P3DirectOwnership(DirectOwnership { column }) => {
             assert_eq!(column, "manager");
             assert_eq!(classification.confidence, ConfidenceLevel::A);
         }
@@ -321,11 +324,11 @@ fn multi_policy_table_classification() {
     let pub_class = published.using_classification.as_ref().unwrap();
 
     match &pub_class.pattern {
-        PatternClass::P9AttributeCondition {
+        PatternClass::P9AttributeCondition(AttributeCondition {
             column,
             predicate: Some(_),
             ..
-        } => {
+        }) => {
             assert_eq!(column, "status");
             // A literal constant is row data, so it grades with the boolean flag.
             assert_eq!(pub_class.confidence, ConfidenceLevel::B);
@@ -342,7 +345,10 @@ fn multi_policy_table_classification() {
         .expect("Should find author_sees_own policy");
     let author_class = author.using_classification.as_ref().unwrap();
     assert!(
-        matches!(author_class.pattern, PatternClass::P3DirectOwnership { .. }),
+        matches!(
+            author_class.pattern,
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        ),
         "author_id = auth() should be P3, got: {:?}",
         author_class.pattern,
     );
@@ -374,11 +380,11 @@ fn role_in_list_classification() {
         .expect("Should have USING classification");
 
     match &classification.pattern {
-        PatternClass::P2RoleNameInList {
+        PatternClass::P2RoleNameInList(RoleNameInList {
             function_name,
             role_names,
             ..
-        } => {
+        }) => {
             assert_eq!(function_name, "get_owner_role");
             assert_eq!(role_names.len(), 3, "Should have 3 integer values");
             assert!(

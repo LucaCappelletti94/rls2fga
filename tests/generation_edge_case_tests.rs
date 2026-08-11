@@ -256,7 +256,7 @@ CREATE POLICY p ON docs FOR SELECT
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("infinite recursion")),
+        matches!(&using.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("infinite recursion")),
         "a subquery reading the guarded table should fail closed, got: {:?}",
         using.pattern
     );
@@ -307,7 +307,7 @@ CREATE POLICY p ON docs FOR SELECT
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")),
+        matches!(&using.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")),
         "derived joined unqualified extra should fail closed to Unknown ambiguity, got: {:?}",
         using.pattern
     );

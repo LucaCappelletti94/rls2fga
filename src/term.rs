@@ -26,7 +26,7 @@ use sqlparser::ast::Expr;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{
     filter_policies_for_output, ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, PatternClass,
-    PolicyCommand, PolicyMode,
+    PolicyCommand, PolicyMode, UnclassifiedExpr,
 };
 use crate::classifier::policy_classifier::classify_expr;
 use crate::generator::model_generator::{
@@ -36,7 +36,8 @@ use crate::generator::notes::TranslationNote;
 use crate::generator::records::{RecordDerivation, RecordTemplate, ValueSource};
 use crate::generator::relations::{relation_shapes, RelationShapes};
 use crate::generator::row_naming::row_naming;
-use crate::generator::well_known::{CAN_SELECT_RELATION, USER_TYPE};
+use crate::generator::well_known::{can_select_relation, USER_TYPE};
+use crate::parser::identifiers::RelationName;
 use crate::parser::names::{lookup_table, same_identifier};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 
@@ -71,16 +72,16 @@ pub enum TermChain {
     /// One link: a relation on the filtered row naming the caller.
     Direct {
         /// Relation on the filtered type whose records name the caller.
-        relation: String,
+        relation: RelationName,
     },
     /// Two links: the filtered row names a related row, and that row names the caller.
     Through {
         /// Relation on the filtered type whose subject is `through_type`.
-        link: String,
+        link: RelationName,
         /// The related type.
         through_type: String,
         /// Relation on `through_type` whose records name the caller.
-        member: String,
+        member: RelationName,
     },
 }
 
@@ -121,7 +122,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
 
     // The classifier's own wording for a filter it cannot read, which is what reaches an
     // operator. Checked before the threshold, since the grade would say less.
-    if let PatternClass::Unknown { reason, .. } = &classified.pattern {
+    if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern {
         return Err(refuse(reason.clone()));
     }
 
@@ -260,8 +261,8 @@ fn rule_beyond_the_chain(
     let rule = plan
         .types
         .iter()
-        .find(|type_plan| type_plan.type_name == object_type)
-        .and_then(|type_plan| type_plan.computed_relations.get(CAN_SELECT_RELATION))?;
+        .find(|type_plan| type_plan.type_name.as_str() == object_type)
+        .and_then(|type_plan| type_plan.computed_relations.get(&can_select_relation()))?;
     let answered = match (rule, chain) {
         (UsersetExpr::Computed(name), TermChain::Direct { relation }) => name == relation,
         (
@@ -308,9 +309,9 @@ fn derive_chain(
     guarded_table: &str,
     object_type: &str,
 ) -> Result<TermChain, usize> {
-    let mut links: Vec<(String, String)> = Vec::new();
+    let mut links: Vec<(RelationName, String)> = Vec::new();
     for entry in relations {
-        if entry.type_name != object_type {
+        if entry.type_name.as_str() != object_type {
             continue;
         }
         for shape in &entry.shapes {
@@ -363,7 +364,7 @@ fn same_table<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> bool {
 /// link out of one row. Matched exhaustively on purpose: a value source added later stops
 /// this compiling until someone decides what it means here.
 fn links_out_of_its_own_row(entry: &RelationShapes, template: &RecordTemplate) -> bool {
-    template.object_type == entry.type_name
+    template.object_type == entry.type_name.as_str()
         && match template.subject_key.part() {
             ValueSource::Column(_)
             | ValueSource::ListElements(_)
@@ -373,9 +374,9 @@ fn links_out_of_its_own_row(entry: &RelationShapes, template: &RecordTemplate) -
 }
 
 /// The relation on `type_name` whose records name a caller, when exactly one does.
-fn member_relation(relations: &[RelationShapes], type_name: &str) -> Option<String> {
+fn member_relation(relations: &[RelationShapes], type_name: &str) -> Option<RelationName> {
     let mut naming = relations.iter().filter(|entry| {
-        entry.type_name == type_name
+        entry.type_name.as_str() == type_name
             && entry.shapes.iter().any(|shape| {
                 matches!(
                     &shape.derivation,
@@ -412,7 +413,7 @@ fn chain_relations(
         .filter_map(|(type_name, relation)| {
             relations
                 .iter()
-                .find(|entry| entry.type_name == type_name && entry.relation == relation)
+                .find(|entry| entry.type_name.as_str() == type_name && entry.relation == relation)
                 .cloned()
         })
         .collect()
@@ -427,11 +428,11 @@ fn chain_relations(
 fn caller_side_table(
     relations: &[RelationShapes],
     type_name: &str,
-    member: &str,
+    member: &RelationName,
 ) -> Option<String> {
     relations
         .iter()
-        .filter(|entry| entry.type_name == type_name && entry.relation == member)
+        .filter(|entry| entry.type_name.as_str() == type_name && entry.relation == *member)
         .flat_map(|entry| &entry.shapes)
         .find_map(|shape| match &shape.derivation {
             RecordDerivation::FromRow { table, .. } => Some(table.clone()),
@@ -443,11 +444,12 @@ fn caller_side_table(
 mod tests {
     use super::*;
     use crate::generator::records::{ObjectKey, RecordDescription, SubjectKey};
+    use crate::parser::identifiers::TypeName;
 
     fn naming_user(type_name: &str, relation: &str, table: &str) -> RelationShapes {
         RelationShapes {
-            type_name: type_name.to_string(),
-            relation: relation.to_string(),
+            type_name: TypeName::from_resolved(type_name),
+            relation: RelationName::from_resolved(relation),
             from_one_row: false,
             shapes: vec![RecordDescription {
                 tables: vec![table.to_string()],
@@ -456,7 +458,7 @@ mod tests {
                     template: Box::new(RecordTemplate {
                         object_type: type_name.to_string(),
                         object_key: ObjectKey::column("id"),
-                        relation: relation.to_string(),
+                        relation: RelationName::from_resolved(relation),
                         subject_type: USER_TYPE.to_string(),
                         subject_key: SubjectKey::column("user_id"),
                         context: None,
@@ -476,7 +478,12 @@ mod tests {
     #[test]
     fn a_type_naming_the_caller_twice_has_no_single_member_relation() {
         let one = [naming_user("orders", "customer", "orders")];
-        assert_eq!(member_relation(&one, "orders").as_deref(), Some("customer"));
+        assert_eq!(
+            member_relation(&one, "orders")
+                .as_ref()
+                .map(RelationName::as_str),
+            Some("customer")
+        );
 
         let two = [
             naming_user("orders", "customer", "orders"),

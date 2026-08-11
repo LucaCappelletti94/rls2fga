@@ -38,7 +38,7 @@ fn collect_policy_resource_column(
     policy_expr: Option<&Expr>,
     classified: Option<&ClassifiedExpr>,
     registry: &FunctionRegistry,
-    out: &mut BTreeMap<(String, String), String>,
+    out: &mut BTreeMap<(String, String), ColumnName>,
     conflicts: &mut BTreeSet<(String, String)>,
 ) {
     let Some(expr) = policy_expr else {
@@ -89,8 +89,8 @@ fn role_threshold_functions_and_resource_params(
         out: &mut BTreeSet<(String, usize)>,
     ) {
         match &classified.pattern {
-            PatternClass::P1NumericThreshold { function_name, .. }
-            | PatternClass::P2RoleNameInList { function_name, .. } => {
+            PatternClass::P1NumericThreshold(NumericThreshold { function_name, .. })
+            | PatternClass::P2RoleNameInList(RoleNameInList { function_name, .. }) => {
                 let Some(FunctionSemantic::RoleThreshold {
                     resource_param_index,
                     ..
@@ -100,33 +100,33 @@ fn role_threshold_functions_and_resource_params(
                 };
                 out.insert((function_name.clone(), *resource_param_index));
             }
-            PatternClass::P5ParentInheritance { inner_pattern, .. } => {
+            PatternClass::P5ParentInheritance(ParentInheritance { inner_pattern, .. }) => {
                 walk(inner_pattern, registry, out);
             }
-            PatternClass::P7AbacAnd {
+            PatternClass::P7AbacAnd(AbacAnd {
                 relationship_part, ..
-            } => {
+            }) => {
                 walk(relationship_part, registry, out);
             }
-            PatternClass::P8Composite { parts, .. } => {
+            PatternClass::P8Composite(Composite { parts, .. }) => {
                 for part in parts {
                     walk(part, registry, out);
                 }
             }
-            PatternClass::P3DirectOwnership { .. }
-            | PatternClass::P11ArrayMembership { .. }
-            | PatternClass::P12JsonbFieldOwnership { .. }
-            | PatternClass::P13UncorrelatedMembership { .. }
-            | PatternClass::P4ExistsMembership { .. }
-            | PatternClass::P6BooleanFlag { .. }
-            | PatternClass::P9AttributeCondition { .. }
-            | PatternClass::P10ConstantBool { .. }
-            | PatternClass::P18MembershipInCallerSet { .. }
-            | PatternClass::P14RowValueInCallerSet { .. }
-            | PatternClass::P15RowValueEqualsCallerScalar { .. }
-            | PatternClass::P16ConstantInCallerSet { .. }
-            | PatternClass::P17CallerScalarEqualsConstant { .. }
-            | PatternClass::Unknown { .. } => {}
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+            | PatternClass::P11ArrayMembership(ArrayMembership { .. })
+            | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. })
+            | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
+            | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+            | PatternClass::P6BooleanFlag(BooleanFlag { .. })
+            | PatternClass::P9AttributeCondition(AttributeCondition { .. })
+            | PatternClass::P10ConstantBool(ConstantBool { .. })
+            | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
+            | PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { .. })
+            | PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { .. })
+            | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
+            | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
+            | PatternClass::Unknown(UnclassifiedExpr { .. }) => {}
         }
     }
 
@@ -143,7 +143,7 @@ pub(super) fn extract_resource_columns_for_function(
     expr: &Expr,
     function_name: &str,
     resource_param_index: usize,
-) -> BTreeSet<String> {
+) -> BTreeSet<ColumnName> {
     use core::ops::ControlFlow;
     use sqlparser::ast::visit_expressions;
 
@@ -175,7 +175,6 @@ pub(super) fn positional_function_arg(function: &Function, index: usize) -> Opti
 /// membership) for the P1/P2 role-threshold patterns.  Called once per unique
 /// `(source_table, function_name)` pair; the renderer deduplicates via
 /// [`TupleSource::dedup_key`].
-#[allow(clippy::too_many_arguments)]
 pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     function_name: &str,
     source_table: &str,
@@ -211,14 +210,14 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     let user_principal = resolve_principal_info(
         db,
         user_table.as_deref(),
-        user_pk_col.as_deref(),
+        user_pk_col.as_ref(),
         USER_PRINCIPAL_TABLES,
     );
     let team_principal = if has_team {
         resolve_principal_info(
             db,
             team_table.as_deref(),
-            team_pk_col.as_deref(),
+            team_pk_col.as_ref(),
             TEAM_PRINCIPAL_TABLES,
         )
     } else {
@@ -303,11 +302,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         return;
     }
 
-    let grant_join_col = hints
-        .columns
-        .get(&hint_key)
-        .map(String::as_str)
-        .or(owner_col.as_deref());
+    let grant_join_col = hints.columns.get(&hint_key).or(owner_col.as_ref());
 
     let Some(grant_join_col) = grant_join_col else {
         table_plan.add_source(TupleSource::Skipped {
@@ -332,7 +327,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     // duplicate WHEN arms in the generated CASE expression (second is unreachable).
     // Keep only the first occurrence of each level (sorted by (level, name)).
     let mut seen_levels = BTreeSet::new();
-    let role_cases: Vec<(i32, String, String)> = sorted_roles
+    let role_cases: Vec<(i32, RelationName, String)> = sorted_roles
         .iter()
         .filter(|role| seen_levels.insert(role.level))
         .map(|role| {
@@ -347,7 +342,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     table_plan.add_source(TupleSource::ExplicitGrants {
         table: source_table.to_string(),
         pk_cols: object_pk,
-        grant_join_col: grant_join_col.to_string(),
+        grant_join_col: grant_join_col.clone(),
         grant_table: grant_table.clone(),
         grant_role_col: grant_role_col.clone(),
         grant_grantee_col: grant_grantee_col.clone(),

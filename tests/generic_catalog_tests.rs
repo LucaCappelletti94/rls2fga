@@ -8,7 +8,9 @@
 //! the surface fails to build.
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass, PolicyCommand};
+use rls2fga::classifier::patterns::{
+    ConfidenceLevel, DirectOwnership, PatternClass, PolicyCommand,
+};
 use rls2fga::classifier::policy_classifier::{
     classify_expr, classify_policies, classify_policies_with_effective_registry,
     classify_policies_with_effective_registry_and_settings, classify_policies_with_registry,
@@ -169,7 +171,7 @@ fn a_catalog_known_only_as_database_like_drives_the_whole_surface() {
         "schema enrichment must recognise the accessor, saw it refused"
     );
     assert!(
-        matches!(&driven.expr_pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&driven.expr_pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "classifying the clause on its own must reach direct ownership, saw {:?}",
         driven.expr_pattern
     );

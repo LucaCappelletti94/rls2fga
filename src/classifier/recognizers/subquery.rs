@@ -1,5 +1,6 @@
 use super::*;
 use crate::classifier::function_registry::SessionAttribute;
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::unquote_identifier;
 use alloc::collections::BTreeSet;
 use sqlparser::ast::{Distinct, GroupByExpr, Ident, LimitClause, Query, SetExpr};
@@ -52,7 +53,7 @@ pub fn recognize_p5<DB: DatabaseLike>(
                 )
             }
             None => ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: true },
+                pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 confidence: ConfidenceLevel::A,
             },
         };
@@ -61,25 +62,25 @@ pub fn recognize_p5<DB: DatabaseLike>(
         // the entire rule.
         if !matches!(
             inner_classified.pattern,
-            PatternClass::P1NumericThreshold { .. }
-                | PatternClass::P2RoleNameInList { .. }
-                | PatternClass::P3DirectOwnership { .. }
-                | PatternClass::P4ExistsMembership { .. }
-                | PatternClass::P5ParentInheritance { .. }
-                | PatternClass::P7AbacAnd { .. }
-                | PatternClass::P8Composite { .. }
-                | PatternClass::P10ConstantBool { value: true }
+            PatternClass::P1NumericThreshold(NumericThreshold { .. })
+                | PatternClass::P2RoleNameInList(RoleNameInList { .. })
+                | PatternClass::P3DirectOwnership(DirectOwnership { .. })
+                | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+                | PatternClass::P5ParentInheritance(ParentInheritance { .. })
+                | PatternClass::P7AbacAnd(AbacAnd { .. })
+                | PatternClass::P8Composite(Composite { .. })
+                | PatternClass::P10ConstantBool(ConstantBool { value: true })
         ) {
             continue;
         }
 
         matches.push(ClassifiedExpr {
             confidence: inner_classified.confidence,
-            pattern: PatternClass::P5ParentInheritance {
+            pattern: PatternClass::P5ParentInheritance(ParentInheritance {
                 parent_table,
                 fk_column,
                 inner_pattern: Box::new(inner_classified),
-            },
+            }),
         });
     }
 
@@ -469,13 +470,13 @@ fn classify_membership_select<DB: DatabaseLike>(
                     extra_predicate_sql,
                 },
         } => Some(ClassifiedExpr {
-            pattern: PatternClass::P4ExistsMembership {
+            pattern: PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
                 fk_column,
                 outer_column,
                 user_column,
                 extra_predicate_sql,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         }),
         MembershipSelectAnalysis::Unique {
@@ -489,7 +490,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                     extra_predicate_sql,
                 },
         } => Some(ClassifiedExpr {
-            pattern: PatternClass::P18MembershipInCallerSet {
+            pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
                 join_table,
                 fk_column,
                 outer_column,
@@ -497,7 +498,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                 separator,
                 source,
                 extra_predicate_sql,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         }),
         MembershipSelectAnalysis::Uncorrelated {
@@ -505,11 +506,11 @@ fn classify_membership_select<DB: DatabaseLike>(
             user_column,
             extra_predicate_sql,
         } => Some(ClassifiedExpr {
-            pattern: PatternClass::P13UncorrelatedMembership {
+            pattern: PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
                 member_table,
                 user_column,
                 extra_predicate_sql,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         }),
         MembershipSelectAnalysis::AmbiguousMultiple
@@ -542,7 +543,7 @@ enum MembershipSelectAnalysis {
     /// is a member of anything. Every row of the guarded table then passes together.
     Uncorrelated {
         member_table: String,
-        user_column: String,
+        user_column: ColumnName,
         extra_predicate_sql: Option<String>,
     },
     /// The subquery scans the guarded table itself, which `PostgreSQL` refuses to plan:
@@ -594,7 +595,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
-            if scans_root_entity_by_its_key(db, &join_table, &columns.fk_column) {
+            if scans_root_entity_by_its_key(db, &join_table, columns.fk_column.as_str()) {
                 return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
             }
             // A third table in the subquery carries conditions that no single
@@ -658,7 +659,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     let mut predicates = Vec::new();
     flatten_and_predicates(selection, &mut predicates);
 
-    let mut user_column: Option<String> = None;
+    let mut user_column: Option<ColumnName> = None;
     let mut extras: Vec<String> = Vec::new();
     for predicate in predicates {
         match analyze_membership_eq_predicate(
@@ -831,7 +832,7 @@ pub(super) struct P5InheritanceCandidate {
     /// Alias the subquery gave the parent table, if any. Predicates nested inside
     /// this subquery refer to the parent through it.
     pub(super) parent_alias: Option<String>,
-    pub(super) fk_column: String,
+    pub(super) fk_column: ColumnName,
     pub(super) inner_predicates: Vec<Expr>,
 }
 
@@ -876,7 +877,7 @@ pub(super) fn analyze_p5_parent_inheritance<DB: DatabaseLike>(
             .map(|c| c.stored_column_name().into_owned())
             .collect();
 
-        let mut fk_column: Option<String> = None;
+        let mut fk_column: Option<ColumnName> = None;
         let mut inner_predicates = Vec::new();
         let mut invalid_join = false;
 
@@ -914,7 +915,7 @@ pub(super) fn analyze_p5_parent_inheritance<DB: DatabaseLike>(
         // because then the shape competes with a membership lookup and the key is what
         // tells them apart. A bare correlation competes with nothing.
         if !inner_predicates.is_empty()
-            && !table_has_fk_to_parent(outer_table_meta, db, &fk_column, &source.table_name)
+            && !table_has_fk_to_parent(outer_table_meta, db, fk_column.as_str(), &source.table_name)
         {
             continue;
         }
@@ -1098,25 +1099,25 @@ pub(super) enum MemberMatch {
 /// The columns one membership subquery names, once the analysis has read every predicate.
 struct MembershipColumns {
     /// Column of the scanned table naming the parent entity.
-    fk_column: String,
+    fk_column: ColumnName,
     /// Column of the guarded table the policy compares against `fk_column`.
-    outer_column: String,
+    outer_column: ColumnName,
     /// Column of the scanned table naming who the row admits.
-    user_column: String,
+    user_column: ColumnName,
     member_match: MemberMatch,
     extra_predicate_sql: Option<String>,
 }
 
 /// A qualified or bare column reference, as the subquery spells it.
-type ColumnRef = (Option<String>, String);
+type ColumnRef = (Option<String>, ColumnName);
 
 enum MembershipEqAnalysis {
     NotRelevant,
-    UserColumn(String, MemberMatch),
+    UserColumn(ColumnName, MemberMatch),
     /// A correlation between a column of the scanned table and another reference, which
     /// reaches the guarded row directly or through the subquery's other equalities.
     FkCandidate {
-        join_column: String,
+        join_column: ColumnName,
         correlated: ColumnRef,
     },
     OuterCorrelation,
@@ -1141,14 +1142,14 @@ fn analyze_membership_eq_predicate(
         if let Some((qualifier, column)) = extract_qualified_column(left) {
             if is_join_column_ref(
                 qualifier.as_deref(),
-                &column,
+                column.as_str(),
                 join_table,
                 join_alias,
                 join_cols,
             ) {
                 if let Some((source, separator)) = caller_set(right, registry) {
                     return MembershipEqAnalysis::UserColumn(
-                        column,
+                        column.clone(),
                         MemberMatch::InCallerSet {
                             source: source.clone(),
                             separator,
@@ -1173,15 +1174,25 @@ fn analyze_membership_eq_predicate(
     let right_col = extract_qualified_column(right);
 
     if let Some((qual, col)) = left_col.clone() {
-        if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-            && is_current_user_expr(right, registry)
+        if is_join_column_ref(
+            qual.as_deref(),
+            col.as_str(),
+            join_table,
+            join_alias,
+            join_cols,
+        ) && is_current_user_expr(right, registry)
         {
             return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
     }
     if let Some((qual, col)) = right_col.clone() {
-        if is_join_column_ref(qual.as_deref(), &col, join_table, join_alias, join_cols)
-            && is_current_user_expr(left, registry)
+        if is_join_column_ref(
+            qual.as_deref(),
+            col.as_str(),
+            join_table,
+            join_alias,
+            join_cols,
+        ) && is_current_user_expr(left, registry)
         {
             return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
@@ -1194,14 +1205,14 @@ fn analyze_membership_eq_predicate(
 
     let left_is_join = is_join_column_ref(
         left_qual.as_deref(),
-        &left_name,
+        left_name.as_str(),
         join_table,
         join_alias,
         join_cols,
     );
     let right_is_join = is_join_column_ref(
         right_qual.as_deref(),
-        &right_name,
+        right_name.as_str(),
         join_table,
         join_alias,
         join_cols,
@@ -1231,7 +1242,7 @@ fn analyze_membership_eq_predicate(
 /// `None` means the value compared is some other scan's, so a bridge keyed on it would
 /// grant rows the correlation never admitted. A bare name is the guarded row's, since a
 /// column of the scanned table would have been read as the join side.
-fn guarded_row_column(reference: ColumnRef, outer_table: &str) -> Option<String> {
+fn guarded_row_column(reference: ColumnRef, outer_table: &str) -> Option<ColumnName> {
     let (qualifier, column) = reference;
     match qualifier {
         Some(qualifier) if !qualifier_matches_table(&qualifier, outer_table, None) => None,
@@ -1247,7 +1258,7 @@ pub(super) fn extract_membership_columns(
     join_cols: &[String],
     outer_table: &str,
     registry: &FunctionRegistry,
-) -> Option<(String, String, String, Option<String>)> {
+) -> Option<(ColumnName, ColumnName, ColumnName, Option<String>)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
         select,
         join_table,
@@ -1276,9 +1287,9 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     db: Option<&DB>,
     registry: &FunctionRegistry,
 ) -> Option<MembershipColumns> {
-    let mut correlated: Option<(String, String)> = None;
+    let mut correlated: Option<(ColumnName, ColumnName)> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
-    let mut user_col: Option<(String, MemberMatch)> = None;
+    let mut user_col: Option<(ColumnName, MemberMatch)> = None;
     let mut extras: Vec<String> = Vec::new();
     let unqualified_scope = db
         .map(|db| build_unqualified_membership_scope(select, db, join_table, join_cols))
@@ -1690,7 +1701,7 @@ pub(super) fn extract_parent_join_columns(
     parent_table: &str,
     parent_alias: Option<&str>,
     parent_cols: &[String],
-) -> Option<(String, String)> {
+) -> Option<(ColumnName, ColumnName)> {
     let Expr::BinaryOp {
         left,
         op: BinaryOperator::Eq,
@@ -1705,7 +1716,7 @@ pub(super) fn extract_parent_join_columns(
 
     let left_is_parent = is_parent_column_ref(
         left_col.0.as_deref(),
-        &left_col.1,
+        left_col.1.as_str(),
         parent_table,
         parent_alias,
         parent_cols,
@@ -1713,7 +1724,7 @@ pub(super) fn extract_parent_join_columns(
     );
     let right_is_parent = is_parent_column_ref(
         right_col.0.as_deref(),
-        &right_col.1,
+        right_col.1.as_str(),
         parent_table,
         parent_alias,
         parent_cols,
@@ -1722,14 +1733,14 @@ pub(super) fn extract_parent_join_columns(
 
     let left_is_outer = is_outer_column_ref(
         left_col.0.as_deref(),
-        &left_col.1,
+        left_col.1.as_str(),
         outer_table,
         outer_cols,
         parent_cols,
     );
     let right_is_outer = is_outer_column_ref(
         right_col.0.as_deref(),
-        &right_col.1,
+        right_col.1.as_str(),
         outer_table,
         outer_cols,
         parent_cols,

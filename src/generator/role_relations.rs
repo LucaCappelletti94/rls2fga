@@ -2,6 +2,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
+use crate::parser::identifiers::RelationName;
 use crate::parser::names::{canonical_fga_type_name, clamp_relation_name, stable_hex_suffix};
 
 /// Normalized relation naming metadata for a role level.
@@ -13,12 +14,12 @@ pub(crate) struct RoleRelationName {
 }
 
 impl RoleRelationName {
-    pub(crate) fn grant_relation(&self) -> String {
-        clamp_relation_name(format!("grant_{}", self.token))
+    pub(crate) fn grant_relation(&self) -> RelationName {
+        RelationName::from_resolved(clamp_relation_name(format!("grant_{}", self.token)))
     }
 
-    pub(crate) fn role_relation(&self) -> String {
-        clamp_relation_name(format!("role_{}", self.token))
+    pub(crate) fn role_relation(&self) -> RelationName {
+        RelationName::from_resolved(clamp_relation_name(format!("role_{}", self.token)))
     }
 }
 

@@ -11,10 +11,10 @@ use alloc::collections::{BTreeMap, BTreeSet};
 
 use sqlparser::ast::Expr;
 
-use super::{
+use super::actions::{
     policy_uses_using_for_missing_with_check, using_targets, with_check_targets, ActionTarget,
-    TableTypes,
 };
+use super::TableTypes;
 use crate::classifier::patterns::PolicyCommand;
 use crate::parser::expr::reads_relation;
 use crate::parser::sql_parser::{DatabaseLike, PolicyLike};

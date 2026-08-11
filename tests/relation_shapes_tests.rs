@@ -14,7 +14,10 @@ use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::records::{Guard, RecordDerivation, RecordDescription, ValueSource};
 use rls2fga::generator::relations::{RelationShapes, RowDecision};
-use rls2fga::generator::well_known::{MEMBER_RELATION, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE};
+use rls2fga::generator::well_known::{
+    can_select_relation, member_relation, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
+};
+use rls2fga::parser::identifiers::{ColumnName, RelationName};
 use rls2fga::parser::names::lookup_table;
 use rls2fga::parser::sql_parser::{
     parse_schema, ColumnLike, DatabaseLike, ParserDB, PolicyLike, TableLike,
@@ -133,7 +136,7 @@ fn model_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> String {
 fn entry<'a>(shapes: &'a [RelationShapes], type_name: &str, relation: &str) -> &'a RelationShapes {
     shapes
         .iter()
-        .find(|entry| entry.type_name == type_name && entry.relation == relation)
+        .find(|entry| entry.type_name.as_str() == type_name && entry.relation == relation)
         .unwrap_or_else(|| panic!("{type_name}#{relation} should be reported"))
 }
 
@@ -185,14 +188,11 @@ fn a_direct_ownership_relation_carries_one_shape_from_its_own_row() {
     assert_eq!(table, "docs");
     assert_eq!(template.object_type, owned.type_name);
     assert_eq!(template.relation, owned.relation);
-    assert_eq!(
-        template.object_key.parts(),
-        [ValueSource::Column("id".to_string())]
-    );
+    assert_eq!(template.object_key.parts(), [ValueSource::column("id")]);
     assert_eq!(template.subject_type, USER_TYPE);
     assert_eq!(
         template.subject_key.part(),
-        &ValueSource::Column("owner_id".to_string())
+        &ValueSource::column("owner_id")
     );
 }
 
@@ -234,15 +234,12 @@ fn a_compound_key_ownership_relation_is_decided_by_its_own_row() {
     assert_eq!(
         template.object_key.parts(),
         [
-            ValueSource::Column("paper_id".to_string()),
-            ValueSource::Column("viewer".to_string()),
+            ValueSource::column("paper_id"),
+            ValueSource::column("viewer"),
         ],
         "the object is named by every key column, in declared order"
     );
-    assert_eq!(
-        template.subject_key.part(),
-        &ValueSource::Column("viewer".to_string())
-    );
+    assert_eq!(template.subject_key.part(), &ValueSource::column("viewer"));
 
     assert!(
         entry(&shapes, "shares", "can_select").from_one_row,
@@ -307,14 +304,14 @@ fn every_relation_the_model_declares_is_reported() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         );
-        let reported: BTreeSet<(String, String)> = planned
+        let reported: BTreeSet<(String, RelationName)> = planned
             .relations()
             .into_iter()
-            .map(|entry| (entry.type_name, entry.relation))
+            .map(|entry| (entry.type_name.to_string(), entry.relation))
             .collect();
 
         let outputs = planned.clone().outputs_accepting_gaps();
-        let declared: BTreeSet<(String, String)> = outputs
+        let declared: BTreeSet<(String, RelationName)> = outputs
             .json_model()
             .type_definitions
             .iter()
@@ -438,6 +435,100 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
     assert!(checked > 0, "no fixture produced a joining shape");
 }
 
+/// A column whose stored name carries a double quote, which `PostgreSQL` accepts and a
+/// dump reproduces as `"us""er_id"`.
+const QUOTED_MEMBERSHIP: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE staff (\"us\"\"er_id\" TEXT, active BOOLEAN);
+CREATE TABLE doc_members (\"do\"\"c_id\" TEXT, \"us\"\"er_id\" TEXT, role TEXT);
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT USING (EXISTS (SELECT 1 FROM doc_members
+    WHERE doc_members.\"do\"\"c_id\" = docs.id
+      AND doc_members.\"us\"\"er_id\" = auth_current_user_id()
+      AND doc_members.role = 'admin'));
+CREATE POLICY memos_staff ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM staff
+    WHERE staff.\"us\"\"er_id\" = auth_current_user_id() AND staff.active));
+";
+
+/// The identifier a bound query's appended condition names, with any table alias
+/// dropped. `bind` appends its condition last, so the final `AND` is the one to read.
+fn appended_predicate_identifier(sql: &str) -> String {
+    let predicate = sql
+        .rsplit("\nAND ")
+        .next()
+        .expect("rsplit yields at least one part");
+    let column = predicate
+        .strip_suffix(';')
+        .and_then(|body| body.strip_suffix(" = $1"))
+        .unwrap_or_else(|| panic!("a bound condition compares one column to $1: {predicate}"));
+    if column.starts_with('"') {
+        return column.to_string();
+    }
+    column
+        .split_once('.')
+        .map_or_else(|| column.to_string(), |(_, rest)| rest.to_string())
+}
+
+/// The other half of the guarantee above. A bound query is the whole-table query plus one
+/// condition, and that condition has to spell its column the way the query already spells
+/// it. An identifier escaped one way in the query and another way in the condition is not
+/// the same column: `PostgreSQL` does not parse `"us"er_id"`, and a name chosen to close
+/// the quote rather than break it makes the condition a predicate of someone else's
+/// choosing.
+#[test]
+fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
+    let (db, registry) = parsed(QUOTED_MEMBERSHIP, ACCESSOR_REGISTRY);
+    let planned = Translation::plan(
+        classify_policies(&db, &registry),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let shapes = planned.relations();
+    let whole_table: Vec<String> = planned
+        .outputs_accepting_gaps()
+        .tuple_queries()
+        .into_iter()
+        .map(|query| query.sql)
+        .collect();
+
+    let mut checked = 0usize;
+    let mut escaped = 0usize;
+    for entry in &shapes {
+        for shape in &entry.shapes {
+            let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                continue;
+            };
+            for bound in queries {
+                let identifier = appended_predicate_identifier(&bound.sql);
+                checked += 1;
+                if identifier.contains("\"\"") {
+                    escaped += 1;
+                }
+                assert!(
+                    whole_table.iter().any(|sql| sql.contains(&identifier)),
+                    "{}#{} binds {identifier}, which no whole-table query spells:\n{}",
+                    entry.type_name,
+                    entry.relation,
+                    bound.sql
+                );
+            }
+        }
+    }
+
+    assert!(checked > 0, "the schema produces a joining shape");
+    assert!(
+        escaped > 0,
+        "the schema exercises an identifier needing escaping, else this proves nothing"
+    );
+}
+
 /// Assertion 5. The shapes come from the plan the translation holds, so a setting that
 /// changes structure reaches them.
 #[test]
@@ -488,7 +579,32 @@ fn the_well_known_names_are_reachable_from_another_crate() {
     assert_eq!(USER_TYPE, "user");
     assert_eq!(TEAM_TYPE, "team");
     assert_eq!(PG_ROLE_TYPE, "pg_role");
-    assert_eq!(MEMBER_RELATION, "member");
+    assert_eq!(member_relation(), "member");
+}
+
+/// Assertion 5. A reserved name is a relation name by construction, so nothing can hand
+/// one to a place expecting a column or a type.
+#[test]
+fn a_reserved_name_is_a_relation_name() {
+    let selected: RelationName = can_select_relation();
+    assert_eq!(selected, "can_select");
+    assert_eq!(member_relation(), "member");
+}
+
+/// Assertion 6. The column a record reads is a column name, folded the way `PostgreSQL`
+/// stores it, so it cannot be handed to a place expecting a relation or a type.
+#[test]
+fn the_column_a_record_reads_is_a_column_name() {
+    let shapes = shapes_of(OWNERSHIP, ACCESSOR_REGISTRY);
+    let owner = entry(&shapes, "docs", "owner");
+    let RecordDerivation::FromRow { template, .. } = &owner.shapes[0].derivation else {
+        panic!("ownership reads the row itself: {owner:?}");
+    };
+    let ValueSource::Column(column) = template.subject_key.part() else {
+        panic!("the subject is the owner column: {template:?}");
+    };
+    let column: &ColumnName = column;
+    assert_eq!(column, "owner_id");
 }
 
 /// A holder stands for a whole member list, so both halves of it have to be
@@ -517,10 +633,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     assert_eq!(table, "docs");
     assert_eq!(template.object_type, bridge.type_name);
     assert_eq!(template.relation, bridge.relation);
-    assert_eq!(
-        template.object_key.parts(),
-        [ValueSource::Column("id".to_string())]
-    );
+    assert_eq!(template.object_key.parts(), [ValueSource::column("id")]);
     assert!(
         guards.is_empty(),
         "the key needs no NOT NULL guard: a missing part already yields no record"
@@ -532,7 +645,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
         "one holder object stands for the whole list"
     );
 
-    let members = entry(&shapes, &holder_type, MEMBER_RELATION);
+    let members = entry(&shapes, &holder_type, member_relation().as_str());
     assert_eq!(members.shapes.len(), 1, "one member source, one shape");
     let RecordDerivation::FromRow {
         table,
@@ -544,22 +657,18 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     };
     assert_eq!(table, "staff");
     assert_eq!(template.object_type, members.type_name);
-    assert_eq!(template.relation, MEMBER_RELATION);
+    assert_eq!(template.relation, member_relation());
     assert_eq!(
         template.object_key.parts(),
         [ValueSource::Literal("all".to_string())],
         "every member row names the same holder object"
     );
-    assert_eq!(
-        guards,
-        &vec![Guard::NotNull("user_id".to_string())],
-        "a null member is dropped exactly as the query's NULL guard drops it"
+    assert!(
+        matches!(guards.as_slice(), [Guard::NotNull(column)] if column == "user_id"),
+        "a null member is dropped exactly as the query's NULL guard drops it: {guards:?}"
     );
     assert_eq!(template.subject_type, USER_TYPE);
-    assert_eq!(
-        template.subject_key.part(),
-        &ValueSource::Column("user_id".to_string())
-    );
+    assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
 }
 
 /// The same member list carrying a predicate no evaluator here can read has to be
@@ -569,7 +678,7 @@ fn a_holder_member_list_with_a_residual_predicate_joins() {
     let shapes = shapes_of(HOLDER, ACCESSOR_REGISTRY);
     let holder = shapes
         .iter()
-        .find(|entry| entry.type_name.starts_with("reviewers_holder"))
+        .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
         .expect("the reviewers holder is reported");
     let RecordDerivation::Joined { queries, reason } = &holder.shapes[0].derivation else {
         panic!("a residual predicate is not readable from the row: {holder:?}");
@@ -594,7 +703,9 @@ fn a_holder_member_list_with_a_residual_predicate_joins() {
 fn a_holder_relation_is_never_decidable_from_one_row() {
     let shapes = shapes_of(HOLDER, ACCESSOR_REGISTRY);
     for entry in &shapes {
-        if entry.type_name.contains("_holder") || entry.relation.contains("_holder") {
+        if entry.type_name.as_str().contains("_holder")
+            || entry.relation.as_str().contains("_holder")
+        {
             assert!(
                 !entry.from_one_row,
                 "{}#{} holds a shared object, so one row cannot decide it",
@@ -651,7 +762,7 @@ fn a_grant_with_no_principal_describes_nothing() {
     let shapes = shapes_of(GRANTS_WITHOUT_PRINCIPALS, GRANT_REGISTRY);
     let graded: Vec<&RelationShapes> = shapes
         .iter()
-        .filter(|entry| entry.relation.starts_with("grant_"))
+        .filter(|entry| entry.relation.as_str().starts_with("grant_"))
         .collect();
     assert!(
         !graded.is_empty(),
@@ -833,10 +944,12 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_
 CREATE POLICY docs_purge ON docs FOR DELETE USING (editor_id = auth_current_user_id());
 ";
 
-fn leaf(relation: &str, shapes: &[RecordDescription]) -> RowDecision {
+/// The reported entry's own decision shape. Reading the relation off the entry rather
+/// than spelling it again is what keeps the two from disagreeing.
+fn leaf(entry: &RelationShapes) -> RowDecision {
     RowDecision::Leaf {
-        relation: relation.to_string(),
-        shapes: shapes.to_vec(),
+        relation: entry.relation.clone(),
+        shapes: entry.shapes.clone(),
     }
 }
 
@@ -962,7 +1075,7 @@ fn an_ownership_read_names_the_relation_whose_records_decide_it() {
     );
     assert_eq!(
         entry(&shapes, "docs", "can_select").decision.as_ref(),
-        Some(&leaf("owner", &owner.shapes)),
+        Some(&leaf(owner)),
         "can_select is defined as owner, so its subjects are owner's records"
     );
 }
@@ -976,8 +1089,8 @@ fn an_ownership_read_names_the_relation_whose_records_decide_it() {
 fn either_spelling_of_two_ownership_columns_composes_into_any() {
     let shapes = shapes_of(OR_COLUMNS, ACCESSOR_REGISTRY);
     let expected = RowDecision::Any(vec![
-        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
-        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
+        leaf(entry(&shapes, "docs", "owner")),
+        leaf(entry(&shapes, "docs", "editor")),
     ]);
     assert_eq!(
         entry(&shapes, "docs", "can_select").decision.as_ref(),
@@ -1035,8 +1148,8 @@ fn a_restrictive_barrier_composes_into_all_rather_than_one_flat_list() {
         "both sides of the barrier resolve from the row"
     );
     let expected = RowDecision::All(vec![
-        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
-        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
+        leaf(entry(&shapes, "docs", "owner")),
+        leaf(entry(&shapes, "docs", "editor")),
     ]);
     assert_eq!(
         can_select.decision.as_ref(),
@@ -1052,8 +1165,8 @@ fn a_restrictive_barrier_composes_into_all_rather_than_one_flat_list() {
 fn a_computed_relation_inside_a_recipe_flattens_into_what_it_names() {
     let shapes = shapes_of(DELETE_GATED_ON_READ, ACCESSOR_REGISTRY);
     let expected = RowDecision::All(vec![
-        leaf("editor", &entry(&shapes, "docs", "editor").shapes),
-        leaf("owner", &entry(&shapes, "docs", "owner").shapes),
+        leaf(entry(&shapes, "docs", "editor")),
+        leaf(entry(&shapes, "docs", "owner")),
     ]);
     assert_eq!(
         entry(&shapes, "docs", "can_delete").decision.as_ref(),
@@ -1115,7 +1228,7 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                     assert_eq!(template.relation, relation, "{fixture}: leaf misattributed");
                     let expected_key: Vec<ValueSource> = primary_key_of(table, &db)
                         .into_iter()
-                        .map(ValueSource::Column)
+                        .map(ValueSource::column)
                         .collect();
                     assert_eq!(
                         template.object_key.parts(),
@@ -1403,7 +1516,7 @@ CREATE POLICY a_team ON a.docs FOR SELECT USING (team_id = auth_current_user_id(
     let (db, registry) = parsed(sql, ACCESSOR_REGISTRY);
     let mut classified = classify_policies(&db, &registry);
     for cp in &mut classified {
-        if cp.name == "a_team" {
+        if cp.name() == "a_team" {
             cp.table = "docs".to_string();
         }
     }
@@ -1715,7 +1828,9 @@ fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
     let reported = planned.relations();
     let gate = reported
         .iter()
-        .find(|shape| shape.type_name == "papers" && shape.relation.starts_with("gate_"))
+        .find(|shape| {
+            shape.type_name.as_str() == "papers" && shape.relation.as_str().starts_with("gate_")
+        })
         .expect("the share arm mints a gate relation on papers");
 
     assert!(

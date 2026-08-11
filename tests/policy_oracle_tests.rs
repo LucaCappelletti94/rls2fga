@@ -4,7 +4,8 @@ use rls2fga::classifier::oracle::{
     consult_oracle, OracleAnswer, PolicyClause, PolicyOracle, RefusedExpr,
 };
 use rls2fga::classifier::patterns::{
-    ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, PatternClass,
+    ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, ConstantBool, ParentInheritance,
+    PatternClass,
 };
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::format_tuples;
@@ -19,7 +20,7 @@ impl PolicyOracle for BitFlagIsPublic {
     fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
         if refused.sql_text().contains('&') {
             OracleAnswer::Classified(Box::new(ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: true },
+                pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 confidence: ConfidenceLevel::A,
             }))
         } else {
@@ -157,7 +158,8 @@ fn every_pattern_enclosing_an_answered_refusal_is_regraded() {
         "a composed pattern grades B once nothing below it is refused"
     );
     // The pattern in between was regraded too, not just the outermost one.
-    let PatternClass::P5ParentInheritance { inner_pattern, .. } = &outer.pattern else {
+    let PatternClass::P5ParentInheritance(ParentInheritance { inner_pattern, .. }) = &outer.pattern
+    else {
         panic!("expected a parent join, got {:?}", outer.pattern);
     };
     assert_eq!(
@@ -178,7 +180,7 @@ fn an_oracle_answer_below_the_threshold_is_still_dropped() {
     impl PolicyOracle for Unsure {
         fn classify(&self, _refused: &RefusedExpr<'_>) -> OracleAnswer {
             OracleAnswer::Classified(Box::new(ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: true },
+                pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 confidence: ConfidenceLevel::C,
             }))
         }

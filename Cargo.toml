@@ -12,8 +12,6 @@ default = ["std"]
 # protection to the parser dependencies. Disable for a `no_std` + `alloc`
 # build of the parse/classify/generate pipeline.
 std = ["sqlparser/std", "sqlparser/recursive-protection", "sql-traits/std", "serde/std", "serde_json/std"]
-agent = ["std", "reqwest", "tokio"]
-db = ["std", "diesel"]
 
 [dependencies]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
@@ -21,13 +19,11 @@ sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
-# Optional
-reqwest = { version = "0.13", features = ["json"], optional = true }
-tokio = { version = "1", features = ["full"], optional = true }
-diesel = { version = "2", features = ["postgres", "serde_json"], optional = true }
-
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+# The Postgres suites talk to a container, so the driver is test-only. No library code
+# calls it, and a feature enabling it would claim otherwise.
+diesel = { version = "2", features = ["postgres", "serde_json"] }
 insta = { version = "1", features = ["json"] }
 testcontainers = "0.27"
 tokio = { version = "1", features = ["full"] }

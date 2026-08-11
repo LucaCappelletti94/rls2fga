@@ -14,9 +14,10 @@ use crate::generator::model_generator::SchemaPlan;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::records::RecordDescription;
 use crate::generator::well_known::{
-    ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, OWNER_TEAM_RELATION, OWNER_USER_RELATION, PG_ROLE_TYPE,
+    owner_team_relation, owner_user_relation, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, PG_ROLE_TYPE,
     TEAM_TYPE, USER_TYPE,
 };
+use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::names::{lookup_table, split_qualified_identifier_parts};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -86,7 +87,7 @@ pub(crate) fn generate_tuple_queries_from_plan<DB: DatabaseLike>(
             }
             if let Some(query) = render_tuple_source(
                 source,
-                &type_plan.type_name,
+                type_plan.type_name.as_str(),
                 type_plan.reads_only_its_own_rows,
                 NameContext::new(&bounds, db),
                 db,
@@ -106,14 +107,17 @@ struct ObjectSource<'a> {
     /// `OpenFGA` type the objects belong to.
     type_name: &'a str,
     /// Columns supplying the object identifier, in declared order.
-    pk_cols: &'a [String],
+    pk_cols: &'a [ColumnName],
     /// Read `FROM ONLY`, keeping inheritance children's rows out.
     only_own_rows: bool,
 }
 
 /// Each key column quoted, in declared order.
-fn quoted_key_parts(pk_cols: &[String]) -> Vec<String> {
-    pk_cols.iter().map(|c| quote_sql_identifier(c)).collect()
+fn quoted_key_parts(pk_cols: &[ColumnName]) -> Vec<String> {
+    pk_cols
+        .iter()
+        .map(|c| quote_sql_identifier(c.as_str()))
+        .collect()
 }
 
 /// `IS NOT NULL` over every part of a key, and the rendered name fitting the
@@ -127,7 +131,7 @@ fn row_is_nameable<DB: DatabaseLike>(
     parts: &[String],
     object_sql: &str,
     table: &str,
-    columns: &[String],
+    columns: &[ColumnName],
     names: NameContext<'_, DB>,
 ) -> String {
     let mut guard = parts
@@ -151,8 +155,8 @@ fn join_row_is_nameable<DB: DatabaseLike>(
     object_sql: &str,
     subject_sql: Option<&str>,
     table: &str,
-    object_columns: &[String],
-    subject_columns: &[String],
+    object_columns: &[ColumnName],
+    subject_columns: &[ColumnName],
     names: NameContext<'_, DB>,
 ) -> String {
     let mut out = base.to_string();
@@ -182,7 +186,7 @@ fn join_row_is_nameable<DB: DatabaseLike>(
 fn subject_fits<DB: DatabaseLike>(
     subject_sql: &str,
     table: &str,
-    columns: &[String],
+    columns: &[ColumnName],
     names: NameContext<'_, DB>,
 ) -> Option<String> {
     names
@@ -218,7 +222,7 @@ impl<'a, DB: DatabaseLike> NameContext<'a, DB> {
     }
 
     /// Whether any of `columns` could render a name longer than the target accepts.
-    fn any_unbounded(&self, table: &str, columns: &[String]) -> bool {
+    fn any_unbounded(&self, table: &str, columns: &[ColumnName]) -> bool {
         self.bounds.any_unbounded(table, columns, self.db)
     }
 }
@@ -265,7 +269,7 @@ impl UnboundedColumns {
     pub(crate) fn any_unbounded<DB: DatabaseLike>(
         &self,
         table: &str,
-        columns: &[String],
+        columns: &[ColumnName],
         db: &DB,
     ) -> bool {
         let known = self.by_table.get(table).or_else(|| {
@@ -277,7 +281,9 @@ impl UnboundedColumns {
         let Some(unbounded) = known else {
             return true;
         };
-        columns.iter().any(|column| unbounded.contains(column))
+        columns
+            .iter()
+            .any(|column| unbounded.contains(column.as_str()))
     }
 }
 
@@ -305,11 +311,11 @@ fn is_bounded_short_type(data_type: &str) -> bool {
 
 fn render_ownership_tuple_source<DB: DatabaseLike>(
     object: ObjectSource<'_>,
-    owner_col: &str,
-    relation: &str,
+    owner_col: &ColumnName,
+    relation: &RelationName,
     subject_prefix: &str,
     comment: String,
-    owner_filter: Option<(&str, &str)>,
+    owner_filter: Option<(&str, &ColumnName)>,
     names: NameContext<'_, DB>,
 ) -> TupleQuery {
     let ObjectSource {
@@ -320,17 +326,17 @@ fn render_ownership_tuple_source<DB: DatabaseLike>(
     } = object;
     let table_sql = owner_table_reference(table, only_own_rows);
     let pk_parts = quoted_key_parts(pk_cols);
-    let owner_col_sql = quote_sql_identifier(owner_col);
+    let owner_col_sql = quote_sql_identifier(owner_col.as_str());
     let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
     let subject_sql = typed_name_sql(subject_prefix, [owner_col_sql.as_str()]);
 
-    let owner_cols = [owner_col.to_string()];
+    let owner_cols = [owner_col.clone()];
     let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
     let subject_guard = subject_fits(&subject_sql, table, &owner_cols, names)
         .map_or_else(String::new, |guard| format!("\nAND {guard}"));
     let where_clause = if let Some((principal_table, principal_pk_col)) = owner_filter {
         let principal_table_sql = quote_sql_identifier(principal_table);
-        let principal_pk_col_sql = quote_sql_identifier(principal_pk_col);
+        let principal_pk_col_sql = quote_sql_identifier(principal_pk_col.as_str());
         format!(
             "WHERE {owner_col_sql} IN (SELECT {principal_pk_col_sql} FROM {principal_table_sql})\n\
              AND {owner_col_sql} IS NOT NULL\n\
@@ -455,7 +461,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         } => {
             let table_sql = owner_table_reference(table, only_own_rows);
             let pk_parts = quoted_key_parts(pk_cols);
-            let array_col_sql = quote_sql_identifier(array_col);
+            let array_col_sql = quote_sql_identifier(array_col.as_str());
             let object_sql = typed_name_sql(owner_type, pk_parts.iter().map(String::as_str));
             let subject_sql = typed_name_sql(USER_TYPE, [ARRAY_ELEMENT_ALIAS]);
             let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
@@ -486,7 +492,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         } => {
             let table_sql = owner_table_reference(table, only_own_rows);
             let pk_parts = quoted_key_parts(pk_cols);
-            let field_sql = render_jsonb_path(&quote_sql_identifier(column), path)?;
+            let field_sql = render_jsonb_path(&quote_sql_identifier(column.as_str()), path)?;
             let object_sql = typed_name_sql(owner_type, pk_parts.iter().map(String::as_str));
             let field_operand = format!("({field_sql})");
             let subject_sql = typed_name_sql(USER_TYPE, [field_operand.as_str()]);
@@ -525,7 +531,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 only_own_rows,
             },
             owner_col,
-            OWNER_USER_RELATION,
+            &owner_user_relation(),
             USER_TYPE,
             format!("-- User ownership ({owner_col} references {user_table})"),
             Some((user_table, user_pk_col)),
@@ -546,7 +552,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 only_own_rows,
             },
             owner_col,
-            OWNER_TEAM_RELATION,
+            &owner_team_relation(),
             TEAM_TYPE,
             format!("-- Team ownership ({owner_col} references {team_table})"),
             Some((team_table, team_pk_col)),
@@ -571,11 +577,11 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let table_type = owner_type;
             let table_sql = owner_table_reference(table, only_own_rows);
             let pk_parts = quoted_key_parts(pk_cols);
-            let grant_join_col_sql = quote_sql_identifier(grant_join_col);
+            let grant_join_col_sql = quote_sql_identifier(grant_join_col.as_str());
             let grant_table_sql = quote_sql_identifier(grant_table);
-            let grant_role_col_sql = quote_sql_identifier(grant_role_col);
-            let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col);
-            let grant_resource_col_sql = quote_sql_identifier(grant_resource_col);
+            let grant_role_col_sql = quote_sql_identifier(grant_role_col.as_str());
+            let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col.as_str());
+            let grant_resource_col_sql = quote_sql_identifier(grant_resource_col.as_str());
 
             let case_arms: Vec<String> = role_cases
                 .iter()
@@ -609,9 +615,9 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
                 (Some(up), Some(tp)) => {
                     let user_tbl_sql = quote_sql_identifier(&up.table);
-                    let user_pk_sql = quote_sql_identifier(&up.pk_col);
+                    let user_pk_sql = quote_sql_identifier(up.pk_col.as_str());
                     let team_tbl_sql = quote_sql_identifier(&tp.table);
-                    let team_pk_sql = quote_sql_identifier(&tp.pk_col);
+                    let team_pk_sql = quote_sql_identifier(tp.pk_col.as_str());
                     subject_joins.push(format!(
                         "LEFT JOIN {user_tbl_sql} u ON u.{user_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
@@ -631,7 +637,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 (Some(_), None) => user_subject_sql.clone(),
                 (None, Some(tp)) => {
                     let team_tbl_sql = quote_sql_identifier(&tp.table);
-                    let team_pk_sql = quote_sql_identifier(&tp.pk_col);
+                    let team_pk_sql = quote_sql_identifier(tp.pk_col.as_str());
                     subject_joins.push(format!(
                         "JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
@@ -685,8 +691,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             user_col,
         } => {
             let membership_table_sql = quote_sql_identifier(membership_table);
-            let team_col_sql = quote_sql_identifier(team_col);
-            let user_col_sql = quote_sql_identifier(user_col);
+            let team_col_sql = quote_sql_identifier(team_col.as_str());
+            let user_col_sql = quote_sql_identifier(user_col.as_str());
             let object_sql = typed_name_sql(TEAM_TYPE, [team_col_sql.as_str()]);
             let subject_sql = typed_name_sql(USER_TYPE, [user_col_sql.as_str()]);
             let team_guards = join_row_is_nameable(
@@ -720,8 +726,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
-            let fk_col_sql = quote_sql_identifier(fk_col);
-            let user_col_sql = quote_sql_identifier(user_col);
+            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
+            let user_col_sql = quote_sql_identifier(user_col.as_str());
             // The extra predicate joins a conjunction of NULL guards, so it is
             // parenthesised: a disjunction would otherwise break out of the AND.
             let null_guards = format!("{fk_col_sql} IS NOT NULL AND {user_col_sql} IS NOT NULL");
@@ -766,8 +772,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             ..
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
-            let fk_col_sql = quote_sql_identifier(fk_col);
-            let member_col_sql = quote_sql_identifier(member_col);
+            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
+            let member_col_sql = quote_sql_identifier(member_col.as_str());
             let parameter_sql = quote_sql_string_literal(row_parameter);
             let null_guards = format!("{fk_col_sql} IS NOT NULL AND {member_col_sql} IS NOT NULL");
             let object_sql = typed_name_sql(parent_type, [fk_col_sql.as_str()]);
@@ -808,7 +814,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             let member_table_sql = quote_sql_identifier(member_table);
-            let user_col_sql = quote_sql_identifier(user_col);
+            let user_col_sql = quote_sql_identifier(user_col.as_str());
             let object_sql = typed_name_literal(holder_type, HOLDER_OBJECT_ID);
             let subject_sql = typed_name_sql(USER_TYPE, [user_col_sql.as_str()]);
             let user_col_sql_guard = subject_fits(
@@ -878,7 +884,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             };
             let table_sql = owner_table_reference(table, only_own_rows);
             let object_parts = quoted_key_parts(&object_cols);
-            let parent_ref_col_sql = quote_sql_identifier(&parent_ref_col);
+            let parent_ref_col_sql = quote_sql_identifier(parent_ref_col.as_str());
             let object_sql = typed_name_sql(table_type, object_parts.iter().map(String::as_str));
             let subject_sql = typed_name_sql(parent_type, [parent_ref_col_sql.as_str()]);
             let bridge_guards = join_row_is_nameable(
@@ -920,7 +926,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let pk_parts = quoted_key_parts(pk_cols);
             let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
             let key_not_null = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
-            let flag_col_sql = quote_sql_identifier(flag_col);
+            let flag_col_sql = quote_sql_identifier(flag_col.as_str());
             Some(TupleQuery {
                 comment: format!("-- Public access flag ({flag_col})"),
                 sql: format!(
@@ -945,7 +951,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let pk_parts = quoted_key_parts(pk_cols);
             let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
             let key_not_null = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
-            let column_sql = quote_sql_identifier(&predicate.column);
+            let column_sql = quote_sql_identifier(predicate.column.as_str());
             let operator = render_attribute_operator(predicate.operator);
             let value_sql = render_attribute_literal(&predicate.value);
             Some(TupleQuery {
@@ -980,7 +986,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let pk_parts = quoted_key_parts(pk_cols);
             let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
             let key_not_null = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
-            let column_sql = quote_sql_identifier(column);
+            let column_sql = quote_sql_identifier(column.as_str());
             let parameter_sql = quote_sql_string_literal(row_parameter);
             Some(TupleQuery {
                 comment: format!(
@@ -1017,7 +1023,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             // A NULL row value matches nothing in PostgreSQL, so it needs no tuple.
             let (carried_sql, carried_filter, what) = match row_parameter {
                 RowParameter::Column { column, .. } => {
-                    let column_sql = quote_sql_identifier(column);
+                    let column_sql = quote_sql_identifier(column.as_str());
                     (
                         format!("{column_sql}::text"),
                         format!("\nAND {column_sql} IS NOT NULL"),
@@ -1117,11 +1123,11 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
 /// row. A name the schema does not carry is a bridge nobody can write.
 pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     table: &str,
-    fk_column: &str,
+    fk_column: &ColumnName,
     db: &DB,
-) -> Option<(Vec<String>, String)> {
+) -> Option<(Vec<ColumnName>, ColumnName)> {
     let object_cols = resolve_pk_columns(table, db)?;
-    table_has_column(db, table, fk_column).then(|| (object_cols, fk_column.to_string()))
+    table_has_column(db, table, fk_column.as_str()).then(|| (object_cols, fk_column.clone()))
 }
 
 /// The `FROM` reference for a query minting this type's objects.
@@ -1136,7 +1142,12 @@ fn owner_table_reference(table: &str, only_own_rows: bool) -> String {
         quoted
     }
 }
-fn quote_sql_identifier(identifier: &str) -> String {
+/// Quote `identifier` for SQL, splitting a qualified name and escaping each part.
+///
+/// The only place an identifier becomes SQL text. `describe.rs` reads it too, since a
+/// bound query's condition names a column and a second escaper would let one spelling
+/// escape what the other does not.
+pub(crate) fn quote_sql_identifier(identifier: &str) -> String {
     split_qualified_identifier_parts(identifier)
         .into_iter()
         .map(|part| quote_sql_identifier_part(&part))
@@ -1218,7 +1229,9 @@ fn render_jsonb_path(column_sql: &str, path: &[String]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::classifier::function_registry::FunctionRegistry;
-    use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
+    use crate::classifier::patterns::{
+        BooleanFlag, ClassifiedPolicy, ConfidenceLevel, DirectOwnership,
+    };
     use crate::generator::model_generator::GeneratorSettings;
     use crate::parser::names::policy_scope_relation_name;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
@@ -1266,35 +1279,60 @@ CREATE TABLE 日本(id uuid primary key);
         )
         .expect("schema should parse");
 
-        assert_eq!(resolve_bridge_columns("missing", "project_id", &db), None);
         assert_eq!(
-            resolve_bridge_columns("docs", "project_id", &db),
-            Some((vec!["id".to_string()], "project_id".to_string()))
+            resolve_bridge_columns("missing", &ColumnName::from_stored("project_id"), &db),
+            None
+        );
+        assert_eq!(
+            resolve_bridge_columns("docs", &ColumnName::from_stored("project_id"), &db),
+            Some((
+                vec![ColumnName::from_stored("id")],
+                ColumnName::from_stored("project_id")
+            ))
         );
         // A column the table does not carry is a bridge nobody writes, whatever the name
         // suggests about the parent.
-        assert_eq!(resolve_bridge_columns("projects", "project_id", &db), None);
-        assert_eq!(resolve_bridge_columns("status", "status_id", &db), None);
         assert_eq!(
-            resolve_bridge_columns("categories", "category_id", &db),
+            resolve_bridge_columns("projects", &ColumnName::from_stored("project_id"), &db),
+            None
+        );
+        assert_eq!(
+            resolve_bridge_columns("status", &ColumnName::from_stored("status_id"), &db),
+            None
+        );
+        assert_eq!(
+            resolve_bridge_columns("categories", &ColumnName::from_stored("category_id"), &db),
             None
         );
         // Both names canonicalize to `resource`, which used to be enough to bridge one
         // table to another it has nothing to do with. The `id` case beside it keeps the
         // refusal from resting on an unparsed table.
         assert_eq!(
-            resolve_bridge_columns("\u{65e5}\u{672c}", "\u{4e2d}\u{6587}", &db),
+            resolve_bridge_columns(
+                "\u{65e5}\u{672c}",
+                &ColumnName::from_stored("\u{4e2d}\u{6587}"),
+                &db
+            ),
             None
         );
         assert_eq!(
-            resolve_bridge_columns("\u{65e5}\u{672c}", "id", &db),
-            Some((vec!["id".to_string()], "id".to_string()))
+            resolve_bridge_columns("\u{65e5}\u{672c}", &ColumnName::from_stored("id"), &db),
+            Some((
+                vec![ColumnName::from_stored("id")],
+                ColumnName::from_stored("id")
+            ))
         );
         assert_eq!(
-            resolve_bridge_columns("events", "project_id", &db),
-            Some((vec!["event_uuid".to_string()], "project_id".to_string()))
+            resolve_bridge_columns("events", &ColumnName::from_stored("project_id"), &db),
+            Some((
+                vec![ColumnName::from_stored("event_uuid")],
+                ColumnName::from_stored("project_id")
+            ))
         );
-        assert_eq!(resolve_bridge_columns("links", "project_id", &db), None);
+        assert_eq!(
+            resolve_bridge_columns("links", &ColumnName::from_stored("project_id"), &db),
+            None
+        );
     }
 
     #[test]
@@ -1314,15 +1352,15 @@ CREATE POLICY docs_update ON docs FOR ALL
         let policy = db.policies().next().expect("policy should exist");
         let mut classified = ClassifiedPolicy::from_policy(policy, &db);
         classified.using_classification = Some(ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership {
-                column: "owner_id".to_string(),
-            },
+            pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+                column: ColumnName::from_stored("owner_id"),
+            }),
             confidence: ConfidenceLevel::A,
         });
         classified.with_check_classification = Some(ClassifiedExpr {
-            pattern: PatternClass::P6BooleanFlag {
-                column: "is_public".to_string(),
-            },
+            pattern: PatternClass::P6BooleanFlag(BooleanFlag {
+                column: ColumnName::from_stored("is_public"),
+            }),
             confidence: ConfidenceLevel::A,
         });
 
@@ -1845,13 +1883,17 @@ CREATE POLICY docs_select ON docs FOR SELECT
         // Both user_principal and team_principal are None → fail-closed path.
         let source = TupleSource::ExplicitGrants {
             table: "docs".to_string(),
-            pk_cols: vec!["id".to_string()],
-            grant_join_col: "doc_id".to_string(),
+            pk_cols: vec![ColumnName::from_stored("id")],
+            grant_join_col: ColumnName::from_stored("doc_id"),
             grant_table: "doc_grants".to_string(),
-            grant_role_col: "role_level".to_string(),
-            grant_grantee_col: "grantee_id".to_string(),
-            grant_resource_col: "doc_id".to_string(),
-            role_cases: vec![(1, "viewer".to_string(), "viewer".to_string())],
+            grant_role_col: ColumnName::from_stored("role_level"),
+            grant_grantee_col: ColumnName::from_stored("grantee_id"),
+            grant_resource_col: ColumnName::from_stored("doc_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("viewer"),
+                "viewer".to_string(),
+            )],
             user_principal: None,
             team_principal: None,
         };
@@ -1884,17 +1926,21 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
         let source = TupleSource::ExplicitGrants {
             table: "docs".to_string(),
-            pk_cols: vec!["id".to_string()],
-            grant_join_col: "id".to_string(),
+            pk_cols: vec![ColumnName::from_stored("id")],
+            grant_join_col: ColumnName::from_stored("id"),
             grant_table: "doc_grants".to_string(),
-            grant_role_col: "role_level".to_string(),
-            grant_grantee_col: "grantee_id".to_string(),
-            grant_resource_col: "doc_id".to_string(),
-            role_cases: vec![(1, "grant_viewer".to_string(), "viewer".to_string())],
+            grant_role_col: ColumnName::from_stored("role_level"),
+            grant_grantee_col: ColumnName::from_stored("grantee_id"),
+            grant_resource_col: ColumnName::from_stored("doc_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("grant_viewer"),
+                "viewer".to_string(),
+            )],
             user_principal: None,
             team_principal: Some(PrincipalInfo {
                 table: "teams".to_string(),
-                pk_col: "id".to_string(),
+                pk_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
@@ -1921,20 +1967,24 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
         let source = TupleSource::ExplicitGrants {
             table: "docs".to_string(),
-            pk_cols: vec!["id".to_string()],
-            grant_join_col: "id".to_string(),
+            pk_cols: vec![ColumnName::from_stored("id")],
+            grant_join_col: ColumnName::from_stored("id"),
             grant_table: "doc_grants".to_string(),
-            grant_role_col: "role_level".to_string(),
-            grant_grantee_col: "grantee_id".to_string(),
-            grant_resource_col: "doc_id".to_string(),
-            role_cases: vec![(1, "grant_viewer".to_string(), "viewer".to_string())],
+            grant_role_col: ColumnName::from_stored("role_level"),
+            grant_grantee_col: ColumnName::from_stored("grantee_id"),
+            grant_resource_col: ColumnName::from_stored("doc_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("grant_viewer"),
+                "viewer".to_string(),
+            )],
             user_principal: Some(PrincipalInfo {
                 table: "users".to_string(),
-                pk_col: "id".to_string(),
+                pk_col: ColumnName::from_stored("id"),
             }),
             team_principal: Some(PrincipalInfo {
                 table: "teams".to_string(),
-                pk_col: "id".to_string(),
+                pk_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");

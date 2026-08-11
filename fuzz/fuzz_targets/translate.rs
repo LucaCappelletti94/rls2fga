@@ -5,7 +5,9 @@ use std::hint::black_box;
 
 use libfuzzer_sys::fuzz_target;
 use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
-use rls2fga::classifier::patterns::{ClassifiedExpr, ConfidenceLevel, PatternClass};
+use rls2fga::classifier::patterns::{
+    ClassifiedExpr, ConfidenceLevel, ConstantBool, PatternClass,
+};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{records_from_row, RowValues};
 use rls2fga::generator::tuple_generator::format_tuples;
@@ -25,9 +27,9 @@ impl PolicyOracle for TextOracle {
             0 => OracleAnswer::Bailed,
             1 => OracleAnswer::Denied,
             _ => OracleAnswer::Classified(Box::new(ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool {
+                pattern: PatternClass::P10ConstantBool(ConstantBool {
                     value: len.is_multiple_of(2),
-                },
+                }),
                 confidence: ConfidenceLevel::B,
             })),
         }

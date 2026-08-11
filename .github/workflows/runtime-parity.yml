@@ -36,7 +36,7 @@ jobs:
         run: docker version
 
       - name: Run runtime integration suites
-        run: cargo test --features db --locked --lib --tests
+        run: cargo test --locked --lib --tests
 
       - name: Run ignored runtime integration suites
-        run: cargo test --features db --locked --tests -- --ignored
+        run: cargo test --locked --tests -- --ignored

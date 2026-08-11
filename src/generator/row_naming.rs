@@ -48,7 +48,7 @@ pub(crate) fn row_naming<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<Ro
             let columns = resolve_pk_columns(table, db)?;
             Some(RowNaming {
                 table: table.clone(),
-                type_name: type_plan.type_name.clone(),
+                type_name: type_plan.type_name.to_string(),
                 key: ObjectKey::new(columns.into_iter().map(ValueSource::Column).collect()),
             })
         })

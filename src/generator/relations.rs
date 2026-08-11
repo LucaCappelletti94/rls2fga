@@ -12,6 +12,7 @@
 
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use crate::parser::identifiers::{RelationName, TypeName};
 use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::generator::db_lookup::resolve_pk_columns;
@@ -26,9 +27,9 @@ use crate::parser::sql_parser::DatabaseLike;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationShapes {
     /// `OpenFGA` type the relation is defined on.
-    pub type_name: String,
+    pub type_name: TypeName,
     /// Relation name.
-    pub relation: String,
+    pub relation: RelationName,
     /// True only when every leaf resolves from the object's own row to a named
     /// user. False whenever the analysis cannot establish that, including every
     /// case it does not understand.
@@ -56,7 +57,7 @@ pub enum RowDecision {
     /// The subjects are the records these shapes produce for this row.
     Leaf {
         /// The direct relation whose records answer. Always on the same type.
-        relation: String,
+        relation: RelationName,
         /// The shapes filling it, identical to that relation's own entry. Never empty.
         shapes: Vec<RecordDescription>,
     },
@@ -72,7 +73,7 @@ pub enum RowDecision {
     RequestGated {
         /// The direct relation whose records carry the row's side. Always on the same
         /// type.
-        relation: String,
+        relation: RelationName,
         /// The shapes filling it, identical to that relation's own entry. Never empty.
         shapes: Vec<RecordDescription>,
         /// Context key each record carries the row's side under.
@@ -103,13 +104,13 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
 
     let mut out = Vec::new();
     for type_plan in &plan.types {
-        let mut names: BTreeSet<&str> = BTreeSet::new();
-        names.extend(type_plan.direct_relations.keys().map(String::as_str));
-        names.extend(type_plan.computed_relations.keys().map(String::as_str));
+        let mut names: BTreeSet<&RelationName> = BTreeSet::new();
+        names.extend(type_plan.direct_relations.keys());
+        names.extend(type_plan.computed_relations.keys());
         for relation in names {
             let mut visiting = BTreeSet::new();
             let decision = relation_decision(
-                &type_plan.type_name,
+                type_plan.type_name.as_str(),
                 relation,
                 plan,
                 &sources,
@@ -118,9 +119,9 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
             );
             out.push(RelationShapes {
                 type_name: type_plan.type_name.clone(),
-                relation: relation.to_string(),
+                relation: relation.clone(),
                 from_one_row: decision.is_some(),
-                shapes: shapes_filling(&type_plan.type_name, relation, &sources, db),
+                shapes: shapes_filling(type_plan.type_name.as_str(), relation, &sources, db),
                 decision,
             });
         }
@@ -145,7 +146,8 @@ fn index_sources(plan: &SchemaPlan) -> SourceIndex<'_> {
     index
 }
 
-type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'plan str, bool)>>;
+type SourceIndex<'plan> =
+    BTreeMap<(String, RelationName), Vec<(&'plan TupleSource, &'plan str, bool)>>;
 
 /// One shape per source. A source feeding the same relation from two type plans
 /// describes it twice, and the key the renderer deduplicates queries on is what
@@ -154,14 +156,14 @@ type SourceIndex<'plan> = BTreeMap<(String, String), Vec<(&'plan TupleSource, &'
 /// that type.
 fn shapes_filling<DB: DatabaseLike>(
     type_name: &str,
-    relation: &str,
+    relation: &RelationName,
     sources: &SourceIndex<'_>,
     db: &DB,
 ) -> Vec<RecordDescription> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for (source, owner_type, only_own_rows) in sources
-        .get(&(type_name.to_string(), relation.to_string()))
+        .get(&(type_name.to_string(), relation.clone()))
         .into_iter()
         .flatten()
     {
@@ -178,19 +180,19 @@ fn shapes_filling<DB: DatabaseLike>(
 fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &str) -> Option<&'plan TypePlan> {
     plan.types
         .iter()
-        .find(|candidate| candidate.type_name == type_name)
+        .find(|candidate| candidate.type_name.as_str() == type_name)
 }
 
 fn relation_decision<DB: DatabaseLike>(
     type_name: &str,
-    relation: &str,
+    relation: &RelationName,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
     db: &DB,
-    visiting: &mut BTreeSet<(String, String)>,
+    visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<RowDecision> {
     // A cycle is not something the analysis can judge, so it falls closed.
-    if !visiting.insert((type_name.to_string(), relation.to_string())) {
+    if !visiting.insert((type_name.to_string(), relation.clone())) {
         return None;
     }
     let answer = match find_type(plan, type_name) {
@@ -205,7 +207,7 @@ fn relation_decision<DB: DatabaseLike>(
             None => leaf_decision(type_name, relation, sources, db),
         },
     };
-    visiting.remove(&(type_name.to_string(), relation.to_string()));
+    visiting.remove(&(type_name.to_string(), relation.clone()));
     answer
 }
 
@@ -215,7 +217,7 @@ fn expr_decision<DB: DatabaseLike>(
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
     db: &DB,
-    visiting: &mut BTreeSet<(String, String)>,
+    visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<RowDecision> {
     match expr {
         // A named relation stands for its own definition, so the recipe reaches
@@ -243,7 +245,7 @@ fn child_decisions<DB: DatabaseLike>(
     plan: &SchemaPlan,
     sources: &SourceIndex<'_>,
     db: &DB,
-    visiting: &mut BTreeSet<(String, String)>,
+    visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<Vec<RowDecision>> {
     children
         .iter()
@@ -256,13 +258,13 @@ fn child_decisions<DB: DatabaseLike>(
 /// [`shapes_filling`] reports for it, deduplicated the same way.
 fn leaf_decision<DB: DatabaseLike>(
     type_name: &str,
-    relation: &str,
+    relation: &RelationName,
     sources: &SourceIndex<'_>,
     db: &DB,
 ) -> Option<RowDecision> {
     // Nothing the generator emits populates it, so its tuples come from somewhere
     // this analysis cannot see, `pg_role` memberships among them.
-    let feeding = sources.get(&(type_name.to_string(), relation.to_string()))?;
+    let feeding = sources.get(&(type_name.to_string(), relation.clone()))?;
     if feeding.is_empty() {
         return None;
     }
@@ -296,7 +298,7 @@ fn leaf_decision<DB: DatabaseLike>(
         };
         let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
         return Some(RowDecision::RequestGated {
-            relation: relation.to_string(),
+            relation: relation.clone(),
             shapes: vec![description],
             context_key: row_parameter.parameter().to_string(),
             request_parameter: request_parameter.clone(),
@@ -316,7 +318,7 @@ fn leaf_decision<DB: DatabaseLike>(
         }
     }
     Some(RowDecision::Leaf {
-        relation: relation.to_string(),
+        relation: relation.clone(),
         shapes,
     })
 }

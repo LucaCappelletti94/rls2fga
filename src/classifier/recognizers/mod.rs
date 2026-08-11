@@ -10,6 +10,7 @@ pub use crate::parser::expr::extract_column_name;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::function_analyzer::current_setting_literal_key;
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
     lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
@@ -61,12 +62,12 @@ pub fn recognize_p1<DB: DatabaseLike>(
         let threshold = extract_integer_value(threshold_expr)?;
 
         return Some(ClassifiedExpr {
-            pattern: PatternClass::P1NumericThreshold {
+            pattern: PatternClass::P1NumericThreshold(NumericThreshold {
                 function_name: func_name,
                 operator,
                 threshold,
                 command,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         });
     }
@@ -100,11 +101,11 @@ pub fn recognize_p2<DB: DatabaseLike>(
 
                 if !role_names.is_empty() {
                     return Some(ClassifiedExpr {
-                        pattern: PatternClass::P2RoleNameInList {
+                        pattern: PatternClass::P2RoleNameInList(RoleNameInList {
                             function_name: func_name,
                             role_names,
                             privilege: RolePrivilege::Member,
-                        },
+                        }),
                         confidence: ConfidenceLevel::A,
                     });
                 }
@@ -164,11 +165,11 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     };
 
     Some(ClassifiedExpr {
-        pattern: PatternClass::P2RoleNameInList {
+        pattern: PatternClass::P2RoleNameInList(RoleNameInList {
             function_name: "pg_has_role".to_string(),
             role_names: vec![role_name],
             privilege,
-        },
+        }),
         confidence: ConfidenceLevel::A,
     })
 }
@@ -208,13 +209,13 @@ fn recognize_role_accessor_comparison(
         };
 
         return Some(ClassifiedExpr {
-            pattern: PatternClass::P2RoleNameInList {
+            pattern: PatternClass::P2RoleNameInList(RoleNameInList {
                 function_name: func_name,
                 role_names: vec![role_name],
                 // A role accessor names the caller's role rather than asking about a kind of
                 // membership in another one, so the widest kind is the faithful reading.
                 privilege: RolePrivilege::Member,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         });
     }
@@ -233,11 +234,11 @@ fn recognize_role_accessor_comparison(
         }
 
         return Some(ClassifiedExpr {
-            pattern: PatternClass::P2RoleNameInList {
+            pattern: PatternClass::P2RoleNameInList(RoleNameInList {
                 function_name: func_name,
                 role_names,
                 privilege: RolePrivilege::Member,
-            },
+            }),
             confidence: ConfidenceLevel::A,
         });
     }
@@ -331,14 +332,14 @@ pub fn recognize_p3<DB: DatabaseLike>(
     // indirection. This cap only applies after strict accessor validation above.
     if accessor_indirection {
         return Some(ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership { column: col_name },
+            pattern: PatternClass::P3DirectOwnership(DirectOwnership { column: col_name }),
             confidence: ConfidenceLevel::B,
         });
     }
 
     // Registry-confirmed or SQL keyword without indirection: confidence A.
     Some(ClassifiedExpr {
-        pattern: PatternClass::P3DirectOwnership { column: col_name },
+        pattern: PatternClass::P3DirectOwnership(DirectOwnership { column: col_name }),
         confidence: ConfidenceLevel::A,
     })
 }
@@ -356,7 +357,7 @@ pub fn recognize_array_patterns(
 ) -> Option<ClassifiedExpr> {
     let column = array_membership_column(expr, registry)?;
     Some(ClassifiedExpr {
-        pattern: PatternClass::P11ArrayMembership { column },
+        pattern: PatternClass::P11ArrayMembership(ArrayMembership { column }),
         confidence: ConfidenceLevel::A,
     })
 }
@@ -367,7 +368,7 @@ pub fn recognize_array_patterns(
 /// The array side must resolve to a column: `= ANY (SELECT ...)` is membership
 /// through a table, handled by the P4 recognizers, and treating its subquery as a
 /// column would emit SQL naming a column that does not exist.
-fn array_membership_column(expr: &Expr, registry: &FunctionRegistry) -> Option<String> {
+fn array_membership_column(expr: &Expr, registry: &FunctionRegistry) -> Option<ColumnName> {
     /// How the caller is written on its side of the operator.
     enum CallerForm {
         /// `= ANY` compares the caller itself.
@@ -457,13 +458,13 @@ pub fn recognize_jsonb_field_ownership(
     };
 
     Some(ClassifiedExpr {
-        pattern: PatternClass::P12JsonbFieldOwnership { column, path },
+        pattern: PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { column, path }),
         confidence: ConfidenceLevel::A,
     })
 }
 
 /// The `(column, key chain)` of a jsonb text extraction, or `None` if `expr` is not one.
-fn jsonb_text_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+fn jsonb_text_path(expr: &Expr) -> Option<(ColumnName, Vec<String>)> {
     let (base, path) = json_text_path(expr)?;
     Some((extract_column_name(base)?, path))
 }
@@ -538,7 +539,7 @@ pub fn recognize_p10_constant_bool<DB: DatabaseLike>(
     _registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
     constant_bool_value(expr).map(|value| ClassifiedExpr {
-        pattern: PatternClass::P10ConstantBool { value },
+        pattern: PatternClass::P10ConstantBool(ConstantBool { value }),
         confidence: ConfidenceLevel::A,
     })
 }
@@ -562,12 +563,12 @@ pub fn recognize_p6<DB: DatabaseLike>(
     }
 
     if let Some((col_name, is_true)) = extract_boolean_column_equality(expr) {
-        if is_true && is_public_flag_column_name(&col_name) {
+        if is_true && is_public_flag_column_name(col_name.as_str()) {
             return Some(ClassifiedExpr {
-                pattern: PatternClass::P6BooleanFlag {
+                pattern: PatternClass::P6BooleanFlag(BooleanFlag {
                     column: col_name.clone(),
-                },
-                confidence: p6_confidence(&col_name, registry),
+                }),
+                confidence: p6_confidence(col_name.as_str(), registry),
             });
         }
         return None;
@@ -576,24 +577,24 @@ pub fn recognize_p6<DB: DatabaseLike>(
     match expr {
         Expr::IsTrue(inner) | Expr::IsNotFalse(inner) => {
             let col_name = extract_column_name(inner)?;
-            if is_public_flag_column_name(&col_name) {
+            if is_public_flag_column_name(col_name.as_str()) {
                 return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag {
+                    pattern: PatternClass::P6BooleanFlag(BooleanFlag {
                         column: col_name.clone(),
-                    },
-                    confidence: p6_confidence(&col_name, registry),
+                    }),
+                    confidence: p6_confidence(col_name.as_str(), registry),
                 });
             }
         }
 
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
             let col_name = extract_column_name(expr)?;
-            if is_public_flag_column_name(&col_name) {
+            if is_public_flag_column_name(col_name.as_str()) {
                 return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag {
+                    pattern: PatternClass::P6BooleanFlag(BooleanFlag {
                         column: col_name.clone(),
-                    },
-                    confidence: p6_confidence(&col_name, registry),
+                    }),
+                    confidence: p6_confidence(col_name.as_str(), registry),
                 });
             }
         }
@@ -605,8 +606,8 @@ pub fn recognize_p6<DB: DatabaseLike>(
 /// Negated public-flag check: not expressible as static `OpenFGA` tuples.
 pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
     if let Some((col_name, value)) = extract_boolean_column_equality(expr) {
-        if !value && is_public_flag_column_name(&col_name) {
-            return Some(col_name);
+        if !value && is_public_flag_column_name(col_name.as_str()) {
+            return Some(col_name.to_string());
         }
         return None;
     }
@@ -614,8 +615,8 @@ pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
     match expr {
         Expr::IsFalse(inner) | Expr::IsNotTrue(inner) => {
             let col_name = extract_column_name(inner)?;
-            if is_public_flag_column_name(&col_name) {
-                return Some(col_name);
+            if is_public_flag_column_name(col_name.as_str()) {
+                return Some(col_name.to_string());
             }
             None
         }
@@ -623,7 +624,7 @@ pub fn is_negated_boolean_flag(expr: &Expr) -> Option<String> {
     }
 }
 
-fn extract_boolean_column_equality(expr: &Expr) -> Option<(String, bool)> {
+fn extract_boolean_column_equality(expr: &Expr) -> Option<(ColumnName, bool)> {
     let Expr::BinaryOp {
         left,
         op: BinaryOperator::Eq,
@@ -838,13 +839,13 @@ fn flatten_and_predicates<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, String)> {
+fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, ColumnName)> {
     match expr {
-        Expr::Identifier(id) => Some((None, stored_ident_name(id).into_owned())),
+        Expr::Identifier(id) => Some((None, ColumnName::from_stored(stored_ident_name(id)))),
         Expr::CompoundIdentifier(parts) => match parts.as_slice() {
             [.., qualifier, last] => Some((
                 Some(stored_ident_name(qualifier).into_owned()),
-                stored_ident_name(last).into_owned(),
+                ColumnName::from_stored(stored_ident_name(last)),
             )),
             _ => None,
         },

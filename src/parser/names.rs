@@ -1,5 +1,8 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+
+use crate::parser::identifiers::RelationName;
+
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
 ///
@@ -205,36 +208,40 @@ pub(crate) const MAX_RELATION_RENAME_ATTEMPTS: usize = 64;
 
 /// Name for the `attempt`th yield of `base`, keyed on `key` so one value always yields one
 /// name. Attempt zero is what a single rename produced, so a first collision reads as before.
-pub(crate) fn yielded_relation_name(base: &str, key: &str, attempt: usize) -> String {
+pub(crate) fn yielded_relation_name(base: &str, key: &str, attempt: usize) -> RelationName {
     let suffix = stable_hex_suffix(key);
     let candidate = if attempt == 0 {
         format!("{base}_{suffix}")
     } else {
         format!("{base}_{suffix}_{}", attempt + 1)
     };
-    clamp_relation_name(candidate)
+    RelationName::from_resolved(clamp_relation_name(candidate))
 }
 
 /// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
-pub fn policy_scope_relation_name(policy_name: &str) -> String {
+#[must_use]
+pub fn policy_scope_relation_name(policy_name: &str) -> RelationName {
     scope_relation_name("scope", policy_name)
 }
 
 /// Derive a stable relation name used to scope reads of a membership table by
 /// `PostgreSQL` roles.
-pub fn membership_read_scope_relation_name(join_table: &str) -> String {
+#[must_use]
+pub fn membership_read_scope_relation_name(join_table: &str) -> RelationName {
     scope_relation_name("read_scope", join_table)
 }
 
 /// Derive a stable relation name for the part of an action a role scoped
 /// RESTRICTIVE policy binds.
-pub fn role_limited_relation_name(policy_name: &str) -> String {
+#[must_use]
+pub fn role_limited_relation_name(policy_name: &str) -> RelationName {
     scope_relation_name("limit", policy_name)
 }
 
 /// Derive a stable relation name for a guard the authorization service evaluates per
 /// check rather than one the tuples decide.
-pub fn conditional_gate_relation_name(policy_name: &str) -> String {
+#[must_use]
+pub fn conditional_gate_relation_name(policy_name: &str) -> RelationName {
     scope_relation_name("gate", policy_name)
 }
 
@@ -252,10 +259,10 @@ pub fn gate_condition_name(type_name: &str, policy_name: &str) -> String {
     clamp_relation_name(format!("when_{base}_{suffix}"))
 }
 
-fn scope_relation_name(prefix: &str, key: &str) -> String {
+fn scope_relation_name(prefix: &str, key: &str) -> RelationName {
     let base = canonical_fga_type_name(key);
     let suffix = stable_hex_suffix(key);
-    clamp_relation_name(format!("{prefix}_{base}_{suffix}"))
+    RelationName::from_resolved(clamp_relation_name(format!("{prefix}_{base}_{suffix}")))
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.
@@ -608,7 +615,7 @@ mod tests {
         let third = policy_scope_relation_name("editors_only");
 
         assert_eq!(first, second);
-        assert!(first.starts_with("scope_"));
+        assert!(first.as_str().starts_with("scope_"));
         assert_ne!(first, third);
     }
 
@@ -617,9 +624,11 @@ mod tests {
         let first = role_limited_relation_name("DocsReview");
 
         assert_eq!(first, role_limited_relation_name("DocsReview"));
-        assert!(first.starts_with("limit_"));
+        assert!(first.as_str().starts_with("limit_"));
         assert_ne!(first, role_limited_relation_name("docs_review"));
-        assert!(role_limited_relation_name(&"p".repeat(80)).len() <= MAX_RELATION_NAME_LEN);
+        assert!(
+            role_limited_relation_name(&"p".repeat(80)).as_str().len() <= MAX_RELATION_NAME_LEN
+        );
     }
 
     #[test]

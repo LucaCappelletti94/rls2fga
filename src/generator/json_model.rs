@@ -8,6 +8,7 @@ use crate::generator::model_generator::{
     ConditionParameter, DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
 use crate::generator::well_known::LIST_PARAMETER_TYPE;
+use crate::parser::identifiers::RelationName;
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -72,7 +73,7 @@ pub struct TypeDefinition {
     pub type_name: String,
     /// Relation name → userset rewrite rule. `None` for types with no relations (e.g. `user`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relations: Option<BTreeMap<String, Userset>>,
+    pub relations: Option<BTreeMap<RelationName, Userset>>,
     /// Allowed directly-related user types per relation. `None` for computed-only relations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<TypeMetadata>,
@@ -82,7 +83,7 @@ pub struct TypeDefinition {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeMetadata {
     /// Relation name to its assignable types.
-    pub relations: BTreeMap<String, RelationMetadata>,
+    pub relations: BTreeMap<RelationName, RelationMetadata>,
 }
 
 /// Allowed directly-related types for a single relation.
@@ -152,7 +153,7 @@ pub enum Userset {
 #[derive(Debug, Clone, Serialize)]
 pub struct ObjectRelation {
     /// Relation name.
-    pub relation: String,
+    pub relation: RelationName,
 }
 
 /// Follow `tupleset`, then evaluate `computed_userset` on each object reached.
@@ -228,7 +229,7 @@ pub(crate) fn json_model_from_plan(plan: SchemaPlan) -> AuthorizationModel {
 fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
     if plan.direct_relations.is_empty() && plan.computed_relations.is_empty() {
         return TypeDefinition {
-            type_name: plan.type_name,
+            type_name: plan.type_name.to_string(),
             relations: None,
             metadata: None,
         };
@@ -282,7 +283,7 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
     }
 
     TypeDefinition {
-        type_name: plan.type_name,
+        type_name: plan.type_name.to_string(),
         relations: Some(relations),
         metadata: Some(TypeMetadata {
             relations: meta_relations,
@@ -329,15 +330,15 @@ fn expr_to_userset(expr: &UsersetExpr) -> Userset {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generator::well_known::{MEMBER_RELATION, TEAM_TYPE};
+    use crate::generator::well_known::{member_relation, TEAM_TYPE};
 
     #[test]
     fn expr_to_userset_supports_intersection_nodes() {
         let expr = UsersetExpr::Intersection(vec![
-            UsersetExpr::Computed("owner".to_string()),
+            UsersetExpr::Computed(RelationName::from_resolved("owner")),
             UsersetExpr::TupleToUserset {
-                tupleset: TEAM_TYPE.to_string(),
-                computed: MEMBER_RELATION.to_string(),
+                tupleset: RelationName::from_resolved(TEAM_TYPE),
+                computed: member_relation(),
             },
         ]);
 

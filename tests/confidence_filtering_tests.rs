@@ -26,7 +26,7 @@ fn json_model_respects_min_confidence_threshold() {
     let posts = json
         .type_definitions
         .iter()
-        .find(|t| t.type_name == "posts")
+        .find(|t| t.type_name.as_str() == "posts")
         .expect("posts type should exist");
     let relations = posts
         .relations

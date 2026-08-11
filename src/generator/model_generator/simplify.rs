@@ -1,0 +1,294 @@
+//! Passes that simplify a plan once every table's policies are translated.
+//!
+//! Each one runs over the whole plan rather than one table, because a relation minted for one
+//! table may only become redundant, or unreachable, once another table's rules exist. Anything
+//! order dependent belongs here rather than mid-loop: deciding a name while the loop is still
+//! running is on the trap list twice.
+
+use super::*;
+
+/// The rule a `can_select` gate wraps, if this expression is such a gate.
+pub(crate) fn select_gate_rule(expr: &UsersetExpr) -> Option<&UsersetExpr> {
+    let UsersetExpr::Intersection(children) = expr else {
+        return None;
+    };
+    let [rule, UsersetExpr::Computed(gate)] = children.as_slice() else {
+        return None;
+    };
+    (*gate == can_select_relation()).then_some(rule)
+}
+
+/// Whether `rule` can only hold where `visible` holds. Unrecognized shapes keep the
+/// gate.
+pub(crate) fn rule_implies(
+    rule: &UsersetExpr,
+    visible: &UsersetExpr,
+    relations: &BTreeMap<RelationName, UsersetExpr>,
+    seen: &mut BTreeSet<RelationName>,
+) -> bool {
+    if userset_key(rule) == userset_key(visible) {
+        return true;
+    }
+    match visible {
+        // Any branch that admits the rule admits it for the whole union.
+        UsersetExpr::Union(branches) => branches
+            .iter()
+            .any(|branch| rule_implies(rule, branch, relations, seen)),
+        // Every conjunct has to admit it.
+        UsersetExpr::Intersection(children) => children
+            .iter()
+            .all(|child| rule_implies(rule, child, relations, seen)),
+        // A named relation stands for its own definition. Levels of a role
+        // hierarchy chain through here, and `seen` keeps a cycle from looping.
+        UsersetExpr::Computed(name) => {
+            seen.insert(name.clone())
+                && relations
+                    .get(name)
+                    .is_some_and(|expr| rule_implies(rule, expr, relations, seen))
+        }
+        // An exclusion can remove the rule's own members, so it admits nothing.
+        UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => false,
+    }
+}
+
+/// Require the row to be readable, which every per-row change does.
+pub(crate) fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
+    UsersetExpr::Intersection(vec![expr, UsersetExpr::Computed(can_select_relation())])
+}
+
+/// Drop a `can_select` gate the rule already implies.
+pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        let relations = plan.computed_relations.clone();
+        let Some(visible) = relations.get(&can_select_relation()) else {
+            continue;
+        };
+        for (relation, expr) in &mut plan.computed_relations {
+            if *relation == can_select_relation() {
+                continue;
+            }
+            let Some(rule) = select_gate_rule(expr) else {
+                continue;
+            };
+            if rule_implies(rule, visible, &relations, &mut BTreeSet::new()) {
+                *expr = rule.clone();
+            }
+        }
+    }
+}
+
+/// Drop the readback relation where it repeats `can_insert`, since a relation
+/// that adds no requirement is noise.
+pub(crate) fn drop_implied_insert_readback(all_types: &mut BTreeMap<String, TypePlan>) {
+    for plan in all_types.values_mut() {
+        let repeats = plan
+            .computed_relations
+            .get(&can_insert_returning_relation())
+            .zip(plan.computed_relations.get(&can_insert_relation()))
+            .is_some_and(|(readback, insert)| readback == insert);
+        if repeats {
+            plan.computed_relations
+                .remove(&can_insert_returning_relation());
+        }
+    }
+}
+
+/// Inline a synthesized rule relation that is just another name for one relation on
+/// the same type. Only generated holders are disposable.
+pub(crate) fn inline_synthetic_rule_aliases(all_types: &mut BTreeMap<String, TypePlan>) {
+    let mut aliases: BTreeMap<String, BTreeMap<RelationName, RelationName>> = BTreeMap::new();
+    for (type_name, plan) in all_types.iter() {
+        for (relation, expr) in &plan.computed_relations {
+            if !relation.as_str().starts_with(INHERITED_RELATION_PREFIX) {
+                continue;
+            }
+            let UsersetExpr::Computed(target) = expr else {
+                continue;
+            };
+            if plan.direct_relations.contains_key(target)
+                || plan.computed_relations.contains_key(target)
+            {
+                aliases
+                    .entry(type_name.clone())
+                    .or_default()
+                    .insert(relation.clone(), target.clone());
+            }
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+
+    for plan in all_types.values_mut() {
+        let TypePlan {
+            type_name,
+            direct_relations,
+            computed_relations,
+            ..
+        } = plan;
+        if let Some(dropped) = aliases.get(type_name.as_str()) {
+            computed_relations.retain(|relation, _| !dropped.contains_key(relation));
+        }
+        let own = aliases.get(type_name.as_str());
+        for expr in computed_relations.values_mut() {
+            repoint_inlined_aliases(expr, direct_relations, own, &aliases);
+        }
+    }
+}
+
+/// Point every reference to an inlined alias at the relation it named.
+pub(crate) fn repoint_inlined_aliases(
+    expr: &mut UsersetExpr,
+    direct_relations: &BTreeMap<RelationName, Vec<DirectSubject>>,
+    own: Option<&BTreeMap<RelationName, RelationName>>,
+    aliases: &BTreeMap<String, BTreeMap<RelationName, RelationName>>,
+) {
+    match expr {
+        UsersetExpr::Computed(name) => {
+            if let Some(replacement) = own.and_then(|dropped| dropped.get(name)) {
+                *name = replacement.clone();
+            }
+        }
+        UsersetExpr::TupleToUserset { tupleset, computed } => {
+            // The walked relation is evaluated on the types the tupleset admits.
+            let replacement = direct_relations
+                .get(tupleset)
+                .into_iter()
+                .flatten()
+                .filter_map(|subject| match subject {
+                    DirectSubject::Type(name) => aliases.get(name.as_str()),
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
+                })
+                .find_map(|dropped| dropped.get(computed));
+            if let Some(replacement) = replacement {
+                *computed = replacement.clone();
+            }
+        }
+        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => {
+            for child in children {
+                repoint_inlined_aliases(child, direct_relations, own, aliases);
+            }
+        }
+        UsersetExpr::Exclusion { base, subtract } => {
+            repoint_inlined_aliases(base, direct_relations, own, aliases);
+            repoint_inlined_aliases(subtract, direct_relations, own, aliases);
+        }
+    }
+}
+
+/// Every `(type, relation)` some definition names, a denying one included.
+///
+/// Deliberately not [`grantable_relations`], which stops at a permission that grants
+/// nothing. A relation only a denial names still has to stay declared, or the model
+/// carries a reference to something it does not define.
+pub(crate) fn referenced_relations(types: &[TypePlan]) -> BTreeSet<(String, RelationName)> {
+    let by_name: BTreeMap<&str, &TypePlan> = types
+        .iter()
+        .map(|plan| (plan.type_name.as_str(), plan))
+        .collect();
+    let mut reached: BTreeSet<(String, RelationName)> = BTreeSet::new();
+    for plan in types {
+        for action in action_relations().chain(derived_action_relations()) {
+            if let Some(expr) = plan.computed_relations.get(&action) {
+                reach_userset(expr, plan, &by_name, &mut reached);
+            }
+        }
+    }
+    reached
+}
+
+/// Drop relations no permission names. They are declared, no tuple query feeds them,
+/// and nothing can consult them, so the model advertises access it can never grant.
+///
+/// An operator hand-writing their own facts for such a relation will no longer find it
+/// in the model, which is the point: it never did anything.
+pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+    let types: Vec<TypePlan> = all_types.values().cloned().collect();
+    let referenced = referenced_relations(&types);
+    for plan in all_types.values_mut() {
+        let owner = plan.type_name.to_string();
+        plan.direct_relations
+            .retain(|name, _| referenced.contains(&(owner.clone(), name.clone())));
+        plan.computed_relations.retain(|name, _| {
+            generator_defines(name) || referenced.contains(&(owner.clone(), name.clone()))
+        });
+    }
+}
+
+/// Whether an expression can never grant. Only certainty is reported.
+pub(crate) fn grants_nothing(
+    expr: &UsersetExpr,
+    plan: &TypePlan,
+    seen: &mut BTreeSet<RelationName>,
+) -> bool {
+    match expr {
+        UsersetExpr::Computed(name) if *name == deny_relation() => true,
+        UsersetExpr::Computed(name) => {
+            seen.insert(name.clone())
+                && plan
+                    .computed_relations
+                    .get(name)
+                    .is_some_and(|expr| grants_nothing(expr, plan, seen))
+        }
+        // One conjunct that never holds denies the whole intersection.
+        UsersetExpr::Intersection(children) => children
+            .iter()
+            .any(|child| grants_nothing(child, plan, seen)),
+        UsersetExpr::Union(children) => children
+            .iter()
+            .all(|child| grants_nothing(child, plan, seen)),
+        // Subtracting from nothing still grants nothing, and how much a subtraction
+        // removes is unknowable here.
+        UsersetExpr::Exclusion { base, .. } => grants_nothing(base, plan, seen),
+        UsersetExpr::TupleToUserset { .. } => false,
+    }
+}
+
+pub(crate) fn reach_userset(
+    expr: &UsersetExpr,
+    plan: &TypePlan,
+    by_name: &BTreeMap<&str, &TypePlan>,
+    reached: &mut BTreeSet<(String, RelationName)>,
+) {
+    match expr {
+        UsersetExpr::Computed(name) => {
+            if !reached.insert((plan.type_name.to_string(), name.clone())) {
+                return;
+            }
+            if let Some(inner) = plan.computed_relations.get(name) {
+                reach_userset(inner, plan, by_name, reached);
+            }
+        }
+        UsersetExpr::TupleToUserset { tupleset, computed } => {
+            reached.insert((plan.type_name.to_string(), tupleset.clone()));
+            // The walked relation is evaluated on every type the tupleset admits.
+            for target in plan
+                .direct_relations
+                .get(tupleset)
+                .into_iter()
+                .flatten()
+                .filter_map(|subject| match subject {
+                    DirectSubject::Type(name) => by_name.get(name.as_str()),
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
+                })
+            {
+                if !reached.insert((target.type_name.to_string(), computed.clone())) {
+                    continue;
+                }
+                if let Some(inner) = target.computed_relations.get(computed) {
+                    reach_userset(inner, target, by_name, reached);
+                }
+            }
+        }
+        UsersetExpr::Union(children) | UsersetExpr::Intersection(children) => {
+            for child in children {
+                reach_userset(child, plan, by_name, reached);
+            }
+        }
+        // Both sides are consulted, so both keep their tuples.
+        UsersetExpr::Exclusion { base, subtract } => {
+            reach_userset(base, plan, by_name, reached);
+            reach_userset(subtract, plan, by_name, reached);
+        }
+    }
+}

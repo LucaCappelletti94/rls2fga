@@ -15,6 +15,7 @@ use crate::generator::identity::{
     encode_identity, encode_part, object_name_fits, subject_name_fits,
 };
 use crate::generator::well_known::WILDCARD_SUBJECT_ID;
+use crate::parser::identifiers::{ColumnName, RelationName};
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
 /// SQL renders it.
@@ -23,7 +24,7 @@ pub struct Record {
     /// `type:key`.
     pub object: String,
     /// Relation name.
-    pub relation: String,
+    pub relation: RelationName,
     /// `type:key`, or `user:*` for a wildcard.
     pub subject: String,
     /// The condition context this record carries, absent for an unconditional one.
@@ -51,14 +52,14 @@ pub struct RecordContextValue {
 #[non_exhaustive]
 pub enum ValueSource {
     /// A scalar column, read as text. One record per row.
-    Column(String),
+    Column(ColumnName),
     /// A list column, one record per element. An empty or null list yields none,
     /// and a null element is dropped, which is how `= ANY` refuses it.
-    ListElements(String),
+    ListElements(ColumnName),
     /// A path into a JSON column, read as text. A missing key yields no record.
     JsonPath {
         /// The JSON column.
-        column: String,
+        column: ColumnName,
         /// Field names, outermost first.
         path: Vec<String>,
     },
@@ -66,14 +67,27 @@ pub enum ValueSource {
     Literal(String),
 }
 
+impl ValueSource {
+    /// Read a scalar column named as the caller already resolved it.
+    ///
+    /// The one place outside the crate that turns text into a
+    /// [`crate::parser::identifiers::ColumnName`]. It can only ever make a column, so it cannot
+    /// be the confusion the name kinds exist to stop, and keeping it to one function is what
+    /// stops a second spelling of the same door appearing.
+    #[must_use]
+    pub fn column(name: impl Into<String>) -> Self {
+        Self::Column(ColumnName::from_stored(name))
+    }
+}
+
 /// A condition the row must satisfy for the records to exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Guard {
     /// The column is not SQL NULL.
-    NotNull(String),
+    NotNull(ColumnName),
     /// The boolean column is true.
-    IsTrue(String),
+    IsTrue(ColumnName),
     /// The column compares as stated against a literal constant. A NULL column
     /// fails every comparison, exactly as SQL's three-valued logic filters it.
     Compare(AttributePredicate),
@@ -97,10 +111,10 @@ impl ObjectKey {
         Self { parts }
     }
 
-    /// A key naming the row through one column.
+    /// A key naming the row through one column, taken as the caller already resolved it.
     #[must_use]
     pub fn column(name: impl Into<String>) -> Self {
-        Self::new(vec![ValueSource::Column(name.into())])
+        Self::new(vec![ValueSource::column(name)])
     }
 
     /// The parts, so a caller can settle up front whether it reads the shape.
@@ -165,10 +179,11 @@ impl SubjectKey {
         }
     }
 
-    /// A key naming the subject through one column.
+    /// A key naming the subject through one column, taken as resolved, exactly as
+    /// [`ObjectKey::column`] does.
     #[must_use]
     pub fn column(name: impl Into<String>) -> Self {
-        Self::new(ValueSource::Column(name.into()))
+        Self::new(ValueSource::column(name))
     }
 
     /// The typed wildcard: every subject of the type, granted by the rule itself
@@ -235,7 +250,7 @@ pub struct RecordTemplate {
     /// How the object's name is built.
     pub object_key: ObjectKey,
     /// Relation name, always fixed.
-    pub relation: String,
+    pub relation: RelationName,
     /// `OpenFGA` type the subject belongs to.
     pub subject_type: String,
     /// How the subject's name is built.
@@ -264,7 +279,7 @@ pub struct BoundQuery {
     /// Table the change arrived on.
     pub table: String,
     /// Column the query binds.
-    pub key_column: String,
+    pub key_column: ColumnName,
     /// SQL taking the key value as `$1`.
     pub sql: String,
 }
@@ -451,8 +466,8 @@ pub fn records_from_row<R: RowValues + ?Sized>(
 
 fn guard_holds<R: RowValues + ?Sized>(guard: &Guard, row: &R) -> bool {
     match guard {
-        Guard::NotNull(column) => row.text(column).is_some(),
-        Guard::IsTrue(column) => row.boolean(column) == Some(true),
+        Guard::NotNull(column) => row.text(column.as_str()).is_some(),
+        Guard::IsTrue(column) => row.boolean(column.as_str()) == Some(true),
         Guard::Compare(predicate) => compare_holds(predicate, row),
     }
 }
@@ -465,13 +480,13 @@ fn guard_holds<R: RowValues + ?Sized>(guard: &Guard, row: &R) -> bool {
 fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R) -> bool {
     let ordering = match &predicate.value {
         AttributeLiteral::Boolean(flag) => {
-            let Some(actual) = row.boolean(&predicate.column) else {
+            let Some(actual) = row.boolean(predicate.column.as_str()) else {
                 return false;
             };
             actual.cmp(flag)
         }
         AttributeLiteral::Number(number) => {
-            let Some(actual) = row.text(&predicate.column) else {
+            let Some(actual) = row.text(predicate.column.as_str()) else {
                 return false;
             };
             // A number the row or the policy spells unparseably cannot be ordered, so
@@ -485,7 +500,7 @@ fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R)
             ordering
         }
         AttributeLiteral::Text(text) => {
-            let Some(actual) = row.text(&predicate.column) else {
+            let Some(actual) = row.text(predicate.column.as_str()) else {
                 return false;
             };
             actual.as_ref().cmp(text.as_str())
@@ -505,8 +520,10 @@ fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R)
 /// The one value a non-expanding source yields.
 fn single_value<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Option<String> {
     match source {
-        ValueSource::Column(column) => row.text(column).map(Cow::into_owned),
-        ValueSource::JsonPath { column, path } => row.json_text(column, path).map(Cow::into_owned),
+        ValueSource::Column(column) => row.text(column.as_str()).map(Cow::into_owned),
+        ValueSource::JsonPath { column, path } => {
+            row.json_text(column.as_str(), path).map(Cow::into_owned)
+        }
         ValueSource::Literal(value) => Some(value.clone()),
         // A list on the object side is not a shape the crate emits, and guessing
         // an element would key the record on an arbitrary one.
@@ -518,7 +535,7 @@ fn single_value<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Option<
 fn expand<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Vec<String> {
     match source {
         ValueSource::ListElements(column) => row
-            .list(column)
+            .list(column.as_str())
             .unwrap_or_default()
             .into_iter()
             .flatten()
@@ -555,8 +572,8 @@ mod tests {
     #[test]
     fn an_object_name_joins_every_key_part_encoded() {
         let key = ObjectKey::new(vec![
-            ValueSource::Column("paper_id".to_string()),
-            ValueSource::Column("viewer".to_string()),
+            ValueSource::Column(ColumnName::from_stored("paper_id")),
+            ValueSource::Column(ColumnName::from_stored("viewer")),
         ]);
         let row = Row::of(&[("paper_id", "1"), ("viewer", "a|b")]);
         assert_eq!(
@@ -568,8 +585,8 @@ mod tests {
     #[test]
     fn a_missing_key_part_yields_no_record_rather_than_a_short_name() {
         let key = ObjectKey::new(vec![
-            ValueSource::Column("paper_id".to_string()),
-            ValueSource::Column("viewer".to_string()),
+            ValueSource::Column(ColumnName::from_stored("paper_id")),
+            ValueSource::Column(ColumnName::from_stored("viewer")),
         ]);
         let row = Row::of(&[("paper_id", "1")]);
         assert_eq!(key.render("paper_shares", &row).unwrap(), None);

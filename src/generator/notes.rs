@@ -9,6 +9,7 @@
 use crate::classifier::patterns::{ConfidenceLevel, RolePrivilege};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use crate::parser::identifiers::{ColumnName, RelationName};
 use core::fmt;
 
 /// How a note bears on what the model says compared with the database.
@@ -130,7 +131,7 @@ pub enum TranslationNote {
         /// Commands the clause fed.
         commands: Vec<String>,
         /// Action relations it directly diverged from the database.
-        relations: Vec<String>,
+        relations: Vec<RelationName>,
     },
     /// A policy names a command without the clause that command needs.
     PolicyClauseAbsent {
@@ -167,7 +168,7 @@ pub enum TranslationNote {
         /// Roles it names.
         roles: Vec<String>,
         /// Relation the scope became.
-        relation: String,
+        relation: RelationName,
     },
     /// A role test in the expression became a role scope relation.
     RoleGateScope {
@@ -176,7 +177,7 @@ pub enum TranslationNote {
         /// Roles it admits.
         roles: Vec<String>,
         /// Relation the gate became.
-        relation: String,
+        relation: RelationName,
         /// Relation on `pg_role` holding the kind of membership the policy asked about.
         held_by: String,
     },
@@ -189,7 +190,7 @@ pub enum TranslationNote {
         /// Roles that may read it.
         roles: Vec<String>,
         /// Relation the scope became.
-        relation: String,
+        relation: RelationName,
     },
     /// A role name is not an `OpenFGA` identifier and was rewritten.
     RoleNameRewritten {
@@ -237,7 +238,7 @@ pub enum TranslationNote {
         /// Type the bridge would have pointed at.
         parent_type: String,
         /// Column the bridge would have read, absent from `table`.
-        column: String,
+        column: ColumnName,
     },
     /// The target caps an identifier, and this table's key can render a longer one, so
     /// a row past the cap emits no fact and the model denies it.
@@ -313,7 +314,7 @@ pub enum TranslationNote {
         /// Policy carrying the condition.
         policy: String,
         /// Column it guards on.
-        column: String,
+        column: ColumnName,
     },
     /// An expression nobody classified.
     ExpressionRefused {
@@ -735,7 +736,7 @@ pub(crate) enum SkippedTuples {
     /// A hybrid policy's attribute half, which no tuple can express.
     AttributeRuntimeEnforcement { table: String, attribute: String },
     /// An attribute condition the row does not decide.
-    StandaloneAttribute { table: String, column: String },
+    StandaloneAttribute { table: String, column: ColumnName },
     /// An expression nobody classified.
     UnclassifiedExpression { table: String, reason: String },
     /// Nothing identifies a row of the table.
@@ -756,7 +757,7 @@ pub(crate) enum SkippedTuples {
     BridgeColumnMissing {
         table: String,
         parent_type: String,
-        fk_col: String,
+        fk_col: ColumnName,
     },
     /// Policies disagree about which column joins the grant table.
     ExplicitGrantsConflictingColumns { table: String },

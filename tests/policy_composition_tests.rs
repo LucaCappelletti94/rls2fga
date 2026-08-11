@@ -300,7 +300,7 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
     let doc_type = json
         .type_definitions
         .iter()
-        .find(|t| t.type_name == "documents")
+        .find(|t| t.type_name.as_str() == "documents")
         .expect("json should contain documents type");
 
     let rels = doc_type

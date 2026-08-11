@@ -27,7 +27,7 @@ fn classify_emi_policies_as_p1() {
         assert!(
             matches!(
                 classification.pattern,
-                PatternClass::P1NumericThreshold { .. }
+                PatternClass::P1NumericThreshold(NumericThreshold { .. })
             ),
             "Policy '{}' should be P1, got {:?}",
             cp.name(),
@@ -53,7 +53,7 @@ fn classify_emi_select_threshold() {
         .find(|c| c.name() == "ownables_select_policy")
         .unwrap();
     if let Some(ClassifiedExpr {
-        pattern: PatternClass::P1NumericThreshold { threshold, .. },
+        pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
         ..
     }) = &select.using_classification
     {
@@ -73,7 +73,7 @@ fn classify_emi_delete_threshold() {
         .find(|c| c.name() == "ownables_delete_policy")
         .unwrap();
     if let Some(ClassifiedExpr {
-        pattern: PatternClass::P1NumericThreshold { threshold, .. },
+        pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
         ..
     }) = &delete.using_classification
     {
@@ -107,7 +107,7 @@ fn classify_simple_ownership_as_p3() {
         assert!(
             matches!(
                 classification.pattern,
-                PatternClass::P3DirectOwnership { .. }
+                PatternClass::P3DirectOwnership(DirectOwnership { .. })
             ),
             "Expected P3, got {:?}",
             classification.pattern,
@@ -129,7 +129,10 @@ fn classify_public_flag_as_p6_heuristic_gives_confidence_b() {
     let cp = &classified[0];
     let classification = cp.using_classification.as_ref().unwrap();
     assert!(
-        matches!(classification.pattern, PatternClass::P6BooleanFlag { .. }),
+        matches!(
+            classification.pattern,
+            PatternClass::P6BooleanFlag(BooleanFlag { .. })
+        ),
         "Expected P6, got {:?}",
         classification.pattern,
     );
@@ -152,7 +155,10 @@ fn classify_public_flag_registered_column_gives_confidence_a() {
     let cp = &classified[0];
     let classification = cp.using_classification.as_ref().unwrap();
     assert!(
-        matches!(classification.pattern, PatternClass::P6BooleanFlag { .. }),
+        matches!(
+            classification.pattern,
+            PatternClass::P6BooleanFlag(BooleanFlag { .. })
+        ),
         "Expected P6, got {:?}",
         classification.pattern,
     );
@@ -173,7 +179,10 @@ fn classify_abac_status_as_p7() {
     let cp = &classified[0];
     let classification = cp.using_classification.as_ref().unwrap();
     assert!(
-        matches!(classification.pattern, PatternClass::P7AbacAnd { .. }),
+        matches!(
+            classification.pattern,
+            PatternClass::P7AbacAnd(AbacAnd { .. })
+        ),
         "Expected P7, got {:?}",
         classification.pattern,
     );
@@ -195,7 +204,7 @@ fn classify_tenant_isolation_without_registry_via_function_body_inference() {
         .as_ref()
         .expect("tenant policy should have USING classification");
     match &classification.pattern {
-        PatternClass::P3DirectOwnership { column } => {
+        PatternClass::P3DirectOwnership(DirectOwnership { column }) => {
             assert_eq!(column, "tenant_id");
             assert_eq!(classification.confidence, ConfidenceLevel::A);
         }

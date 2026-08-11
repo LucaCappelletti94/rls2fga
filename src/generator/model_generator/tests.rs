@@ -1,4 +1,6 @@
+use super::actions::{using_targets, with_check_targets, RoleLimitedRule};
 use super::dsl::*;
+use super::emit_roles::{ensure_role_threshold_scaffold, exact_roles_expr};
 use super::role_threshold::*;
 use super::*;
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
@@ -67,12 +69,15 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     let mut plan = TypePlan::new("docs");
     let bucket = ModeBuckets {
         permissive: Vec::new(),
-        restrictive: vec![UsersetExpr::Computed("owner".to_string())],
+        restrictive: vec![UsersetExpr::Computed(RelationName::from_resolved("owner"))],
         role_limited: Vec::new(),
     };
 
     let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
-    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(
         plan.direct_relations.contains_key("no_access"),
         "restrictive-only rules should synthesize no_access"
@@ -87,13 +92,16 @@ fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
         restrictive: Vec::new(),
         role_limited: vec![RoleLimitedRule {
             policy: "docs_review".to_string(),
-            rule: UsersetExpr::Computed("reviewer".to_string()),
-            scope_relation: "scope_docs_review".to_string(),
+            rule: UsersetExpr::Computed(RelationName::from_resolved("reviewer")),
+            scope_relation: RelationName::from_resolved("scope_docs_review"),
         }],
     };
 
     let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
-    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
 }
 
 /// The fold always puts an exclusion beside a granting branch, so no generated model
@@ -102,14 +110,14 @@ fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
 fn grants_nothing_reads_only_the_base_of_an_exclusion() {
     let mut plan = TypePlan::new("docs");
     plan.ensure_direct(
-        DENY_RELATION,
+        deny_relation(),
         vec![DirectSubject::Type(USER_TYPE.to_string())],
     );
     plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
 
     let from_nothing = UsersetExpr::Exclusion {
-        base: Box::new(UsersetExpr::Computed(DENY_RELATION.to_string())),
-        subtract: Box::new(UsersetExpr::Computed("owner".to_string())),
+        base: Box::new(UsersetExpr::Computed(deny_relation())),
+        subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved("owner"))),
     };
     assert!(
         grants_nothing(&from_nothing, &plan, &mut BTreeSet::new()),
@@ -117,8 +125,8 @@ fn grants_nothing_reads_only_the_base_of_an_exclusion() {
     );
 
     let from_owner = UsersetExpr::Exclusion {
-        base: Box::new(UsersetExpr::Computed("owner".to_string())),
-        subtract: Box::new(UsersetExpr::Computed(DENY_RELATION.to_string())),
+        base: Box::new(UsersetExpr::Computed(RelationName::from_resolved("owner"))),
+        subtract: Box::new(UsersetExpr::Computed(deny_relation())),
     };
     assert!(
         !grants_nothing(&from_owner, &plan, &mut BTreeSet::new()),
@@ -131,8 +139,8 @@ fn grants_nothing_reads_only_the_base_of_an_exclusion() {
 #[test]
 fn userset_key_separates_exclusions_by_both_sides() {
     let exclusion = |base: &str, subtract: &str| UsersetExpr::Exclusion {
-        base: Box::new(UsersetExpr::Computed(base.to_string())),
-        subtract: Box::new(UsersetExpr::Computed(subtract.to_string())),
+        base: Box::new(UsersetExpr::Computed(RelationName::from_resolved(base))),
+        subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved(subtract))),
     };
 
     let key = userset_key(&exclusion("owner", "blocked"));
@@ -142,8 +150,8 @@ fn userset_key_separates_exclusions_by_both_sides() {
     assert_ne!(
         key,
         userset_key(&UsersetExpr::Intersection(vec![
-            UsersetExpr::Computed("owner".to_string()),
-            UsersetExpr::Computed("blocked".to_string()),
+            UsersetExpr::Computed(RelationName::from_resolved("owner")),
+            UsersetExpr::Computed(RelationName::from_resolved("blocked")),
         ]))
     );
 }
@@ -155,17 +163,17 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
-    let p1 = PatternClass::P1NumericThreshold {
+    let p1 = PatternClass::P1NumericThreshold(NumericThreshold {
         function_name: "missing_fn".to_string(),
         operator: ThresholdOperator::Gte,
         threshold: 2,
         command: PolicyCommand::Select,
-    };
-    let p2 = PatternClass::P2RoleNameInList {
+    });
+    let p2 = PatternClass::P2RoleNameInList(RoleNameInList {
         function_name: "missing_fn".to_string(),
         role_names: vec!["viewer".to_string()],
         privilege: RolePrivilege::Member,
-    };
+    });
 
     let p1_expr = pattern_to_expr(
         &p1,
@@ -184,14 +192,17 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
         &mut notes,
     );
 
-    assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        p1_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     // P2 with missing metadata falls through to `handle_p2_role_gate`, which walks a
     // scope relation rather than denying.
     assert!(
         matches!(
             &p2_expr,
             UsersetExpr::TupleToUserset { tupleset, computed }
-                if tupleset.starts_with("scope_") && computed == "member"
+                if tupleset.as_str().starts_with("scope_") && computed == "member"
         ),
         "P2 with a non-RoleThreshold function should walk a scope relation, got: {p2_expr:?}"
     );
@@ -211,16 +222,16 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
-    let p2_non_numeric = PatternClass::P2RoleNameInList {
+    let p2_non_numeric = PatternClass::P2RoleNameInList(RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["viewer".to_string()],
         privilege: RolePrivilege::Member,
-    };
-    let p2_numeric_without_levels = PatternClass::P2RoleNameInList {
+    });
+    let p2_numeric_without_levels = PatternClass::P2RoleNameInList(RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["5".to_string()],
         privilege: RolePrivilege::Member,
-    };
+    });
 
     let first = pattern_to_expr(
         &p2_non_numeric,
@@ -239,8 +250,14 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
         &mut notes,
     );
 
-    assert_eq!(first, UsersetExpr::Computed("no_access".to_string()));
-    assert_eq!(second, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        first,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
+    assert_eq!(
+        second,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
 }
 
 #[test]
@@ -251,30 +268,30 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     let mut notes = Vec::new();
 
     let relationship = ClassifiedExpr {
-        pattern: PatternClass::P3DirectOwnership {
-            column: "owner_id".to_string(),
-        },
+        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("owner_id"),
+        }),
         confidence: ConfidenceLevel::A,
     };
-    let p7 = PatternClass::P7AbacAnd {
+    let p7 = PatternClass::P7AbacAnd(AbacAnd {
         relationship_part: Box::new(relationship.clone()),
         attribute_part: "status".to_string(),
-    };
-    let p8_or_empty = PatternClass::P8Composite {
+    });
+    let p8_or_empty = PatternClass::P8Composite(Composite {
         op: BoolOp::Or,
         parts: Vec::new(),
-    };
-    let p8_and_empty = PatternClass::P8Composite {
+    });
+    let p8_and_empty = PatternClass::P8Composite(Composite {
         op: BoolOp::And,
         parts: Vec::new(),
-    };
-    let p9 = PatternClass::P9AttributeCondition {
-        column: "status".to_string(),
+    });
+    let p9 = PatternClass::P9AttributeCondition(AttributeCondition {
+        column: ColumnName::from_stored("status"),
         value_description: "'published'".to_string(),
         predicate: None,
         request_predicate: None,
-    };
-    let p8_and_attr_true = PatternClass::P8Composite {
+    });
+    let p8_and_attr_true = PatternClass::P8Composite(Composite {
         op: BoolOp::And,
         parts: vec![
             ClassifiedExpr {
@@ -282,21 +299,21 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
                 confidence: ConfidenceLevel::C,
             },
             ClassifiedExpr {
-                pattern: PatternClass::P10ConstantBool { value: true },
+                pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 confidence: ConfidenceLevel::A,
             },
         ],
-    };
-    let p10_false = PatternClass::P10ConstantBool { value: false };
-    let p5 = PatternClass::P5ParentInheritance {
+    });
+    let p10_false = PatternClass::P10ConstantBool(ConstantBool { value: false });
+    let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
         parent_table: "projects".to_string(),
-        fk_column: "project_id".to_string(),
+        fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(relationship),
-    };
-    let unknown = PatternClass::Unknown {
+    });
+    let unknown = PatternClass::Unknown(UnclassifiedExpr {
         sql_text: "mystery()".to_string(),
         reason: "no recognizer".to_string(),
-    };
+    });
 
     let p7_expr = pattern_to_expr(
         &p7,
@@ -363,11 +380,26 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
         &mut notes,
     );
 
-    assert_eq!(p7_expr, UsersetExpr::Computed("owner".to_string()));
-    assert_eq!(p8_or_expr, UsersetExpr::Computed("no_access".to_string()));
-    assert_eq!(p8_and_expr, UsersetExpr::Computed("no_access".to_string()));
-    assert_eq!(p10_expr, UsersetExpr::Computed("no_access".to_string()));
-    assert_eq!(p9_expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        p7_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("owner"))
+    );
+    assert_eq!(
+        p8_or_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
+    assert_eq!(
+        p8_and_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
+    assert_eq!(
+        p10_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
+    assert_eq!(
+        p9_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(
             matches!(
                 &p8_and_attr_true_expr,
@@ -386,11 +418,14 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     assert_eq!(
         p5_expr,
         UsersetExpr::TupleToUserset {
-            tupleset: "projects".to_string(),
-            computed: "owner".to_string(),
+            tupleset: RelationName::from_resolved("projects"),
+            computed: RelationName::from_resolved("owner"),
         }
     );
-    assert_eq!(unknown_expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        unknown_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(table_plan.direct_relations.contains_key("projects"));
     assert!(notes
         .iter()
@@ -412,10 +447,10 @@ fn build_schema_plan_adds_notes_for_non_public_to_and_empty_translation() {
     let classified = classified_from_policy(
         policy,
         &db,
-        Some(PatternClass::Unknown {
+        Some(PatternClass::Unknown(UnclassifiedExpr {
             sql_text: "TRUE".to_string(),
             reason: "not supported".to_string(),
-        }),
+        })),
         None,
     );
     let registry = FunctionRegistry::new();
@@ -444,9 +479,9 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
     let classified = classified_from_policy(
         policy,
         &db,
-        Some(PatternClass::P3DirectOwnership {
-            column: "owner_id".to_string(),
-        }),
+        Some(PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("owner_id"),
+        })),
         None,
     );
     let registry = FunctionRegistry::new();
@@ -455,7 +490,7 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
     let docs = plan
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("docs type should exist");
     assert!(docs.direct_relations.contains_key(&scope_relation));
     assert!(matches!(
@@ -472,7 +507,7 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
     let pg_role = plan
         .types
         .iter()
-        .find(|t| t.type_name == "pg_role")
+        .find(|t| t.type_name.as_str() == "pg_role")
         .expect("pg_role type should exist");
     assert!(matches!(
         pg_role.direct_relations.get("usage"),
@@ -490,9 +525,9 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
         policy,
         &db,
         None,
-        Some(PatternClass::P3DirectOwnership {
-            column: "owner_id".to_string(),
-        }),
+        Some(PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("owner_id"),
+        })),
     );
     let registry = FunctionRegistry::new();
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
@@ -500,7 +535,7 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
     let docs = plan
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("docs type should exist");
     assert!(
         docs.computed_relations.contains_key("can_update"),
@@ -612,10 +647,10 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
 
     ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
 
-    let grant_relations: Vec<&String> = table_plan
+    let grant_relations: Vec<&RelationName> = table_plan
         .direct_relations
         .keys()
-        .filter(|name| name.starts_with("grant_role_a"))
+        .filter(|name| name.as_str().starts_with("grant_role_a"))
         .collect();
     assert_eq!(
         grant_relations.len(),
@@ -631,12 +666,12 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
 #[test]
 fn expr_to_dsl_parenthesizes_a_child_of_another_kind() {
     let union = UsersetExpr::Union(vec![
-        UsersetExpr::Computed("a".to_string()),
-        UsersetExpr::Computed("b".to_string()),
+        UsersetExpr::Computed(RelationName::from_resolved("a")),
+        UsersetExpr::Computed(RelationName::from_resolved("b")),
     ]);
     let intersection = UsersetExpr::Intersection(vec![
-        UsersetExpr::Computed("x".to_string()),
-        UsersetExpr::Computed("y".to_string()),
+        UsersetExpr::Computed(RelationName::from_resolved("x")),
+        UsersetExpr::Computed(RelationName::from_resolved("y")),
     ]);
 
     assert_eq!(expr_to_dsl(&union, Some("and")), "(a or b)");
@@ -647,8 +682,8 @@ fn expr_to_dsl_parenthesizes_a_child_of_another_kind() {
     let mixed = UsersetExpr::Union(vec![
         intersection.clone(),
         UsersetExpr::Exclusion {
-            base: Box::new(UsersetExpr::Computed("a".to_string())),
-            subtract: Box::new(UsersetExpr::Computed("b".to_string())),
+            base: Box::new(UsersetExpr::Computed(RelationName::from_resolved("a"))),
+            subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved("b"))),
         },
     ]);
     assert_eq!(expr_to_dsl(&mixed, None), "(x and y) or (a but not b)");
@@ -666,8 +701,8 @@ fn combine_helpers_cover_empty_and_multi_intersection() {
     assert!(combine_intersection(Vec::new()).is_none());
 
     let inter = combine_intersection(vec![
-        UsersetExpr::Computed("a".to_string()),
-        UsersetExpr::Computed("b".to_string()),
+        UsersetExpr::Computed(RelationName::from_resolved("a")),
+        UsersetExpr::Computed(RelationName::from_resolved("b")),
     ])
     .expect("intersection should exist");
     assert!(matches!(inter, UsersetExpr::Intersection(children) if children.len() == 2));
@@ -695,9 +730,9 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
         let classified = classified_from_policy(
             policy,
             &db,
-            Some(PatternClass::P3DirectOwnership {
-                column: "owner_id".to_string(),
-            }),
+            Some(PatternClass::P3DirectOwnership(DirectOwnership {
+                column: ColumnName::from_stored("owner_id"),
+            })),
             None,
         );
         if classified.name() == "docs_select" {
@@ -711,11 +746,13 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
     let registry = FunctionRegistry::new();
     let plan = build_schema_plan(&policies, &db, &registry, &GeneratorSettings::default());
     assert!(
-        plan.types.iter().any(|t| t.type_name == "rls_docs"),
+        plan.types
+            .iter()
+            .any(|t| t.type_name.as_str() == "rls_docs"),
         "RLS-enabled table should be translated"
     );
     assert!(
-        !plan.types.iter().any(|t| t.type_name == "docs"),
+        !plan.types.iter().any(|t| t.type_name.as_str() == "docs"),
         "non-RLS table should be skipped"
     );
 }
@@ -733,12 +770,14 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     let docs = plan
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("RLS-enabled table should still be emitted");
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
             docs.computed_relations.get(relation),
-            Some(&UsersetExpr::Computed("no_access".to_string())),
+            Some(&UsersetExpr::Computed(RelationName::from_resolved(
+                "no_access"
+            ))),
             "{relation} should deny when nothing translated"
         );
     }
@@ -771,20 +810,23 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
     let classified = classified_from_policy(
         policy,
         &db,
-        Some(PatternClass::P3DirectOwnership {
-            column: "owner_id".to_string(),
-        }),
+        Some(PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("owner_id"),
+        })),
         None,
     );
     let registry = FunctionRegistry::new();
     let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
 
     assert!(
-        plan.types.iter().any(|t| t.type_name == "docs"),
+        plan.types.iter().any(|t| t.type_name.as_str() == "docs"),
         "schema-qualified table name should canonicalize to relation name"
     );
     assert!(
-        !plan.types.iter().any(|t| t.type_name == "app.docs"),
+        !plan
+            .types
+            .iter()
+            .any(|t| t.type_name.as_str() == "app.docs"),
         "raw schema-qualified table name should not appear in output types"
     );
 }
@@ -798,9 +840,9 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
     let classified = classified_from_policy(
         policy,
         &db,
-        Some(PatternClass::P3DirectOwnership {
-            column: "owner_id".to_string(),
-        }),
+        Some(PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("owner_id"),
+        })),
         None,
     );
     let registry = FunctionRegistry::new();
@@ -809,7 +851,7 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
     let docs = plan
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("docs type should exist");
     assert!(docs.computed_relations.contains_key("can_update"));
 }
@@ -847,17 +889,17 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
-    let p1_unreachable = PatternClass::P1NumericThreshold {
+    let p1_unreachable = PatternClass::P1NumericThreshold(NumericThreshold {
         function_name: "role_level".to_string(),
         operator: ThresholdOperator::Gt,
         threshold: 10,
         command: PolicyCommand::Select,
-    };
-    let p2_mixed_case = PatternClass::P2RoleNameInList {
+    });
+    let p2_mixed_case = PatternClass::P2RoleNameInList(RoleNameInList {
         function_name: "role_level".to_string(),
         role_names: vec!["VIEWER".to_string()],
         privilege: RolePrivilege::Member,
-    };
+    });
 
     let p1_expr = pattern_to_expr(
         &p1_unreachable,
@@ -876,7 +918,10 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
         &mut notes,
     );
 
-    assert_eq!(p1_expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        p1_expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(
         matches!(p2_expr, UsersetExpr::Union(_) | UsersetExpr::Computed(_)),
         "case-insensitive role name matching should produce a translatable expression"
@@ -915,9 +960,9 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
              USING (owner_id = current_user) WITH CHECK (owner_id = current_user);",
     );
     let policy = db.policies().next().expect("policy should exist");
-    let p3 = PatternClass::P3DirectOwnership {
-        column: "owner_id".to_string(),
-    };
+    let p3 = PatternClass::P3DirectOwnership(DirectOwnership {
+        column: ColumnName::from_stored("owner_id"),
+    });
     // Construct a policy where WITH CHECK has low confidence (B) and USING has high (A).
     let mut classified = ClassifiedPolicy::from_policy(policy, &db);
     classified.using_classification = Some(ClassifiedExpr {
@@ -952,7 +997,7 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     let docs = plan
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("docs type should exist");
     // USING survived → can_update_using should be defined.
     assert!(
@@ -967,13 +1012,13 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     // show it.
     assert_eq!(
         docs.computed_relations.get("can_update_check"),
-        Some(&UsersetExpr::Computed(DENY_RELATION.to_string())),
+        Some(&UsersetExpr::Computed(deny_relation())),
         "a filtered WITH CHECK with no surviving arm denies, relations present: {:?}",
         docs.computed_relations.keys().collect::<Vec<_>>()
     );
     assert_ne!(
         docs.computed_relations.get("can_update"),
-        Some(&UsersetExpr::Computed("owner".to_string())),
+        Some(&UsersetExpr::Computed(RelationName::from_resolved("owner"))),
         "and the update must not be granted by the resurrected USING"
     );
     // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
@@ -983,7 +1028,7 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     let docs2 = plan2
         .types
         .iter()
-        .find(|t| t.type_name == "docs")
+        .find(|t| t.type_name.as_str() == "docs")
         .expect("docs type");
     assert!(
         docs2.computed_relations.contains_key("can_update"),
@@ -1006,7 +1051,7 @@ CREATE TABLE items(id UUID PRIMARY KEY, creator_id UUID REFERENCES users(id));
     .unwrap();
     // No owner_id column, but FK to users -> should return creator_id
     let result = resolve_owner_column("items", &db);
-    assert_eq!(result, Some("creator_id".to_string()));
+    assert_eq!(result, Some(ColumnName::from_stored("creator_id")));
 }
 
 #[test]
@@ -1017,7 +1062,12 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY, email TEXT);
 ",
     )
     .unwrap();
-    let result = resolve_principal_info(&db, Some("accounts"), Some("account_id"), &[]);
+    let result = resolve_principal_info(
+        &db,
+        Some("accounts"),
+        Some(&ColumnName::from_stored("account_id")),
+        &[],
+    );
     assert!(result.is_some());
     let pi = result.unwrap();
     assert_eq!(pi.table, "accounts");
@@ -1033,7 +1083,12 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY);
     )
     .unwrap();
     // Column doesn't exist
-    let result = resolve_principal_info(&db, Some("accounts"), Some("nonexistent_col"), &[]);
+    let result = resolve_principal_info(
+        &db,
+        Some("accounts"),
+        Some(&ColumnName::from_stored("nonexistent_col")),
+        &[],
+    );
     assert!(result.is_none());
 }
 
@@ -1045,17 +1100,17 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
     let mut notes = Vec::new();
 
     let unknown_inner = ClassifiedExpr {
-        pattern: PatternClass::Unknown {
+        pattern: PatternClass::Unknown(UnclassifiedExpr {
             sql_text: "mystery()".to_string(),
             reason: "unrecognized function".to_string(),
-        },
+        }),
         confidence: ConfidenceLevel::D,
     };
-    let p5 = PatternClass::P5ParentInheritance {
+    let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
         parent_table: "projects".to_string(),
-        fk_column: "project_id".to_string(),
+        fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(unknown_inner),
-    };
+    });
 
     let expr = pattern_to_expr(
         &p5,
@@ -1065,7 +1120,10 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
         &registry,
         &mut notes,
     );
-    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(notes
         .iter()
         .any(|t| t.message().contains("unknown inner rule")));
@@ -1080,9 +1138,9 @@ fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
-    let p6 = PatternClass::P6BooleanFlag {
-        column: "is_public".to_string(),
-    };
+    let p6 = PatternClass::P6BooleanFlag(BooleanFlag {
+        column: ColumnName::from_stored("is_public"),
+    });
 
     let expr = pattern_to_expr_without_row_identity(
         &p6,
@@ -1093,7 +1151,10 @@ fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
         &mut notes,
     );
 
-    assert_eq!(expr, UsersetExpr::Computed("no_access".to_string()));
+    assert_eq!(
+        expr,
+        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+    );
     assert!(
         table_plan.table_tuple_sources.iter().any(|source| matches!(
             source,
@@ -1298,7 +1359,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     // Provide a resource column hint so we get past the grant_join_col check
     hints.columns.insert(
         ("things".to_string(), "role_level".to_string()),
-        "name".to_string(),
+        ColumnName::from_stored("name"),
     );
 
     populate_role_threshold_sources(
@@ -1326,7 +1387,10 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 #[test]
 fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
     let mut plan = TypePlan::new("test");
-    plan.ensure_computed("rel", UsersetExpr::Computed("x".into()));
+    plan.ensure_computed(
+        "rel",
+        UsersetExpr::Computed(RelationName::from_resolved("x")),
+    );
     let name = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
     assert_ne!(name, "rel", "the computed relation still holds 'rel'");
     assert!(plan.direct_relations.contains_key(&name));
@@ -1370,13 +1434,19 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
     let subjects = vec![DirectSubject::Type(USER_TYPE.to_string())];
 
     // `owner` is held by a rule, so a direct `owner` has to yield.
-    plan.ensure_computed("owner", UsersetExpr::Computed("a".into()));
+    plan.ensure_computed(
+        "owner",
+        UsersetExpr::Computed(RelationName::from_resolved("a")),
+    );
     // Occupy exactly where that yield lands, with something else.
     let taken = clamp_relation_name(format!(
         "owner_{}",
         stable_hex_suffix(&subject_key(&subjects))
     ));
-    plan.ensure_computed(taken.clone(), UsersetExpr::Computed("b".into()));
+    plan.ensure_computed(
+        taken.clone(),
+        UsersetExpr::Computed(RelationName::from_resolved("b")),
+    );
 
     let got = plan.ensure_direct("owner", subjects.clone());
     assert_ne!(got, "owner", "the rule still holds 'owner'");
@@ -1398,7 +1468,7 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
 #[test]
 fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
     let mut plan = TypePlan::new("docs");
-    let rule = UsersetExpr::Computed("wanted".into());
+    let rule = UsersetExpr::Computed(RelationName::from_resolved("wanted"));
 
     plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
     let taken = clamp_relation_name(format!("owner_{}", stable_hex_suffix(&userset_key(&rule))));
@@ -1426,21 +1496,30 @@ fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
 #[test]
 fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
     let mut plan = TypePlan::new("test");
-    let first = plan.ensure_computed("rel", UsersetExpr::Computed("a".into()));
-    let second = plan.ensure_computed("rel", UsersetExpr::Computed("b".into()));
+    let first = plan.ensure_computed(
+        "rel",
+        UsersetExpr::Computed(RelationName::from_resolved("a")),
+    );
+    let second = plan.ensure_computed(
+        "rel",
+        UsersetExpr::Computed(RelationName::from_resolved("b")),
+    );
     assert_eq!(first, "rel");
     assert_ne!(second, first, "a different rule cannot reuse the name");
     assert_eq!(
         plan.computed_relations.get(&first),
-        Some(&UsersetExpr::Computed("a".into()))
+        Some(&UsersetExpr::Computed(RelationName::from_resolved("a")))
     );
     assert_eq!(
         plan.computed_relations.get(&second),
-        Some(&UsersetExpr::Computed("b".into()))
+        Some(&UsersetExpr::Computed(RelationName::from_resolved("b")))
     );
     // The same rule keeps sharing the one relation.
     assert_eq!(
-        plan.ensure_computed("rel", UsersetExpr::Computed("a".into())),
+        plan.ensure_computed(
+            "rel",
+            UsersetExpr::Computed(RelationName::from_resolved("a"))
+        ),
         first
     );
 }
@@ -1453,7 +1532,10 @@ fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
     let mut plan = TypePlan::new("test");
     plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
 
-    let name = plan.set_computed("rel", UsersetExpr::Computed("x".into()));
+    let name = plan.set_computed(
+        "rel",
+        UsersetExpr::Computed(RelationName::from_resolved("x")),
+    );
 
     assert_ne!(name, "rel", "the direct relation still holds 'rel'");
     assert!(
@@ -1466,12 +1548,18 @@ fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
     );
 
     // Overwriting an existing computed rule is still what the function is for.
-    let first = plan.set_computed("other", UsersetExpr::Computed("a".into()));
-    let second = plan.set_computed("other", UsersetExpr::Computed("b".into()));
+    let first = plan.set_computed(
+        "other",
+        UsersetExpr::Computed(RelationName::from_resolved("a")),
+    );
+    let second = plan.set_computed(
+        "other",
+        UsersetExpr::Computed(RelationName::from_resolved("b")),
+    );
     assert_eq!(first, second, "a computed name is overwritten, not yielded");
     assert_eq!(
         plan.computed_relations.get(&second),
-        Some(&UsersetExpr::Computed("b".into())),
+        Some(&UsersetExpr::Computed(RelationName::from_resolved("b"))),
         "the later rule wins"
     );
 }
@@ -1497,9 +1585,9 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
         let table_name = policy.target_table_name().to_string();
         let mut classified = ClassifiedPolicy::from_policy(policy, &db);
         classified.using_classification = Some(ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership {
-                column: "owner_id".to_string(),
-            },
+            pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+                column: ColumnName::from_stored("owner_id"),
+            }),
             confidence: ConfidenceLevel::A,
         });
         policies.push((table_name, classified));
@@ -1557,9 +1645,9 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     let policy = db.policies().next().expect("policy should exist");
     let mut classified = ClassifiedPolicy::from_policy(policy, &db);
     classified.using_classification = Some(ClassifiedExpr {
-        pattern: PatternClass::P3DirectOwnership {
-            column: "name".to_string(),
-        },
+        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("name"),
+        }),
         confidence: ConfidenceLevel::A,
     });
     let registry = FunctionRegistry::new();
@@ -1568,11 +1656,11 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     let things = plan
         .types
         .iter()
-        .find(|t| t.type_name == "things")
+        .find(|t| t.type_name.as_str() == "things")
         .expect("the table gets a type");
     assert_eq!(
-        things.computed_relations.get(CAN_SELECT_RELATION),
-        Some(&UsersetExpr::Computed(DENY_RELATION.to_string())),
+        things.computed_relations.get(&can_select_relation()),
+        Some(&UsersetExpr::Computed(deny_relation())),
         "nothing names a row, so the read denies: {:?}",
         things.computed_relations
     );
@@ -1580,7 +1668,7 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
         things
             .direct_relations
             .keys()
-            .all(|relation| !relation.starts_with("scope_")),
+            .all(|relation| !relation.as_str().starts_with("scope_")),
         "and no scope relation is declared: {:?}",
         things.direct_relations
     );
@@ -1623,19 +1711,19 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
 
     // P5 with inner P9 (attribute-only) which produces no_access
     let inner = ClassifiedExpr {
-        pattern: PatternClass::P9AttributeCondition {
-            column: "status".to_string(),
+        pattern: PatternClass::P9AttributeCondition(AttributeCondition {
+            column: ColumnName::from_stored("status"),
             value_description: "'active'".to_string(),
             predicate: None,
             request_predicate: None,
-        },
+        }),
         confidence: ConfidenceLevel::C,
     };
-    let p5 = PatternClass::P5ParentInheritance {
+    let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
         parent_table: "projects".to_string(),
-        fk_column: "project_id".to_string(),
+        fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(inner),
-    };
+    });
 
     let _expr = pattern_to_expr(
         &p5,

@@ -18,9 +18,13 @@ use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem,
 use crate::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
 };
-use crate::classifier::patterns::{ClassifiedExpr, ConfidenceLevel, PatternClass};
+use crate::classifier::patterns::{
+    CallerScalarEqualsConstant, ClassifiedExpr, ConfidenceLevel, ConstantInCallerSet, PatternClass,
+    RowValueEqualsCallerScalar, RowValueInCallerSet,
+};
 use crate::parser::expr::function_arg_expr;
 use crate::parser::function_analyzer::FunctionSemantic;
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::normalized_function_name;
 
 use super::{
@@ -83,16 +87,16 @@ fn tested_against_set(
     separator: Option<String>,
 ) -> Option<ClassifiedExpr> {
     let pattern = match tested_value(tested) {
-        TestedValue::Column(column) => PatternClass::P14RowValueInCallerSet {
+        TestedValue::Column(column) => PatternClass::P14RowValueInCallerSet(RowValueInCallerSet {
             column,
             separator,
             source: source.clone(),
-        },
-        TestedValue::Constant(value) => PatternClass::P16ConstantInCallerSet {
+        }),
+        TestedValue::Constant(value) => PatternClass::P16ConstantInCallerSet(ConstantInCallerSet {
             value,
             separator,
             source: source.clone(),
-        },
+        }),
         TestedValue::Neither => return None,
     };
     Some(ClassifiedExpr {
@@ -118,14 +122,18 @@ fn scalar_equality(expr: &Expr, registry: &FunctionRegistry) -> Option<Classifie
     };
 
     let pattern = match tested_value(tested) {
-        TestedValue::Column(column) => PatternClass::P15RowValueEqualsCallerScalar {
-            column,
-            source: source.clone(),
-        },
-        TestedValue::Constant(value) => PatternClass::P17CallerScalarEqualsConstant {
-            value,
-            source: source.clone(),
-        },
+        TestedValue::Column(column) => {
+            PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar {
+                column,
+                source: source.clone(),
+            })
+        }
+        TestedValue::Constant(value) => {
+            PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant {
+                value,
+                source: source.clone(),
+            })
+        }
         TestedValue::Neither => return None,
     };
     Some(ClassifiedExpr {
@@ -137,7 +145,7 @@ fn scalar_equality(expr: &Expr, registry: &FunctionRegistry) -> Option<Classifie
 /// What the declared value is being compared against.
 enum TestedValue {
     /// A column of the guarded row, so the row supplies it as tuple context.
-    Column(String),
+    Column(ColumnName),
     /// A literal from the policy, so the rule supplies it as tuple context.
     Constant(String),
     Neither,
@@ -429,7 +437,7 @@ mod tests {
         assert!(
             matches!(
                 recognize_session_attribute(&expr, &registry).map(|c| c.pattern),
-                Some(PatternClass::P14RowValueInCallerSet { separator, .. })
+                Some(PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { separator, .. }))
                     if separator.as_deref() == Some(";")
             ),
             "the separator decides which elements exist"

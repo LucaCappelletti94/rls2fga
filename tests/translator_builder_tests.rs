@@ -1,7 +1,11 @@
 use rls2fga::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
 };
-use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass};
+use rls2fga::classifier::patterns::{
+    CallerScalarEqualsConstant, ConfidenceLevel, ConstantInCallerSet, DirectOwnership,
+    ExistsMembership, MembershipInCallerSet, PatternClass, RowValueEqualsCallerScalar,
+    RowValueInCallerSet, UnclassifiedExpr,
+};
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
@@ -24,7 +28,10 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        !matches!(&using.pattern, PatternClass::P3DirectOwnership { .. }),
+        !matches!(
+            &using.pattern,
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        ),
         "timezone-based current_setting must not infer direct ownership by default, got: {:?}",
         using.pattern
     );
@@ -51,7 +58,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "custom allowlist should infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -81,7 +88,10 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = listed_ids_accessor());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        !matches!(&using.pattern, PatternClass::P3DirectOwnership { .. }),
+        !matches!(
+            &using.pattern,
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        ),
         "UUID[] accessors must not infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -106,7 +116,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user_id());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "direct accessor with alias substring should still infer P3 ownership, got: {:?}",
         using.pattern
     );
@@ -136,7 +146,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = oauth_token());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "registry-provided accessor should classify as direct ownership, got: {:?}",
         using.pattern
     );
@@ -164,7 +174,7 @@ CREATE POLICY p ON notes FOR SELECT USING (owner = current_setting('app.user_id'
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner"),
         "a named key read inline should infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -209,7 +219,7 @@ fn a_wrapper_whose_body_can_return_no_row_does_not_resolve_to_its_key() {
     let gated =
         classify("SELECT current_setting(''app.tenant_id'')::uuid FROM kill_switch WHERE enabled");
     assert!(
-        matches!(gated, PatternClass::Unknown { .. }),
+        matches!(gated, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "a body that can return no row does not resolve to its key, got: {gated:?}"
     );
 
@@ -217,7 +227,7 @@ fn a_wrapper_whose_body_can_return_no_row_does_not_resolve_to_its_key() {
     // same read with nothing around it still resolves to the declared key.
     let plain = classify("SELECT current_setting(''app.tenant_id'')::uuid");
     assert!(
-        matches!(&plain, PatternClass::P15RowValueEqualsCallerScalar { column, .. } if column == "tenant_id"),
+        matches!(&plain, PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { column, .. }) if column == "tenant_id"),
         "a body that is only the read still resolves to its key, got: {plain:?}"
     );
 }
@@ -247,13 +257,13 @@ fn an_accessor_body_that_can_return_no_row_does_not_name_the_caller() {
 
     let limited = classify("SELECT current_setting(''app.user_id'', true) LIMIT 0");
     assert!(
-        matches!(limited, PatternClass::Unknown { .. }),
+        matches!(limited, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "a body limited to no row does not name the caller, got: {limited:?}"
     );
 
     let plain = classify("SELECT current_setting(''app.user_id'', true)");
     assert!(
-        matches!(&plain, PatternClass::P3DirectOwnership { column } if column == "owner"),
+        matches!(&plain, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner"),
         "a body that is only the read still names the caller, got: {plain:?}"
     );
 }
@@ -267,7 +277,9 @@ fn owned_columns(translator: &rls2fga::translator::Translator, sql: &str) -> Vec
         .iter()
         .filter_map(
             |policy| match policy.using_classification.as_ref()?.pattern {
-                PatternClass::P3DirectOwnership { ref column } => Some(column.clone()),
+                PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
+                    Some(column.to_string())
+                }
                 _ => None,
             },
         )
@@ -344,7 +356,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
     assert!(
         matches!(
             &using.pattern,
-            PatternClass::P4ExistsMembership { join_table, user_column, .. }
+            PatternClass::P4ExistsMembership(ExistsMembership { join_table, user_column, .. })
                 if join_table == "doc_members" && user_column == "user_id"
         ),
         "a named key read inline should carry the membership too, got: {:?}",
@@ -373,7 +385,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = app_user_id());
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "a TEXT accessor body should infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -399,7 +411,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_i
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "a cast key read inline should infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -462,7 +474,7 @@ CREATE POLICY p ON rows_ FOR SELECT USING (tenant_id = current_setting('app.tena
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "tenant_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "tenant_id"),
         "the named key decides, whatever it is called, got: {:?}",
         using.pattern
     );
@@ -486,7 +498,7 @@ CREATE POLICY p ON docs FOR SELECT
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "a built-in key read inline should infer direct ownership, got: {:?}",
         using.pattern
     );
@@ -512,7 +524,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('APP.User_I
         .as_ref()
         .expect("expected USING classification");
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "one setting under two spellings is one caller, got: {:?}",
         using.pattern
     );
@@ -541,7 +553,9 @@ CREATE POLICY p_editor ON docs FOR UPDATE USING (editor_id = current_setting('ot
         .iter()
         .filter_map(
             |policy| match policy.using_classification.as_ref()?.pattern {
-                PatternClass::P3DirectOwnership { ref column } => Some(column.as_str()),
+                PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
+                    Some(column.as_str())
+                }
                 _ => None,
             },
         )
@@ -597,7 +611,7 @@ CREATE POLICY p ON notes FOR SELECT USING (
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P14RowValueInCallerSet { column, source, .. }
+            PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, source, .. })
                 if column == "owner" && source.request_parameter() == "app_subjects"
         ),
         "a declared set holding the row's value is the whole grant, got {:?}",
@@ -634,7 +648,7 @@ fn a_declared_set_inside_the_token_holds_the_rows_value() {
         assert!(
             matches!(
                 &classified[0].1,
-                PatternClass::P14RowValueInCallerSet { column, source, separator }
+                PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, source, separator })
                     if column == "team_id"
                     && source.request_parameter() == "request_jwt_claims_teams"
                     && separator.is_none()
@@ -679,7 +693,7 @@ fn a_set_returning_wrapper_over_a_declared_setting_holds_the_rows_value() {
         assert!(
             matches!(
                 &classified[0].1,
-                PatternClass::P14RowValueInCallerSet { column, source, separator }
+                PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, source, separator })
                     if column == "team_id"
                     && source.request_parameter() == "app_teams"
                     && separator.as_deref() == Some(",")
@@ -709,7 +723,7 @@ CREATE POLICY p ON documents FOR SELECT USING (tenant_id = current_setting('app.
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P15RowValueEqualsCallerScalar { column, source }
+            PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { column, source })
                 if column == "tenant_id" && source.request_parameter() == "app_tenant_id"
         ),
         "a declared scalar equal to the row's value is the grant, got {:?}",
@@ -737,7 +751,7 @@ CREATE POLICY p ON audit_log FOR SELECT USING (
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P16ConstantInCallerSet { value, source, .. }
+            PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { value, source, .. })
                 if value == "admin" && source.request_parameter() == "app_roles"
         ),
         "the request alone decides this grant, got {:?}",
@@ -769,7 +783,7 @@ CREATE POLICY p ON documents AS RESTRICTIVE FOR SELECT
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P17CallerScalarEqualsConstant { value, source }
+            PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { value, source })
                 if value == "aal2" && source.request_parameter() == "request_jwt_claims_aal"
         ),
         "a declared token field is a request value, got {:?}",
@@ -798,7 +812,7 @@ CREATE POLICY p ON documents FOR SELECT
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P17CallerScalarEqualsConstant { value, .. } if value == "aal2"
+            PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { value, .. }) if value == "aal2"
         ),
         "the inline spelling and the wrapper spelling are one declaration, got {:?}",
         classified[0].1
@@ -817,7 +831,10 @@ CREATE POLICY p ON notes FOR SELECT USING (
 ";
     let classified = declared(sql, Vec::new());
     assert!(
-        matches!(&classified[0].1, PatternClass::Unknown { .. }),
+        matches!(
+            &classified[0].1,
+            PatternClass::Unknown(UnclassifiedExpr { .. })
+        ),
         "nothing named this key, so nothing may read it, got {:?}",
         classified[0].1
     );
@@ -850,13 +867,13 @@ CREATE POLICY p ON papers FOR SELECT USING (
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P18MembershipInCallerSet {
+            PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
                 join_table,
                 fk_column,
                 member_column,
                 source,
                 ..
-            } if join_table == "paper_shares"
+            }) if join_table == "paper_shares"
                 && fk_column == "paper_id"
                 && member_column == "viewer"
                 && source.request_parameter() == "app_subjects"
@@ -884,7 +901,10 @@ CREATE POLICY p ON papers FOR SELECT USING (
 ";
     let classified = declared(sql, Vec::new());
     assert!(
-        matches!(&classified[0].1, PatternClass::Unknown { .. }),
+        matches!(
+            &classified[0].1,
+            PatternClass::Unknown(UnclassifiedExpr { .. })
+        ),
         "nothing named this key, so nothing may read it, got {:?}",
         classified[0].1
     );
@@ -915,7 +935,10 @@ CREATE POLICY p ON papers FOR SELECT USING (
         )],
     );
     assert!(
-        matches!(&classified[0].1, PatternClass::Unknown { .. }),
+        matches!(
+            &classified[0].1,
+            PatternClass::Unknown(UnclassifiedExpr { .. })
+        ),
         "a grant key is not a person, so it cannot hold the whole table open, got {:?}",
         classified[0].1
     );
@@ -939,7 +962,7 @@ CREATE POLICY p ON docs FOR SELECT USING (auth.uid() IS NOT NULL AND auth.uid() 
     assert!(
         matches!(
             &classified[0].1,
-            PatternClass::P3DirectOwnership { column } if column == "user_id"
+            PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "user_id"
         ),
         "the ownership half is the whole rule, got {:?}",
         classified[0].1
@@ -965,7 +988,10 @@ CREATE POLICY p ON docs FOR SELECT USING (approved_at IS NOT NULL AND auth.uid()
 ";
     let classified = declared(sql, Vec::new());
     assert!(
-        !matches!(&classified[0].1, PatternClass::P3DirectOwnership { .. }),
+        !matches!(
+            &classified[0].1,
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        ),
         "the row's own guard decides which rows are granted, got {:?}",
         classified[0].1
     );

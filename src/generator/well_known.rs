@@ -1,5 +1,12 @@
 //! Type and relation names the generator reserves. The DSL, the JSON model and the
 //! tuple SQL all read them from here so they cannot drift apart.
+//!
+//! A reserved relation is a function rather than a constant because
+//! [`crate::parser::identifiers::RelationName`] is owned and an owned value cannot be a
+//! `const`. That is the point: the names the generator uses most are relation names by
+//! construction, so none of them can be handed to a place wanting a column or a type.
+
+use crate::parser::identifiers::RelationName;
 
 /// Subject type for a database user.
 pub const USER_TYPE: &str = "user";
@@ -11,10 +18,16 @@ pub const TEAM_TYPE: &str = "team";
 pub const PG_ROLE_TYPE: &str = "pg_role";
 
 /// Relation that grants nobody, used wherever a policy must fail closed.
-pub const DENY_RELATION: &str = "no_access";
+#[must_use]
+pub fn deny_relation() -> RelationName {
+    RelationName::from_resolved("no_access")
+}
 
 /// Relation that grants everyone, used wherever a policy is unconditionally open.
-pub const PUBLIC_RELATION: &str = "public_viewer";
+#[must_use]
+pub fn public_relation() -> RelationName {
+    RelationName::from_resolved("public_viewer")
+}
 
 /// Condition parameter the request supplies for a guard against statement time.
 ///
@@ -32,19 +45,28 @@ pub const STRING_PARAMETER_TYPE: &str = "TYPE_NAME_STRING";
 pub const LIST_PARAMETER_TYPE: &str = "TYPE_NAME_LIST";
 
 /// Relation holding the users a membership row attaches to its parent object.
-pub const MEMBER_RELATION: &str = "member";
+#[must_use]
+pub fn member_relation() -> RelationName {
+    RelationName::from_resolved("member")
+}
 
 /// Alias an unnested list element takes in generated SQL.
 ///
-/// Deliberately not `member`: it is a column alias, not the [`MEMBER_RELATION`],
+/// Deliberately not `member`: it is a column alias, not the [`member_relation`],
 /// and one spelling for both made the two read as related.
 pub(crate) const ARRAY_ELEMENT_ALIAS: &str = "element";
 
 /// Relation holding the owning user of a row.
-pub const OWNER_USER_RELATION: &str = "owner_user";
+#[must_use]
+pub fn owner_user_relation() -> RelationName {
+    RelationName::from_resolved("owner_user")
+}
 
 /// Relation holding the owning team of a row.
-pub const OWNER_TEAM_RELATION: &str = "owner_team";
+#[must_use]
+pub fn owner_team_relation() -> RelationName {
+    RelationName::from_resolved("owner_team")
+}
 
 /// Object id of every holder, since exactly one stands for each member source.
 pub const HOLDER_OBJECT_ID: &str = "all";
@@ -57,37 +79,67 @@ pub const HOLDER_OBJECT_ID: &str = "all";
 pub const WILDCARD_SUBJECT_ID: &str = "*";
 
 /// Action relation answering for a SQL `SELECT`.
-pub const CAN_SELECT_RELATION: &str = "can_select";
+#[must_use]
+pub fn can_select_relation() -> RelationName {
+    RelationName::from_resolved("can_select")
+}
 
 /// Action relation answering for a SQL `INSERT`.
-pub const CAN_INSERT_RELATION: &str = "can_insert";
+#[must_use]
+pub fn can_insert_relation() -> RelationName {
+    RelationName::from_resolved("can_insert")
+}
 
 /// Action relation answering for a SQL `UPDATE`.
-pub const CAN_UPDATE_RELATION: &str = "can_update";
+#[must_use]
+pub fn can_update_relation() -> RelationName {
+    RelationName::from_resolved("can_update")
+}
 
 /// Action relation answering for a SQL `DELETE`.
-pub const CAN_DELETE_RELATION: &str = "can_delete";
+#[must_use]
+pub fn can_delete_relation() -> RelationName {
+    RelationName::from_resolved("can_delete")
+}
 
 /// The `USING` half of an `UPDATE`, which picks the rows the statement may touch.
-pub const CAN_UPDATE_USING_RELATION: &str = "can_update_using";
+#[must_use]
+pub fn can_update_using_relation() -> RelationName {
+    RelationName::from_resolved("can_update_using")
+}
 
 /// The `WITH CHECK` half of an `UPDATE`, which admits the new row.
-pub const CAN_UPDATE_CHECK_RELATION: &str = "can_update_check";
+#[must_use]
+pub fn can_update_check_relation() -> RelationName {
+    RelationName::from_resolved("can_update_check")
+}
 
 /// Updating without naming a row, as `UPDATE t SET c = 1` does. `PostgreSQL` applies
 /// the `UPDATE` policies to it and not the `SELECT` policies, since the statement reads
 /// no row to decide which to change.
-pub const CAN_UPDATE_WITHOUT_READING_RELATION: &str = "can_update_without_reading";
+#[must_use]
+pub fn can_update_without_reading_relation() -> RelationName {
+    RelationName::from_resolved("can_update_without_reading")
+}
 
 /// Inserting a row and reading it back, which returning a table column or naming
 /// an `ON CONFLICT` target both do, so the `SELECT` policies apply to the new row.
-pub const CAN_INSERT_RETURNING_RELATION: &str = "can_insert_returning";
+#[must_use]
+pub fn can_insert_returning_relation() -> RelationName {
+    RelationName::from_resolved("can_insert_returning")
+}
 
 /// Inserting with `ON CONFLICT ... DO UPDATE`, which updates the conflicting row,
 /// so the `UPDATE` policies apply to it and to the merged row.
-pub const CAN_UPSERT_RELATION: &str = "can_upsert";
+#[must_use]
+pub fn can_upsert_relation() -> RelationName {
+    RelationName::from_resolved("can_upsert")
+}
 
 /// Reading a row under a locking clause (`FOR UPDATE`, `FOR NO KEY UPDATE`,
 /// `FOR SHARE`, `FOR KEY SHARE`), which `PostgreSQL` filters by the `UPDATE`
 /// policies' `USING` clause on top of the `SELECT` policies.
-pub const CAN_SELECT_FOR_UPDATE_RELATION: &str = "can_select_for_update";
+#[must_use]
+pub fn can_select_for_update_relation() -> RelationName {
+    RelationName::from_resolved("can_select_for_update")
+}

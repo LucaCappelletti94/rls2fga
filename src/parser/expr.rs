@@ -2,6 +2,7 @@
 use crate::no_std_prelude::*;
 use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
 
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::stored_ident_name;
 
 /// Extract a simple column name from an expression.
@@ -9,10 +10,12 @@ use crate::parser::names::stored_ident_name;
 /// Supports plain identifiers (`owner_id`) and qualified identifiers
 /// (`public.docs.owner_id`), returning only the terminal column component under
 /// the name `PostgreSQL` stores it.
-pub fn extract_column_name(expr: &Expr) -> Option<String> {
+pub fn extract_column_name(expr: &Expr) -> Option<ColumnName> {
     match expr {
-        Expr::Identifier(ident) => Some(stored_ident_name(ident).into_owned()),
-        Expr::CompoundIdentifier(parts) => Some(stored_ident_name(parts.last()?).into_owned()),
+        Expr::Identifier(ident) => Some(ColumnName::from_stored(stored_ident_name(ident))),
+        Expr::CompoundIdentifier(parts) => {
+            Some(ColumnName::from_stored(stored_ident_name(parts.last()?)))
+        }
         Expr::Nested(inner) => extract_column_name(inner),
         Expr::Cast { expr, .. } => extract_column_name(expr),
         _ => None,
@@ -21,7 +24,7 @@ pub fn extract_column_name(expr: &Expr) -> Option<String> {
 
 /// Like [`extract_column_name`] but also unwraps `COALESCE(col, default)` and
 /// `NULLIF(col, sentinel)`, extracting the column name from the first argument.
-pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<String> {
+pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<ColumnName> {
     if let Some(col) = extract_column_name(expr) {
         return Some(col);
     }
@@ -111,17 +114,39 @@ mod tests {
             format: None,
         };
 
-        assert_eq!(extract_column_name(&simple).as_deref(), Some("owner_id"));
-        assert_eq!(extract_column_name(&qualified).as_deref(), Some("owner_id"));
-        assert_eq!(extract_column_name(&nested).as_deref(), Some("owner_id"));
-        assert_eq!(extract_column_name(&casted).as_deref(), Some("owner_id"));
+        assert_eq!(
+            extract_column_name(&simple)
+                .as_ref()
+                .map(ColumnName::as_str),
+            Some("owner_id")
+        );
+        assert_eq!(
+            extract_column_name(&qualified)
+                .as_ref()
+                .map(ColumnName::as_str),
+            Some("owner_id")
+        );
+        assert_eq!(
+            extract_column_name(&nested)
+                .as_ref()
+                .map(ColumnName::as_str),
+            Some("owner_id")
+        );
+        assert_eq!(
+            extract_column_name(&casted)
+                .as_ref()
+                .map(ColumnName::as_str),
+            Some("owner_id")
+        );
     }
 
     #[test]
     fn extract_column_name_through_coalesce_unwraps_coalesce() {
         let expr = parse_expr("COALESCE(owner_id, '00000000-0000-0000-0000-000000000000')");
         assert_eq!(
-            extract_column_name_through_coalesce(&expr).as_deref(),
+            extract_column_name_through_coalesce(&expr)
+                .as_ref()
+                .map(ColumnName::as_str),
             Some("owner_id"),
         );
     }
@@ -130,7 +155,9 @@ mod tests {
     fn extract_column_name_through_coalesce_unwraps_nullif() {
         let expr = parse_expr("NULLIF(owner_id, '')");
         assert_eq!(
-            extract_column_name_through_coalesce(&expr).as_deref(),
+            extract_column_name_through_coalesce(&expr)
+                .as_ref()
+                .map(ColumnName::as_str),
             Some("owner_id"),
         );
     }
@@ -139,7 +166,9 @@ mod tests {
     fn extract_column_name_through_coalesce_passes_through_plain_col() {
         let expr = Expr::Identifier(Ident::new("owner_id"));
         assert_eq!(
-            extract_column_name_through_coalesce(&expr).as_deref(),
+            extract_column_name_through_coalesce(&expr)
+                .as_ref()
+                .map(ColumnName::as_str),
             Some("owner_id"),
         );
     }

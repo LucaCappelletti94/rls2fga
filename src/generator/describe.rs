@@ -15,11 +15,14 @@ use crate::generator::records::{
     BoundQuery, Guard, ObjectKey, RecordContext, RecordDerivation, RecordDescription,
     RecordTemplate, SubjectKey, ValueSource,
 };
-use crate::generator::tuple_generator::{render_tuple_source_inner, resolve_bridge_columns};
+use crate::generator::tuple_generator::{
+    quote_sql_identifier, render_tuple_source_inner, resolve_bridge_columns,
+};
 use crate::generator::tuple_generator::{NameContext, UnboundedColumns};
 use crate::generator::well_known::{
-    HOLDER_OBJECT_ID, MEMBER_RELATION, PG_ROLE_TYPE, PUBLIC_RELATION, TEAM_TYPE, USER_TYPE,
+    member_relation, public_relation, HOLDER_OBJECT_ID, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
 };
+use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::sql_parser::DatabaseLike;
 
 /// Sorted, deduplicated table list.
@@ -37,46 +40,36 @@ fn from_row(
     table: &str,
     object_type: &str,
     object_key: impl Into<ObjectKey>,
-    relation: &str,
+    relation: &RelationName,
     subject_type: &str,
     subject_key: impl Into<SubjectKey>,
     guards: Vec<Guard>,
 ) -> RecordDescription {
-    with_context(
+    described(
         table,
-        object_type,
-        object_key,
-        relation,
-        subject_type,
-        subject_key,
+        RecordTemplate {
+            object_type: object_type.to_string(),
+            object_key: object_key.into(),
+            relation: relation.clone(),
+            subject_type: subject_type.to_string(),
+            subject_key: subject_key.into(),
+            context: None,
+        },
         guards,
-        None,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn with_context(
-    table: &str,
-    object_type: &str,
-    object_key: impl Into<ObjectKey>,
-    relation: &str,
-    subject_type: &str,
-    subject_key: impl Into<SubjectKey>,
-    guards: Vec<Guard>,
-    context: Option<RecordContext>,
-) -> RecordDescription {
+/// A description of records a template already spells out.
+///
+/// Takes the template rather than its six fields, since the caller that needs a request
+/// context is building one anyway and the fields travelling separately made this the
+/// widest signature in the module.
+fn described(table: &str, template: RecordTemplate, guards: Vec<Guard>) -> RecordDescription {
     RecordDescription {
         tables: tables(&[table]),
         derivation: RecordDerivation::FromRow {
             table: table.to_string(),
-            template: Box::new(RecordTemplate {
-                object_type: object_type.to_string(),
-                object_key: object_key.into(),
-                relation: relation.to_string(),
-                subject_type: subject_type.to_string(),
-                subject_key: subject_key.into(),
-                context,
-            }),
+            template: Box::new(template),
             guards,
         },
     }
@@ -84,16 +77,33 @@ fn with_context(
 
 /// Bind the whole-table query to one value, which every joining shape's query
 /// ends in a position to accept: each closes with a `WHERE` and a `;`.
-fn bind(sql: &str, table: &str, key_column: &str, predicate: &str) -> Option<BoundQuery> {
+fn bind(sql: &str, table: &str, key_column: &ColumnName, predicate: &str) -> Option<BoundQuery> {
     let body = sql.strip_suffix(';')?;
     if !body.contains("WHERE ") {
         return None;
     }
     Some(BoundQuery {
         table: table.to_string(),
-        key_column: key_column.to_string(),
+        key_column: key_column.clone(),
         sql: format!("{body}\nAND {predicate};"),
     })
+}
+
+/// The condition [`bind`] appends: one column compared to the bound value.
+///
+/// The only place a bound condition is spelled, and it escapes through the renderer's
+/// own [`quote_sql_identifier`] rather than wrapping the name in quotes, because a
+/// column whose stored name carries a `"` is not the column `"a"b"` names and
+/// `PostgreSQL` does not parse it.
+///
+/// `qualifier` is the alias the rendered query gave the table, absent where it gave none.
+/// It is a generated alias rather than a schema name, so it needs no escaping.
+fn bound_eq(qualifier: Option<&str>, column: &ColumnName) -> String {
+    let quoted = quote_sql_identifier(column.as_str());
+    match qualifier {
+        Some(alias) => format!("{alias}.{quoted} = $1"),
+        None => format!("{quoted} = $1"),
+    }
 }
 
 /// The whole-table query for this one source, which is what a bound query extends.
@@ -126,7 +136,7 @@ fn rendered_sql<DB: DatabaseLike>(
 /// A missing part makes [`ObjectKey::render`] yield no record, which is why no
 /// description carries a `NOT NULL` guard for a key column: the guard would
 /// duplicate that and read as load bearing while guarding nothing.
-fn key_parts(pk_cols: &[String]) -> Vec<ValueSource> {
+fn key_parts(pk_cols: &[ColumnName]) -> Vec<ValueSource> {
     pk_cols
         .iter()
         .map(|c| ValueSource::Column(c.clone()))
@@ -258,13 +268,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             &sql,
                             table,
                             first_key,
-                            &format!("resource.\"{first_key}\" = $1"),
+                            &bound_eq(Some("resource"), first_key),
                         ),
                         bind(
                             &sql,
                             grant_table,
                             grant_resource_col,
-                            &format!("og.\"{grant_resource_col}\" = $1"),
+                            &bound_eq(Some("og"), grant_resource_col),
                         ),
                     ]
                     .into_iter()
@@ -284,7 +294,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             membership_table,
             TEAM_TYPE,
             ValueSource::Column(team_col.clone()),
-            MEMBER_RELATION,
+            &member_relation(),
             USER_TYPE,
             ValueSource::Column(user_col.clone()),
             vec![
@@ -307,7 +317,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
-                        queries: bind(&sql, join_table, fk_col, &format!("\"{fk_col}\" = $1"))
+                        queries: bind(&sql, join_table, fk_col, &bound_eq(None, fk_col))
                             .into_iter()
                             .collect(),
                         reason: format!(
@@ -321,7 +331,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 join_table,
                 parent_type,
                 ValueSource::Column(fk_col.clone()),
-                MEMBER_RELATION,
+                &member_relation(),
                 USER_TYPE,
                 ValueSource::Column(user_col.clone()),
                 vec![
@@ -361,7 +371,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
-            PUBLIC_RELATION,
+            &public_relation(),
             USER_TYPE,
             SubjectKey::wildcard(),
             vec![Guard::IsTrue(flag_col.clone())],
@@ -371,7 +381,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
-            PUBLIC_RELATION,
+            &public_relation(),
             USER_TYPE,
             SubjectKey::wildcard(),
             Vec::new(),
@@ -402,7 +412,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
-            PUBLIC_RELATION,
+            &public_relation(),
             USER_TYPE,
             SubjectKey::wildcard(),
             vec![Guard::Compare(predicate.clone())],
@@ -420,7 +430,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(RecordDescription {
                 tables: tables(&[table]),
                 derivation: RecordDerivation::Joined {
-                    queries: bind(&sql, table, column, &format!("\"{column}\" = $1"))
+                    queries: bind(&sql, table, column, &bound_eq(None, column))
                         .into_iter()
                         .collect(),
                     reason: format!(
@@ -454,18 +464,20 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     (ValueSource::Literal(value.clone()), Vec::new())
                 }
             };
-            Some(with_context(
+            Some(described(
                 table,
-                owner_type,
-                ObjectKey::new(key_parts(pk_cols)),
-                relation,
-                USER_TYPE,
-                SubjectKey::wildcard(),
+                RecordTemplate {
+                    object_type: owner_type.to_string(),
+                    object_key: ObjectKey::new(key_parts(pk_cols)),
+                    relation: relation.clone(),
+                    subject_type: USER_TYPE.to_string(),
+                    subject_key: SubjectKey::wildcard(),
+                    context: Some(RecordContext {
+                        key: row_parameter.parameter().to_string(),
+                        value,
+                    }),
+                },
                 guards,
-                Some(RecordContext {
-                    key: row_parameter.parameter().to_string(),
-                    value,
-                }),
             ))
         }
 
@@ -482,7 +494,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(RecordDescription {
                 tables: tables(&[join_table]),
                 derivation: RecordDerivation::Joined {
-                    queries: bind(&sql, join_table, fk_col, &format!("\"{fk_col}\" = $1"))
+                    queries: bind(&sql, join_table, fk_col, &bound_eq(None, fk_col))
                         .into_iter()
                         .collect(),
                     reason: format!(
@@ -524,14 +536,9 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
                     derivation: RecordDerivation::Joined {
-                        queries: bind(
-                            &sql,
-                            member_table,
-                            user_col,
-                            &format!("\"{user_col}\" = $1"),
-                        )
-                        .into_iter()
-                        .collect(),
+                        queries: bind(&sql, member_table, user_col, &bound_eq(None, user_col))
+                            .into_iter()
+                            .collect(),
                         reason: format!(
                             "the member row carries a residual predicate only SQL can \
                              evaluate: {predicate}"
@@ -543,7 +550,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 member_table,
                 holder_type,
                 ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
-                MEMBER_RELATION,
+                &member_relation(),
                 USER_TYPE,
                 ValueSource::Column(user_col.clone()),
                 vec![Guard::NotNull(user_col.clone())],
@@ -559,25 +566,26 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 fn joined_ownership(
     sql: &str,
     table: &str,
-    pk_cols: &[String],
-    owner_col: &str,
+    pk_cols: &[ColumnName],
+    owner_col: &ColumnName,
     principal_table: &str,
-    principal_pk_col: &str,
+    principal_pk_col: &ColumnName,
     reason: &str,
 ) -> RecordDescription {
     // A joined description binds its query to one column, so a compound key has
     // no single value to bind and the shape falls back to a query per table.
-    let key_column = pk_cols.first().map_or("", String::as_str);
+    let fallback = ColumnName::default();
+    let key_column = pk_cols.first().unwrap_or(&fallback);
     RecordDescription {
         tables: tables(&[table, principal_table]),
         derivation: RecordDerivation::Joined {
             queries: [
-                bind(sql, table, key_column, &format!("\"{key_column}\" = $1")),
+                bind(sql, table, key_column, &bound_eq(None, key_column)),
                 bind(
                     sql,
                     principal_table,
                     principal_pk_col,
-                    &format!("\"{owner_col}\" = $1"),
+                    &bound_eq(None, owner_col),
                 ),
             ]
             .into_iter()

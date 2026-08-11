@@ -1,5 +1,4 @@
 #![cfg(not(target_os = "windows"))]
-#![cfg(feature = "db")]
 
 use std::collections::BTreeSet;
 use std::thread;

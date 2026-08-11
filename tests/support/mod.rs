@@ -3,6 +3,8 @@
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod openfga;
 
+pub(crate) mod footgun;
+
 use std::path::PathBuf;
 
 use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};

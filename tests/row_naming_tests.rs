@@ -81,15 +81,13 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
 
     let docs = &entries[0];
     assert_eq!(docs.table, "docs");
-    assert_eq!(
-        docs.key.parts(),
-        [ValueSource::Column("id".to_string())].as_slice()
-    );
+    assert_eq!(docs.key.parts(), [ValueSource::column("id")].as_slice());
     assert!(
         planned
             .relations()
             .iter()
-            .any(|entry| entry.type_name == docs.type_name && entry.relation == "can_select"),
+            .any(|entry| entry.type_name.as_str() == docs.type_name
+                && entry.relation == "can_select"),
         "the type it reports is the one carrying that table's actions"
     );
 }
@@ -110,7 +108,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
 
     let rendered = docs
         .key
-        .render(&docs.type_name, &subject)
+        .render(docs.type_name.as_str(), &subject)
         .expect("the row is nameable")
         .expect("the name fits");
 
@@ -264,7 +262,7 @@ CREATE POLICY p ON docs FOR SELECT USING (
     assert!(
         entries
             .iter()
-            .all(|entry| entry.table != "doc_members" && entry.type_name != "doc"),
+            .all(|entry| entry.table != "doc_members" && entry.type_name.as_str() != "doc"),
         "a type named after a column names no table's rows, got {entries:?}"
     );
 }

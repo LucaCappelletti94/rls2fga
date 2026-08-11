@@ -6,7 +6,6 @@
 //! written by hand, so a description that disagrees with its own SQL fails here.
 
 #![cfg(not(target_os = "windows"))]
-#![cfg(feature = "db")]
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -162,8 +161,32 @@ async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgCo
     (container, conn)
 }
 
+/// One fact as the three strings a tuple carries.
+///
+/// The database hands this side back text, and a [`Record`]'s relation is a typed name
+/// only the crate mints, so both sides are compared through this rather than by building
+/// a `Record` out of a row.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Fact {
+    object: String,
+    relation: String,
+    subject: String,
+    context: Option<RecordContextValue>,
+}
+
+impl Fact {
+    fn of(record: &Record) -> Self {
+        Self {
+            object: record.object.clone(),
+            relation: record.relation.to_string(),
+            subject: record.subject.clone(),
+            context: record.context.clone(),
+        }
+    }
+}
+
 /// Records the generated query returns.
-fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Record> {
+fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Fact> {
     let failed = |error: diesel::result::Error| -> ! {
         panic!(
             "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
@@ -176,7 +199,7 @@ fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Rec
             .unwrap_or_else(|error| failed(error));
         return rows
             .into_iter()
-            .map(|row| Record {
+            .map(|row| Fact {
                 object: row.object,
                 relation: row.relation,
                 subject: row.subject,
@@ -188,7 +211,7 @@ fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Rec
         .load(conn)
         .unwrap_or_else(|error| failed(error));
     rows.into_iter()
-        .map(|row| Record {
+        .map(|row| Fact {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
@@ -234,7 +257,7 @@ fn rows_of(conn: &mut PgConnection, table: &str) -> Vec<serde_json::Value> {
 fn records_from_descriptions(
     conn: &mut PgConnection,
     description: &RecordDescription,
-) -> BTreeSet<Record> {
+) -> BTreeSet<Fact> {
     let table = description
         .row_table()
         .expect("only a pure description reaches here");
@@ -244,6 +267,7 @@ fn records_from_descriptions(
             records_from_row(description, &JsonRowValues(row))
                 .expect("a pure description evaluates without a database")
         })
+        .map(|record| Fact::of(&record))
         .collect()
 }
 
@@ -273,7 +297,7 @@ fn records_from_bound_query(
     bound: &BoundQuery,
     key: &str,
     conditional: bool,
-) -> BTreeSet<Record> {
+) -> BTreeSet<Fact> {
     let literal = format!("'{}'", key.replace('\'', "''"));
     let sql = bound.sql.replace("$1", &literal);
     let failed = |error: diesel::result::Error| -> ! {
@@ -290,7 +314,7 @@ fn records_from_bound_query(
             .unwrap_or_else(|error| failed(error));
         return rows
             .into_iter()
-            .map(|row| Record {
+            .map(|row| Fact {
                 object: row.object,
                 relation: row.relation,
                 subject: row.subject,
@@ -302,7 +326,7 @@ fn records_from_bound_query(
         .load(conn)
         .unwrap_or_else(|error| failed(error));
     rows.into_iter()
-        .map(|row| Record {
+        .map(|row| Fact {
             object: row.object,
             relation: row.relation,
             subject: row.subject,
@@ -328,7 +352,7 @@ fn assert_bound_queries_account_for_every_record(
     );
 
     for bound in bound_queries {
-        let keys = distinct_keys(conn, &bound.table, &bound.key_column);
+        let keys = distinct_keys(conn, &bound.table, bound.key_column.as_str());
         assert!(
             !keys.is_empty(),
             "{label}: no key values in {}.{}, so the bound query is untested for {}",
@@ -997,7 +1021,7 @@ fn recipe_object(decision: &RowDecision, row: &serde_json::Value) -> Option<Stri
     let [ValueSource::Column(column)] = template.object_key.parts() else {
         panic!("a leaf keys its object on a column");
     };
-    let key = scalar_text(row.get(column)?)?;
+    let key = scalar_text(row.get(column.as_str())?)?;
     Some(format!("{}:{key}", template.object_type))
 }
 
@@ -1057,7 +1081,7 @@ fn flattened_subjects(
 
 async fn start_openfga(
     model: &AuthorizationModel,
-    tuples: &BTreeSet<Record>,
+    tuples: &BTreeSet<Fact>,
 ) -> (
     testcontainers::ContainerAsync<GenericImage>,
     OpenFgaClient<Channel>,
@@ -1082,7 +1106,11 @@ async fn start_openfga(
         tuples
             .iter()
             .map(|record| {
-                support::openfga::make_tuple(&record.object, &record.relation, &record.subject)
+                support::openfga::make_tuple(
+                    &record.object,
+                    record.relation.as_str(),
+                    &record.subject,
+                )
             })
             .collect(),
     )
@@ -1117,7 +1145,7 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     let reported = planned.relations();
     let outputs = planned.outputs_accepting_gaps();
 
-    let mut tuples: BTreeSet<Record> = BTreeSet::new();
+    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
     for query in &outputs.tuple_queries() {
         tuples.extend(records_from_sql(&mut conn, query));
     }
@@ -1168,8 +1196,13 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
             let mut allowed = BTreeSet::new();
             for candidate in universe.union(&expected) {
                 compared += 1;
-                if support::openfga::check_allowed(&client, candidate, &entry.relation, &object)
-                    .await
+                if support::openfga::check_allowed(
+                    &client,
+                    candidate,
+                    entry.relation.as_str(),
+                    &object,
+                )
+                .await
                 {
                     allowed.insert(candidate.clone());
                 } else {
@@ -1245,7 +1278,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     )
     .outputs_accepting_gaps();
 
-    let mut tuples: BTreeSet<Record> = BTreeSet::new();
+    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
     for query in &outputs.tuple_queries() {
         tuples.extend(records_from_sql(&mut conn, query));
     }
@@ -1265,7 +1298,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
             support::openfga::check_allowed(
                 &client,
                 &record.subject,
-                &record.relation,
+                record.relation.as_str(),
                 &record.object
             )
             .await,
@@ -1280,7 +1313,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
             !support::openfga::check_allowed(
                 &client,
                 "user:stranger",
-                &record.relation,
+                record.relation.as_str(),
                 &record.object
             )
             .await,
@@ -1379,7 +1412,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
             .filter_map(|row| {
                 entry
                     .key
-                    .render(&entry.type_name, &JsonRowValues(row))
+                    .render(entry.type_name.as_str(), &JsonRowValues(row))
                     .unwrap_or_else(|error| {
                         panic!("a row of {} cannot be named: {error:?}", entry.table)
                     })

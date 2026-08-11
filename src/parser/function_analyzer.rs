@@ -9,6 +9,7 @@ use sqlparser::parser::Parser;
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
 };
@@ -31,32 +32,32 @@ pub enum FunctionSemantic {
         /// Table that stores explicit role grants.
         grant_table: String,
         /// Column in `grant_table` identifying the grantee (user or team).
-        grant_grantee_col: String,
+        grant_grantee_col: ColumnName,
         /// Column in `grant_table` identifying the target resource.
-        grant_resource_col: String,
+        grant_resource_col: ColumnName,
         /// Column in `grant_table` storing the integer role level.
-        grant_role_col: String,
+        grant_role_col: ColumnName,
         /// Optional team-membership table for team-based grant resolution.
         #[serde(default)]
         team_membership_table: Option<String>,
         /// User column in the team-membership table.
         #[serde(default)]
-        team_membership_user_col: Option<String>,
+        team_membership_user_col: Option<ColumnName>,
         /// Team column in the team-membership table.
         #[serde(default)]
-        team_membership_team_col: Option<String>,
+        team_membership_team_col: Option<ColumnName>,
         /// Optional user principal table used for ownership/grant subject resolution.
         #[serde(default)]
         user_table: Option<String>,
         /// Primary-key column of `user_table`.
         #[serde(default)]
-        user_pk_col: Option<String>,
+        user_pk_col: Option<ColumnName>,
         /// Optional team principal table used for ownership/grant subject resolution.
         #[serde(default)]
         team_table: Option<String>,
         /// Primary-key column of `team_table`.
         #[serde(default)]
-        team_pk_col: Option<String>,
+        team_pk_col: Option<ColumnName>,
     },
 
     /// A function that returns the current authenticated user's ID.
@@ -694,6 +695,7 @@ fn runs_as_owner_reading_effective_user(body_lower: &str, security: &FunctionSec
 #[cfg(test)]
 mod tests {
     use super::{AccessorInferenceSettings, FunctionSecurity, FunctionSemantic};
+    use crate::parser::identifiers::ColumnName;
     use alloc::collections::BTreeMap;
 
     #[test]
@@ -1183,16 +1185,16 @@ mod tests {
             resource_param_index: 1,
             role_levels: BTreeMap::from([("viewer".to_string(), 1), ("editor".to_string(), 2)]),
             grant_table: "object_grants".to_string(),
-            grant_grantee_col: "grantee_id".to_string(),
-            grant_resource_col: "resource_id".to_string(),
-            grant_role_col: "role_level".to_string(),
+            grant_grantee_col: ColumnName::from_stored("grantee_id"),
+            grant_resource_col: ColumnName::from_stored("resource_id"),
+            grant_role_col: ColumnName::from_stored("role_level"),
             team_membership_table: Some("team_memberships".to_string()),
-            team_membership_user_col: Some("user_id".to_string()),
-            team_membership_team_col: Some("team_id".to_string()),
+            team_membership_user_col: Some(ColumnName::from_stored("user_id")),
+            team_membership_team_col: Some(ColumnName::from_stored("team_id")),
             user_table: Some("users".to_string()),
-            user_pk_col: Some("id".to_string()),
+            user_pk_col: Some(ColumnName::from_stored("id")),
             team_table: Some("teams".to_string()),
-            team_pk_col: Some("id".to_string()),
+            team_pk_col: Some(ColumnName::from_stored("id")),
         };
 
         let json = serde_json::to_string(&semantic).expect("semantic should serialize");

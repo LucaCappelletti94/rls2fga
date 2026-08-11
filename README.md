@@ -8,7 +8,7 @@ Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/curren
 
 `PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples, fine-grained, per-resource permissions evaluated at the application layer.
 
-`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression into one of twelve canonical patterns and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
+`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression against the canonical patterns listed below and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
 
 Policies that cannot be fully translated are flagged with a confidence level and emit `-- TODO` items for manual review.
 
@@ -147,6 +147,11 @@ Run this query against your database, convert the rows to `OpenFGA` tuple object
 | P11 | `ArrayMembership` | `current_user = ANY (editors)` | Direct relation named after the column, one tuple per array element |
 | P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `define owner: [user]` direct relation, read from the jsonb field |
 | P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object per member source, every row pointing at it, so the grant reads as `member from staff_holder` |
+| P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate relation `[user:* with ...]` whose condition asks whether the caller's list holds the row's value, one tuple per row carrying that value |
+| P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, with the condition comparing for equality against the caller's single value instead of asking a list |
+| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, with the row's side a constant the policy named, so no column takes part |
+| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, comparing the caller's single value against a constant, so again no column takes part |
+| P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))` | A gate on the membership row rather than on the guarded row, since the member value is a value the request completes and not a person. Refused unless the correlated column is the guarded table's single primary key |
 | - | `Unknown` | Unrecognised expression | Denied, and emitted as `-- TODO [Level D]`, unless an oracle classifies it |
 
 ## Classifying What This Crate Refuses

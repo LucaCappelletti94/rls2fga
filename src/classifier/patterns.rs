@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
 use crate::classifier::function_registry::SessionAttribute;
-use crate::generator::well_known::MEMBER_RELATION;
+use crate::generator::well_known::member_relation;
+use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::sql_parser::PolicyLike;
 
 /// The command a policy applies to.
@@ -86,12 +87,12 @@ impl RolePrivilege {
     /// One relation per kind, since the sets differ: sharing one would make the operator's
     /// facts mean whichever policy the reader happened to look at.
     #[must_use]
-    pub fn relation_name(self) -> &'static str {
+    pub fn relation_name(self) -> RelationName {
         match self {
-            Self::Member => MEMBER_RELATION,
-            Self::Usage => "usage",
-            Self::SetRole => "set_role",
-            Self::AdminOption => "admin_option",
+            Self::Member => member_relation(),
+            Self::Usage => RelationName::from_resolved("usage"),
+            Self::SetRole => RelationName::from_resolved("set_role"),
+            Self::AdminOption => RelationName::from_resolved("admin_option"),
         }
     }
 
@@ -177,7 +178,7 @@ pub enum AttributeLiteral {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributePredicate {
     /// Column the guard reads, folded to its stored name.
-    pub column: String,
+    pub column: ColumnName,
     /// Comparison applied, oriented with the column on the left.
     pub operator: AttributeOperator,
     /// The literal the column is compared against.
@@ -189,7 +190,7 @@ pub struct AttributePredicate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeRequestPredicate {
     /// Column the guard reads, folded to its stored name.
-    pub column: String,
+    pub column: ColumnName,
     /// Comparison applied, oriented with the column on the left.
     pub operator: AttributeOperator,
     /// What the request supplies.
@@ -204,6 +205,229 @@ pub enum RequestValue {
     StatementTimestamp,
 }
 
+// The shape of each pattern, one named struct per variant.
+//
+// The fields live here rather than inline in `PatternClass`, so a recognizer builds one
+// value, an emitter takes one argument, and every field name exists in exactly one place.
+
+/// P1: Numeric role threshold: `role_level(user, resource) >= N`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericThreshold {
+    /// Role-level function called.
+    pub function_name: String,
+    /// Comparison used.
+    pub operator: ThresholdOperator,
+    /// Level the policy requires.
+    pub threshold: i32,
+    /// Command the threshold applies to.
+    pub command: PolicyCommand,
+}
+
+/// P2: Role name IN-list: `role_name(user, resource) IN ('viewer', ...)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleNameInList {
+    /// Role-name function called.
+    pub function_name: String,
+    /// Roles the list admits.
+    pub role_names: Vec<String>,
+    /// Which kind of membership in those roles the policy asked about.
+    pub privilege: RolePrivilege,
+}
+
+/// P3: Direct column equality: `owner_id = current_user_id()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectOwnership {
+    /// Column compared against the current user.
+    pub column: ColumnName,
+}
+
+/// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExistsMembership {
+    /// Table scanned in the subquery.
+    pub join_table: String,
+    /// Column of `join_table` identifying the parent entity.
+    pub fk_column: ColumnName,
+    /// Column of the guarded table the policy compares against `fk_column`.
+    pub outer_column: ColumnName,
+    /// Column of `join_table` identifying the user.
+    pub user_column: ColumnName,
+    /// Residual filter such as `role = 'admin'`, which no tuple can express.
+    pub extra_predicate_sql: Option<String>,
+}
+
+/// P5: Parent permission inheritance through a foreign key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParentInheritance {
+    /// Parent table read by the policy.
+    pub parent_table: String,
+    /// Column of the child table linking to `parent_table`.
+    pub fk_column: ColumnName,
+    /// The parent-side rule the policy requires.
+    pub inner_pattern: Box<ClassifiedExpr>,
+}
+
+/// P6: Boolean flag or public access: `is_public = TRUE`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BooleanFlag {
+    /// Column controlling visibility.
+    pub column: ColumnName,
+}
+
+/// P7: A relationship check AND an attribute guard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbacAnd {
+    /// The translatable relationship half.
+    pub relationship_part: Box<ClassifiedExpr>,
+    /// Column the attribute guard reads.
+    pub attribute_part: String,
+}
+
+/// P8: `OR` or `AND` of two or more sub-patterns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Composite {
+    /// Operator joining `parts`.
+    pub op: BoolOp,
+    /// Sub-patterns being combined.
+    pub parts: Vec<ClassifiedExpr>,
+}
+
+/// P9: Standalone attribute condition: `status = 'published'`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributeCondition {
+    /// Column the guard reads.
+    pub column: ColumnName,
+    /// Human-readable form of the compared value.
+    pub value_description: String,
+    /// The guard as structure, when the compared value is a literal constant and
+    /// so is decided by the row alone.
+    pub predicate: Option<AttributePredicate>,
+    /// The guard as structure, when the compared value is one only the request
+    /// knows. Such a guard becomes a condition rather than a tuple, since a tuple
+    /// computed once would outlive the value it was computed against.
+    pub request_predicate: Option<AttributeRequestPredicate>,
+}
+
+/// P10: Constant `TRUE` or `FALSE` policy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstantBool {
+    /// The constant.
+    pub value: bool,
+}
+
+/// P11: The caller is an element of an array column: `current_user = ANY (editors)`.
+///
+/// Exact, not a widening: `UNNEST` enumerates precisely the rows `= ANY` admits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayMembership {
+    /// Array column holding the admitted principals.
+    pub column: ColumnName,
+}
+
+/// P12: The caller is named by a jsonb field: `data ->> 'owner' = current_user`.
+///
+/// Exact: `->>` yields NULL for a missing key, a null value and a null column, and
+/// the comparison then filters, which is what dropping the NULLs reproduces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsonbFieldOwnership {
+    /// Column holding the document.
+    pub column: ColumnName,
+    /// Key chain to the field, the last hop extracted as text.
+    pub path: Vec<String>,
+}
+
+/// A membership check naming no column of the guarded table, so it admits every
+/// row at once to whoever appears in the member table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UncorrelatedMembership {
+    /// Table whose rows list the members.
+    pub member_table: String,
+    /// Column of that table holding the member.
+    pub user_column: ColumnName,
+    /// Any further condition the membership row has to satisfy.
+    pub extra_predicate_sql: Option<String>,
+}
+
+/// The caller's declared set holds the row's value:
+/// `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowValueInCallerSet {
+    /// Column whose value the set has to hold.
+    pub column: ColumnName,
+    /// Separator the policy splits the setting on, since it decides which elements
+    /// exist and so what the caller has to send. Absent where the source is already
+    /// a list, which has no delimiter and so no such hazard.
+    pub separator: Option<String>,
+    /// The declared source, carrying the parameter the caller supplies.
+    pub source: SessionAttribute,
+}
+
+/// The caller's declared single value equals the row's:
+/// `tenant_id = current_setting('app.tenant_id')::uuid`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowValueEqualsCallerScalar {
+    /// Column the value has to equal.
+    pub column: ColumnName,
+    /// The declared source, carrying the parameter the caller supplies.
+    pub source: SessionAttribute,
+}
+
+/// The caller's declared set holds a constant the policy names, so no row takes part:
+/// `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstantInCallerSet {
+    /// The constant the set has to hold.
+    pub value: String,
+    /// Separator the policy splits the setting on, absent for a list source.
+    pub separator: Option<String>,
+    /// The declared source, carrying the parameter the caller supplies.
+    pub source: SessionAttribute,
+}
+
+/// The caller's declared single value equals a constant the policy names, so no row
+/// takes part: `(SELECT auth.jwt() ->> 'aal') = 'aal2'`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallerScalarEqualsConstant {
+    /// The constant the value has to equal.
+    pub value: String,
+    /// The declared source, carrying the parameter the caller supplies.
+    pub source: SessionAttribute,
+}
+
+/// A membership row whose member column holds a value the caller's declared set has
+/// to contain: `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND
+/// s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))`.
+///
+/// The membership row is the table's authority and the set is the request's, so the
+/// grant is a request-completed gate on the parent rather than a subject named by
+/// the row: the member value is not a person.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MembershipInCallerSet {
+    /// Table whose rows record the grants.
+    pub join_table: String,
+    /// Column of `join_table` naming the guarded row.
+    pub fk_column: ColumnName,
+    /// Column of the guarded table the policy compares against `fk_column`.
+    pub outer_column: ColumnName,
+    /// Column of `join_table` holding the value the caller's set must contain.
+    pub member_column: ColumnName,
+    /// Separator the policy splits the setting on, absent for a list source.
+    pub separator: Option<String>,
+    /// The declared source, carrying the parameter the caller supplies.
+    pub source: SessionAttribute,
+    /// Residual filter on the membership row, which no tuple can express.
+    pub extra_predicate_sql: Option<String>,
+}
+
+/// No known pattern matched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnclassifiedExpr {
+    /// The expression as written.
+    pub sql_text: String,
+    /// Why classification failed, surfaced to the operator.
+    pub reason: String,
+}
+
 /// Classified pattern for an expression.
 ///
 /// `#[non_exhaustive]`: a new recognizer adds a variant, so matching this outside the
@@ -212,155 +436,49 @@ pub enum RequestValue {
 #[non_exhaustive]
 pub enum PatternClass {
     /// P1: Numeric role threshold: `role_level(user, resource) >= N`.
-    P1NumericThreshold {
-        /// Role-level function called.
-        function_name: String,
-        /// Comparison used.
-        operator: ThresholdOperator,
-        /// Level the policy requires.
-        threshold: i32,
-        /// Command the threshold applies to.
-        command: PolicyCommand,
-    },
+    P1NumericThreshold(NumericThreshold),
     /// P2: Role name IN-list: `role_name(user, resource) IN ('viewer', ...)`.
-    P2RoleNameInList {
-        /// Role-name function called.
-        function_name: String,
-        /// Roles the list admits.
-        role_names: Vec<String>,
-        /// Which kind of membership in those roles the policy asked about.
-        privilege: RolePrivilege,
-    },
+    P2RoleNameInList(RoleNameInList),
     /// P3: Direct column equality: `owner_id = current_user_id()`.
-    P3DirectOwnership {
-        /// Column compared against the current user.
-        column: String,
-    },
+    P3DirectOwnership(DirectOwnership),
     /// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
-    P4ExistsMembership {
-        /// Table scanned in the subquery.
-        join_table: String,
-        /// Column of `join_table` identifying the parent entity.
-        fk_column: String,
-        /// Column of the guarded table the policy compares against `fk_column`.
-        outer_column: String,
-        /// Column of `join_table` identifying the user.
-        user_column: String,
-        /// Residual filter such as `role = 'admin'`, which no tuple can express.
-        extra_predicate_sql: Option<String>,
-    },
+    P4ExistsMembership(ExistsMembership),
     /// P5: Parent permission inheritance through a foreign key.
-    P5ParentInheritance {
-        /// Parent table read by the policy.
-        parent_table: String,
-        /// Column of the child table linking to `parent_table`.
-        fk_column: String,
-        /// The parent-side rule the policy requires.
-        inner_pattern: Box<ClassifiedExpr>,
-    },
+    P5ParentInheritance(ParentInheritance),
     /// P6: Boolean flag or public access: `is_public = TRUE`.
-    P6BooleanFlag {
-        /// Column controlling visibility.
-        column: String,
-    },
+    P6BooleanFlag(BooleanFlag),
     /// P7: A relationship check AND an attribute guard.
-    P7AbacAnd {
-        /// The translatable relationship half.
-        relationship_part: Box<ClassifiedExpr>,
-        /// Column the attribute guard reads.
-        attribute_part: String,
-    },
+    P7AbacAnd(AbacAnd),
     /// P8: `OR` or `AND` of two or more sub-patterns.
-    P8Composite {
-        /// Operator joining `parts`.
-        op: BoolOp,
-        /// Sub-patterns being combined.
-        parts: Vec<ClassifiedExpr>,
-    },
+    P8Composite(Composite),
     /// P9: Standalone attribute condition: `status = 'published'`.
-    P9AttributeCondition {
-        /// Column the guard reads.
-        column: String,
-        /// Human-readable form of the compared value.
-        value_description: String,
-        /// The guard as structure, when the compared value is a literal constant and
-        /// so is decided by the row alone.
-        predicate: Option<AttributePredicate>,
-        /// The guard as structure, when the compared value is one only the request
-        /// knows. Such a guard becomes a condition rather than a tuple, since a tuple
-        /// computed once would outlive the value it was computed against.
-        request_predicate: Option<AttributeRequestPredicate>,
-    },
+    P9AttributeCondition(AttributeCondition),
     /// P10: Constant `TRUE` or `FALSE` policy.
-    P10ConstantBool {
-        /// The constant.
-        value: bool,
-    },
+    P10ConstantBool(ConstantBool),
     /// P11: The caller is an element of an array column: `current_user = ANY (editors)`.
     ///
     /// Exact, not a widening: `UNNEST` enumerates precisely the rows `= ANY` admits.
-    P11ArrayMembership {
-        /// Array column holding the admitted principals.
-        column: String,
-    },
+    P11ArrayMembership(ArrayMembership),
     /// P12: The caller is named by a jsonb field: `data ->> 'owner' = current_user`.
     ///
     /// Exact: `->>` yields NULL for a missing key, a null value and a null column, and
     /// the comparison then filters, which is what dropping the NULLs reproduces.
-    P12JsonbFieldOwnership {
-        /// Column holding the document.
-        column: String,
-        /// Key chain to the field, the last hop extracted as text.
-        path: Vec<String>,
-    },
+    P12JsonbFieldOwnership(JsonbFieldOwnership),
     /// A membership check naming no column of the guarded table, so it admits every
     /// row at once to whoever appears in the member table.
-    P13UncorrelatedMembership {
-        /// Table whose rows list the members.
-        member_table: String,
-        /// Column of that table holding the member.
-        user_column: String,
-        /// Any further condition the membership row has to satisfy.
-        extra_predicate_sql: Option<String>,
-    },
+    P13UncorrelatedMembership(UncorrelatedMembership),
     /// The caller's declared set holds the row's value:
     /// `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))`.
-    P14RowValueInCallerSet {
-        /// Column whose value the set has to hold.
-        column: String,
-        /// Separator the policy splits the setting on, since it decides which elements
-        /// exist and so what the caller has to send. Absent where the source is already
-        /// a list, which has no delimiter and so no such hazard.
-        separator: Option<String>,
-        /// The declared source, carrying the parameter the caller supplies.
-        source: SessionAttribute,
-    },
+    P14RowValueInCallerSet(RowValueInCallerSet),
     /// The caller's declared single value equals the row's:
     /// `tenant_id = current_setting('app.tenant_id')::uuid`.
-    P15RowValueEqualsCallerScalar {
-        /// Column the value has to equal.
-        column: String,
-        /// The declared source, carrying the parameter the caller supplies.
-        source: SessionAttribute,
-    },
+    P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar),
     /// The caller's declared set holds a constant the policy names, so no row takes part:
     /// `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))`.
-    P16ConstantInCallerSet {
-        /// The constant the set has to hold.
-        value: String,
-        /// Separator the policy splits the setting on, absent for a list source.
-        separator: Option<String>,
-        /// The declared source, carrying the parameter the caller supplies.
-        source: SessionAttribute,
-    },
+    P16ConstantInCallerSet(ConstantInCallerSet),
     /// The caller's declared single value equals a constant the policy names, so no row
     /// takes part: `(SELECT auth.jwt() ->> 'aal') = 'aal2'`.
-    P17CallerScalarEqualsConstant {
-        /// The constant the value has to equal.
-        value: String,
-        /// The declared source, carrying the parameter the caller supplies.
-        source: SessionAttribute,
-    },
+    P17CallerScalarEqualsConstant(CallerScalarEqualsConstant),
     /// A membership row whose member column holds a value the caller's declared set has
     /// to contain: `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND
     /// s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))`.
@@ -368,29 +486,9 @@ pub enum PatternClass {
     /// The membership row is the table's authority and the set is the request's, so the
     /// grant is a request-completed gate on the parent rather than a subject named by
     /// the row: the member value is not a person.
-    P18MembershipInCallerSet {
-        /// Table whose rows record the grants.
-        join_table: String,
-        /// Column of `join_table` naming the guarded row.
-        fk_column: String,
-        /// Column of the guarded table the policy compares against `fk_column`.
-        outer_column: String,
-        /// Column of `join_table` holding the value the caller's set must contain.
-        member_column: String,
-        /// Separator the policy splits the setting on, absent for a list source.
-        separator: Option<String>,
-        /// The declared source, carrying the parameter the caller supplies.
-        source: SessionAttribute,
-        /// Residual filter on the membership row, which no tuple can express.
-        extra_predicate_sql: Option<String>,
-    },
+    P18MembershipInCallerSet(MembershipInCallerSet),
     /// No known pattern matched.
-    Unknown {
-        /// The expression as written.
-        sql_text: String,
-        /// Why classification failed, surfaced to the operator.
-        reason: String,
-    },
+    Unknown(UnclassifiedExpr),
 }
 
 /// Confidence level for a classification.
@@ -735,10 +833,10 @@ fn filter_or_arms(
     expr: &ClassifiedExpr,
     min_confidence: ConfidenceLevel,
 ) -> (Option<ClassifiedExpr>, Option<ConfidenceLevel>) {
-    let PatternClass::P8Composite {
+    let PatternClass::P8Composite(Composite {
         op: BoolOp::Or,
         parts,
-    } = &expr.pattern
+    }) = &expr.pattern
     else {
         return if expr.confidence >= min_confidence {
             (Some(expr.clone()), None)
@@ -768,10 +866,10 @@ fn filter_or_arms(
             let confidence = composite_confidence(kept.iter());
             (
                 Some(ClassifiedExpr {
-                    pattern: PatternClass::P8Composite {
+                    pattern: PatternClass::P8Composite(Composite {
                         op: BoolOp::Or,
                         parts: kept,
-                    },
+                    }),
                     confidence,
                 }),
                 worst_dropped,

@@ -10,7 +10,7 @@ pub fn attribute_request_predicate(expr: &Expr) -> Option<AttributeRequestPredic
     };
     let operator = attribute_operator(op)?;
     if let Some(column) = extract_column_name(left) {
-        if is_well_known_temporal_function(right) && !is_user_related_column_name(&column) {
+        if is_well_known_temporal_function(right) && !is_user_related_column_name(column.as_str()) {
             return Some(AttributeRequestPredicate {
                 column,
                 operator,
@@ -19,7 +19,7 @@ pub fn attribute_request_predicate(expr: &Expr) -> Option<AttributeRequestPredic
         }
     }
     let column = extract_column_name(right)?;
-    if !is_well_known_temporal_function(left) || is_user_related_column_name(&column) {
+    if !is_well_known_temporal_function(left) || is_user_related_column_name(column.as_str()) {
         return None;
     }
     Some(AttributeRequestPredicate {
@@ -45,7 +45,7 @@ pub fn attribute_literal_predicate(expr: &Expr) -> Option<AttributePredicate> {
     // predicate always reads column-first.
     if let Some(column) = extract_column_name(left) {
         if let Some(value) = attribute_literal(right) {
-            if !is_user_related_column_name(&column) {
+            if !is_user_related_column_name(column.as_str()) {
                 return Some(AttributePredicate {
                     column,
                     operator,
@@ -56,7 +56,7 @@ pub fn attribute_literal_predicate(expr: &Expr) -> Option<AttributePredicate> {
     }
     let column = extract_column_name(right)?;
     let value = attribute_literal(left)?;
-    if is_user_related_column_name(&column) {
+    if is_user_related_column_name(column.as_str()) {
         return None;
     }
     Some(AttributePredicate {
@@ -104,7 +104,7 @@ fn attribute_literal(expr: &Expr) -> Option<AttributeLiteral> {
 }
 
 /// Column name compared in a non-user attribute guard, if `expr` is one.
-pub fn is_attribute_check(expr: &Expr) -> Option<String> {
+pub fn is_attribute_check(expr: &Expr) -> Option<ColumnName> {
     if let Expr::BinaryOp { left, op, right } = expr {
         if matches!(
             op,
@@ -116,12 +116,12 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
                 | BinaryOperator::Lt
         ) {
             if let Some(col) = extract_column_name(left) {
-                if is_literal_or_temporal(right) && !is_user_related_column_name(&col) {
+                if is_literal_or_temporal(right) && !is_user_related_column_name(col.as_str()) {
                     return Some(col);
                 }
             }
             if let Some(col) = extract_column_name(right) {
-                if is_literal_or_temporal(left) && !is_user_related_column_name(&col) {
+                if is_literal_or_temporal(left) && !is_user_related_column_name(col.as_str()) {
                     return Some(col);
                 }
             }
@@ -134,7 +134,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column_name(&col)
+            if !is_user_related_column_name(col.as_str())
                 && !list.is_empty()
                 && list.iter().all(is_literal_value)
             {
@@ -145,12 +145,12 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     // `col IS NOT DISTINCT FROM value` / `col IS DISTINCT FROM value`
     if let Expr::IsNotDistinctFrom(left, right) | Expr::IsDistinctFrom(left, right) = expr {
         if let Some(col) = extract_column_name(left) {
-            if is_literal_or_temporal(right) && !is_user_related_column_name(&col) {
+            if is_literal_or_temporal(right) && !is_user_related_column_name(col.as_str()) {
                 return Some(col);
             }
         }
         if let Some(col) = extract_column_name(right) {
-            if is_literal_or_temporal(left) && !is_user_related_column_name(&col) {
+            if is_literal_or_temporal(left) && !is_user_related_column_name(col.as_str()) {
                 return Some(col);
             }
         }
@@ -164,7 +164,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column_name(&col)
+            if !is_user_related_column_name(col.as_str())
                 && is_literal_or_temporal(low)
                 && is_literal_or_temporal(high)
             {
@@ -175,7 +175,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     // `col IS NULL` / `col IS NOT NULL`
     if let Expr::IsNull(col_expr) | Expr::IsNotNull(col_expr) = expr {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column_name(&col) {
+            if !is_user_related_column_name(col.as_str()) {
                 return Some(col);
             }
         }
@@ -193,7 +193,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
     } = expr
     {
         if let Some(col) = extract_column_name(col_expr) {
-            if !is_user_related_column_name(&col) {
+            if !is_user_related_column_name(col.as_str()) {
                 return Some(col);
             }
         }
@@ -209,7 +209,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<String> {
 /// Same job as the column forms above: the value is not the caller, so no tuple can
 /// carry it. Recognising it keeps `owner_id = caller AND data ->> 'k' = 'v'` behaving
 /// like `owner_id = caller AND status = 'v'` instead of collapsing to a denial.
-fn is_document_attribute_check(expr: &Expr) -> Option<String> {
+fn is_document_attribute_check(expr: &Expr) -> Option<ColumnName> {
     let Expr::BinaryOp { left, op, right } = expr else {
         return None;
     };
@@ -243,7 +243,7 @@ fn is_document_attribute_check(expr: &Expr) -> Option<String> {
                 continue;
             }
             if let Some(col) = extract_column_name(unwrap_cast_or_nested(column_side)) {
-                if !is_user_related_column_name(&col) {
+                if !is_user_related_column_name(col.as_str()) {
                     return Some(col);
                 }
             }
@@ -254,12 +254,15 @@ fn is_document_attribute_check(expr: &Expr) -> Option<String> {
 
 /// `data -> meta ->> status` for a jsonb text extraction whose field is not user
 /// related, matching the refusal `is_attribute_check` already makes for such a column.
-fn describe_jsonb_path_guard(expr: &Expr) -> Option<String> {
+fn describe_jsonb_path_guard(expr: &Expr) -> Option<ColumnName> {
     let (column, path) = jsonb_text_path(expr)?;
     if is_user_related_column_name(path.last()?) {
         return None;
     }
-    Some(format!("{column} ->> {}", path.join(" -> ")))
+    Some(ColumnName::from_stored(format!(
+        "{column} ->> {}",
+        path.join(" -> ")
+    )))
 }
 
 /// A literal, or an array literal whose every element is a literal.

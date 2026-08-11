@@ -140,10 +140,10 @@ fn fold_and(mut exprs: Vec<Expr>) -> Expr {
 
 fn unknown_d(expr: &Expr, reason: impl Into<String>) -> ClassifiedExpr {
     ClassifiedExpr {
-        pattern: PatternClass::Unknown {
+        pattern: PatternClass::Unknown(UnclassifiedExpr {
             sql_text: expr.to_string(),
             reason: reason.into(),
-        },
+        }),
         confidence: ConfidenceLevel::D,
     }
 }
@@ -222,10 +222,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 let confidence = composite_confidence([&left_class, &right_class]);
 
                 return ClassifiedExpr {
-                    pattern: PatternClass::P8Composite {
+                    pattern: PatternClass::P8Composite(Composite {
                         op: BoolOp::Or,
                         parts: vec![left_class, right_class],
-                    },
+                    }),
                     confidence,
                 };
             }
@@ -249,10 +249,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 if let Some(attr) = left_attr {
                     if is_relationship_pattern_for_p7(&right_class.pattern) {
                         return ClassifiedExpr {
-                            pattern: PatternClass::P7AbacAnd {
+                            pattern: PatternClass::P7AbacAnd(AbacAnd {
                                 relationship_part: Box::new(right_class),
-                                attribute_part: attr,
-                            },
+                                attribute_part: attr.to_string(),
+                            }),
                             confidence: ConfidenceLevel::C,
                         };
                     }
@@ -260,10 +260,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 if let Some(attr) = right_attr {
                     if is_relationship_pattern_for_p7(&left_class.pattern) {
                         return ClassifiedExpr {
-                            pattern: PatternClass::P7AbacAnd {
+                            pattern: PatternClass::P7AbacAnd(AbacAnd {
                                 relationship_part: Box::new(left_class),
-                                attribute_part: attr,
-                            },
+                                attribute_part: attr.to_string(),
+                            }),
                             confidence: ConfidenceLevel::C,
                         };
                     }
@@ -272,10 +272,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 let confidence = composite_confidence([&left_class, &right_class]);
 
                 return ClassifiedExpr {
-                    pattern: PatternClass::P8Composite {
+                    pattern: PatternClass::P8Composite(Composite {
                         op: BoolOp::And,
                         parts: vec![left_class, right_class],
-                    },
+                    }),
                     confidence,
                 };
             }
@@ -457,12 +457,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
             ConfidenceLevel::C
         };
         return ClassifiedExpr {
-            pattern: PatternClass::P9AttributeCondition {
+            pattern: PatternClass::P9AttributeCondition(AttributeCondition {
                 column: col,
                 value_description: value_desc,
                 predicate,
                 request_predicate,
-            },
+            }),
             confidence,
         };
     }
@@ -527,58 +527,66 @@ fn describe_comparison_value(expr: &Expr) -> String {
 
 fn pattern_short_name(pattern: &PatternClass) -> &'static str {
     match pattern {
-        PatternClass::P1NumericThreshold { .. } => "numeric role-threshold check",
-        PatternClass::P2RoleNameInList { .. } => "role-name-in-list check",
-        PatternClass::P3DirectOwnership { .. } => "direct-ownership check",
-        PatternClass::P4ExistsMembership { .. } => "EXISTS membership check",
-        PatternClass::P18MembershipInCallerSet { .. } => {
+        PatternClass::P1NumericThreshold(NumericThreshold { .. }) => "numeric role-threshold check",
+        PatternClass::P2RoleNameInList(RoleNameInList { .. }) => "role-name-in-list check",
+        PatternClass::P3DirectOwnership(DirectOwnership { .. }) => "direct-ownership check",
+        PatternClass::P4ExistsMembership(ExistsMembership { .. }) => "EXISTS membership check",
+        PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. }) => {
             "membership row naming a value the caller's declared set holds"
         }
-        PatternClass::P5ParentInheritance { .. } => "parent-inheritance check",
-        PatternClass::P6BooleanFlag { .. } => "boolean-flag check",
-        PatternClass::P7AbacAnd { .. } => "ABAC-and-relationship check",
-        PatternClass::P8Composite { .. } => "composite check",
-        PatternClass::P9AttributeCondition { .. } => "attribute-condition check",
-        PatternClass::P10ConstantBool { .. } => "constant-boolean check",
-        PatternClass::P11ArrayMembership { .. } => "array-membership check",
-        PatternClass::P12JsonbFieldOwnership { .. } => "jsonb-field-ownership check",
-        PatternClass::P13UncorrelatedMembership { .. } => "uncorrelated membership check",
-        PatternClass::P14RowValueInCallerSet { .. } => {
+        PatternClass::P5ParentInheritance(ParentInheritance { .. }) => "parent-inheritance check",
+        PatternClass::P6BooleanFlag(BooleanFlag { .. }) => "boolean-flag check",
+        PatternClass::P7AbacAnd(AbacAnd { .. }) => "ABAC-and-relationship check",
+        PatternClass::P8Composite(Composite { .. }) => "composite check",
+        PatternClass::P9AttributeCondition(AttributeCondition { .. }) => {
+            "attribute-condition check"
+        }
+        PatternClass::P10ConstantBool(ConstantBool { .. }) => "constant-boolean check",
+        PatternClass::P11ArrayMembership(ArrayMembership { .. }) => "array-membership check",
+        PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. }) => {
+            "jsonb-field-ownership check"
+        }
+        PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. }) => {
+            "uncorrelated membership check"
+        }
+        PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { .. }) => {
             "declared caller set holding the row's value"
         }
-        PatternClass::P15RowValueEqualsCallerScalar { .. } => {
+        PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { .. }) => {
             "declared caller value equal to the row's"
         }
-        PatternClass::P16ConstantInCallerSet { .. } => "declared caller set holding a constant",
-        PatternClass::P17CallerScalarEqualsConstant { .. } => {
+        PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. }) => {
+            "declared caller set holding a constant"
+        }
+        PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. }) => {
             "declared caller value equal to a constant"
         }
-        PatternClass::Unknown { .. } => "unrecognized expression",
+        PatternClass::Unknown(UnclassifiedExpr { .. }) => "unrecognized expression",
     }
 }
 
 fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
     match pattern {
-        PatternClass::P1NumericThreshold { .. }
-        | PatternClass::P2RoleNameInList { .. }
-        | PatternClass::P3DirectOwnership { .. }
+        PatternClass::P1NumericThreshold(NumericThreshold { .. })
+        | PatternClass::P2RoleNameInList(RoleNameInList { .. })
+        | PatternClass::P3DirectOwnership(DirectOwnership { .. })
         // The caller is an element of the array column, or named by the jsonb field, so
         // both are user-resource relationships exactly as ownership is.
-        | PatternClass::P11ArrayMembership { .. }
-        | PatternClass::P12JsonbFieldOwnership { .. }
-        | PatternClass::P4ExistsMembership { .. }
+        | PatternClass::P11ArrayMembership(ArrayMembership { .. })
+        | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. })
+        | PatternClass::P4ExistsMembership(ExistsMembership { .. })
         // Membership of the holder is still a user-resource relationship, even though
         // the holder stands for the whole table.
-        | PatternClass::P13UncorrelatedMembership { .. }
-        | PatternClass::P5ParentInheritance { .. } => true,
+        | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
+        | PatternClass::P5ParentInheritance(ParentInheritance { .. }) => true,
         // P6 (boolean public flag) is a resource-attribute check, not a user-resource
         // relationship. Including it here would misclassify e.g.
         // `is_public = TRUE AND status = 'published'` as P7 (ABAC+relationship)
         // when it is really two attribute conditions with no user dimension.
-        PatternClass::P7AbacAnd {
+        PatternClass::P7AbacAnd(AbacAnd {
             relationship_part, ..
-        } => is_relationship_pattern_for_p7(&relationship_part.pattern),
-        PatternClass::P8Composite { parts, .. } => {
+        }) => is_relationship_pattern_for_p7(&relationship_part.pattern),
+        PatternClass::P8Composite(Composite { parts, .. }) => {
             !parts.is_empty()
                 && parts
                     .iter()
@@ -587,21 +595,22 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         // A declared request-scoped value is not a user-resource relationship a tuple
         // can carry, so an attribute guard beside one composes as a plain intersection
         // rather than through the P7 shape.
-        PatternClass::P6BooleanFlag { .. }
-        | PatternClass::P9AttributeCondition { .. }
-        | PatternClass::P10ConstantBool { .. }
-        | PatternClass::P14RowValueInCallerSet { .. }
-        | PatternClass::P18MembershipInCallerSet { .. }
-        | PatternClass::P15RowValueEqualsCallerScalar { .. }
-        | PatternClass::P16ConstantInCallerSet { .. }
-        | PatternClass::P17CallerScalarEqualsConstant { .. }
-        | PatternClass::Unknown { .. } => false,
+        PatternClass::P6BooleanFlag(BooleanFlag { .. })
+        | PatternClass::P9AttributeCondition(AttributeCondition { .. })
+        | PatternClass::P10ConstantBool(ConstantBool { .. })
+        | PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { .. })
+        | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
+        | PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { .. })
+        | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
+        | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
+        | PatternClass::Unknown(UnclassifiedExpr { .. }) => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::identifiers::ColumnName;
     use crate::parser::sql_parser::{parse_schema, ParserDB};
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
@@ -645,10 +654,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::P8Composite {
+            PatternClass::P8Composite(Composite {
                 op: BoolOp::Or,
                 parts
-            } if parts.len() == 2
+            }) if parts.len() == 2
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::B);
     }
@@ -666,7 +675,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(matches!(
                 &classified.pattern,
-                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+                PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) if attribute_part == "status"
             ));
             assert_eq!(classified.confidence, ConfidenceLevel::C);
         }
@@ -684,7 +693,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+                PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) if attribute_part == "status"
             ),
             "IN-list attribute guard should produce P7, got: {:?}",
             classified.pattern
@@ -702,10 +711,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::P8Composite {
+            PatternClass::P8Composite(Composite {
                 op: BoolOp::And,
                 parts
-            } if parts.len() == 2
+            }) if parts.len() == 2
         ));
         // The attribute half now grades B, and a composite takes the weaker of its
         // parts, so the whole is B rather than the old C.
@@ -722,10 +731,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::P8Composite {
+            PatternClass::P8Composite(Composite {
                 op: BoolOp::And,
                 parts
-            } if parts.len() == 2
+            }) if parts.len() == 2
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::B);
     }
@@ -740,7 +749,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::P3DirectOwnership { column } if column == "owner_id"
+            PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::A);
     }
@@ -761,12 +770,12 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(matches!(
                 &classified.pattern,
-                PatternClass::P9AttributeCondition {
+                PatternClass::P9AttributeCondition(AttributeCondition {
                     column,
                     value_description,
                     predicate: Some(_),
                     ..
-                } if column == expected_col && value_description == expected_value
+                }) if column == expected_col && value_description == expected_value
             ));
             // A literal constant is decided by the row, so it grades with the boolean
             // flag rather than falling to the review tier.
@@ -784,7 +793,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason.contains("Function 'mystery_auth' not in registry")
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Function 'mystery_auth' not in registry")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -809,7 +818,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -834,7 +843,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::Unknown { reason, .. } if reason.contains("infinite recursion")
+                PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("infinite recursion")
             ),
             "reading the guarded table is a read PostgreSQL refuses to plan, got {:?}",
             classified.pattern
@@ -861,7 +870,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous membership pattern")
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -897,7 +906,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason.contains("Ambiguous parent inheritance pattern")
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous parent inheritance pattern")
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -926,7 +935,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
-                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
                     if reason.contains(expected_fragment)),
                 "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
                 classified.pattern
@@ -959,7 +968,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
-                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
                     if reason.contains(expected_fragment)),
                 "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
                 classified.pattern
@@ -982,7 +991,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         for expr_sql in [claim_set, function_set] {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
                 panic!(
                     "`{expr_sql}`: expected Unknown, got {:?}",
                     classified.pattern
@@ -1003,7 +1012,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         // constructor arm cannot pass by silencing everything under it.
         let expr = parse_expr(function_set);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+        let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
             panic!("expected Unknown, got {:?}", classified.pattern);
         };
         assert!(
@@ -1022,7 +1031,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
-        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+        let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
             panic!("expected Unknown, got {:?}", classified.pattern);
         };
         assert!(
@@ -1045,7 +1054,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason == "Expression does not match any known pattern"
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason == "Expression does not match any known pattern"
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -1082,7 +1091,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
         assert!(matches!(
             &classified.pattern,
-            PatternClass::Unknown { reason, .. } if reason == "Expression does not match any known pattern"
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason == "Expression does not match any known pattern"
         ));
         assert_eq!(classified.confidence, ConfidenceLevel::D);
     }
@@ -1105,7 +1114,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::Unknown { reason, .. }
+                PatternClass::Unknown(UnclassifiedExpr { reason, .. })
                     if reason.contains("registered as Unknown")
                     && !reason.contains("not in registry")
             ),
@@ -1136,7 +1145,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
-                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
                     if reason.contains("mystery_auth")),
                 "`{expr_sql}`: the reason must name the call, got: {:?}",
                 classified.pattern
@@ -1160,7 +1169,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         let expr = parse_expr("outer_guard(inner_guard(auth_current_user_id())) = 'x'");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
-        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+        let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
             panic!("expected Unknown, got: {:?}", classified.pattern);
         };
         assert!(
@@ -1175,7 +1184,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         // One call spelled twice is one thing to go read.
         let repeated = parse_expr("tenant_of(owner_id) = tenant_of(id)");
         let classified = classify_expr(&repeated, &db, &registry, "docs", PolicyCommand::Select);
-        let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+        let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
             panic!("expected Unknown, got: {:?}", classified.pattern);
         };
         assert_eq!(
@@ -1199,7 +1208,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         ] {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
                 continue;
             };
             assert!(
@@ -1224,7 +1233,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         ] {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            let PatternClass::Unknown { reason, .. } = &classified.pattern else {
+            let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
                 panic!(
                     "`{expr_sql}`: expected Unknown, got {:?}",
                     classified.pattern
@@ -1287,7 +1296,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             assert!(
-                matches!(&classified.pattern, PatternClass::Unknown { reason, .. }
+                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
                     if reason.contains("Negated boolean-flag check")),
                 "`{expr_sql}`: expected Unknown with negated-flag reason, got: {:?}",
                 classified.pattern
@@ -1313,10 +1322,10 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::P8Composite {
+                PatternClass::P8Composite(Composite {
                     op: BoolOp::And,
                     ..
-                }
+                })
             ),
             "P6 AND attribute should be P8Composite, not P7, got: {:?}",
             classified.pattern
@@ -1338,7 +1347,10 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         let classified = classify_expr(&expr, &db, &registry, "tasks", PolicyCommand::Select);
 
         assert!(
-            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            !matches!(
+                &classified.pattern,
+                PatternClass::P3DirectOwnership(DirectOwnership { .. })
+            ),
             "column = column must not classify as P3DirectOwnership, got: {:?}",
             classified.pattern
         );
@@ -1357,7 +1369,10 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
-            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            !matches!(
+                &classified.pattern,
+                PatternClass::P3DirectOwnership(DirectOwnership { .. })
+            ),
             "owner_id = author_id must not classify as P3DirectOwnership, got: {:?}",
             classified.pattern
         );
@@ -1380,7 +1395,10 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
 
         assert!(
-            !matches!(&classified.pattern, PatternClass::P4ExistsMembership { .. }),
+            !matches!(
+                &classified.pattern,
+                PatternClass::P4ExistsMembership(ExistsMembership { .. })
+            ),
             "EXISTS with no user predicate must not classify as P4, got: {:?}",
             classified.pattern
         );
@@ -1396,7 +1414,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
             classify_expr(&not_true, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(
             classified_not_true.pattern,
-            PatternClass::P10ConstantBool { value: false },
+            PatternClass::P10ConstantBool(ConstantBool { value: false }),
             "NOT TRUE should classify as P10 constant false"
         );
         assert_eq!(classified_not_true.confidence, ConfidenceLevel::A);
@@ -1406,7 +1424,7 @@ CREATE TABLE doc_members(doc_id uuid, user_id uuid);
             classify_expr(&not_false, &db, &registry, "docs", PolicyCommand::Select);
         assert_eq!(
             classified_not_false.pattern,
-            PatternClass::P10ConstantBool { value: true },
+            PatternClass::P10ConstantBool(ConstantBool { value: true }),
             "NOT FALSE should classify as P10 constant true"
         );
         assert_eq!(classified_not_false.confidence, ConfidenceLevel::A);
@@ -1449,7 +1467,7 @@ CREATE POLICY docs_open ON docs;
         let expr = parse_expr("owner_id = current_role");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column }
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column })
                 if column == "owner_id"),
             "owner_id = current_role should classify as P3, got: {:?}",
             classified.pattern
@@ -1467,7 +1485,10 @@ CREATE POLICY docs_open ON docs;
         let expr = parse_expr("owner_id = session_user");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::Unknown { .. }),
+            matches!(
+                &classified.pattern,
+                PatternClass::Unknown(UnclassifiedExpr { .. })
+            ),
             "owner_id = session_user should classify as Unknown, got: {:?}",
             classified.pattern
         );
@@ -1497,7 +1518,10 @@ CREATE POLICY docs_open ON docs;
         // The resulting P8Composite or Unknown D is acceptable; what matters is
         // the classifier does not panic or overflow the stack.
         assert!(
-            !matches!(&classified.pattern, PatternClass::P3DirectOwnership { .. }),
+            !matches!(
+                &classified.pattern,
+                PatternClass::P3DirectOwnership(DirectOwnership { .. })
+            ),
             "deeply nested expression should not silently classify as P3, got: {:?}",
             classified.pattern
         );
@@ -1525,7 +1549,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         assert!(
             !matches!(
                 &classified.pattern,
-                PatternClass::P5ParentInheritance { .. }
+                PatternClass::P5ParentInheritance(ParentInheritance { .. })
             ),
             "P5 with attribute-only inner pattern must be rejected, got: {:?}",
             classified.pattern
@@ -1536,86 +1560,94 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
     fn pattern_short_name_covers_all_variants() {
         let cases: Vec<(PatternClass, &str)> = vec![
             (
-                PatternClass::P1NumericThreshold {
+                PatternClass::P1NumericThreshold(NumericThreshold {
                     function_name: "f".into(),
                     operator: ThresholdOperator::Gte,
                     threshold: 1,
                     command: PolicyCommand::Select,
-                },
+                }),
                 "numeric role-threshold check",
             ),
             (
-                PatternClass::P2RoleNameInList {
+                PatternClass::P2RoleNameInList(RoleNameInList {
                     function_name: "f".into(),
                     role_names: vec!["a".into()],
                     privilege: RolePrivilege::Member,
-                },
+                }),
                 "role-name-in-list check",
             ),
             (
-                PatternClass::P3DirectOwnership { column: "c".into() },
+                PatternClass::P3DirectOwnership(DirectOwnership {
+                    column: ColumnName::from_stored("c"),
+                }),
                 "direct-ownership check",
             ),
             (
-                PatternClass::P4ExistsMembership {
+                PatternClass::P4ExistsMembership(ExistsMembership {
                     join_table: "t".into(),
-                    fk_column: "c".into(),
-                    outer_column: "o".into(),
-                    user_column: "u".into(),
+                    fk_column: ColumnName::from_stored("c"),
+                    outer_column: ColumnName::from_stored("o"),
+                    user_column: ColumnName::from_stored("u"),
                     extra_predicate_sql: None,
-                },
+                }),
                 "EXISTS membership check",
             ),
             (
-                PatternClass::P5ParentInheritance {
+                PatternClass::P5ParentInheritance(ParentInheritance {
                     parent_table: "p".into(),
-                    fk_column: "c".into(),
+                    fk_column: ColumnName::from_stored("c"),
                     inner_pattern: Box::new(ClassifiedExpr {
-                        pattern: PatternClass::P3DirectOwnership { column: "c".into() },
+                        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+                            column: ColumnName::from_stored("c"),
+                        }),
                         confidence: ConfidenceLevel::A,
                     }),
-                },
+                }),
                 "parent-inheritance check",
             ),
             (
-                PatternClass::P6BooleanFlag { column: "c".into() },
+                PatternClass::P6BooleanFlag(BooleanFlag {
+                    column: ColumnName::from_stored("c"),
+                }),
                 "boolean-flag check",
             ),
             (
-                PatternClass::P7AbacAnd {
+                PatternClass::P7AbacAnd(AbacAnd {
                     relationship_part: Box::new(ClassifiedExpr {
-                        pattern: PatternClass::P3DirectOwnership { column: "c".into() },
+                        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
+                            column: ColumnName::from_stored("c"),
+                        }),
                         confidence: ConfidenceLevel::A,
                     }),
                     attribute_part: "a".into(),
-                },
+                }),
                 "ABAC-and-relationship check",
             ),
             (
-                PatternClass::P8Composite {
+                PatternClass::P8Composite(Composite {
                     op: BoolOp::Or,
                     parts: Vec::new(),
-                },
+                }),
                 "composite check",
             ),
             (
-                PatternClass::P9AttributeCondition {
-                    column: "c".into(),
+                PatternClass::P9AttributeCondition(AttributeCondition {
+                    column: ColumnName::from_stored("c"),
                     value_description: "v".into(),
                     predicate: None,
                     request_predicate: None,
-                },
+                }),
                 "attribute-condition check",
             ),
             (
-                PatternClass::P10ConstantBool { value: true },
+                PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 "constant-boolean check",
             ),
             (
-                PatternClass::Unknown {
+                PatternClass::Unknown(UnclassifiedExpr {
                     sql_text: "x".into(),
                     reason: "r".into(),
-                },
+                }),
                 "unrecognized expression",
             ),
         ];
@@ -1630,7 +1662,9 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
 
     #[test]
     fn is_relationship_pattern_for_p7_covers_recursive_arms() {
-        let p3 = PatternClass::P3DirectOwnership { column: "c".into() };
+        let p3 = PatternClass::P3DirectOwnership(DirectOwnership {
+            column: ColumnName::from_stored("c"),
+        });
         let p3_expr = ClassifiedExpr {
             pattern: p3.clone(),
             confidence: ConfidenceLevel::A,
@@ -1638,96 +1672,106 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
 
         // Direct relationship patterns
         assert!(is_relationship_pattern_for_p7(
-            &PatternClass::P1NumericThreshold {
+            &PatternClass::P1NumericThreshold(NumericThreshold {
                 function_name: "f".into(),
                 operator: ThresholdOperator::Gte,
                 threshold: 1,
                 command: PolicyCommand::Select,
-            }
+            })
         ));
         assert!(is_relationship_pattern_for_p7(
-            &PatternClass::P2RoleNameInList {
+            &PatternClass::P2RoleNameInList(RoleNameInList {
                 function_name: "f".into(),
                 role_names: vec!["a".into()],
                 privilege: RolePrivilege::Member,
-            }
+            })
         ));
         assert!(is_relationship_pattern_for_p7(&p3));
         assert!(is_relationship_pattern_for_p7(
-            &PatternClass::P4ExistsMembership {
+            &PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table: "t".into(),
-                fk_column: "c".into(),
-                outer_column: "o".into(),
-                user_column: "u".into(),
+                fk_column: ColumnName::from_stored("c"),
+                outer_column: ColumnName::from_stored("o"),
+                user_column: ColumnName::from_stored("u"),
                 extra_predicate_sql: None,
-            }
+            })
         ));
         assert!(is_relationship_pattern_for_p7(
-            &PatternClass::P5ParentInheritance {
+            &PatternClass::P5ParentInheritance(ParentInheritance {
                 parent_table: "p".into(),
-                fk_column: "c".into(),
+                fk_column: ColumnName::from_stored("c"),
                 inner_pattern: Box::new(p3_expr.clone()),
-            }
+            })
         ));
 
         // Non-relationship patterns
         assert!(!is_relationship_pattern_for_p7(
-            &PatternClass::P6BooleanFlag { column: "c".into() }
+            &PatternClass::P6BooleanFlag(BooleanFlag {
+                column: ColumnName::from_stored("c")
+            })
         ));
         assert!(!is_relationship_pattern_for_p7(
-            &PatternClass::P9AttributeCondition {
-                column: "c".into(),
+            &PatternClass::P9AttributeCondition(AttributeCondition {
+                column: ColumnName::from_stored("c"),
                 value_description: "v".into(),
                 predicate: None,
                 request_predicate: None,
+            })
+        ));
+        assert!(!is_relationship_pattern_for_p7(
+            &PatternClass::P10ConstantBool(ConstantBool { value: true })
+        ));
+        assert!(!is_relationship_pattern_for_p7(&PatternClass::Unknown(
+            UnclassifiedExpr {
+                sql_text: "x".into(),
+                reason: "r".into(),
             }
-        ));
-        assert!(!is_relationship_pattern_for_p7(
-            &PatternClass::P10ConstantBool { value: true }
-        ));
-        assert!(!is_relationship_pattern_for_p7(&PatternClass::Unknown {
-            sql_text: "x".into(),
-            reason: "r".into(),
-        }));
+        )));
 
-        assert!(is_relationship_pattern_for_p7(&PatternClass::P7AbacAnd {
-            relationship_part: Box::new(p3_expr.clone()),
-            attribute_part: "a".into(),
-        }));
+        assert!(is_relationship_pattern_for_p7(&PatternClass::P7AbacAnd(
+            AbacAnd {
+                relationship_part: Box::new(p3_expr.clone()),
+                attribute_part: "a".into(),
+            }
+        )));
 
-        assert!(is_relationship_pattern_for_p7(&PatternClass::P8Composite {
-            op: BoolOp::Or,
-            parts: vec![
-                p3_expr.clone(),
-                ClassifiedExpr {
-                    pattern: PatternClass::P4ExistsMembership {
-                        join_table: "t".into(),
-                        fk_column: "c".into(),
-                        outer_column: "o".into(),
-                        user_column: "u".into(),
-                        extra_predicate_sql: None,
+        assert!(is_relationship_pattern_for_p7(&PatternClass::P8Composite(
+            Composite {
+                op: BoolOp::Or,
+                parts: vec![
+                    p3_expr.clone(),
+                    ClassifiedExpr {
+                        pattern: PatternClass::P4ExistsMembership(ExistsMembership {
+                            join_table: "t".into(),
+                            fk_column: ColumnName::from_stored("c"),
+                            outer_column: ColumnName::from_stored("o"),
+                            user_column: ColumnName::from_stored("u"),
+                            extra_predicate_sql: None,
+                        }),
+                        confidence: ConfidenceLevel::A,
                     },
-                    confidence: ConfidenceLevel::A,
-                },
-            ],
-        }));
+                ],
+            }
+        )));
 
-        assert!(!is_relationship_pattern_for_p7(
-            &PatternClass::P8Composite {
+        assert!(!is_relationship_pattern_for_p7(&PatternClass::P8Composite(
+            Composite {
                 op: BoolOp::Or,
                 parts: vec![ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag { column: "c".into() },
+                    pattern: PatternClass::P6BooleanFlag(BooleanFlag {
+                        column: ColumnName::from_stored("c")
+                    }),
                     confidence: ConfidenceLevel::A,
                 }],
             }
-        ));
+        )));
 
-        assert!(!is_relationship_pattern_for_p7(
-            &PatternClass::P8Composite {
+        assert!(!is_relationship_pattern_for_p7(&PatternClass::P8Composite(
+            Composite {
                 op: BoolOp::Or,
                 parts: Vec::new(),
             }
-        ));
+        )));
     }
 
     #[test]
@@ -1737,7 +1781,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
             "IS DISTINCT FROM should classify as P9, got: {:?}",
             classified.pattern
         );
@@ -1750,7 +1794,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
             "IS NOT DISTINCT FROM should classify as P9, got: {:?}",
             classified.pattern
         );
@@ -1763,7 +1807,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let expr = parse_expr("priority BETWEEN 1 AND 10");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "priority"),
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "priority"),
             "BETWEEN should classify as P9, got: {:?}",
             classified.pattern
         );
@@ -1776,7 +1820,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let expr = parse_expr("status > now()");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition { column, .. } if column == "status"),
+            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
             "temporal comparison should classify as P9, got: {:?}",
             classified.pattern
         );
@@ -1809,7 +1853,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::P7AbacAnd { attribute_part, .. } if attribute_part == "status"
+                PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) if attribute_part == "status"
             ),
             "Row-value comparison should decompose and classify as P7, got: {:?}",
             classified.pattern
@@ -1823,7 +1867,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let expr = parse_expr("(owner_id) = (current_user)");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
             "Single-element row-value should decompose to P3, got: {:?}",
             classified.pattern
         );
@@ -1840,7 +1884,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         );
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P8Composite { op: BoolOp::Or, parts } if parts.len() == 2),
+            matches!(&classified.pattern, PatternClass::P8Composite(Composite { op: BoolOp::Or, parts }) if parts.len() == 2),
             "CASE with two TRUE branches should become P8 OR, got: {:?}",
             classified.pattern
         );
@@ -1853,7 +1897,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let expr = parse_expr("CASE WHEN owner_id = current_user THEN TRUE ELSE FALSE END");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+            matches!(&classified.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
             "CASE with one TRUE branch should collapse to inner, got: {:?}",
             classified.pattern
         );
@@ -1866,7 +1910,10 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let expr = parse_expr("CASE WHEN owner_id = current_user THEN 'yes' ELSE 'no' END");
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::Unknown { .. }),
+            matches!(
+                &classified.pattern,
+                PatternClass::Unknown(UnclassifiedExpr { .. })
+            ),
             "CASE with non-boolean results should stay Unknown, got: {:?}",
             classified.pattern
         );

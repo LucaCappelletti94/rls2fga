@@ -34,7 +34,7 @@ CREATE FUNCTION my_user_func() RETURNS UUID LANGUAGE sql AS 'SELECT current_user
         .as_ref()
         .expect("should have USING");
     assert!(
-        matches!(&c.pattern, PatternClass::Unknown { .. }),
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "Expected Unknown for non-matching pattern, got {:?}",
         c.pattern
     );
@@ -59,7 +59,7 @@ CREATE POLICY p ON docs FOR SELECT USING (mystery_func(val));
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
-    if let PatternClass::Unknown { reason, .. } = &c.pattern {
+    if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &c.pattern {
         assert!(
             reason.contains("registered as Unknown"),
             "Expected 'registered as Unknown' message, got: {reason}"
@@ -98,7 +98,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(val, id));
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
-    if let PatternClass::Unknown { reason, .. } = &c.pattern {
+    if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &c.pattern {
         assert!(
             reason.contains("did not match any recognized translation pattern"),
             "Expected 'did not match' message, got: {reason}"
@@ -189,7 +189,7 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P7AbacAnd { .. }),
+        matches!(&c.pattern, PatternClass::P7AbacAnd(AbacAnd { .. })),
         "Expected P7 for ownership + attribute AND, got: {:?}",
         c.pattern
     );
@@ -207,7 +207,10 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P8Composite { op: BoolOp::Or, .. }),
+        matches!(
+            &c.pattern,
+            PatternClass::P8Composite(Composite { op: BoolOp::Or, .. })
+        ),
         "Expected P8 OR composite, got: {:?}",
         c.pattern
     );
@@ -229,7 +232,7 @@ CREATE POLICY p ON docs FOR SELECT USING (current_user = ANY(allowed_users));
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P11ArrayMembership { column } if column == "allowed_users"
+            PatternClass::P11ArrayMembership(ArrayMembership { column }) if column == "allowed_users"
         ),
         "Expected P11 for = ANY(...), got: {:?}",
         c.pattern
@@ -251,7 +254,10 @@ CREATE POLICY p ON docs FOR SELECT USING (tags && user_tags);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P9AttributeCondition { .. }),
+        matches!(
+            &c.pattern,
+            PatternClass::P9AttributeCondition(AttributeCondition { .. })
+        ),
         "Expected P9 for array overlap (&&), got: {:?}",
         c.pattern
     );
@@ -274,7 +280,10 @@ CREATE POLICY p ON tasks FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        !matches!(&c.pattern, PatternClass::P5ParentInheritance { .. }),
+        !matches!(
+            &c.pattern,
+            PatternClass::P5ParentInheritance(ParentInheritance { .. })
+        ),
         "P5 with P6 inner should be rejected, got: {:?}",
         c.pattern
     );
@@ -310,14 +319,18 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
 
     let filtered = filter_policies_for_output(&classified, ConfidenceLevel::A);
     let has_p3 = filtered.iter().any(|cp| {
-        cp.classifications()
-            .any(|c| matches!(&c.pattern, PatternClass::P3DirectOwnership { .. }))
+        cp.classifications().any(|c| {
+            matches!(
+                &c.pattern,
+                PatternClass::P3DirectOwnership(DirectOwnership { .. })
+            )
+        })
     });
     assert!(has_p3, "P3 (confidence A) should survive A-level filter");
 
     let has_p6 = filtered.iter().any(|cp| {
         cp.classifications()
-            .any(|c| matches!(&c.pattern, PatternClass::P6BooleanFlag { .. }))
+            .any(|c| matches!(&c.pattern, PatternClass::P6BooleanFlag(BooleanFlag { .. })))
     });
     assert!(
         !has_p6,
@@ -346,7 +359,7 @@ CREATE POLICY p ON docs FOR SELECT USING (auth.role() = 'authenticated');
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P2RoleNameInList { role_names, .. } if role_names == &["authenticated"]
+            PatternClass::P2RoleNameInList(RoleNameInList { role_names, .. }) if role_names == &["authenticated"]
         ),
         "Expected P2 for role accessor = 'authenticated', got: {:?}",
         c.pattern
@@ -372,7 +385,7 @@ CREATE POLICY p ON docs FOR SELECT USING (auth.role() IN ('authenticated', 'admi
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P2RoleNameInList { role_names, .. } if role_names.len() == 2
+            PatternClass::P2RoleNameInList(RoleNameInList { role_names, .. }) if role_names.len() == 2
         ),
         "Expected P2 with 2 role names, got: {:?}",
         c.pattern
@@ -392,7 +405,7 @@ CREATE POLICY p ON docs FOR SELECT USING (pg_has_role('admin', 'MEMBER'));
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P2RoleNameInList { role_names, .. } if role_names == &["admin"]
+            PatternClass::P2RoleNameInList(RoleNameInList { role_names, .. }) if role_names == &["admin"]
         ),
         "Expected P2 for pg_has_role 2-arg, got: {:?}",
         c.pattern
@@ -412,7 +425,7 @@ CREATE POLICY p ON docs FOR SELECT USING (pg_has_role(current_user, 'editor', 'M
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P2RoleNameInList { role_names, .. } if role_names == &["editor"]
+            PatternClass::P2RoleNameInList(RoleNameInList { role_names, .. }) if role_names == &["editor"]
         ),
         "Expected P2 for pg_has_role 3-arg, got: {:?}",
         c.pattern
@@ -441,7 +454,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_i
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "Expected P3 for current_setting accessor, got: {:?}",
         c.pattern
     );
@@ -467,7 +480,10 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = (SELECT auth.uid()));
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P3DirectOwnership { .. }),
+        matches!(
+            &c.pattern,
+            PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        ),
         "Expected P3, got: {:?}",
         c.pattern
     );
@@ -491,7 +507,7 @@ CREATE POLICY p ON docs FOR SELECT USING (is_public = FALSE);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::Unknown { .. }),
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "Negated boolean flag (= FALSE) should classify as Unknown, got: {:?}",
         c.pattern
     );
@@ -508,7 +524,7 @@ CREATE POLICY p ON docs FOR SELECT USING (is_public IS FALSE);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::Unknown { .. }),
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "IS FALSE boolean flag should classify as Unknown, got: {:?}",
         c.pattern
     );
@@ -525,7 +541,10 @@ CREATE POLICY p ON docs FOR SELECT USING (TRUE);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P10ConstantBool { value: true }),
+        matches!(
+            &c.pattern,
+            PatternClass::P10ConstantBool(ConstantBool { value: true })
+        ),
         "TRUE should classify as P10, got: {:?}",
         c.pattern
     );
@@ -542,7 +561,10 @@ CREATE POLICY p ON docs FOR SELECT USING (FALSE);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P10ConstantBool { value: false }),
+        matches!(
+            &c.pattern,
+            PatternClass::P10ConstantBool(ConstantBool { value: false })
+        ),
         "FALSE should classify as P10, got: {:?}",
         c.pattern
     );
@@ -563,7 +585,10 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P4ExistsMembership { .. }),
+        matches!(
+            &c.pattern,
+            PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        ),
         "InSubquery form should classify as P4, got: {:?}",
         c.pattern
     );
@@ -589,7 +614,7 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::Unknown { reason, .. }
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
             if reason.contains("infinite recursion")),
         "reading 'docs' inside its own policy must be refused, got: {:?}",
         c.pattern
@@ -631,7 +656,7 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P4ExistsMembership { fk_column, outer_column, .. }
+        matches!(&c.pattern, PatternClass::P4ExistsMembership(ExistsMembership { fk_column, outer_column, .. })
             if fk_column == "doc_id" && outer_column == "id"),
         "the guarded side of the correlation is docs.id, got: {:?}",
         c.pattern
@@ -705,7 +730,10 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        !matches!(&c.pattern, PatternClass::P5ParentInheritance { .. }),
+        !matches!(
+            &c.pattern,
+            PatternClass::P5ParentInheritance(ParentInheritance { .. })
+        ),
         "Conflicting join columns should NOT classify as P5, got: {:?}",
         c.pattern
     );
@@ -731,11 +759,11 @@ CREATE POLICY p ON docs FOR SELECT
     assert!(
         matches!(
             &c.pattern,
-            PatternClass::P5ParentInheritance { parent_table, inner_pattern, .. }
+            PatternClass::P5ParentInheritance(ParentInheritance { parent_table, inner_pattern, .. })
                 if parent_table == "orgs"
                     && matches!(
                         inner_pattern.pattern,
-                        PatternClass::P10ConstantBool { value: true }
+                        PatternClass::P10ConstantBool(ConstantBool { value: true })
                     )
         ),
         "the parent's own rule is the whole requirement, got: {:?}",

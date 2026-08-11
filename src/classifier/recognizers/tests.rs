@@ -78,12 +78,12 @@ fn recognize_p1_supports_gt_and_rejects_unknown_functions() {
         recognize_p1(&expr, &db, &registry, PolicyCommand::Delete).expect("expected P1 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P1NumericThreshold {
+        PatternClass::P1NumericThreshold(NumericThreshold {
             function_name,
             operator: ThresholdOperator::Gt,
             threshold,
             command: PolicyCommand::Delete,
-        } if function_name == "role_level" && *threshold == 2
+        }) if function_name == "role_level" && *threshold == 2
     ));
 
     let unknown = parse_expr("unknown_role(auth_current_user_id(), id) >= 1");
@@ -100,11 +100,11 @@ fn recognize_p1_accepts_reversed_comparators() {
         recognize_p1(&gte, &db, &registry, PolicyCommand::Select).expect("expected P1 match");
     assert!(matches!(
         &classified_gte.pattern,
-        PatternClass::P1NumericThreshold {
+        PatternClass::P1NumericThreshold(NumericThreshold {
             operator: ThresholdOperator::Gte,
             threshold,
             ..
-        } if *threshold == 2
+        }) if *threshold == 2
     ));
 
     let gt = parse_expr("2 < role_level(auth_current_user_id(), id)");
@@ -112,12 +112,12 @@ fn recognize_p1_accepts_reversed_comparators() {
         recognize_p1(&gt, &db, &registry, PolicyCommand::Delete).expect("expected P1 match");
     assert!(matches!(
         &classified_gt.pattern,
-        PatternClass::P1NumericThreshold {
+        PatternClass::P1NumericThreshold(NumericThreshold {
             operator: ThresholdOperator::Gt,
             threshold,
             command: PolicyCommand::Delete,
             ..
-        } if *threshold == 2
+        }) if *threshold == 2
     ));
 }
 
@@ -139,11 +139,11 @@ fn recognize_p2_handles_negation_and_literal_filtering() {
     let classified = recognize_p2(&ok, &db, &registry).expect("expected P2 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P2RoleNameInList {
+        PatternClass::P2RoleNameInList(RoleNameInList {
             function_name,
             role_names,
             ..
-        } if function_name == "role_level"
+        }) if function_name == "role_level"
             && role_names == &vec!["viewer".to_string(), "2".to_string()]
     ));
 }
@@ -159,7 +159,7 @@ fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
     assert!(
         matches!(
             &c3.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names, .. }
+            PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
                 if function_name == "pg_has_role" && role_names == &["admin"]
         ),
         "three-arg pg_has_role should produce P2 with role 'admin', got: {:?}",
@@ -173,7 +173,7 @@ fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
     assert!(
         matches!(
             &c2.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names, .. }
+            PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
                 if function_name == "pg_has_role" && role_names == &["editor"]
         ),
         "two-arg pg_has_role should produce P2 with role 'editor', got: {:?}",
@@ -207,7 +207,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         matches!(
             &c_eq.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names, .. }
+            PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
                 if function_name == "role" && role_names == &["authenticated"]
         ),
         "auth.role() = 'authenticated' should produce P2, got: {:?}",
@@ -222,7 +222,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         matches!(
             &c_in.pattern,
-            PatternClass::P2RoleNameInList { function_name, role_names, .. }
+            PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
                 if function_name == "role"
                     && role_names == &["authenticated", "service_role"]
         ),
@@ -258,7 +258,7 @@ fn recognize_array_patterns_matches_the_caller_in_every_spelling() {
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::P11ArrayMembership { column } if column == "allowed_users"
+                PatternClass::P11ArrayMembership(ArrayMembership { column }) if column == "allowed_users"
             ),
             "`{spelling}` should name the array column, got: {:?}",
             classified.pattern
@@ -277,7 +277,9 @@ fn recognize_array_patterns_matches_the_caller_in_every_spelling() {
         "a literal array names no principal to relate"
     );
     assert_eq!(
-        is_attribute_check(&overlap_expr).as_deref(),
+        is_attribute_check(&overlap_expr)
+            .as_ref()
+            .map(ColumnName::as_str),
         Some("allowed_roles"),
         "overlap against a literal is an attribute guard"
     );
@@ -335,7 +337,7 @@ fn recognize_p3_supports_is_not_distinct_from() {
     let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
     assert!(matches!(
         classified.pattern,
-        PatternClass::P3DirectOwnership { ref column } if column == "owner_id"
+        PatternClass::P3DirectOwnership(DirectOwnership { ref column }) if column == "owner_id"
     ));
     assert_eq!(classified.confidence, ConfidenceLevel::A);
 }
@@ -361,7 +363,7 @@ fn recognize_p3_scalar_subquery_wrapper_caps_confidence_at_b() {
     assert!(
         matches!(
             &c_subquery.pattern,
-            PatternClass::P3DirectOwnership { column } if column == "owner_id"
+            PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"
         ),
         "subquery-wrapped accessor should still produce P3, got: {:?}",
         c_subquery.pattern
@@ -423,7 +425,7 @@ fn recognize_p3_reads_a_named_setting_key_without_registering_the_function() {
     let classified = recognize_p3(&named, &db, &registry)
         .expect("expected P3 match for a named current_setting key");
     assert!(
-        matches!(&classified.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id"),
+        matches!(&classified.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "the column keyed by the caller owns the row, got: {:?}",
         classified.pattern
     );
@@ -537,13 +539,13 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership {
+        PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
             fk_column,
             user_column,
             extra_predicate_sql,
             ..
-        } if join_table == "doc_members"
+        }) if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
             && extra_predicate_sql
@@ -593,13 +595,13 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership {
+        PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
             fk_column,
             user_column,
             extra_predicate_sql,
             ..
-        } if join_table == "doc_members"
+        }) if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
             && extra_predicate_sql
@@ -704,7 +706,7 @@ fn recognize_p4_supports_function_wrapped_membership_predicates_without_alias_le
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
+        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicate_sql, .. })
             if extra_predicate_sql
                 .as_deref()
                 .is_some_and(|s| {
@@ -799,7 +801,7 @@ fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership { extra_predicate_sql, .. }
+        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicate_sql, .. })
             if extra_predicate_sql
                 .as_deref()
                 .is_some_and(|s| s.to_ascii_lowercase().contains("role = 'admin'"))
@@ -834,11 +836,11 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
             .expect("expected match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership {
+        PatternClass::P4ExistsMembership(ExistsMembership {
             fk_column,
             user_column,
             ..
-        } if fk_column == "doc_id" && user_column == "user_id"
+        }) if fk_column == "doc_id" && user_column == "user_id"
     ));
 }
 
@@ -944,25 +946,25 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
 
     let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicate_sql) =
         match exists.pattern {
-            PatternClass::P4ExistsMembership {
+            PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
                 fk_column,
                 user_column,
                 extra_predicate_sql,
                 ..
-            } => (join_table, fk_column, user_column, extra_predicate_sql),
+            }) => (join_table, fk_column, user_column, extra_predicate_sql),
             other => panic!("expected P4 EXISTS classification, got: {other:?}"),
         };
 
     let (in_join_table, in_fk_column, in_user_column, in_extra_predicate_sql) = match in_sub.pattern
     {
-        PatternClass::P4ExistsMembership {
+        PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
             fk_column,
             user_column,
             extra_predicate_sql,
             ..
-        } => (join_table, fk_column, user_column, extra_predicate_sql),
+        }) => (join_table, fk_column, user_column, extra_predicate_sql),
         other => panic!("expected P4 IN-subquery classification, got: {other:?}"),
     };
 
@@ -1022,7 +1024,7 @@ fn recognize_p10_and_p6_cover_non_matching_variants() {
     assert!(matches!(
         recognize_p10_constant_bool(&p10_not_true, &db, &registry),
         Some(ClassifiedExpr {
-            pattern: PatternClass::P10ConstantBool { value: false },
+            pattern: PatternClass::P10ConstantBool(ConstantBool { value: false }),
             ..
         })
     ));
@@ -1030,7 +1032,7 @@ fn recognize_p10_and_p6_cover_non_matching_variants() {
     assert!(matches!(
         recognize_p10_constant_bool(&p10_cast, &db, &registry),
         Some(ClassifiedExpr {
-            pattern: PatternClass::P10ConstantBool { value: true },
+            pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
             ..
         })
     ));
@@ -1066,20 +1068,31 @@ fn extractor_helpers_and_attribute_detection_work_for_edge_cases() {
     assert!(extract_function_name(&id_expr).is_none());
 
     let qualified = parse_expr("docs.owner_id");
-    assert_eq!(extract_column_name(&qualified).as_deref(), Some("owner_id"));
+    assert_eq!(
+        extract_column_name(&qualified)
+            .as_ref()
+            .map(ColumnName::as_str),
+        Some("owner_id")
+    );
     assert_eq!(
         extract_qualified_column(&qualified),
-        Some((Some("docs".to_string()), "owner_id".to_string()))
+        Some((
+            Some("docs".to_string()),
+            ColumnName::from_stored("owner_id")
+        ))
     );
 
     let simple = parse_expr("owner_id");
     assert_eq!(
         extract_qualified_column(&simple),
-        Some((None, "owner_id".to_string()))
+        Some((None, ColumnName::from_stored("owner_id")))
     );
 
     let attr = parse_expr("priority >= 3");
-    assert_eq!(is_attribute_check(&attr).as_deref(), Some("priority"));
+    assert_eq!(
+        is_attribute_check(&attr).as_ref().map(ColumnName::as_str),
+        Some("priority")
+    );
 
     let user_attr = parse_expr("user_id = 'x'");
     assert!(is_attribute_check(&user_attr).is_none());
@@ -1160,12 +1173,19 @@ fn current_user_expr_detection_supports_cast_and_nested() {
 fn is_attribute_check_supports_literal_on_left_and_not_equal_operator() {
     let reverse_literal = parse_expr("3 <= priority");
     assert_eq!(
-        is_attribute_check(&reverse_literal).as_deref(),
+        is_attribute_check(&reverse_literal)
+            .as_ref()
+            .map(ColumnName::as_str),
         Some("priority")
     );
 
     let not_equal = parse_expr("status <> 'draft'");
-    assert_eq!(is_attribute_check(&not_equal).as_deref(), Some("status"));
+    assert_eq!(
+        is_attribute_check(&not_equal)
+            .as_ref()
+            .map(ColumnName::as_str),
+        Some("status")
+    );
 }
 
 #[test]
@@ -1180,7 +1200,10 @@ fn extract_integer_value_supports_nested_cast_and_signed_literals() {
 #[test]
 fn is_attribute_check_accepts_casted_literal_values() {
     let expr = parse_expr("status = CAST('draft' AS TEXT)");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"));
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("status")
+    );
 }
 
 #[test]
@@ -1288,7 +1311,7 @@ fn recognize_p3_accepts_function_on_left_side() {
     let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P3DirectOwnership { column } if column == "owner_id"
+        PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"
     ));
 }
 
@@ -1357,7 +1380,7 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
     assert!(
         matches!(
             classified.pattern,
-            PatternClass::P13UncorrelatedMembership { .. }
+            PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
         ),
         "it must not become a per-row membership, got {:?}",
         classified.pattern
@@ -1437,7 +1460,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
     assert!(matches!(
         recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs", PolicyCommand::Select),
         Some(ClassifiedExpr {
-            pattern: PatternClass::P4ExistsMembership { ref join_table, .. },
+            pattern: PatternClass::P4ExistsMembership(ExistsMembership { ref join_table, .. }),
             ..
         }) if join_table == "doc_members"
     ));
@@ -1452,7 +1475,7 @@ fn recognize_p6_covers_visible_branch_and_non_literal_binary_case() {
     let classified = recognize_p6(&visible, &db, &registry).expect("expected visible match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P6BooleanFlag { column } if column == "visible"
+        PatternClass::P6BooleanFlag(BooleanFlag { column }) if column == "visible"
     ));
 
     let non_literal = parse_expr("is_public = owner_id");
@@ -1600,7 +1623,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
         .expect("expected P5 classification");
     assert!(matches!(
         classified.pattern,
-        PatternClass::P5ParentInheritance { ref parent_table, ref fk_column, .. }
+        PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, ref fk_column, .. })
             if parent_table == "projects" && fk_column == "project_id"
     ));
 }
@@ -1631,7 +1654,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
         .expect("expected P5 classification");
     assert!(matches!(
         classified.pattern,
-        PatternClass::P5ParentInheritance { ref parent_table, ref fk_column, .. }
+        PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, ref fk_column, .. })
             if parent_table == "projects" && fk_column == "project_id"
     ));
 }
@@ -1640,23 +1663,29 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
 fn is_attribute_check_recognizes_like_ilike_in_list_and_null_forms() {
     // LIKE and ILIKE are now attribute checks (Phase 3g).
     let like_expr = parse_expr("status LIKE 'draft%'");
-    assert_eq!(is_attribute_check(&like_expr), Some("status".to_string()));
+    assert_eq!(
+        is_attribute_check(&like_expr),
+        Some(ColumnName::from_stored("status"))
+    );
 
     let ilike_name_expr = parse_expr("name ILIKE '%admin%'");
     assert_eq!(
         is_attribute_check(&ilike_name_expr),
-        Some("name".to_string())
+        Some(ColumnName::from_stored("name"))
     );
 
     // IN list with all literals is an attribute check.
     let in_expr = parse_expr("status IN ('active', 'pending')");
-    assert_eq!(is_attribute_check(&in_expr), Some("status".to_string()));
+    assert_eq!(
+        is_attribute_check(&in_expr),
+        Some(ColumnName::from_stored("status"))
+    );
 
     // IS NULL / IS NOT NULL are attribute checks.
     let is_null_expr = parse_expr("deleted_at IS NULL");
     assert_eq!(
         is_attribute_check(&is_null_expr),
-        Some("deleted_at".to_string())
+        Some(ColumnName::from_stored("deleted_at"))
     );
 
     // Negated forms are NOT attribute checks (they restrict, not grant).
@@ -1714,9 +1743,9 @@ fn role_accessor_comparison_reversed_eq() {
     let c = classified.unwrap();
     assert!(matches!(
         c.pattern,
-        PatternClass::P2RoleNameInList {
+        PatternClass::P2RoleNameInList(RoleNameInList {
             ref role_names, ..
-        } if role_names == &["authenticated"]
+        }) if role_names == &["authenticated"]
     ));
 }
 
@@ -2514,12 +2543,12 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
     assert!(
         matches!(
             &classified.pattern,
-            PatternClass::P5ParentInheritance { parent_table, fk_column, inner_pattern }
+            PatternClass::P5ParentInheritance(ParentInheritance { parent_table, fk_column, inner_pattern })
                 if parent_table == "projects"
                     && fk_column == "project_id"
                     && matches!(
                         inner_pattern.pattern,
-                        PatternClass::P10ConstantBool { value: true }
+                        PatternClass::P10ConstantBool(ConstantBool { value: true })
                     )
         ),
         "the parent's gate is the whole rule, got {:?}",
@@ -2559,7 +2588,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
                 PolicyCommand::Select,
             )
             .map(|classified| classified.pattern),
-            Some(PatternClass::P5ParentInheritance { ref parent_table, .. })
+            Some(PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, .. }))
                 if parent_table == "projects"
         ),
         "the policy states the join, so it is the evidence"
@@ -2755,7 +2784,7 @@ fn diagnose_p4_membership_ambiguity_negated_in_subquery() {
 fn is_attribute_check_handles_now_comparison() {
     let expr = parse_expr("valid_until > now()");
     assert_eq!(
-        is_attribute_check(&expr).as_deref(),
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
         Some("valid_until"),
         "now() should be accepted as a temporal literal"
     );
@@ -2764,7 +2793,10 @@ fn is_attribute_check_handles_now_comparison() {
 #[test]
 fn is_attribute_check_handles_current_timestamp() {
     let expr = parse_expr("created_at <= current_timestamp");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("created_at"),);
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("created_at"),
+    );
 }
 
 // ── Gap 3: COALESCE/NULLIF → P3 ────────────────────────────────────────
@@ -2777,7 +2809,7 @@ fn coalesce_wrapped_ownership_classified_as_p3_confidence_b() {
         parse_expr("COALESCE(owner_id, '00000000-0000-0000-0000-000000000000') = current_user");
     let classified = recognize_p3(&expr, &db, &registry);
     assert!(
-        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id")),
         "COALESCE-wrapped column should classify as P3, got: {classified:?}"
     );
     assert_eq!(
@@ -2794,7 +2826,7 @@ fn nullif_wrapped_ownership_classified_as_p3() {
     let expr = parse_expr("NULLIF(owner_id, '') = current_user");
     let classified = recognize_p3(&expr, &db, &registry);
     assert!(
-        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id")),
         "NULLIF-wrapped column should classify as P3, got: {classified:?}"
     );
 }
@@ -2808,7 +2840,7 @@ fn coalesce_wrapped_ownership_classified_as_p3_with_the_caller_on_the_left() {
     let expr = parse_expr("current_user = COALESCE(owner_id, '')");
     let classified = recognize_p3(&expr, &db, &registry);
     assert!(
-        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership { column } if column == "owner_id")),
+        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id")),
         "the operand order says nothing about who owns the row, got: {classified:?}"
     );
     assert_eq!(
@@ -2863,13 +2895,19 @@ fn a_field_read_is_refused_for_a_registered_accessor_and_a_named_key_alike() {
 #[test]
 fn is_attribute_check_handles_is_not_distinct_from() {
     let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"),);
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("status"),
+    );
 }
 
 #[test]
 fn is_attribute_check_handles_is_distinct_from() {
     let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("status"),);
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("status"),
+    );
 }
 
 // ── Gap 5: BETWEEN ───────────────────────────────────────────────────
@@ -2877,7 +2915,10 @@ fn is_attribute_check_handles_is_distinct_from() {
 #[test]
 fn is_attribute_check_handles_between() {
     let expr = parse_expr("priority BETWEEN 1 AND 10");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("priority"),);
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("priority"),
+    );
 }
 
 #[test]
@@ -2892,7 +2933,10 @@ fn is_attribute_check_rejects_negated_between() {
 #[test]
 fn is_attribute_check_between_with_temporal_bounds() {
     let expr = parse_expr("created_at BETWEEN '2024-01-01' AND now()");
-    assert_eq!(is_attribute_check(&expr).as_deref(), Some("created_at"),);
+    assert_eq!(
+        is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
+        Some("created_at"),
+    );
 }
 
 #[test]

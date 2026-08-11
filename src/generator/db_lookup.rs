@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use crate::parser::identifiers::ColumnName;
 use crate::parser::names::lookup_table;
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, IndexLike, TableLike};
 
@@ -16,15 +17,18 @@ pub(crate) const TEAM_PRINCIPAL_TABLES: &[&str] = &["teams", "team"];
 /// constraint make identify a row. `None` means nothing positively identifies
 /// one, which includes a schema that cannot answer, since a guessed identifier
 /// merges distinct rows into one `OpenFGA` object.
-pub(crate) fn resolve_pk_columns<DB: DatabaseLike>(table: &str, db: &DB) -> Option<Vec<String>> {
+pub(crate) fn resolve_pk_columns<DB: DatabaseLike>(
+    table: &str,
+    db: &DB,
+) -> Option<Vec<ColumnName>> {
     let table_info = lookup_table(db, table)?;
     // Every arm below refuses unless it positively knows: an identifier the schema
     // does not confirm merges distinct rows into one object.
     let Ok(declared) = table_info.primary_key_columns(db) else {
         return None;
     };
-    let declared: Vec<String> = declared
-        .map(|c| c.stored_column_name().into_owned())
+    let declared: Vec<ColumnName> = declared
+        .map(|c| ColumnName::from_stored(c.stored_column_name()))
         .collect();
     if !declared.is_empty() {
         return Some(declared);
@@ -38,7 +42,7 @@ pub(crate) fn resolve_pk_columns<DB: DatabaseLike>(table: &str, db: &DB) -> Opti
                 && c.is_nullable(db) == Ok(false)
                 && uniquely_constrained("id", table, db)
         })
-        .map(|c| vec![c.stored_column_name().into_owned()])
+        .map(|c| vec![ColumnName::from_stored(c.stored_column_name())])
 }
 
 /// The one column naming a row, `None` when several do or none does.
@@ -46,7 +50,7 @@ pub(crate) fn resolve_pk_columns<DB: DatabaseLike>(table: &str, db: &DB) -> Opti
 /// Derived from [`resolve_pk_columns`] rather than resolving again, so a caller
 /// that cannot work with a compound key refuses explicitly instead of by
 /// accident.
-pub(crate) fn single_pk_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option<String> {
+pub(crate) fn single_pk_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option<ColumnName> {
     let mut columns = resolve_pk_columns(table, db)?.into_iter();
     let only = columns.next()?;
     columns.next().is_none().then_some(only)
@@ -77,13 +81,13 @@ pub(crate) fn uniquely_constrained<DB: DatabaseLike>(column: &str, table: &str, 
 pub(crate) fn composite_primary_key_columns<DB: DatabaseLike>(
     table: &str,
     db: &DB,
-) -> Option<Vec<String>> {
+) -> Option<Vec<ColumnName>> {
     let table_info = lookup_table(db, table)?;
-    let columns: Vec<String> = table_info
+    let columns: Vec<ColumnName> = table_info
         .primary_key_columns(db)
         .into_iter()
         .flatten()
-        .map(|c| c.stored_column_name().into_owned())
+        .map(|c| ColumnName::from_stored(c.stored_column_name()))
         .collect();
     (columns.len() > 1).then_some(columns)
 }
@@ -119,7 +123,10 @@ mod tests {
         let db = parse_schema(SCHEMA).expect("schema parses");
         assert_eq!(
             resolve_pk_columns("paper_shares", &db),
-            Some(vec!["paper_id".to_string(), "viewer".to_string()]),
+            Some(vec![
+                ColumnName::from_stored("paper_id"),
+                ColumnName::from_stored("viewer")
+            ]),
             "a key spanning two columns names a row through both"
         );
     }
@@ -129,11 +136,11 @@ mod tests {
         let db = parse_schema(SCHEMA).expect("schema parses");
         assert_eq!(
             resolve_pk_columns("docs", &db),
-            Some(vec!["id".to_string()])
+            Some(vec![ColumnName::from_stored("id")])
         );
         assert_eq!(
             resolve_pk_columns("loose", &db),
-            Some(vec!["id".to_string()]),
+            Some(vec![ColumnName::from_stored("id")]),
             "the id fallback still answers where no key is declared"
         );
     }
@@ -148,7 +155,10 @@ mod tests {
     #[test]
     fn the_single_column_answer_refuses_a_compound_key() {
         let db = parse_schema(SCHEMA).expect("schema parses");
-        assert_eq!(single_pk_column("docs", &db), Some("id".to_string()));
+        assert_eq!(
+            single_pk_column("docs", &db),
+            Some(ColumnName::from_stored("id"))
+        );
         assert_eq!(
             single_pk_column("paper_shares", &db),
             None,

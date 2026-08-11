@@ -78,7 +78,7 @@ fn format_subjects(subjects: &[DirectSubject]) -> String {
 pub(super) fn expr_to_dsl(expr: &UsersetExpr, parent: Option<&str>) -> String {
     const ATOM: &str = "";
     let (operator, parts) = match expr {
-        UsersetExpr::Computed(name) => return name.clone(),
+        UsersetExpr::Computed(name) => return name.clone().to_string(),
         UsersetExpr::TupleToUserset { tupleset, computed } => {
             return format!("{computed} from {tupleset}")
         }
