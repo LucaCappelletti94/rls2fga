@@ -25,6 +25,7 @@ use testcontainers::{
 use openfga_client::client::OpenFgaClient;
 use openfga_client::tonic::transport::Channel;
 use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
@@ -1442,5 +1443,133 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     assert_eq!(
         compared, 6,
         "every seeded row is named on both sides, compared {compared}"
+    );
+}
+
+/// Two clauses spelled apart, which is the shape whose `UPDATE` the model answers with
+/// two relations instead of one.
+const REPLACEMENT_SCHEMA: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    writer_user_id TEXT NOT NULL REFERENCES users(id),
+    reviewer_user_id TEXT NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_read ON notes FOR SELECT USING (writer_user_id = auth_current_user_id());
+CREATE POLICY notes_write ON notes FOR UPDATE
+    USING (writer_user_id = auth_current_user_id())
+    WITH CHECK (reviewer_user_id = auth_current_user_id());
+";
+
+/// One row per way the two clauses can disagree, so a comparison that ignored one of
+/// them still has a row to be wrong about.
+const REPLACEMENT_SEED: &str = "
+INSERT INTO users (id) VALUES ('alice'), ('bob');
+INSERT INTO notes (id, writer_user_id, reviewer_user_id, body) VALUES
+    ('both', 'alice', 'alice', 'x'),
+    ('write-only', 'alice', 'bob', 'x'),
+    ('review-only', 'bob', 'alice', 'x'),
+    ('neither', 'bob', 'bob', 'x');
+";
+
+/// Asking every judgement the report names, and requiring all of them, has to answer as
+/// the model's own relation does where the two row versions are the same row. That is
+/// what says the report and the emitted model have not drifted apart.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn every_judgement_together_answers_as_the_action_relation_does() {
+    let (_postgres, mut conn) = start_postgres().await;
+    conn.batch_execute(REPLACEMENT_SCHEMA)
+        .expect("failed to apply the replacement schema");
+    conn.batch_execute(REPLACEMENT_SEED)
+        .expect("failed to seed the replacement schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        REPLACEMENT_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let reported = planned.action_relations();
+    let outputs = planned.outputs_accepting_gaps();
+
+    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
+    for query in &outputs.tuple_queries() {
+        tuples.extend(records_from_sql(&mut conn, query));
+    }
+    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+
+    let update = reported
+        .iter()
+        .find(|entry| {
+            entry.type_name.as_str() == "notes" && entry.statement == ActionStatement::Update
+        })
+        .expect("the guarded table answers for an UPDATE");
+    let ActionAnswer::Judged(judges) = &update.answer else {
+        panic!("a replacement is judged, got {:?}", update.answer);
+    };
+    let named: BTreeSet<&str> = judges.iter().map(|judge| judge.relation.as_str()).collect();
+    assert_eq!(
+        named,
+        BTreeSet::from(["can_update_using", "can_update_check"]),
+        "the case only tests anything while the two clauses are answered apart"
+    );
+
+    let mut agreed = 0usize;
+    let mut granted = 0usize;
+    let mut split_by_a_half = 0usize;
+    let mut failures = Vec::new();
+    for id in ["both", "write-only", "review-only", "neither"] {
+        let object = format!("notes:{id}");
+        for user in ["user:alice", "user:bob"] {
+            let mut halves = Vec::new();
+            for judge in judges {
+                halves.push(
+                    support::openfga::check_allowed(
+                        &client,
+                        user,
+                        judge.relation.as_str(),
+                        &object,
+                    )
+                    .await,
+                );
+            }
+            let together = halves.iter().all(|granted| *granted);
+            let whole = support::openfga::check_allowed(&client, user, "can_update", &object).await;
+            if together != whole {
+                failures.push(format!(
+                    "{object} for {user}: the judgements answer {together}, can_update answers \
+                     {whole}"
+                ));
+            }
+            agreed += 1;
+            granted += usize::from(whole);
+            split_by_a_half += usize::from(halves.iter().any(|granted| *granted) && !together);
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the report and the model disagree:\n{}",
+        failures.join("\n")
+    );
+    assert_eq!(agreed, 8, "every seeded row is asked about by both callers");
+    assert!(
+        granted > 0,
+        "nothing is granted, so a report naming a denial for everything would pass"
+    );
+    assert!(
+        split_by_a_half > 0,
+        "no row is admitted by one half alone, so requiring either half would pass"
     );
 }

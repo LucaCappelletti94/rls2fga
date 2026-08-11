@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
+use crate::generator::action_relations::{action_relations, ActionRelations};
 use crate::generator::json_model::{json_model_from_plan, AuthorizationModel};
 use crate::generator::model_generator::{
     build_filtered_schema_plan, render_dsl_from_plan, GeneratorSettings, SchemaPlan,
@@ -242,6 +243,18 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     #[must_use]
     pub fn row_naming(&self) -> Vec<RowNaming> {
         row_naming(&self.plan, self.db)
+    }
+
+    /// Which relations answer each action the model covers, and which version of the
+    /// row each of them judges.
+    ///
+    /// Read with [`Translation::relations`] and [`Translation::row_naming`]: those say
+    /// what a type grants and how its rows are named, this says what to ask about one.
+    /// Which relations exist depends on how a policy spelled its clauses, so deriving
+    /// this from the emitted model is the case analysis it exists to remove.
+    #[must_use]
+    pub fn action_relations(&self) -> Vec<ActionRelations> {
+        action_relations(&self.plan, self.db)
     }
 
     /// The outputs, refused while any expression went unhandled.
