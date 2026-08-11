@@ -4,36 +4,19 @@
 [![codecov](https://codecov.io/gh/LucaCappelletti94/rls2fga/graph/badge.svg)](https://codecov.io/gh/LucaCappelletti94/rls2fga)
 [![License](https://img.shields.io/github/license/LucaCappelletti94/rls2fga)](https://github.com/LucaCappelletti94/rls2fga/blob/main/LICENSE)
 
-Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) (RLS) policies into [OpenFGA](https://openfga.dev/docs) authorization model definitions and relationship tuples.
+Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) policies into an [OpenFGA](https://openfga.dev/docs) authorization model, plus the SQL that fills its relationship tuples from your database.
 
-`PostgreSQL` RLS lets you gate row access with SQL expressions such as `owner_id = current_user_id()` or `EXISTS (SELECT 1 FROM memberships ...)`. [OpenFGA](https://openfga.dev/docs) represents those rules as typed authorization models and relationship tuples, fine-grained, per-resource permissions evaluated at the application layer.
-
-`rls2fga` classifies each RLS `USING` / `WITH CHECK` expression against the canonical patterns listed below and generates an `OpenFGA` DSL model with the corresponding types and relations, alongside SQL queries that populate the relationship tuples from your live database.
-
-Policies that cannot be fully translated are flagged with a confidence level and emit `-- TODO` items for manual review.
+Each `USING` and `WITH CHECK` expression is classified against the patterns below. What is recognised becomes types and relations, what is not is denied and reported, so the model is never wider than the policy.
 
 > [!WARNING]
-> The crate is not published yet on crates.io because we are waiting for the latest `sqlparser` version to be released.
+> Not on crates.io yet, pending a `sqlparser` release with `no_std` fixes.
 
 > [!WARNING]
-> An attribute guard beside a relationship check (`owner_id = current_user AND status = 'published'`) translates only its relationship half. The attribute half becomes a `-- TODO` for your application to enforce. A guard standing on its own does translate.
-
-## Cargo Features
-
-The `std` feature is enabled by default.
-
-| Feature | Enables | Purpose |
-| --------- | --------- | --------- |
-| `std` | standard library | File output (`Translator::write_output`, `output::formatter`) and stack-overflow protection in the SQL parser. On by default. Disable with `--no-default-features` for a `no_std` + `alloc` build of the parse, classify, and generate pipeline. |
-| `client` | `openfga-client` | `client::write_authorization_model`, which puts a generated model on a running server over a client you built. Off by default, implies `std`. |
-
-### `no_std`
-
-With `default-features = false` the crate builds on `no_std` + `alloc` targets (verified against `thumbv7em-none-eabi`). The full pipeline stays available: `parse_schema`, classification, DSL/JSON model generation, and tuple-query generation. Only the filesystem output surface (`Translator::write_output` and the `output::formatter` module) is gated behind `std`, since it writes files. Model, tuple, and report strings are still produced in memory via `output::report::build_report` and the generator APIs.
+> An attribute guard beside a relationship check (`owner_id = current_user AND status = 'published'`) translates only its relationship half. The guard becomes a `-- TODO` for your application. A guard standing on its own does translate.
 
 ## Usage
 
-The library is a three-stage pipeline: parse a SQL schema, plan a translation of its RLS policies, then ask that translation for each output you want. The plan is built once, so a caller wanting the model, the JSON and the tuple SQL pays for the analysis once.
+Parse a schema, plan a translation, then ask it for each output. The plan is built once, so the model, the JSON and the tuple SQL cost one analysis between them.
 
 ```rust
 use rls2fga::classifier::patterns::ConfidenceLevel;
@@ -55,17 +38,11 @@ let sql = "
         USING (owner_id = current_user_id());
 ";
 
-// Stage 1: Parse the SQL schema
 let db = parse_schema(sql).expect("parse error");
-
-// Stage 2: Plan the translation
-let translator = TranslatorBuilder::new()
+let translation = TranslatorBuilder::new()
     .with_min_confidence(ConfidenceLevel::B)
-    .build();
-let translation = translator.translate(&db);
-
-// Stage 3: Take the outputs. This refuses while any expression went unclassified,
-// because such a model denies what the database grants.
+    .build()
+    .translate(&db);
 let outputs = translation.outputs().expect("every clause translated");
 
 println!("{}", outputs.model());
@@ -76,22 +53,11 @@ for note in outputs.notes() {
 }
 ```
 
-When something did go unclassified and you want the narrower model anyway, say so: `translation.outputs_accepting_gaps()` gives the same outputs without the check. That is one visible line rather than an omission, and `translation.unhandled()` names exactly what it costs.
+`outputs()` refuses while anything went unclassified, because such a model denies what the database grants. `outputs_accepting_gaps()` takes the narrower model on purpose and `unhandled()` names what that costs. `min_confidence` sets the bar: `A` is fully translated, `B` a composed pattern or a guard the row alone decides, `C` the relationship half of an ABAC crossover, `D` unrecognised. Nothing is dropped silently, `output::report::build_report` lists every clause below the bar. A dropped `PERMISSIVE` clause grants nothing and a dropped `RESTRICTIVE` one becomes `no_access`.
 
-The `min_confidence` parameter controls which policies appear in the output:
+## Output
 
-| Level | Meaning |
-| ------- | --------- |
-| `A` | Fully translated, no manual review needed |
-| `B` | A composed pattern, or an attribute guard the row alone decides. A composed pattern is graded by its weakest part and never rises above `B` |
-| `C` | Partial translation, an ABAC crossover where the relationship half translates and the attribute half does not |
-| `D` | Unrecognised expression. Denied, and emits a TODO item, unless an oracle classifies it |
-
-Dropping is not silent: `output::report::build_report` lists every clause below the threshold. A dropped `PERMISSIVE` clause grants nothing, so the model is narrower than the policy. A `RESTRICTIVE` clause instead becomes `no_access`, since RLS is `(permissive OR ...) AND restrictive AND ...`, and so does a `SELECT` policy reading its own table, which `PostgreSQL` rejects with `infinite recursion detected in policy for relation`.
-
-### Generated model (example)
-
-For the ownership example above, `model.dsl` contains:
+The example above yields this model, where only `SELECT` has a policy and an RLS-enabled table denies every command no permissive policy covers. Apply it with `fga model write --store-id "$FGA_STORE_ID" --file model.fga`.
 
 ```fga
 model
@@ -110,15 +76,7 @@ type documents
     define can_update: no_access
 ```
 
-Only `SELECT` has a policy, and an RLS-enabled table denies every command no permissive policy covers.
-
-Apply it with the [OpenFGA CLI](https://openfga.dev/docs/getting-started/setup-openfga):
-
-```bash
-fga model write --store-id "$FGA_STORE_ID" --file model.fga
-```
-
-### Generated tuple SQL (example)
+Beside it comes one query per relation a permission can reach, so a table that denies everything yields nothing to load.
 
 ```sql
 -- User ownership (owner_id references users)
@@ -127,61 +85,55 @@ FROM "documents"
 WHERE "owner_id" IS NOT NULL;
 ```
 
-Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`. Only relations a permission can reach get a query, so a table that denies everything yields nothing to load.
+Every query projects `object`, `relation` and `subject`. One whose `TupleQuery::condition` is `Some` adds `condition`, the name its tuples carry, and `context`, a one-key `jsonb` object. `Outputs::record_from_tuple_row` reads such a row back as a `Record`, refusing one the model holds no such fact for, and `generator::records::records_from_row` produces the same records from a row's values with no database at all.
 
-Every query projects `object`, `relation` and `subject`, in that order. A query whose `TupleQuery::condition` is `Some` projects five columns instead, adding `condition`, the name the tuple has to carry, and `context`, a one-key `jsonb` object holding what the row contributes to it. Read `condition` rather than counting columns. `Outputs::record_from_tuple_row` turns one such row into a `Record`, looking the relation up in the model rather than trusting the text, so a row this model has no such fact in is refused instead of loaded.
+Running the SQL and writing the tuples are yours, since the crate keeps no database handle and batching and retry are your policy. The model is the exception: `client::write_authorization_model` puts it on a running server over a client you built and answers with the id it was stored under.
 
-Running the SQL is the caller's job: the crate keeps no database handle. `TupleQuery::description` describes the same records as structure, so a caller holding one row's values reaches them through `generator::records::records_from_row` without running anything.
+## Cargo features
 
-Writing the tuples is the caller's job too, since batching, deletion and retry are its policy, and a `Record` carries everything a tuple needs including the condition it names. The model is the exception: `client::write_authorization_model` puts it on a running server and answers with the id it was stored under, over a client you built, so TLS and authentication stay on your own dependency. It needs the `client` feature.
+`std` is on by default and carries the file output surface (`Translator::write_output`, `output::formatter`). Without it the crate builds on `no_std` plus `alloc`, verified against `thumbv7em-none-eabi`, with the whole parse, classify and generate pipeline intact. `client` adds the model writer and implies `std`.
 
-## Supported RLS Patterns
+## Supported patterns
 
-| Pattern | Name | RLS expression shape | `OpenFGA` mapping |
-| --------- | ------ | ---------------------- | ----------------- |
-| P1 | `NumericThreshold` | `role_fn(user, resource) >= N` | Hierarchical relations derived from a numeric level |
-| P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One direct relation per allowed role name |
-| P3 | `DirectOwnership` | `owner_id = current_user_id()` | `define owner: [user]` direct relation |
-| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members WHERE ...)`, `id IN (SELECT ...)`, `id = ANY (SELECT ...)` | Group membership via a `member` relation |
-| P5 | `ParentInheritance` | FK join carrying a parent-side rule | Tuple-to-userset onto that rule (`owner from parent`), gated by the parent's own `can_select` |
-| P6 | `BooleanFlag` | `is_public = TRUE` | Wildcard `[user:*]` public access |
-| P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship part translated, attribute guard emitted as `-- TODO [Level C]` |
-| P8 | `Composite` | `expr1 OR expr2` / `expr1 AND expr2` | `union` / `intersection` of sub-expressions |
-| P9 | `AttributeCondition` | `status = 'published'`, `expires_at > now()` | A value the row alone decides becomes a wildcard whose tuple query carries the guard in its `WHERE`, so only matching rows get one. A value the clock decides becomes an `OpenFGA` condition instead, since a tuple written once would outlive it |
-| P10 | `ConstantBool` | `TRUE` / `FALSE` | Open (`[user:*]`) or closed (no access) |
-| P11 | `ArrayMembership` | `current_user = ANY (editors)` | Direct relation named after the column, one tuple per array element |
-| P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `define owner: [user]` direct relation, read from the jsonb field |
-| P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object per member source, every row pointing at it, so the grant reads as `member from staff_holder` |
-| P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate relation `[user:* with ...]` whose condition asks whether the caller's list holds the row's value, one tuple per row carrying that value |
-| P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, with the condition comparing for equality against the caller's single value instead of asking a list |
-| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, with the row's side a constant the policy named, so no column takes part |
-| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, comparing the caller's single value against a constant, so again no column takes part |
-| P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))` | A gate on the membership row rather than on the guarded row, since the member value is a value the request completes and not a person. Refused unless the correlated column is the guarded table's single primary key |
-| - | `Unknown` | Unrecognised expression | Denied, and emitted as `-- TODO [Level D]`, unless an oracle classifies it |
+A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO points at a row here.
 
-## Classifying What This Crate Refuses
+| # | Pattern | Shape | Mapping |
+| --- | --- | --- | --- |
+| P1 | `NumericThreshold` | `role_fn(user, resource) >= N` | Hierarchical relations from the level |
+| P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One relation per role name |
+| P3 | `DirectOwnership` | `owner_id = current_user_id()` | `owner: [user]` |
+| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members ...)`, `IN`, `= ANY` | A `member` relation |
+| P5 | `ParentInheritance` | FK join carrying a parent-side rule | `owner from parent`, gated by the parent's `can_select` |
+| P6 | `BooleanFlag` | `is_public = TRUE` | `[user:*]` |
+| P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship half only, guard as a TODO |
+| P8 | `Composite` | `expr OR expr`, `expr AND expr` | Union, intersection |
+| P9 | `AttributeCondition` | `status = 'published'`, `expires_at > now()` | A row-decided value guards the tuple query, a clock-decided one becomes a condition |
+| P10 | `ConstantBool` | `TRUE`, `FALSE` | `[user:*]`, or no access |
+| P11 | `ArrayMembership` | `current_user = ANY (editors)` | Relation named after the column, one tuple per element |
+| P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `owner: [user]`, read from the field |
+| P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object, so the grant reads as `member from staff_holder` |
+| P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate asking whether the caller's list holds the row's value |
+| P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, equality against the caller's value |
+| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, no column takes part |
+| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, caller's value against a constant |
+| P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(...))` | The gate on the membership row, refused unless the correlated column is the guarded table's single primary key |
+| - | `Unknown` | Anything else | Denied, with a TODO, unless an oracle classifies it |
 
-An expression `rls2fga` does not recognise is denied rather than guessed at, which is safe but narrower than the policy. When you know what your own expression means, implement `PolicyOracle` and call `consult_oracle` on the classified policies before generating anything. The oracle is offered each refused expression as written, along with the reason it was refused, and answers in one of three ways: with a classification, with a deliberate denial when the expression grants nobody, or by bailing. Bailing is the default, so an oracle implementing nothing changes nothing, and it is the only answer that leaves a gap in the report. A classification is emitted exactly as a pattern the crate recognised itself, and the grade it claims still faces your confidence threshold, so an oracle cannot push a guess past a gate you set.
+## What the crate refuses
 
-Reach for it rather than walking the classification yourself. A refusal nests inside a parent join and inside a composite, so a walk that misses one leaves the model quietly denying, and every pattern enclosing a refusal has to be regraded or the clause is dropped for a refusal that is no longer there. `rls2fga::classifier::oracle` documents both traps and carries a worked example.
+An unrecognised expression is denied rather than guessed at, which is safe but narrower than the policy. Implement `PolicyOracle` and call `consult_oracle` to answer for your own shapes: it is offered each refusal with its reason and may classify it, deny it deliberately, or bail, and bailing is the default, so an oracle implementing nothing changes nothing. Reach for it rather than walking the classification yourself, since a refusal nests inside parent joins and composites and every pattern enclosing one has to be regraded. `classifier::oracle` documents both traps with a worked example.
 
-**This is the general answer for a shape `rls2fga` will not bake in.** Two refusals are deliberate rather than unfinished, and both are yours to answer. A function marked `SECURITY DEFINER` that reads a table is the documented way around a policy that would otherwise recurse on its own table, and reading its body would defeat the point of the marking: the function sees rows the caller cannot, so a misreading widens access. Whoever wrote the function knows what it means and can say so. A document read by position, `data -> 0 ->> 'owner'`, identifies a value by offset rather than by name, and a permission whose name encoded an offset would be repointed silently by unrelated code that reordered the document. Neither gets a convention baked into the crate, and both reach you through the same seam.
+Two refusals are deliberate. Reading the body of a `SECURITY DEFINER` function would defeat the marking, since it sees rows the caller cannot. A jsonb field read by position, `data -> 0 ->> 'owner'`, would name a permission after an offset that unrelated code can repoint. Both reach you through the oracle.
 
-## Reads Gate The Other Commands
+## Reads gate the other commands
 
-Naming the row to change requires reading it, so `can_update` and `can_delete` are intersected with `can_select`. Plain `INSERT` reads nothing, so `can_insert` stays ungated, but returning a table column and naming an `ON CONFLICT` target both read the new row back, so `PostgreSQL` checks it against the `SELECT` policies as well. `can_insert_returning` is that intersection, omitted where the insert rule already implies the read. Check it against the tuples the new row would produce, the same contextual tuples `can_insert` needs. `INSERT ... ON CONFLICT ... DO UPDATE` takes the update path on a conflict, so the `UPDATE` policies apply to the conflicting row as well, which `can_upsert` intersects. A locking read (`FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR KEY SHARE`) is filtered by the `UPDATE` policies' `USING` clause on top of the `SELECT` policies, so `can_select` overstates what it returns and `can_select_for_update` is the relation to check. A policy expression also reads any table it names, filtered by that table's own policies: an inherited parent rule is intersected with the parent's `can_select`, and a membership table that grants no reads denies the command outright. Which membership rows a user sees is otherwise up to that table's policies, which no relation can express, so load tuples only for the rows it exposes.
+Naming a row to change means reading it, so `can_update` and `can_delete` intersect `can_select`. Plain `INSERT` reads nothing, but `RETURNING` a column and naming an `ON CONFLICT` target both read the new row back, which is `can_insert_returning`, and `INSERT ... ON CONFLICT DO UPDATE` is `can_upsert`. A locking read (`FOR UPDATE` and friends) also applies the `UPDATE` policies, so `can_select_for_update` is the relation to check rather than `can_select`. A policy expression reads every table it names, so an inherited parent rule intersects the parent's `can_select` and a membership table granting no reads denies outright.
 
-## Policy Role Scope (`TO <role>`)
+## Runtime data you have to supply
 
-When a `PostgreSQL` policy targets a specific role, for example `CREATE POLICY ... TO analyst USING (...)`, `rls2fga` preserves that scope. It adds role-scope relations in the generated model, adds a `pg_role` type with a `member` relation, and emits tuples that tie protected rows to `pg_role:<role>`.
+A policy scoped `TO analyst` keeps that scope through a `pg_role` type, so load `pg_role#member` tuples mapping users to roles or those policies match nobody.
 
-Required runtime data: you must load `pg_role#member` tuples that map users to `PostgreSQL` roles in your `OpenFGA` store. Without them, role-scoped policies will not match any user.
-
-## Policies That Depend On The Clock
-
-A guard comparing a column against statement time, such as `expires_at > now()`, cannot become a tuple: whatever the comparison decided when the tuple was written stays decided, and the grant outlives the moment it was true for. `rls2fga` emits an `OpenFGA` condition instead. The row's own value travels with the tuple, and the time comes from the caller at check time, so the same tuple stops granting once the clock passes it.
-
-Required runtime data: every `Check` against such a relation must supply the time in its context, under the parameter name `request_time`. Nothing computes it for you, which is the point, since a server clock reading would put the decision back where it cannot be audited. `TranslatorBuilder::with_request_time_parameter` renames it when your service already has a convention.
+A guard against statement time such as `expires_at > now()` cannot be a tuple, since whatever it decided when written stays decided. It becomes an `OpenFGA` condition instead: the row's value travels with the tuple and every check must carry the time in its context under `request_time`, renamed by `TranslatorBuilder::with_request_time_parameter`. Nothing computes it for you, which is the point, since a server clock reading puts the decision where it cannot be audited.
 
 ## License
 
