@@ -29,12 +29,13 @@ use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordContextValue, RecordDerivation, RecordDescription,
-    RowValues, ValueSource,
+    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
+    ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
-use rls2fga::generator::tuple_generator::TupleQuery;
-use rls2fga::translator::Translation;
+use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
+use rls2fga::parser::sql_parser::ParserDB;
+use rls2fga::translator::{Outputs, Translation};
 
 mod support;
 
@@ -47,7 +48,7 @@ const PG_DB: &str = "rls2fga";
 /// The query under test is generated text, so it cannot go through the typed
 /// query DSL. The row type still binds every column to its declared SQL type.
 #[derive(QueryableByName, Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct TupleRow {
+struct SqlRow {
     #[diesel(sql_type = Text)]
     object: String,
     #[diesel(sql_type = Text)]
@@ -57,16 +58,18 @@ struct TupleRow {
 }
 
 /// The same, for a query whose tuples carry a condition context. A conditional record
-/// grants nobody until the request completes the comparison, so the context is part of
-/// what the two sides have to agree on.
+/// grants nobody until the request completes the comparison, so the condition it names
+/// and the context are part of what the two sides have to agree on.
 #[derive(QueryableByName, Debug, Clone)]
-struct ConditionalTupleRow {
+struct ConditionalSqlRow {
     #[diesel(sql_type = Text)]
     object: String,
     #[diesel(sql_type = Text)]
     relation: String,
     #[diesel(sql_type = Text)]
     subject: String,
+    #[diesel(sql_type = Text)]
+    condition: String,
     #[diesel(sql_type = Jsonb)]
     context: serde_json::Value,
 }
@@ -162,80 +165,72 @@ async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgCo
     (container, conn)
 }
 
-/// One fact as the three strings a tuple carries.
+/// Records the generated query returns, read back through the crate's own reader.
 ///
-/// The database hands this side back text, and a [`Record`]'s relation is a typed name
-/// only the crate mints, so both sides are compared through this rather than by building
-/// a `Record` out of a row.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Fact {
-    object: String,
-    relation: String,
-    subject: String,
-    context: Option<RecordContextValue>,
+/// Building the fact here by hand would compare the description against a second
+/// spelling of the mapping rather than against the one a consumer uses.
+fn records_from_sql(
+    outputs: &Outputs<'_, ParserDB>,
+    conn: &mut PgConnection,
+    query: &TupleQuery,
+) -> BTreeSet<Record> {
+    records_of_sql(outputs, conn, &query.sql, query.condition.is_some(), || {
+        query.comment.clone()
+    })
 }
 
-impl Fact {
-    fn of(record: &Record) -> Self {
-        Self {
-            object: record.object.clone(),
-            relation: record.relation.to_string(),
-            subject: record.subject.clone(),
-            context: record.context.clone(),
-        }
-    }
-}
-
-/// Records the generated query returns.
-fn records_from_sql(conn: &mut PgConnection, query: &TupleQuery) -> BTreeSet<Fact> {
+/// Every row of `sql`, as the records it spells.
+fn records_of_sql(
+    outputs: &Outputs<'_, ParserDB>,
+    conn: &mut PgConnection,
+    sql: &str,
+    conditional: bool,
+    label: impl Fn() -> String,
+) -> BTreeSet<Record> {
     let failed = |error: diesel::result::Error| -> ! {
         panic!(
-            "the generated query failed on PostgreSQL 18: {}\n{}\nError: {error}",
-            query.comment, query.sql
+            "the generated query failed on PostgreSQL 18: {}\n{sql}\nError: {error}",
+            label()
         )
     };
-    if query.condition.is_some() {
-        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&query.sql)
+    let read = |row: TupleRow<'_>| {
+        outputs.record_from_tuple_row(row).unwrap_or_else(|error| {
+            panic!("the query returned a row it cannot mean:\n{sql}\n{error}")
+        })
+    };
+    if conditional {
+        let rows: Vec<ConditionalSqlRow> = diesel::sql_query(sql)
             .load(conn)
             .unwrap_or_else(|error| failed(error));
         return rows
-            .into_iter()
-            .map(|row| Fact {
-                object: row.object,
-                relation: row.relation,
-                subject: row.subject,
-                context: Some(context_of(&row.context, &query.sql)),
+            .iter()
+            .map(|row| {
+                let context = row.context.to_string();
+                read(TupleRow {
+                    object: &row.object,
+                    relation: &row.relation,
+                    subject: &row.subject,
+                    condition: Some(TupleCondition {
+                        name: &row.condition,
+                        context: &context,
+                    }),
+                })
             })
             .collect();
     }
-    let rows: Vec<TupleRow> = diesel::sql_query(&query.sql)
+    let rows: Vec<SqlRow> = diesel::sql_query(sql)
         .load(conn)
         .unwrap_or_else(|error| failed(error));
-    rows.into_iter()
-        .map(|row| Fact {
-            object: row.object,
-            relation: row.relation,
-            subject: row.subject,
-            context: None,
+    rows.iter()
+        .map(|row| {
+            read(TupleRow {
+                object: &row.object,
+                relation: &row.relation,
+                subject: &row.subject,
+                condition: None,
+            })
         })
         .collect()
-}
-
-/// The one key a conditional tuple's context carries. More than one would mean the
-/// request supplies nothing, which the model's own invariant already forbids.
-fn context_of(context: &serde_json::Value, sql: &str) -> RecordContextValue {
-    let object = context
-        .as_object()
-        .unwrap_or_else(|| panic!("a conditional tuple's context is an object:\n{sql}"));
-    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
-        panic!("a conditional tuple carries exactly one context key:\n{sql}");
-    };
-    RecordContextValue {
-        key: key.clone(),
-        value: scalar_text(value)
-            .unwrap_or_else(|| panic!("a context value renders as text:\n{sql}"))
-            .into_owned(),
-    }
 }
 
 /// Every row of `table`, as JSON.
@@ -258,7 +253,7 @@ fn rows_of(conn: &mut PgConnection, table: &str) -> Vec<serde_json::Value> {
 fn records_from_descriptions(
     conn: &mut PgConnection,
     description: &RecordDescription,
-) -> BTreeSet<Fact> {
+) -> BTreeSet<Record> {
     let table = description
         .row_table()
         .expect("only a pure description reaches here");
@@ -268,7 +263,6 @@ fn records_from_descriptions(
             records_from_row(description, &JsonRowValues(row))
                 .expect("a pure description evaluates without a database")
         })
-        .map(|record| Fact::of(&record))
         .collect()
 }
 
@@ -294,58 +288,35 @@ fn distinct_keys(conn: &mut PgConnection, table: &str, column: &str) -> Vec<Stri
 /// exist`. What is under test is the SQL the description carries, not the wire
 /// form of the placeholder.
 fn records_from_bound_query(
+    outputs: &Outputs<'_, ParserDB>,
     conn: &mut PgConnection,
     bound: &BoundQuery,
     key: &str,
     conditional: bool,
-) -> BTreeSet<Fact> {
+) -> BTreeSet<Record> {
     let literal = format!("'{}'", key.replace('\'', "''"));
     let sql = bound.sql.replace("$1", &literal);
-    let failed = |error: diesel::result::Error| -> ! {
-        panic!(
-            "a bound query failed on PostgreSQL 18 for {}.{} = {literal}\n{sql}\nError: {error}",
-            bound.table, bound.key_column
-        )
-    };
     // The whole-table query and its bound replay have to agree on the context too, or a
     // consumer replaying a change would answer differently from the loader.
-    if conditional {
-        let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&sql)
-            .load(conn)
-            .unwrap_or_else(|error| failed(error));
-        return rows
-            .into_iter()
-            .map(|row| Fact {
-                object: row.object,
-                relation: row.relation,
-                subject: row.subject,
-                context: Some(context_of(&row.context, &sql)),
-            })
-            .collect();
-    }
-    let rows: Vec<TupleRow> = diesel::sql_query(&sql)
-        .load(conn)
-        .unwrap_or_else(|error| failed(error));
-    rows.into_iter()
-        .map(|row| Fact {
-            object: row.object,
-            relation: row.relation,
-            subject: row.subject,
-            context: None,
-        })
-        .collect()
+    records_of_sql(outputs, conn, &sql, conditional, || {
+        format!(
+            "bound replay of {}.{} = {literal}",
+            bound.table, bound.key_column
+        )
+    })
 }
 
 /// A joining shape answers a change by querying, so every bound query has to run,
 /// return only records the whole-table query returns, and between them account for
 /// all of them. Replaying every changed row is how the consumer stays complete.
 fn assert_bound_queries_account_for_every_record(
+    outputs: &Outputs<'_, ParserDB>,
     conn: &mut PgConnection,
     query: &TupleQuery,
     bound_queries: &[BoundQuery],
     label: &str,
 ) {
-    let whole = records_from_sql(conn, query);
+    let whole = records_from_sql(outputs, conn, query);
     assert!(
         !whole.is_empty(),
         "{label}: nothing to compare, the seed produces no records for {}",
@@ -366,7 +337,7 @@ fn assert_bound_queries_account_for_every_record(
         let mut narrowed = false;
         for key in &keys {
             let bound_records =
-                records_from_bound_query(conn, bound, key, query.condition.is_some());
+                records_from_bound_query(outputs, conn, bound, key, query.condition.is_some());
             let invented: Vec<_> = bound_records.difference(&whole).collect();
             assert!(
                 invented.is_empty(),
@@ -408,6 +379,7 @@ fn assert_bound_queries_account_for_every_record(
 
 /// Compare both sides for every query the schema emits, and report what was covered.
 fn assert_descriptions_match_their_sql(
+    outputs: &Outputs<'_, ParserDB>,
     conn: &mut PgConnection,
     queries: &[TupleQuery],
     label: &str,
@@ -445,7 +417,7 @@ fn assert_descriptions_match_their_sql(
                         query.comment
                     );
                 }
-                assert_bound_queries_account_for_every_record(conn, query, bound, label);
+                assert_bound_queries_account_for_every_record(outputs, conn, query, bound, label);
                 continue;
             }
             RecordDerivation::FromRow { table, .. } => {
@@ -461,7 +433,7 @@ fn assert_descriptions_match_their_sql(
         }
 
         pure += 1;
-        let expected = records_from_sql(conn, query);
+        let expected = records_from_sql(outputs, conn, query);
         let actual = records_from_descriptions(conn, description);
         records += expected.len();
 
@@ -606,18 +578,18 @@ async fn every_row_shape_description_matches_its_own_sql() {
         ROW_SHAPES_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let queries = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&mut conn, &queries, "row shapes");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "row shapes");
 
     // Non-vacuous: the schema really does exercise the fast path, and the rows
     // really do produce records on both sides.
@@ -670,15 +642,15 @@ async fn a_request_gated_description_matches_its_own_sql() {
             .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
 
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
-        let queries = Translation::plan(
+        let outputs = Translation::plan(
             classified,
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+        let queries = outputs.tuple_queries();
 
         // Non-vacuous: without this the comparison below could pass by comparing two
         // empty sets, which is exactly how this shape went uncovered until now.
@@ -692,7 +664,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
         );
 
         let (pure, joined, records) =
-            assert_descriptions_match_their_sql(&mut conn, &queries, fixture);
+            assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, fixture);
         assert_eq!(
             joined, 0,
             "{fixture}: a request gate is decided by the row alone"
@@ -748,18 +720,18 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .expect("failed to seed the earth_metabolome schema");
 
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
-    let queries = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
 
     let (pure, joined, _) =
-        assert_descriptions_match_their_sql(&mut conn, &queries, "earth_metabolome");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "earth_metabolome");
 
     // The membership table is row-decidable; the two role-ownership shapes and the
     // grant expansion are not, because each reads a table the row does not carry.
@@ -832,18 +804,18 @@ async fn holder_shapes_match_their_own_sql() {
         HOLDER_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let queries = Translation::plan(
+    let outputs = Translation::plan(
         classified,
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&mut conn, &queries, "holder shapes");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "holder shapes");
 
     // Two bridges and one member list the row decides, plus the guarded member list.
     assert_eq!(
@@ -912,18 +884,18 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let queries = Translation::plan(
+    let outputs = Translation::plan(
         classified,
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&mut conn, &queries, "compound identity");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "compound identity");
 
     assert_eq!(
         pure, 1,
@@ -1082,7 +1054,7 @@ fn flattened_subjects(
 
 async fn start_openfga(
     model: &AuthorizationModel,
-    tuples: &BTreeSet<Fact>,
+    tuples: &BTreeSet<Record>,
 ) -> (
     testcontainers::ContainerAsync<GenericImage>,
     OpenFgaClient<Channel>,
@@ -1146,9 +1118,9 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     let reported = planned.relations();
     let outputs = planned.outputs_accepting_gaps();
 
-    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
     for query in &outputs.tuple_queries() {
-        tuples.extend(records_from_sql(&mut conn, query));
+        tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     assert!(
         !tuples.is_empty(),
@@ -1279,9 +1251,9 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     )
     .outputs_accepting_gaps();
 
-    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
     for query in &outputs.tuple_queries() {
-        tuples.extend(records_from_sql(&mut conn, query));
+        tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     assert_eq!(
         tuples.len(),
@@ -1398,11 +1370,12 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         "one table has to be keyed by two columns: {naming:?}"
     );
 
-    let queries = translation.outputs_accepting_gaps().tuple_queries();
+    let outputs = translation.outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
     let written: BTreeSet<String> = queries
         .iter()
         .filter(|query| !query.sql.trim_start().starts_with("--"))
-        .flat_map(|query| records_from_sql(&mut conn, query))
+        .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
         .map(|record| record.object)
         .collect();
 
@@ -1503,9 +1476,9 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
     let reported = planned.action_relations();
     let outputs = planned.outputs_accepting_gaps();
 
-    let mut tuples: BTreeSet<Fact> = BTreeSet::new();
+    let mut tuples: BTreeSet<Record> = BTreeSet::new();
     for query in &outputs.tuple_queries() {
-        tuples.extend(records_from_sql(&mut conn, query));
+        tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
 

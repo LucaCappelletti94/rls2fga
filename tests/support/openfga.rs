@@ -1,7 +1,6 @@
 use openfga_client::client::{
     AuthorizationModel, CreateStoreRequest, OpenFgaClient, OpenFgaServiceClient,
     ReadAuthorizationModelRequest, TupleKey, TupleKeyWithoutCondition,
-    WriteAuthorizationModelRequest,
 };
 use openfga_client::tonic::transport::Channel;
 
@@ -29,21 +28,9 @@ pub(crate) async fn write_authorization_model(
     store_id: &str,
     model: &rls2fga::generator::json_model::AuthorizationModel,
 ) -> String {
-    let json = serde_json::to_string(model).expect("model should serialize");
-    let proto_model: AuthorizationModel =
-        serde_json::from_str(&json).expect("model should deserialize into openfga-client type");
-
-    let response = client
-        .write_authorization_model(WriteAuthorizationModelRequest {
-            store_id: store_id.to_string(),
-            type_definitions: proto_model.type_definitions,
-            schema_version: proto_model.schema_version,
-            conditions: proto_model.conditions,
-        })
+    rls2fga::client::write_authorization_model(client, store_id, model)
         .await
-        .expect("authorization model write should succeed");
-
-    response.into_inner().authorization_model_id
+        .expect("authorization model write should succeed")
 }
 
 pub(crate) async fn write_tuples(client: &OpenFgaClient<Channel>, tuples: Vec<TupleKey>) {

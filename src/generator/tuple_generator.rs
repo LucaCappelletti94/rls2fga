@@ -9,10 +9,9 @@ use crate::generator::identity::{
     typed_name_literal, typed_name_sql, MAX_OBJECT_NAME_CHARS, MAX_SUBJECT_NAME_BYTES,
 };
 use crate::generator::ir::TupleSource;
-use crate::generator::model_generator::RowParameter;
-use crate::generator::model_generator::SchemaPlan;
+use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
 use crate::generator::notes::SkippedTuples;
-use crate::generator::records::RecordDescription;
+use crate::generator::records::{Record, RecordContextValue, RecordDescription};
 use crate::generator::well_known::{
     owner_team_relation, owner_user_relation, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, PG_ROLE_TYPE,
     TEAM_TYPE, USER_TYPE,
@@ -57,6 +56,211 @@ pub fn format_tuples(tuples: &[TupleQuery]) -> String {
     let mut result = trimmed.to_string();
     result.push('\n');
     result
+}
+
+/// One row of a [`TupleQuery`]'s result, named as the query projects it.
+#[derive(Debug, Clone, Copy)]
+pub struct TupleRow<'a> {
+    /// The `object` column.
+    pub object: &'a str,
+    /// The `relation` column.
+    pub relation: &'a str,
+    /// The `subject` column.
+    pub subject: &'a str,
+    /// The `condition` and `context` columns, which a query projects together or
+    /// not at all. `Some` exactly when [`TupleQuery::condition`] is.
+    pub condition: Option<TupleCondition<'a>>,
+}
+
+/// The two columns a conditional query adds.
+#[derive(Debug, Clone, Copy)]
+pub struct TupleCondition<'a> {
+    /// The `condition` column, the condition the tuple names.
+    pub name: &'a str,
+    /// The `context` column, as the JSON text of the one-key object the query
+    /// builds.
+    pub context: &'a str,
+}
+
+/// Why a row does not spell a record.
+///
+/// `#[non_exhaustive]`: every arm is a refusal, so a caller's wildcard arm still
+/// falls closed, and a later reason costs it no rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TupleRowError {
+    /// The object names a type the model does not define.
+    UnknownType(String),
+    /// The type defines no such relation.
+    UnknownRelation {
+        /// Type the object names.
+        type_name: String,
+        /// Relation the row names.
+        relation: String,
+    },
+    /// The relation is computed from others, so no tuple is written on it.
+    RelationTakesNoTuples {
+        /// Type the object names.
+        type_name: String,
+        /// Relation the row names.
+        relation: String,
+    },
+    /// The object is not a `type:key` name.
+    MalformedObject(String),
+    /// The subject is not a `type:key` name.
+    MalformedSubject(String),
+    /// The context is not a one-key object of a scalar, carrying the text read.
+    MalformedContext(String),
+    /// The relation does not accept tuples under the condition the row names, or
+    /// grants nothing without one. Taking the row at face value would grant what
+    /// the model does not.
+    ConditionMismatch {
+        /// Type the object names.
+        type_name: String,
+        /// Relation the row names.
+        relation: String,
+        /// The condition the row named, absent where it named none.
+        named: Option<String>,
+    },
+}
+
+impl core::fmt::Display for TupleRowError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownType(name) => write!(f, "the model defines no type {name}"),
+            Self::UnknownRelation {
+                type_name,
+                relation,
+            } => write!(f, "the model defines no {relation} on {type_name}"),
+            Self::RelationTakesNoTuples {
+                type_name,
+                relation,
+            } => write!(
+                f,
+                "{type_name}'s {relation} is computed from other relations, so it takes no tuples"
+            ),
+            Self::MalformedObject(name) => write!(f, "the object {name} is not a type:key name"),
+            Self::MalformedSubject(name) => write!(f, "the subject {name} is not a type:key name"),
+            Self::MalformedContext(text) => write!(
+                f,
+                "the context {text} is not an object of one key holding a scalar"
+            ),
+            Self::ConditionMismatch {
+                type_name,
+                relation,
+                named: Some(condition),
+            } => write!(
+                f,
+                "{type_name}'s {relation} accepts no tuple under condition {condition}"
+            ),
+            Self::ConditionMismatch {
+                type_name,
+                relation,
+                named: None,
+            } => write!(
+                f,
+                "{type_name}'s {relation} grants nothing without a condition"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for TupleRowError {}
+
+/// Read one row of a tuple query back as the record it spells.
+pub(crate) fn record_from_tuple_row(
+    plan: &SchemaPlan,
+    row: TupleRow<'_>,
+) -> Result<Record, TupleRowError> {
+    let Some((object_type, _)) = row.object.split_once(':') else {
+        return Err(TupleRowError::MalformedObject(row.object.to_string()));
+    };
+    if !row.subject.contains(':') {
+        return Err(TupleRowError::MalformedSubject(row.subject.to_string()));
+    }
+    let Some(type_plan) = plan
+        .types
+        .iter()
+        .find(|type_plan| type_plan.type_name == *object_type)
+    else {
+        return Err(TupleRowError::UnknownType(object_type.to_string()));
+    };
+    let Some((relation, subjects)) = type_plan.direct_relations.get_key_value(row.relation) else {
+        let type_name = object_type.to_string();
+        let relation = row.relation.to_string();
+        return Err(if type_plan.computed_relations.contains_key(row.relation) {
+            TupleRowError::RelationTakesNoTuples {
+                type_name,
+                relation,
+            }
+        } else {
+            TupleRowError::UnknownRelation {
+                type_name,
+                relation,
+            }
+        });
+    };
+
+    Ok(Record {
+        object: row.object.to_string(),
+        relation: relation.clone(),
+        subject: row.subject.to_string(),
+        context: row_context(&row, object_type, relation, subjects)?,
+    })
+}
+
+/// The context the row carries, once the relation is known to accept it.
+fn row_context(
+    row: &TupleRow<'_>,
+    object_type: &str,
+    relation: &RelationName,
+    subjects: &[DirectSubject],
+) -> Result<Option<RecordContextValue>, TupleRowError> {
+    let mismatch = |named: Option<&str>| TupleRowError::ConditionMismatch {
+        type_name: object_type.to_string(),
+        relation: relation.to_string(),
+        named: named.map(ToString::to_string),
+    };
+    let Some(condition) = row.condition else {
+        return if subjects
+            .iter()
+            .any(|subject| !matches!(subject, DirectSubject::ConditionalWildcard { .. }))
+        {
+            Ok(None)
+        } else {
+            Err(mismatch(None))
+        };
+    };
+    if !subjects.iter().any(|subject| {
+        matches!(subject, DirectSubject::ConditionalWildcard { condition: named, .. }
+            if named == condition.name)
+    }) {
+        return Err(mismatch(Some(condition.name)));
+    }
+    let (key, value) = single_context_entry(condition.context)
+        .ok_or_else(|| TupleRowError::MalformedContext(condition.context.to_string()))?;
+    Ok(Some(RecordContextValue {
+        condition: condition.name.to_string(),
+        key,
+        value,
+    }))
+}
+
+/// The one key and scalar a conditional tuple's context holds, rendered as the
+/// tuple SQL renders it.
+fn single_context_entry(context: &str) -> Option<(String, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(context).ok()?;
+    let object = parsed.as_object()?;
+    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let text = match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(flag) => (if *flag { "true" } else { "false" }).to_string(),
+        _ => return None,
+    };
+    Some((key.clone(), text))
 }
 
 /// Generate tuple SQL queries from a pre-built [`SchemaPlan`].

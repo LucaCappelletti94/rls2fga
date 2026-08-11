@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), feature = "client"))]
 pub(crate) mod openfga;
 
 pub(crate) mod footgun;

@@ -12,12 +12,18 @@ default = ["std"]
 # protection to the parser dependencies. Disable for a `no_std` + `alloc`
 # build of the parse/classify/generate pipeline.
 std = ["sqlparser/std", "sqlparser/recursive-protection", "sql-traits/std", "serde/std", "serde_json/std"]
+# Writes a generated model to a running `OpenFGA` server, over a client the caller
+# built. Off by default: everything else here needs no server, no async runtime and
+# no gRPC stack.
+client = ["std", "dep:openfga-client"]
 
 [dependencies]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
 sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", branch = "main", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Only the model write calls it, behind `client`.
+openfga-client = { version = "0.6.1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
@@ -28,10 +34,27 @@ insta = { version = "1", features = ["json"] }
 testcontainers = "0.27"
 tokio = { version = "1", features = ["full"] }
 
-# openfga-client pulls in protobuf-src which fails to link on Windows MSVC
-# (abseil-cpp CRT mismatch). Only needed for Docker integration tests on Linux/macOS.
-[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-openfga-client = "0.6"
+# The server-backed suites write a model through the `client` feature, so they build
+# only with it.
+[[test]]
+name = "openfga_client_tests"
+required-features = ["client"]
+
+[[test]]
+name = "openfga_integration_tests"
+required-features = ["client"]
+
+[[test]]
+name = "openfga_semantic_tests"
+required-features = ["client"]
+
+[[test]]
+name = "openfga_postgres_parity_tests"
+required-features = ["client"]
+
+[[test]]
+name = "per_row_record_parity_tests"
+required-features = ["client"]
 
 [lints.rust]
 unsafe_code = "forbid"

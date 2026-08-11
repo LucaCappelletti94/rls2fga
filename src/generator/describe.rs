@@ -449,6 +449,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             pk_cols,
             relation,
             row_parameter,
+            condition,
             ..
         } => {
             let (value, guards) = match row_parameter {
@@ -473,6 +474,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     subject_type: USER_TYPE.to_string(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
+                        condition: condition.clone(),
                         key: row_parameter.parameter().to_string(),
                         value,
                     }),

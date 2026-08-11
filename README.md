@@ -25,8 +25,7 @@ The `std` feature is enabled by default.
 | Feature | Enables | Purpose |
 | --------- | --------- | --------- |
 | `std` | standard library | File output (`Translator::write_output`, `output::formatter`) and stack-overflow protection in the SQL parser. On by default. Disable with `--no-default-features` for a `no_std` + `alloc` build of the parse, classify, and generate pipeline. |
-| `agent` | `reqwest`, `tokio` | Push generated models and tuples to a live `OpenFGA` instance via its HTTP API (implies `std`) |
-| `db` | `diesel` (`PostgreSQL`) | Connect to a live `PostgreSQL` database to read schema metadata and execute tuple queries (implies `std`) |
+| `client` | `openfga-client` | `client::write_authorization_model`, which puts a generated model on a running server over a client you built. Off by default, implies `std`. |
 
 ### `no_std`
 
@@ -129,6 +128,12 @@ WHERE "owner_id" IS NOT NULL;
 ```
 
 Run this query against your database, convert the rows to `OpenFGA` tuple objects, and load them with `fga tuple write`. Only relations a permission can reach get a query, so a table that denies everything yields nothing to load.
+
+Every query projects `object`, `relation` and `subject`, in that order. A query whose `TupleQuery::condition` is `Some` projects five columns instead, adding `condition`, the name the tuple has to carry, and `context`, a one-key `jsonb` object holding what the row contributes to it. Read `condition` rather than counting columns. `Outputs::record_from_tuple_row` turns one such row into a `Record`, looking the relation up in the model rather than trusting the text, so a row this model has no such fact in is refused instead of loaded.
+
+Running the SQL is the caller's job: the crate keeps no database handle. `TupleQuery::description` describes the same records as structure, so a caller holding one row's values reaches them through `generator::records::records_from_row` without running anything.
+
+Writing the tuples is the caller's job too, since batching, deletion and retry are its policy, and a `Record` carries everything a tuple needs including the condition it names. The model is the exception: `client::write_authorization_model` puts it on a running server and answers with the id it was stored under, over a client you built, so TLS and authentication stay on your own dependency. It needs the `client` feature.
 
 ## Supported RLS Patterns
 

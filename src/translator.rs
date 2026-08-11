@@ -12,9 +12,12 @@ use crate::generator::model_generator::{
     build_filtered_schema_plan, render_dsl_from_plan, GeneratorSettings, SchemaPlan,
 };
 use crate::generator::notes::{NoteSeverity, TranslationNote};
+use crate::generator::records::Record;
 use crate::generator::relations::{relation_shapes, RelationShapes};
 use crate::generator::row_naming::{row_naming, RowNaming};
-use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, TupleQuery};
+use crate::generator::tuple_generator::{
+    generate_tuple_queries_from_plan, record_from_tuple_row, TupleQuery, TupleRow, TupleRowError,
+};
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
 use crate::output::report::build_report;
@@ -307,6 +310,19 @@ impl<DB: DatabaseLike> Outputs<'_, DB> {
     #[must_use]
     pub fn tuple_queries(&self) -> Vec<TupleQuery> {
         generate_tuple_queries_from_plan(&self.0.plan, self.0.db)
+    }
+
+    /// Read one row a [`Outputs::tuple_queries`] query returned back as the record
+    /// it spells.
+    ///
+    /// The relation is looked up rather than taken, so a row naming something the
+    /// model does not define is refused instead of loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TupleRowError`] for a row this model has no such fact in.
+    pub fn record_from_tuple_row(&self, row: TupleRow<'_>) -> Result<Record, TupleRowError> {
+        record_from_tuple_row(&self.0.plan, row)
     }
 
     /// Everything the translation has to say about itself.

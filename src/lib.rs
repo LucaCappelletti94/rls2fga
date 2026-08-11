@@ -36,6 +36,9 @@ pub(crate) mod no_std_prelude {
 
 /// RLS expression classification: pattern matching, function registry, and confidence scoring.
 pub mod classifier;
+/// Writing a generated model to a running `OpenFGA` server. Needs the `client` feature.
+#[cfg(feature = "client")]
+pub mod client;
 /// `OpenFGA` model generation from classified policies (DSL, JSON, and tuple SQL).
 pub mod generator;
 /// File output and markdown report generation.

@@ -35,9 +35,12 @@ pub struct Record {
     pub context: Option<RecordContextValue>,
 }
 
-/// One key and value a record puts in its condition context.
+/// One key and value a record puts in its condition context, under the condition
+/// the tuple has to name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RecordContextValue {
+    /// Condition the tuple names, declared by the model.
+    pub condition: String,
     /// Condition parameter the value fills.
     pub key: String,
     /// The value, rendered as the tuple SQL renders it.
@@ -263,9 +266,12 @@ pub struct RecordTemplate {
     pub context: Option<RecordContext>,
 }
 
-/// One key a record puts in its condition context.
+/// One key a record puts in its condition context, under the condition the tuple
+/// has to name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordContext {
+    /// Condition the tuple names, declared by the model.
+    pub condition: String,
     /// Condition parameter the value fills.
     pub key: String,
     /// Where the value comes from.
@@ -443,6 +449,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
     let context = match &template.context {
         Some(context) => match single_value(&context.value, row) {
             Some(value) => Some(RecordContextValue {
+                condition: context.condition.clone(),
                 key: context.key.clone(),
                 value,
             }),
