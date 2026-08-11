@@ -7,7 +7,7 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    composite_primary_key_columns, resolve_pk_columns, single_pk_column, table_has_column,
+    composite_primary_key_columns, resolve_pk_columns, single_pk_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
 use crate::generator::ir::{PrincipalInfo, TupleSource};
@@ -32,7 +32,8 @@ use crate::parser::names::{
     gate_condition_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
     parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
-    same_identifier, stable_hex_suffix, yielded_relation_name, MAX_RELATION_RENAME_ATTEMPTS,
+    same_identifier, stable_hex_suffix, table_has_column, yielded_relation_name,
+    MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,

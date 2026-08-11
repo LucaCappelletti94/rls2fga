@@ -92,16 +92,6 @@ pub(crate) fn composite_primary_key_columns<DB: DatabaseLike>(
     (columns.len() > 1).then_some(columns)
 }
 
-/// Returns true when `table` has a column named `col`.
-pub(crate) fn table_has_column<DB: DatabaseLike>(db: &DB, table: &str, col: &str) -> bool {
-    lookup_table(db, table).is_some_and(|t| {
-        t.columns(db)
-            .into_iter()
-            .flatten()
-            .any(|c| c.stored_column_name() == col)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

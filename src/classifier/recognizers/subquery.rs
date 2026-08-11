@@ -3,7 +3,7 @@ use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::unquote_identifier;
 use alloc::collections::BTreeSet;
-use sqlparser::ast::{Distinct, GroupByExpr, Ident, LimitClause, Query, SetExpr};
+use sqlparser::ast::{Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr};
 
 /// EXISTS membership check.
 pub fn recognize_p4<DB: DatabaseLike>(
@@ -23,7 +23,8 @@ pub fn recognize_p5<DB: DatabaseLike>(
     outer_table: &str,
     command: PolicyCommand,
 ) -> Option<ClassifiedExpr> {
-    let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
+    let select = readable_exists_select(expr)?;
+    let analysis = analyze_p5_parent_inheritance(select, db, outer_table)?;
 
     let mut matches = Vec::new();
     for candidate in analysis.candidates {
@@ -33,10 +34,22 @@ pub fn recognize_p5<DB: DatabaseLike>(
             fk_column,
             inner_predicates,
         } = candidate;
+        // A join the rule never mentions still decides which rows the subquery returns,
+        // so a filtering one has to be refused whether or not anything reads it.
+        let rule = combine_predicates_with_and(inner_predicates);
+        if !joins_drop_no_row(
+            select,
+            rule.as_ref(),
+            &parent_table,
+            parent_alias.as_deref(),
+            db,
+        ) {
+            continue;
+        }
         // No predicate of its own means the parent's own read rule is the whole
         // requirement: "you may do this over a parent row you can already see". P5 gates
         // on the parent's `can_select` regardless, so the inherited rule adds nothing.
-        let inner_classified = match combine_predicates_with_and(inner_predicates) {
+        let inner_classified = match rule {
             Some(mut inner_expr) => {
                 // Nested queries use parent alias from outer scope.
                 strip_qualifier_from_expr_deep(
@@ -44,6 +57,21 @@ pub fn recognize_p5<DB: DatabaseLike>(
                     &parent_table,
                     parent_alias.as_deref(),
                 );
+                // What survives the strip reads a joined relation. Where the join makes
+                // that reference equal to one of the parent's own columns for every row
+                // the subquery returns, say so and carry on. Otherwise refuse: resolving
+                // the bare name against the parent grants rows the database refuses.
+                if predicate_references_other_table(&inner_expr, &parent_table, None)
+                    && !rewrite_through_join(
+                        &mut inner_expr,
+                        select,
+                        &parent_table,
+                        parent_alias.as_deref(),
+                        db,
+                    )
+                {
+                    continue;
+                }
                 crate::classifier::policy_classifier::classify_expr(
                     &inner_expr,
                     db,
@@ -88,6 +116,378 @@ pub fn recognize_p5<DB: DatabaseLike>(
         return matches.into_iter().next();
     }
     None
+}
+
+/// Rewrite each reference to a joined relation into the parent's own column, where the
+/// join makes the two equal for every row the subquery can return.
+///
+/// `SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id WHERE c.id = $caller`
+/// returns exactly the orders `WHERE o.customer_id = $caller` returns, so the second
+/// spelling is the answer to the first. Two conditions make that an equality rather than
+/// a resemblance, and both are required:
+///
+/// - The joined column is the joined table's whole primary key, so a parent row matches
+///   at most one row of it and the substituted value is single.
+/// - The parent's column is a declared foreign key to that table, so a parent row matches
+///   at least one row of it and the join drops nothing. Without the key an orphan row
+///   passes the rewritten filter and is dropped by the join, which is a wrong allow.
+///
+/// Returns false when any reference fails either condition, leaving `expr` untouched, so
+/// the caller refuses rather than translating half a filter.
+fn rewrite_through_join<DB: DatabaseLike>(
+    expr: &mut Expr,
+    select: &Select,
+    parent_table: &str,
+    parent_alias: Option<&str>,
+    db: &DB,
+) -> bool {
+    let Some(equalities) = inner_join_equalities(select, Some(expr)) else {
+        return false;
+    };
+    let sources = relation_sources(select);
+    let Some(parent_meta) = lookup_table(db, parent_table) else {
+        return false;
+    };
+
+    let mut rewrites: Vec<((String, String), Ident)> = Vec::new();
+    for reference in foreign_references(expr, parent_table, parent_alias) {
+        let (qualifier, column) = &reference;
+        // The relation the qualifier names, so the parent's key to it can be read.
+        let Some(source) = sources.iter().find(|source| {
+            qualifier_matches_table(qualifier, &source.table_name, source.alias.as_deref())
+        }) else {
+            return false;
+        };
+        let Some(parent_column) = equalities.iter().find_map(|equality| {
+            equality.parent_side(parent_table, parent_alias, qualifier, column.as_str())
+        }) else {
+            return false;
+        };
+        if !fk_targets_column(
+            parent_meta,
+            db,
+            parent_column.as_str(),
+            &source.table_name,
+            column.as_str(),
+        ) {
+            return false;
+        }
+        rewrites.push((
+            (qualifier.clone(), column.as_str().to_string()),
+            Ident::new(parent_column.as_str()),
+        ));
+    }
+    if rewrites.is_empty() {
+        return false;
+    }
+    for ((qualifier, column), to) in rewrites {
+        replace_compound_identifier(expr, (&qualifier, &column), &to);
+    }
+    // The comma spelling states its join in the rule, so the rewrite turns that half
+    // into `x = x`. Dropping it is what makes the two spellings answer alike, and it
+    // changes nothing: every shape reading a column already leaves its NULL rows out,
+    // which is all `x = x` filters.
+    let Some(remaining) = drop_self_equalities(expr) else {
+        return false;
+    };
+    *expr = remaining;
+    true
+}
+
+/// The rule without the `x = x` a rewrite leaves behind, or `None` when nothing else
+/// remains: a subquery whose only condition was its join filters rows the bare parent
+/// rule would grant, so it is not the same question.
+fn drop_self_equalities(expr: &Expr) -> Option<Expr> {
+    let mut predicates = Vec::new();
+    flatten_and_predicates(expr, &mut predicates);
+    let kept: Vec<Expr> = predicates
+        .into_iter()
+        .filter(|predicate| {
+            !matches!(
+                predicate,
+                Expr::BinaryOp { left, op: BinaryOperator::Eq, right }
+                    if matches!((left.as_ref(), right.as_ref()),
+                        (Expr::Identifier(l), Expr::Identifier(r)) if l.value == r.value)
+            )
+        })
+        .cloned()
+        .collect();
+    combine_predicates_with_and(kept)
+}
+
+/// One equality an inner join states.
+struct JoinEquality {
+    left: (Option<String>, String),
+    right: (Option<String>, String),
+}
+
+/// The qualifier and column of a reference to something other than the parent.
+fn foreign_of<'s>(
+    side: &'s (Option<String>, String),
+    parent_table: &str,
+    parent_alias: Option<&str>,
+) -> Option<(&'s str, &'s str)> {
+    let qualifier = side.0.as_deref()?;
+    (!qualifier_matches_table(qualifier, parent_table, parent_alias))
+        .then_some((qualifier, side.1.as_str()))
+}
+
+impl JoinEquality {
+    /// The parent's column this equality ties `qualifier`.`column` to, if it does.
+    fn parent_side(
+        &self,
+        parent_table: &str,
+        parent_alias: Option<&str>,
+        qualifier: &str,
+        column: &str,
+    ) -> Option<ColumnName> {
+        let names = |side: &(Option<String>, String), q: &str, c: &str| {
+            side.0
+                .as_deref()
+                .is_some_and(|found| qualifier_matches_table(found, q, None))
+                && side.1 == c
+        };
+        // A bare name in this scope is the parent's own, which is what every other
+        // reader here assumes and what the classifier's column gate then verifies.
+        let parent_of = |side: &(Option<String>, String)| {
+            side.0
+                .as_deref()
+                .is_none_or(|found| qualifier_matches_table(found, parent_table, parent_alias))
+                .then(|| ColumnName::from_stored(side.1.as_str()))
+        };
+        if names(&self.left, qualifier, column) {
+            return parent_of(&self.right);
+        }
+        if names(&self.right, qualifier, column) {
+            return parent_of(&self.left);
+        }
+        None
+    }
+
+    /// The parent column and the foreign reference this equality ties together, when it
+    /// ties exactly those two.
+    fn link(
+        &self,
+        parent_table: &str,
+        parent_alias: Option<&str>,
+    ) -> Option<(ColumnName, &str, &str)> {
+        let parent_of = |side: &(Option<String>, String)| {
+            side.0
+                .as_deref()
+                .is_none_or(|found| qualifier_matches_table(found, parent_table, parent_alias))
+                .then(|| ColumnName::from_stored(side.1.as_str()))
+        };
+        if let (Some(parent), Some((qualifier, column))) = (
+            parent_of(&self.left),
+            foreign_of(&self.right, parent_table, parent_alias),
+        ) {
+            return Some((parent, qualifier, column));
+        }
+        if let (Some(parent), Some((qualifier, column))) = (
+            parent_of(&self.right),
+            foreign_of(&self.left, parent_table, parent_alias),
+        ) {
+            return Some((parent, qualifier, column));
+        }
+        None
+    }
+}
+
+/// Whether every relation the select joins beside the parent leaves the parent's rows
+/// alone: it drops none and duplicates none.
+///
+/// A join is a filter unless a declared key guarantees the match, so a parent row with
+/// no partner is dropped by the database while a model that never saw the join grants
+/// it. The key has to run from the parent to the joined column. A key the other way
+/// says every joined row has a parent, which is not the same statement.
+fn joins_drop_no_row<DB: DatabaseLike>(
+    select: &Select,
+    rule: Option<&Expr>,
+    parent_table: &str,
+    parent_alias: Option<&str>,
+    db: &DB,
+) -> bool {
+    let joined: Vec<RelationSource> = relation_sources(select)
+        .into_iter()
+        .filter(|source| {
+            !qualifier_matches_table(&source.table_name, parent_table, parent_alias)
+                && source
+                    .alias
+                    .as_deref()
+                    .is_none_or(|alias| !qualifier_matches_table(alias, parent_table, parent_alias))
+        })
+        .collect();
+    if joined.is_empty() {
+        return true;
+    }
+    let Some(parent_meta) = lookup_table(db, parent_table) else {
+        return false;
+    };
+    let Some(equalities) = inner_join_equalities(select, rule) else {
+        return false;
+    };
+
+    joined.iter().all(|source| {
+        equalities.iter().any(|equality| {
+            let Some((parent_column, qualifier, column)) =
+                equality.link(parent_table, parent_alias)
+            else {
+                return false;
+            };
+            qualifier_matches_table(qualifier, &source.table_name, source.alias.as_deref())
+                && fk_targets_column(
+                    parent_meta,
+                    db,
+                    parent_column.as_str(),
+                    &source.table_name,
+                    column,
+                )
+        })
+    })
+}
+
+/// Every equality an inner join of the select states, plus every equality the rule
+/// itself carries, which is where the comma-separated `FROM` spelling puts its join.
+///
+/// `None` when a join is not an inner one: an outer join admits rows whose right side is
+/// absent, and a comparison against that absence is not the one the rewrite would write.
+fn inner_join_equalities(select: &Select, rule: Option<&Expr>) -> Option<Vec<JoinEquality>> {
+    let mut equalities = Vec::new();
+    let mut predicates = Vec::new();
+    for from in &select.from {
+        for join in &from.joins {
+            if !matches!(
+                join.join_operator,
+                JoinOperator::Join(_) | JoinOperator::Inner(_)
+            ) {
+                return None;
+            }
+            let condition = join_on_expr(&join.join_operator)?;
+            flatten_and_predicates(condition, &mut predicates);
+        }
+    }
+    if let Some(rule) = rule {
+        flatten_and_predicates(rule, &mut predicates);
+    }
+    // An equality between two column references is a candidate join. Anything else is
+    // part of the rule and is left to the classifier.
+    for predicate in predicates {
+        let Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } = predicate
+        else {
+            continue;
+        };
+        let (Some(left), Some(right)) = (
+            extract_qualified_column(left),
+            extract_qualified_column(right),
+        ) else {
+            continue;
+        };
+        equalities.push(JoinEquality {
+            left: (left.0, left.1.as_str().to_string()),
+            right: (right.0, right.1.as_str().to_string()),
+        });
+    }
+    Some(equalities)
+}
+
+/// Every `qualifier`.`column` the expression reads that the parent does not own,
+/// deduplicated, and not descending into a nested subquery, whose references are its own.
+fn foreign_references(
+    expr: &Expr,
+    parent_table: &str,
+    parent_alias: Option<&str>,
+) -> Vec<(String, ColumnName)> {
+    use core::ops::ControlFlow;
+    use sqlparser::ast::{Query, Visit, Visitor};
+
+    struct ForeignCollector<'a> {
+        parent_table: &'a str,
+        parent_alias: Option<&'a str>,
+        subquery_depth: usize,
+        found: Vec<(String, ColumnName)>,
+    }
+
+    impl Visitor for ForeignCollector<'_> {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.subquery_depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            if self.subquery_depth == 0 {
+                if let Expr::CompoundIdentifier(parts) = expr {
+                    if let [.., qualifier, last] = parts.as_slice() {
+                        if !qualifier_matches_table(
+                            &qualifier.value,
+                            self.parent_table,
+                            self.parent_alias,
+                        ) {
+                            let found = (
+                                qualifier.value.clone(),
+                                ColumnName::from_stored(last.value.as_str()),
+                            );
+                            if !self.found.contains(&found) {
+                                self.found.push(found);
+                            }
+                        }
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    let mut collector = ForeignCollector {
+        parent_table,
+        parent_alias,
+        subquery_depth: 0,
+        found: Vec::new(),
+    };
+    let _ = expr.visit(&mut collector);
+    collector.found
+}
+
+/// Replace every `qualifier`.`column` reference with the bare identifier `to`.
+fn replace_compound_identifier(expr: &mut Expr, from: (&str, &str), to: &Ident) {
+    use core::ops::ControlFlow;
+    use sqlparser::ast::{VisitMut, VisitorMut};
+
+    struct Replacer<'a> {
+        qualifier: &'a str,
+        column: &'a str,
+        to: &'a Ident,
+    }
+
+    impl VisitorMut for Replacer<'_> {
+        type Break = ();
+
+        fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+            if let Expr::CompoundIdentifier(parts) = &*expr {
+                if let [.., qualifier, last] = parts.as_slice() {
+                    if qualifier.value == self.qualifier && last.value == self.column {
+                        *expr = Expr::Identifier(self.to.clone());
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    let (qualifier, column) = from;
+    let _ = expr.visit(&mut Replacer {
+        qualifier,
+        column,
+        to,
+    });
 }
 
 /// The single `Select` a query's body is, if it is one.
@@ -807,8 +1207,14 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
 pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     expr: &Expr,
     db: &DB,
+    registry: &FunctionRegistry,
     outer_table: &str,
+    command: PolicyCommand,
 ) -> Option<String> {
+    // The `IN (SELECT ...)` spelling reaches the recognizers rewritten, so the diagnosis
+    // has to read the same expression they refused.
+    let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table);
+    let expr = rewritten.as_ref().unwrap_or(expr);
     let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
 
     if analysis.candidates.len() > 1 {
@@ -823,7 +1229,39 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
                 .to_string(),
         );
     }
-    None
+    // The parent is unambiguous and its own rule is what failed, so say which rule and
+    // why. Without this the operator reads "could not infer a unique membership join"
+    // for a filter whose parent was inferred perfectly well.
+    analysis.candidates.into_iter().find_map(|candidate| {
+        let mut inner = combine_predicates_with_and(candidate.inner_predicates)?;
+        strip_qualifier_from_expr_deep(
+            &mut inner,
+            &candidate.parent_table,
+            candidate.parent_alias.as_deref(),
+        );
+        if predicate_references_other_table(&inner, &candidate.parent_table, None) {
+            return Some(format!(
+                "The rule inherited from '{}' reads another relation of the subquery, \
+                 which one relation cannot carry",
+                candidate.parent_table
+            ));
+        }
+        match crate::classifier::policy_classifier::classify_expr(
+            &inner,
+            db,
+            registry,
+            &candidate.parent_table,
+            command,
+        )
+        .pattern
+        {
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) => Some(format!(
+                "The rule inherited from '{}' is not translatable: {reason}",
+                candidate.parent_table
+            )),
+            _ => None,
+        }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1061,7 +1499,7 @@ fn membership_matches<DB: DatabaseLike>(
     matches
 }
 
-pub(super) fn join_on_expr(op: &sqlparser::ast::JoinOperator) -> Option<&Expr> {
+pub(super) fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
     use sqlparser::ast::JoinConstraint;
     use sqlparser::ast::JoinOperator::{
         CrossJoin, FullOuter, Inner, Join, Left, LeftOuter, Right, RightOuter,
@@ -1789,6 +2227,39 @@ fn is_outer_column_ref(
         Some(q) => qualifier_matches_table(q, outer_table, None),
         None => !parent_cols.iter().any(|c| c == column),
     }
+}
+
+/// Whether `column` of `parent` is a declared foreign key to `table`.`target`.
+///
+/// One check for both halves a rewrite through a join needs: a matching row always
+/// exists, and there is at most one of it, since a foreign key can only target a
+/// column the referenced table constrains as unique.
+fn fk_targets_column<DB: DatabaseLike>(
+    parent: &DB::Table,
+    db: &DB,
+    column: &str,
+    table: &str,
+    target: &str,
+) -> bool {
+    parent
+        .foreign_keys(db)
+        .into_iter()
+        .flatten()
+        .filter(|fk| {
+            fk.host_column(db)
+                .ok()
+                .flatten()
+                .is_some_and(|host| host.stored_column_name() == column)
+        })
+        .any(|fk| {
+            let table_matches = fk.referenced_table(db).is_ok_and(|referenced| {
+                qualifier_matches_table(referenced.table_name(), table, None)
+            });
+            table_matches
+                && fk.referenced_column(db).is_ok_and(|referenced| {
+                    referenced.is_some_and(|column| column.stored_column_name() == target)
+                })
+        })
 }
 
 fn table_has_fk_to_parent<DB: DatabaseLike>(

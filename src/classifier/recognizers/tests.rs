@@ -1628,8 +1628,19 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
     ));
 }
 
+/// A joined parent source used to classify as `P5`, ignoring what the join does.
+///
+/// It filters: a project with no tag row is dropped by the inner join, so `PostgreSQL`
+/// hides a task under it while the model, which only ever saw `owner_id = current_user`,
+/// grants it. Measured on `postgres:18` over this schema before the refusal landed:
+/// alice reads `t-tagged` alone, while the loader wrote `projects:p-bare#owner@user:alice`
+/// and the bridge that reaches `t-bare` through it.
+///
+/// `project_tags.project_id REFERENCES projects(project_uuid)` does not save it. That key
+/// says every tag row has a project, not that every project has a tag row, and the second
+/// is what the join needs.
 #[test]
-fn recognize_p5_supports_joined_parent_sources() {
+fn recognize_p5_refuses_a_joined_source_the_parent_does_not_key() {
     let db = parse_schema(
         r"
 CREATE TABLE users(id UUID PRIMARY KEY);
@@ -1650,13 +1661,10 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
              )",
     );
 
-    let classified = recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select)
-        .expect("expected P5 classification");
-    assert!(matches!(
-        classified.pattern,
-        PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, ref fk_column, .. })
-            if parent_table == "projects" && fk_column == "project_id"
-    ));
+    assert!(
+        recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select).is_none(),
+        "the join drops a project with no tags, so the parent's rule is not the whole rule"
+    );
 }
 
 #[test]
@@ -2045,7 +2053,14 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);",
     .unwrap();
     // Not an EXISTS expression at all
     let expr = parse_expr("tasks.project_id = current_user");
-    assert!(diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none());
+    assert!(diagnose_p5_parent_inheritance_ambiguity(
+        &expr,
+        &db,
+        &FunctionRegistry::new(),
+        "tasks",
+        PolicyCommand::Select
+    )
+    .is_none());
 }
 
 #[test]
@@ -2442,7 +2457,14 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
             "NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user)",
         );
     assert!(
-        diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none(),
+        diagnose_p5_parent_inheritance_ambiguity(
+            &expr,
+            &db,
+            &FunctionRegistry::new(),
+            "tasks",
+            PolicyCommand::Select
+        )
+        .is_none(),
         "negated EXISTS should return None"
     );
 }
@@ -2458,7 +2480,14 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
     .unwrap();
     let expr = parse_expr("EXISTS (VALUES (1))");
     assert!(
-        diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks").is_none(),
+        diagnose_p5_parent_inheritance_ambiguity(
+            &expr,
+            &db,
+            &FunctionRegistry::new(),
+            "tasks",
+            PolicyCommand::Select
+        )
+        .is_none(),
         "non-Select body should return None"
     );
 }
@@ -2482,7 +2511,13 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id),
                   AND p.owner_id = current_user
             )",
     );
-    let result = diagnose_p5_parent_inheritance_ambiguity(&expr, &db, "tasks");
+    let result = diagnose_p5_parent_inheritance_ambiguity(
+        &expr,
+        &db,
+        &FunctionRegistry::new(),
+        "tasks",
+        PolicyCommand::Select,
+    );
     assert!(
         result.is_some(),
         "conflicting join columns should produce a diagnostic"

@@ -4369,3 +4369,195 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
         failures.join("\n")
     );
 }
+
+mod joined_inner_rule_schema {
+    diesel::table! {
+        customers (id) {
+            id -> diesel::sql_types::Text,
+            org_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        orders (id) {
+            id -> diesel::sql_types::Text,
+            customer_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+
+    diesel::table! {
+        line_items (id) {
+            id -> diesel::sql_types::Text,
+            order_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(customers, orders, line_items);
+}
+
+/// Line item ids the plain login role reads with `app.current_user_id` set to `user_id`.
+fn postgres_readable_joined_line_items(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use joined_inner_rule_schema::line_items;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = line_items::table.select(line_items::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the line items")
+}
+
+/// `WHERE c.id = <caller>` over `ON o.customer_id = c.id` is rewritten into the parent's
+/// own column, which is a claim about which rows the database returns and therefore
+/// belongs here rather than in a model assertion.
+///
+/// The seed carries an order whose `customer_id` is NULL, which the join drops and the
+/// rewritten filter also drops, and one whose customer is another caller, so a rewrite
+/// that lost the comparison would fail in both directions.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn joined_inner_rule_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE customers (id TEXT PRIMARY KEY, org_id TEXT NOT NULL);
+CREATE TABLE orders (id TEXT PRIMARY KEY, customer_id TEXT REFERENCES customers(id));
+CREATE TABLE line_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id));
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE line_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY line_items_visible ON line_items FOR SELECT
+    USING (order_id IN (SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id
+                        WHERE c.id = auth_current_user_id()));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the joined-inner-rule schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON customers, orders, line_items TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    {
+        use joined_inner_rule_schema::{customers, line_items, orders};
+        for user in [USER_ALICE, USER_BOB] {
+            diesel::insert_into(customers::table)
+                .values((customers::id.eq(user), customers::org_id.eq("acme")))
+                .execute(&mut conn)
+                .expect("Failed to seed customers");
+        }
+        // One order per caller, plus an ownerless one the join drops.
+        let seeded = [
+            ("o-alice", Some(USER_ALICE)),
+            ("o-bob", Some(USER_BOB)),
+            ("o-none", None),
+        ];
+        for (order, customer) in seeded {
+            diesel::insert_into(orders::table)
+                .values((orders::id.eq(order), orders::customer_id.eq(customer)))
+                .execute(&mut conn)
+                .expect("Failed to seed orders");
+            diesel::insert_into(line_items::table)
+                .values((
+                    line_items::id.eq(format!("li-{order}")),
+                    line_items::order_id.eq(order),
+                ))
+                .execute(&mut conn)
+                .expect("Failed to seed line items");
+        }
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "joined-inner-rule").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let items = ["li-o-alice", "li-o-bob", "li-o-none"];
+    let mut failures = Vec::new();
+    let (mut granted, mut denied) = (0usize, 0usize);
+    for user in [USER_ALICE, USER_BOB] {
+        let readable = postgres_readable_joined_line_items(&mut conn, user);
+        assert_eq!(
+            readable.len(),
+            1,
+            "{user} reads one line item, PostgreSQL showed {readable:?}"
+        );
+        for item in items {
+            let expected = readable.contains(item);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("line_items:{item}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "line_items:{item} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA joined-inner-rule parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

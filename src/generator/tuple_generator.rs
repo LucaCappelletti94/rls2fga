@@ -4,7 +4,7 @@ use crate::no_std_prelude::*;
 
 #[cfg(test)]
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
-use crate::generator::db_lookup::{resolve_pk_columns, table_has_column};
+use crate::generator::db_lookup::resolve_pk_columns;
 use crate::generator::identity::{
     typed_name_literal, typed_name_sql, MAX_OBJECT_NAME_CHARS, MAX_SUBJECT_NAME_BYTES,
 };
@@ -17,7 +17,7 @@ use crate::generator::well_known::{
     TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::identifiers::{ColumnName, RelationName};
-use crate::parser::names::{lookup_table, split_qualified_identifier_parts};
+use crate::parser::names::{lookup_table, split_qualified_identifier_parts, table_has_column};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;

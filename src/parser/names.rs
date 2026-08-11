@@ -354,6 +354,24 @@ where
     db.resolve_target_table(target).ok().flatten()
 }
 
+/// Whether `table` declares a column named `column`.
+///
+/// Beside [`lookup_table`] rather than in the generator, since both the classifier and
+/// the generator ask it: a name no table has must never become a relation.
+pub fn table_has_column<DB>(db: &DB, table: &str, column: &str) -> bool
+where
+    DB: sql_traits::prelude::DatabaseLike,
+{
+    lookup_table(db, table).is_some_and(|table| {
+        use sql_traits::prelude::{ColumnLike, TableLike};
+        table
+            .columns(db)
+            .into_iter()
+            .flatten()
+            .any(|declared| declared.stored_column_name() == column)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

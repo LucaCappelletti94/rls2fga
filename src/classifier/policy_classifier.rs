@@ -1,5 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use crate::parser::identifiers::ColumnName;
+use crate::parser::names::table_has_column;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::function_registry::FunctionRegistry;
@@ -176,7 +178,60 @@ fn classify_expr_depth<DB: DatabaseLike>(
             ),
         );
     }
-    classify_expr_inner(expr, db, registry, table, command, depth)
+    let classified = classify_expr_inner(expr, db, registry, table, command, depth);
+    // Every classification passes through here, including each part of a composite and
+    // the inner rule of an inheritance, each against its own table.
+    match guarded_column(&classified.pattern) {
+        Some(column) if !table_has_column(db, table, column.as_str()) => unknown_d(
+            expr,
+            format!(
+                "'{table}' has no column '{column}', so this would name a relation \
+                 no tuple can fill"
+            ),
+        ),
+        _ => classified,
+    }
+}
+
+/// The column of the table being classified that `pattern` reads, if it names one.
+///
+/// Matched exhaustively on purpose: a pattern added later that reads a column must fail
+/// to compile here rather than emit a relation nobody can fill. A column belonging to
+/// another table, a membership table's own or a parent's, is checked where that table is
+/// resolved, which is why those arms yield nothing.
+fn guarded_column(pattern: &PatternClass) -> Option<&ColumnName> {
+    match pattern {
+        PatternClass::P3DirectOwnership(DirectOwnership { column, .. })
+        | PatternClass::P6BooleanFlag(BooleanFlag { column, .. })
+        | PatternClass::P9AttributeCondition(AttributeCondition { column, .. })
+        | PatternClass::P11ArrayMembership(ArrayMembership { column, .. })
+        | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { column, .. })
+        | PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, .. })
+        | PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar {
+            column, ..
+        }) => Some(column),
+        PatternClass::P5ParentInheritance(ParentInheritance { fk_column, .. }) => Some(fk_column),
+        // Nothing these read belongs to the table being classified: a role function
+        // takes the caller, a constant takes no row, a composite's parts and an
+        // inheritance's inner rule are classified in their own right, and an
+        // uncorrelated membership reads only the member table.
+        //
+        // A membership's `outer_column` is the guarded table's, and it is deliberately
+        // absent from the list above: `resolve_bridge_columns` already refuses it with
+        // `BridgeColumnMissing`, which names the bridge that could not be written, and
+        // refusing here instead would replace that with a threshold drop saying less.
+        PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
+        | PatternClass::P1NumericThreshold(NumericThreshold { .. })
+        | PatternClass::P2RoleNameInList(RoleNameInList { .. })
+        | PatternClass::P7AbacAnd(AbacAnd { .. })
+        | PatternClass::P8Composite(Composite { .. })
+        | PatternClass::P10ConstantBool(ConstantBool { .. })
+        | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
+        | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
+        | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
+        | PatternClass::Unknown(UnclassifiedExpr { .. }) => None,
+    }
 }
 
 fn classify_expr_inner<DB: DatabaseLike>(
@@ -407,7 +462,9 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return classified;
     }
 
-    if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, table) {
+    if let Some(reason) =
+        recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, registry, table, command)
+    {
         return unknown_d(expr, reason);
     }
 
