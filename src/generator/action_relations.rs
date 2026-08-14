@@ -13,7 +13,8 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::generator::model_generator::{SchemaPlan, TypePlan};
+use crate::generator::model_generator::{relation_grants_nothing, SchemaPlan, TypePlan};
+use crate::generator::unrestricted;
 use crate::generator::well_known::{
     can_delete_relation, can_insert_relation, can_insert_returning_relation,
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
@@ -21,7 +22,7 @@ use crate::generator::well_known::{
 };
 use crate::parser::identifiers::{RelationName, TypeName};
 use crate::parser::names::lookup_table;
-use crate::parser::sql_parser::{DatabaseLike, TableLike};
+use crate::parser::sql_parser::DatabaseLike;
 
 /// Which version of the row a relation judges.
 ///
@@ -58,6 +59,13 @@ pub enum ActionAnswer {
     /// The table carries no row-level security, so the database restricts nothing here
     /// and there is nothing to ask.
     Unrestricted,
+    /// The model refuses this statement for every row of the table, so nothing has to be
+    /// named or asked.
+    ///
+    /// Reported only where every statement is refused, which is what row-level security
+    /// with no policy at all leaves: `PostgreSQL` shows nobody anything, and a consumer
+    /// that cannot name a row of such a table would otherwise have no answer to read.
+    Denied,
     /// One relation fuses the two versions, so no single row version answers it.
     ///
     /// `can_update_without_reading` is `USING and WITH CHECK` in one relation, and the
@@ -229,12 +237,25 @@ fn answer(plan: &TypePlan, statement: ActionStatement) -> ActionAnswer {
     }
 }
 
-/// Whether the database is positively known to restrict nothing on this table.
-///
-/// Only a definite no counts, which is the rule the plan builder itself applies: an
-/// unreadable answer must not become a claim that nothing is enforced.
+/// Whether the database filters none of this table's rows, by any route.
 fn restricts_nothing<DB: DatabaseLike>(table: &str, db: &DB) -> bool {
-    lookup_table(db, table).is_some_and(|table| table.has_row_level_security(db) == Ok(false))
+    lookup_table(db, table)
+        .is_some_and(|table| unrestricted::restricts_nothing_by_any_route(table, db))
+}
+
+/// Whether the model answers no to this statement for every row.
+///
+/// Reads [`relation_grants_nothing`], which is the simplifier's own walk, so the report
+/// and the pruner cannot disagree about which relation is a denial.
+fn answer_grants_nobody(plan: &TypePlan, answer: &ActionAnswer) -> bool {
+    match answer {
+        // Every judgement has to grant, so one that grants nobody refuses the statement.
+        ActionAnswer::Judged(judges) => judges
+            .iter()
+            .any(|judge| relation_grants_nothing(plan, &judge.relation)),
+        ActionAnswer::NotSeparable { relation } => relation_grants_nothing(plan, relation),
+        _ => false,
+    }
 }
 
 /// One entry per type and statement the model answers, by type name then statement.
@@ -256,15 +277,28 @@ pub(crate) fn action_relations<DB: DatabaseLike>(
         if !restricted && !restricts_nothing(table, db) {
             continue;
         }
-        entries.extend(EVERY_STATEMENT.map(|statement| ActionRelations {
-            type_name: type_plan.type_name.clone(),
-            statement,
-            answer: if restricted {
-                answer(type_plan, statement)
-            } else {
-                ActionAnswer::Unrestricted
-            },
-        }));
+        let answers = if restricted {
+            EVERY_STATEMENT.map(|statement| answer(type_plan, statement))
+        } else {
+            EVERY_STATEMENT.map(|_| ActionAnswer::Unrestricted)
+        };
+        let refuses_everything = answers
+            .iter()
+            .all(|answer| answer_grants_nobody(type_plan, answer));
+        entries.extend(
+            EVERY_STATEMENT
+                .into_iter()
+                .zip(answers)
+                .map(|(statement, answer)| ActionRelations {
+                    type_name: type_plan.type_name.clone(),
+                    statement,
+                    answer: if refuses_everything {
+                        ActionAnswer::Denied
+                    } else {
+                        answer
+                    },
+                }),
+        );
     }
     entries.sort_by(|left, right| {
         left.type_name

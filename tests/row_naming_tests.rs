@@ -266,3 +266,94 @@ CREATE POLICY p ON docs FOR SELECT USING (
         "a type named after a column names no table's rows, got {entries:?}"
     );
 }
+
+/// A partition holds the root's rows, and the query minting the root's objects reads
+/// every partition, so a row of a partition is named after the root and keyed by the
+/// root's key. `PostgreSQL` requires that key to span the partitioning columns, which is
+/// why it is composite here.
+#[test]
+fn a_partition_is_named_after_its_root() {
+    let entries = naming(&format!(
+        "CREATE TABLE events(id TEXT, tenant TEXT, at DATE, PRIMARY KEY (id, at))
+  PARTITION BY RANGE (at);
+CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON events FOR SELECT USING (tenant = {CALLER});
+"
+    ));
+    let partition = entry(&entries, "events_2026");
+    assert_eq!(partition.type_name, "events");
+    assert_eq!(
+        partition.key.parts(),
+        entry(&entries, "events").key.parts(),
+        "the partition is keyed exactly as the root is"
+    );
+    assert_eq!(
+        partition
+            .key
+            .render("events", &row(&[("id", "e-1"), ("at", "2026-05-01")])),
+        Ok(Some("events:e-1|2026-05-01".to_string())),
+        "the rendered name is the root's object"
+    );
+}
+
+/// Two levels down, with nothing guarding the middle one.
+#[test]
+fn a_subpartition_is_named_after_the_root_that_carries_the_policy() {
+    let entries = naming(&format!(
+        "CREATE TABLE events(id TEXT, tenant TEXT, at DATE, PRIMARY KEY (id, at))
+  PARTITION BY RANGE (at);
+CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')
+  PARTITION BY RANGE (at);
+CREATE TABLE events_2026_h1 PARTITION OF events_2026
+  FOR VALUES FROM ('2026-01-01') TO ('2026-07-01');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON events FOR SELECT USING (tenant = {CALLER});
+"
+    ));
+    assert_eq!(entry(&entries, "events_2026_h1").type_name, "events");
+}
+
+/// A partition carrying its own policy already has a type, and its rows are named once.
+///
+/// `PostgreSQL` answers a direct read of it from its own policies and a read through the
+/// root from the root's, so both types judge those rows and neither is the answer to the
+/// other's question. One table, one name: a second entry would be silently dropped by any
+/// consumer keying on the table, and which of the two survived would be arbitrary.
+#[test]
+fn a_partition_carrying_its_own_policy_is_named_once() {
+    let entries = naming(&format!(
+        "CREATE TABLE events(id TEXT, tenant TEXT, region TEXT, PRIMARY KEY (id, region))
+  PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE events_eu ENABLE ROW LEVEL SECURITY;
+CREATE POLICY r ON events FOR SELECT USING (tenant = {CALLER});
+CREATE POLICY p ON events_eu FOR SELECT USING (tenant = {CALLER});
+"
+    ));
+    let named: Vec<&str> = entries
+        .iter()
+        .filter(|entry| entry.table == "events_eu")
+        .map(|entry| entry.type_name.as_str())
+        .collect();
+    assert_eq!(named, ["events_eu"], "one entry, its own");
+}
+
+/// An `INHERITS` child is not named after its parent: those queries read `FROM ONLY`, so
+/// no tuple names a child row, and naming one would point at an object nothing grants.
+#[test]
+fn an_inheritance_child_is_not_named_after_its_parent() {
+    let entries = naming(&format!(
+        "CREATE TABLE docs(id TEXT PRIMARY KEY, owner TEXT);
+CREATE TABLE secret_docs(extra TEXT) INHERITS (docs);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner = {CALLER});
+"
+    ));
+    assert_eq!(entry(&entries, "docs").type_name, "docs");
+    assert!(
+        entries.iter().all(|entry| entry.table != "secret_docs"),
+        "a child of an inheritance parent carries no name, got {entries:?}"
+    );
+}

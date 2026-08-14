@@ -18,6 +18,7 @@ use crate::generator::row_naming::{row_naming, RowNaming};
 use crate::generator::tuple_generator::{
     generate_tuple_queries_from_plan, record_from_tuple_row, TupleQuery, TupleRow, TupleRowError,
 };
+use crate::generator::unrestricted::{unrestricted_tables, UnrestrictedTable};
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
 use crate::output::report::build_report;
@@ -242,7 +243,8 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// consumer asking the authorization service about one changed row has to spell.
     ///
     /// Beside [`Translation::relations`] and read with it: the relations say what a type
-    /// grants, this says which table's rows that type is.
+    /// grants, this says which table's rows that type is. A partition is named after its
+    /// root, so a row of one is asked about under the root's type.
     #[must_use]
     pub fn row_naming(&self) -> Vec<RowNaming> {
         row_naming(&self.plan, self.db)
@@ -258,6 +260,21 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     #[must_use]
     pub fn action_relations(&self) -> Vec<ActionRelations> {
         action_relations(&self.plan, self.db)
+    }
+
+    /// Every table the database restricts nothing on: row-level security is off on it, and
+    /// off on every table it is a partition or an `INHERITS` child of, since a read through
+    /// one of those applies that table's policies to these rows.
+    ///
+    /// Read beside [`Translation::action_relations`], and read positively: a table here
+    /// shows every row to everybody, so a question about one of its rows is granted with
+    /// nothing asked. A table absent from both this and the action report is one nothing
+    /// covered, which says nothing about what the database allows.
+    ///
+    /// Reported by table because the emitted model defines no type for such a table.
+    #[must_use]
+    pub fn unrestricted_tables(&self) -> Vec<UnrestrictedTable> {
+        unrestricted_tables(self.db)
     }
 
     /// The outputs, refused while any expression went unhandled.

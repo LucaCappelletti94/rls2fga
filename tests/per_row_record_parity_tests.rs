@@ -1419,6 +1419,98 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     );
 }
 
+/// A partitioned root carrying the policy, with two partitions holding the rows.
+///
+/// The key spans the partitioning column because `PostgreSQL` refuses a primary key on a
+/// partitioned table that does not.
+const PARTITION_SCHEMA: &str = "
+CREATE TABLE events (id TEXT, tenant TEXT, at DATE, PRIMARY KEY (id, at))
+    PARTITION BY RANGE (at);
+CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+CREATE TABLE events_2027 PARTITION OF events FOR VALUES FROM ('2027-01-01') TO ('2028-01-01');
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON events FOR SELECT USING (tenant = auth_current_user_id());
+";
+
+/// One row per partition, so a naming that covered only the first would fail.
+const PARTITION_SEED: &str = "
+INSERT INTO events (id, tenant, at) VALUES
+  ('e-1', 'alice', '2026-05-01'),
+  ('e-2', 'bob', '2027-05-01');
+";
+
+/// A partition's rows are named after the root, and the root's own SQL writes exactly
+/// those objects.
+///
+/// A change stream delivers the row at the partition while the policy and the tuples live
+/// on the root, so the entry claims a partition's row is named `events:<key>`. If the
+/// query minting the root's objects did not read the partitions, or keyed them
+/// differently, every question about such a row would be asked about nothing.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(PARTITION_SCHEMA)
+        .expect("failed to apply the partitioned schema");
+    conn.batch_execute(PARTITION_SEED)
+        .expect("failed to seed the partitions");
+
+    let (classified, db, registry) = support::classify_sql(
+        PARTITION_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let translation = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+    let naming = translation.row_naming();
+
+    let outputs = translation.outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+    let written: BTreeSet<String> = queries
+        .iter()
+        .filter(|query| !query.sql.trim_start().starts_with("--"))
+        .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
+        .map(|record| record.object)
+        .collect();
+
+    let mut compared = 0usize;
+    for partition in ["events_2026", "events_2027"] {
+        let entry = naming
+            .iter()
+            .find(|entry| entry.table == partition)
+            .unwrap_or_else(|| panic!("no entry for {partition}, got {naming:?}"));
+        assert_eq!(
+            entry.type_name, "events",
+            "a partition's rows are objects of its root"
+        );
+        let rows = rows_of(&mut conn, partition);
+        assert_eq!(rows.len(), 1, "each partition holds one seeded row");
+        for row in &rows {
+            let object = entry
+                .key
+                .render(entry.type_name.as_str(), &JsonRowValues(row))
+                .expect("a partition row renders")
+                .expect("every key column is filled");
+            assert!(
+                written.contains(&object),
+                "the entry names {object} for {partition}, which the root's SQL never wrote: {written:?}"
+            );
+            compared += 1;
+        }
+    }
+
+    // A naming that rendered nothing, or a seed that loaded nothing, would pass silently.
+    assert_eq!(compared, 2, "both partitions are compared, not {compared}");
+}
+
 /// Two clauses spelled apart, which is the shape whose `UPDATE` the model answers with
 /// two relations instead of one.
 const REPLACEMENT_SCHEMA: &str = "

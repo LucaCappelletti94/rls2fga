@@ -86,6 +86,7 @@ use emit_roles::{
 };
 use recursion::PolicyReadRecursion;
 use role_threshold::{infer_role_threshold_resource_columns, populate_role_threshold_sources};
+pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
     drop_implied_insert_readback, grants_nothing, inline_synthetic_rule_aliases,
     prune_unreferenced_relations, reach_userset, requires_read_access,
@@ -1211,12 +1212,7 @@ fn fill_and_report_coverage<DB: DatabaseLike>(
     }
 
     // Denying this silently would hide a schema mistake.
-    if has_row_scoped_write_policy
-        && plan
-            .computed_relations
-            .get(&can_select_relation())
-            .is_some_and(|expr| grants_nothing(expr, plan, &mut BTreeSet::new()))
-    {
+    if has_row_scoped_write_policy && relation_grants_nothing(plan, &can_select_relation()) {
         notes.push(TranslationNote::ReadsDeniedSoWritesCannotName {
             table: source_table.to_string(),
         });
@@ -1518,10 +1514,7 @@ fn read_join_table_readability<DB: DatabaseLike>(
     let mut grants_read = false;
     let mut grants_read_unscoped = false;
     for policy in table.policies(db).into_iter().flatten() {
-        if !matches!(
-            PolicyCommand::from(policy.command()),
-            PolicyCommand::Select | PolicyCommand::All
-        ) {
+        if !policy_covers_reads(policy) {
             continue;
         }
         let Some(using) = policy.using_expression(db) else {
@@ -1560,7 +1553,7 @@ fn read_join_table_readability<DB: DatabaseLike>(
 }
 
 /// Schema-qualified stored name, in the spelling `lookup_table` resolves.
-fn qualified_table_name<T: TableLike>(table: &T) -> String {
+pub(crate) fn qualified_table_name<T: TableLike>(table: &T) -> String {
     table_identity(table).to_string()
 }
 

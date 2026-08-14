@@ -64,12 +64,20 @@ CREATE POLICY d ON docs USING (project_id IN (
   SELECT project_id FROM project_members WHERE user_id = current_setting('app.user_id', true)));
 ";
 
-const EVERY_SCHEMA: [(&str, &str); 5] = [
+/// Row-level security on with no policy at all, which `PostgreSQL` reads as nobody sees
+/// anything and no statement succeeds.
+const DENIES_EVERYTHING: &str = "
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+";
+
+const EVERY_SCHEMA: [(&str, &str); 6] = [
     ("one condition", ONE_CONDITION),
     ("two conditions", TWO_CONDITIONS),
     ("reads only", READS_ONLY),
     ("insert and update", INSERT_AND_UPDATE),
     ("unrestricted parent", UNRESTRICTED_PARENT),
+    ("denies everything", DENIES_EVERYTHING),
 ];
 
 const EVERY_STATEMENT: [ActionStatement; 8] = [
@@ -397,5 +405,109 @@ fn every_statement_names_the_command_it_answers() {
     assert_eq!(
         commands,
         ["SELECT", "INSERT", "UPDATE", "DELETE", "SELECT", "INSERT", "INSERT", "UPDATE"]
+    );
+}
+
+/// A table nobody may touch says so, rather than naming a relation the consumer has to
+/// ask about. The model already answers no for every row, and a consumer that cannot
+/// name a row of it has no other way to learn that.
+#[test]
+fn a_table_that_refuses_every_statement_says_so() {
+    let entries = report(DENIES_EVERYTHING);
+    let answers: Vec<&ActionAnswer> = entries
+        .iter()
+        .filter(|entry| entry.type_name.as_str() == "notes")
+        .map(|entry| &entry.answer)
+        .collect();
+    assert_eq!(answers.len(), 8, "every statement is answered: {answers:?}");
+    assert!(
+        answers
+            .iter()
+            .all(|answer| **answer == ActionAnswer::Denied),
+        "every statement is refused: {answers:?}"
+    );
+}
+
+/// The refusal is the model's, not the report's own reading of it.
+///
+/// The report walks the plan to decide that nothing can grant, and the simplifier walks
+/// the same expressions to prune. Derived apart they could disagree, so this pins the
+/// answer against the emitted text a reader of the model would see.
+#[test]
+fn a_refusal_says_what_the_emitted_model_says() {
+    let model = dsl(DENIES_EVERYTHING);
+    for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
+        assert_eq!(
+            relation_definition(&model, "notes", relation).as_deref(),
+            Some("no_access"),
+            "{relation} is a denial in the model:\n{model}"
+        );
+    }
+    assert_eq!(
+        entry(&report(DENIES_EVERYTHING), "notes", ActionStatement::Select).answer,
+        ActionAnswer::Denied,
+        "and the report says so without naming a relation"
+    );
+}
+
+/// The refusal needs no row name, which is the whole point: nothing keys a row of this
+/// table, so a judgement naming a relation could never be asked.
+#[test]
+fn a_refusal_is_answered_for_a_table_whose_rows_cannot_be_named() {
+    let sql = "CREATE TABLE audit(message TEXT);
+ALTER TABLE audit ENABLE ROW LEVEL SECURITY;
+";
+    let db: ParserDB = parse_schema(sql).expect("schema should parse");
+    let planned = translate(&db);
+    assert!(
+        planned.row_naming().is_empty(),
+        "nothing names a row of a keyless table"
+    );
+    let entries = planned.action_relations();
+    assert_eq!(entries.len(), 8, "every statement is answered: {entries:?}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.answer == ActionAnswer::Denied),
+        "and every one of them is a refusal: {entries:?}"
+    );
+}
+
+/// A table refusing some statements and granting others keeps naming relations, since
+/// the refusal is a property of the whole table and not of one statement.
+#[test]
+fn a_table_that_grants_reads_still_names_its_relations() {
+    let entries = report(READS_ONLY);
+    assert_eq!(
+        judges(entry(&entries, "notes", ActionStatement::Select)),
+        judged(&[("can_select", RowVersion::Existing)])
+    );
+    assert_eq!(
+        judges(entry(&entries, "notes", ActionStatement::Delete)),
+        judged(&[("can_delete", RowVersion::Existing)])
+    );
+}
+
+/// A table whose only policy is an `UPDATE` refuses every statement that names a row,
+/// because reads are denied and a write cannot name what it cannot read, yet a blanket
+/// `UPDATE` reads nothing and still grants. So the refusal is not the table's.
+#[test]
+fn a_table_whose_blanket_update_still_grants_is_not_a_refusal() {
+    let sql = "CREATE TABLE notes(id INTEGER PRIMARY KEY, editor TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_u ON notes FOR UPDATE
+  USING (editor = current_setting('app.user_id', true));
+";
+    let entries = report(sql);
+    assert_eq!(
+        judges(entry(&entries, "notes", ActionStatement::Select)),
+        judged(&[("can_select", RowVersion::Existing)]),
+        "a read is judged by can_select, which denies"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.answer != ActionAnswer::Denied),
+        "the blanket update grants, so the table refuses less than everything: {entries:?}"
     );
 }

@@ -215,6 +215,17 @@ pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, Type
     }
 }
 
+/// Whether a relation this type defines can never grant.
+///
+/// The relation-level door to [`grants_nothing`], so a caller holding a name rather than
+/// an expression does not walk the plan itself. A relation the type does not define may
+/// grant, since nothing here says it cannot.
+pub(crate) fn relation_grants_nothing(plan: &TypePlan, relation: &RelationName) -> bool {
+    plan.computed_relations
+        .get(relation)
+        .is_some_and(|expr| grants_nothing(expr, plan, &mut BTreeSet::new()))
+}
+
 /// Whether an expression can never grant. Only certainty is reported.
 pub(crate) fn grants_nothing(
     expr: &UsersetExpr,

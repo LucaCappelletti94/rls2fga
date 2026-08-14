@@ -574,15 +574,24 @@ pub fn derive_policy_mode<P: PolicyLike>(policy: &P) -> PolicyMode {
     PolicyMode::from(policy.policy_type())
 }
 
+/// Whether a policy's command covers reads.
+///
+/// Split out because the generator's readability walk applies this same rule to a
+/// `RESTRICTIVE` barrier as well, where the rest of [`policy_grants_select`] does not
+/// apply, and a command rule spelled twice can be widened in one place only.
+pub(crate) fn policy_covers_reads<P: PolicyLike>(policy: &P) -> bool {
+    matches!(
+        PolicyCommand::from(policy.command()),
+        PolicyCommand::Select | PolicyCommand::All
+    )
+}
+
 /// Whether a policy can grant reads: permissive, covering `SELECT`, and storing
 /// the `USING` clause a read is filtered by.
 pub fn policy_grants_select<P: PolicyLike>(policy: &P, db: &P::DB) -> bool {
     derive_policy_mode(policy) == PolicyMode::Permissive
+        && policy_covers_reads(policy)
         && policy.using_expression(db).is_some()
-        && matches!(
-            PolicyCommand::from(policy.command()),
-            PolicyCommand::Select | PolicyCommand::All
-        )
 }
 
 /// Roles in `TO (...)` that constrain policy applicability, named and resolvable.

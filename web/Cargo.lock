@@ -2863,7 +2863,7 @@ checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 [[package]]
 name = "sql-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#54986c21132ac329927bb0b678931b272a775629"
+source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#981b57f0724086ef1606fbce110758bcaa1ef0cd"
 dependencies = [
  "geometric-traits",
  "sha2",

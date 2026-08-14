@@ -23,4 +23,6 @@ pub(crate) mod role_relations;
 pub mod row_naming;
 /// SQL queries that populate `OpenFGA` relationship tuples from live data.
 pub mod tuple_generator;
+// `unrestricted` carries its own `//!` docs, so no outer doc here.
+pub mod unrestricted;
 pub mod well_known;

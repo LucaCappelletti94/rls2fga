@@ -1,5 +1,6 @@
 #![cfg(not(target_os = "windows"))]
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
@@ -16,6 +17,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::generator::records::RowValues;
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 
@@ -4558,6 +4560,215 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
     assert!(
         failures.is_empty(),
         "PostgreSQL/OpenFGA joined-inner-rule parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+mod partition_schema {
+    diesel::table! {
+        events (id, region) {
+            id -> diesel::sql_types::Text,
+            tenant -> diesel::sql_types::Text,
+            region -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// One row of a partition, so the naming entry's key can be rendered against it.
+struct PartitionRow {
+    id: String,
+    region: String,
+}
+
+impl RowValues for PartitionRow {
+    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
+        match column {
+            "id" => Some(Cow::Borrowed(self.id.as_str())),
+            "region" => Some(Cow::Borrowed(self.region.as_str())),
+            _ => None,
+        }
+    }
+}
+
+/// Event ids the plain login role reads **through the root**, which is how an application
+/// reads a partitioned table.
+fn postgres_readable_events(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use partition_schema::events;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = events::table.select(events::id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the events")
+}
+
+/// A row of a partition is named after the root, and the service answers about that name
+/// as `PostgreSQL` answers a read through the root.
+///
+/// A change stream delivers the row at the partition, whose own row-level-security flag is
+/// off because enabling it on the root does not set it, while the policy and the tuples
+/// live on the root. Reading the partition's flag alone says every row is visible, so this
+/// is the case that keeps the report from granting rows the database only shows filtered.
+///
+/// One row per partition, each owned by a different caller, so a model answering from one
+/// partition only, or granting everyone, fails in both directions.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn partitioned_table_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL, PRIMARY KEY (id, region))
+    PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu');
+CREATE TABLE events_us PARTITION OF events FOR VALUES IN ('us');
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_user_id());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the partitioned schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON events, events_eu, events_us TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    let seeded = [("e-eu", USER_ALICE, "eu"), ("e-us", USER_BOB, "us")];
+    {
+        use partition_schema::events;
+        for (id, tenant, region) in seeded {
+            diesel::insert_into(events::table)
+                .values((
+                    events::id.eq(id),
+                    events::tenant.eq(tenant),
+                    events::region.eq(region),
+                ))
+                .execute(&mut conn)
+                .expect("Failed to seed events");
+        }
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let translation = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
+
+    // The object every question names comes from the report, not from this test.
+    let naming = translation.row_naming();
+    let mut objects: Vec<(String, String)> = Vec::new();
+    for (partition, id, region) in [("events_eu", "e-eu", "eu"), ("events_us", "e-us", "us")] {
+        let entry = naming
+            .iter()
+            .find(|entry| entry.table == partition)
+            .unwrap_or_else(|| panic!("no naming entry for {partition}, got {naming:?}"));
+        assert_eq!(
+            entry.type_name, "events",
+            "a partition's rows are objects of its root"
+        );
+        let row = PartitionRow {
+            id: id.to_string(),
+            region: region.to_string(),
+        };
+        let object = entry
+            .key
+            .render(entry.type_name.as_str(), &row)
+            .expect("the key renders")
+            .expect("every key column is filled");
+        objects.push((id.to_string(), object));
+    }
+
+    let outputs = translation.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "partitioned-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for (_, user, _) in seeded {
+        let readable = postgres_readable_events(&mut conn, user);
+        // One row each, so a seed that showed every row could not pass quietly.
+        assert_eq!(
+            readable.len(),
+            1,
+            "{user} reads one event through the root, PostgreSQL showed {readable:?}"
+        );
+        for (id, object) in &objects {
+            let expected = readable.contains(id);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                object,
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "{object} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // A model that denied everything, or granted everything, would pass a one-sided case.
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA partitioned-table parity mismatches:\n{}",
         failures.join("\n")
     );
 }
