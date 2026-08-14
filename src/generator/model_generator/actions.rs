@@ -349,6 +349,32 @@ pub(crate) fn policy_clause_targets<P: PolicyLike>(
         .collect()
 }
 
+/// Whether barriers alone reached this target. A RESTRICTIVE policy narrows a grant and
+/// there is none to narrow, so `compose_action` synthesizes a denial and the relation
+/// exists without granting anybody.
+fn barriers_alone(bucket: Option<&ModeBuckets>) -> bool {
+    bucket.is_some_and(|bucket| {
+        bucket.permissive.is_empty()
+            && (!bucket.restrictive.is_empty() || !bucket.role_limited.is_empty())
+    })
+}
+
+/// Commands a barrier refuses outright, so coverage is read off what grants rather than
+/// off which relation exists. A command denies as soon as one of its targets does.
+pub(crate) fn commands_denied_by_barriers_alone(
+    action_buckets: &BTreeMap<ActionTarget, ModeBuckets>,
+) -> Vec<&'static str> {
+    action_relation_commands()
+        .into_iter()
+        .filter(|(_, _, targets)| {
+            targets
+                .iter()
+                .any(|target| barriers_alone(action_buckets.get(target)))
+        })
+        .map(|(_, command, _)| command)
+        .collect()
+}
+
 /// Commands the schema's permissive policies on one table cover, whatever their
 /// confidence. The filtered policy set cannot answer this, and the answer decides
 /// whether a denied command is a coverage gap in `PostgreSQL` or in the translation.

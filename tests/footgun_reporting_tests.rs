@@ -839,3 +839,105 @@ CREATE POLICY shares_read ON shares FOR SELECT USING (viewer = current_user);
         );
     }
 }
+
+/// A barrier with nothing permissive to narrow refuses every command, exactly as row-level
+/// security with no policy at all does. The model is the same either way, so the report has
+/// to be too, and coverage was read off whether a relation existed rather than whether it
+/// grants.
+#[test]
+fn a_barrier_with_nothing_to_narrow_reports_the_commands_it_refuses() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_barrier ON docs AS RESTRICTIVE USING (owner_id = current_user);
+",
+    );
+    let translation = translator(ConfidenceLevel::B).translate(&db);
+    let notes: Vec<TranslationNote> = translation.notes().to_vec();
+    let dsl = translation.outputs_accepting_gaps().model();
+    for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
+        assert!(
+            relation_denies(&dsl, "docs", relation),
+            "the barrier alone grants nobody {relation}:\n{dsl}"
+        );
+    }
+    let named: Vec<&TranslationNote> = notes
+        .iter()
+        .filter(|note| matches!(note, TranslationNote::NoPermissivePolicy { .. }))
+        .collect();
+    let [note] = named.as_slice() else {
+        panic!("one note names the commands nothing covers: {notes:#?}");
+    };
+    let TranslationNote::NoPermissivePolicy { table, commands } = note else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(
+        (table.as_str(), commands.as_slice()),
+        (
+            "docs",
+            &[
+                "SELECT".to_string(),
+                "INSERT".to_string(),
+                "UPDATE".to_string(),
+                "DELETE".to_string(),
+            ][..]
+        )
+    );
+    assert!(
+        !note.severity().diverges_from_database(),
+        "PostgreSQL refuses the same commands, so nothing here disagrees with it"
+    );
+}
+
+/// The read gate is a different denial from a missing policy: a permissive `UPDATE` policy
+/// covers the command and the database still refuses it, so nothing may claim the
+/// threshold dropped a clause here.
+#[test]
+fn a_write_the_read_gate_blocks_names_the_commands_it_blocks() {
+    for (label, sql, expected) in [
+        (
+            "update alone",
+            "CREATE TABLE docs(id UUID PRIMARY KEY, editor TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_u ON docs FOR UPDATE USING (editor = current_user);
+",
+            vec!["UPDATE".to_string()],
+        ),
+        (
+            "update and delete",
+            "CREATE TABLE docs(id UUID PRIMARY KEY, editor TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_u ON docs FOR UPDATE USING (editor = current_user);
+CREATE POLICY docs_d ON docs FOR DELETE USING (editor = current_user);
+",
+            vec!["UPDATE".to_string(), "DELETE".to_string()],
+        ),
+    ] {
+        let db = db_of(sql);
+        let notes: Vec<TranslationNote> = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .notes()
+            .to_vec();
+        let named: Vec<&TranslationNote> = notes
+            .iter()
+            .filter(|note| matches!(note, TranslationNote::ReadsDeniedSoWritesCannotName { .. }))
+            .collect();
+        let [note] = named.as_slice() else {
+            panic!("{label}: one note says the read gate closed the writes: {notes:#?}");
+        };
+        let TranslationNote::ReadsDeniedSoWritesCannotName { commands, .. } = note else {
+            unreachable!("filtered above")
+        };
+        assert_eq!(commands, &expected, "{label}: the blocked commands");
+        assert!(
+            note.to_string().contains("UPDATE"),
+            "{label}: and the line names them: {note}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|note| matches!(note, TranslationNote::CoveringPoliciesBelowThreshold { .. })),
+            "{label}: no clause fell below the bar, the read gate closed it: {notes:#?}"
+        );
+    }
+}

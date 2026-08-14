@@ -12,7 +12,7 @@ use rls2fga::generator::action_relations::{
 };
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translation, TranslatorBuilder};
-use support::footgun::relation_definition;
+use support::footgun::{relation_definition, relation_denies};
 
 /// One permissive policy giving one condition, which is what every connetto table
 /// writes. `PostgreSQL` applies that condition to the existing row and to the result.
@@ -71,13 +71,44 @@ CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);
 ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
 ";
 
-const EVERY_SCHEMA: [(&str, &str); 6] = [
+/// A readable read policy beside an `UPDATE` whose `WITH CHECK` admits no result, so the
+/// fused blind-update relation is an intersection that grants nobody.
+const CHECK_DENIES_THE_RESULT: &str = "
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT, body TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_s ON notes FOR SELECT USING (owner = current_setting('app.user_id', true));
+CREATE POLICY notes_u ON notes FOR UPDATE
+  USING (owner = current_setting('app.user_id', true))
+  WITH CHECK (false);
+";
+
+/// An `UPDATE` policy alone: reads are denied, so every statement that names a row is
+/// refused, while a blanket `UPDATE` reads nothing and still grants.
+const BLANKET_UPDATE_ONLY: &str = "
+CREATE TABLE notes(id INTEGER PRIMARY KEY, editor TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_u ON notes FOR UPDATE
+  USING (editor = current_setting('app.user_id', true));
+";
+
+/// A restrictive policy with no permissive one to narrow, which `PostgreSQL` reads as
+/// nobody sees anything, and which no note names.
+const RESTRICTIVE_ONLY: &str = "
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_r ON notes AS RESTRICTIVE USING (owner = current_setting('app.user_id', true));
+";
+
+const EVERY_SCHEMA: [(&str, &str); 9] = [
     ("one condition", ONE_CONDITION),
     ("two conditions", TWO_CONDITIONS),
     ("reads only", READS_ONLY),
     ("insert and update", INSERT_AND_UPDATE),
     ("unrestricted parent", UNRESTRICTED_PARENT),
     ("denies everything", DENIES_EVERYTHING),
+    ("check denies the result", CHECK_DENIES_THE_RESULT),
+    ("blanket update only", BLANKET_UPDATE_ONLY),
+    ("restrictive only", RESTRICTIVE_ONLY),
 ];
 
 const EVERY_STATEMENT: [ActionStatement; 8] = [
@@ -151,6 +182,14 @@ fn named_relations(entry: &ActionRelations) -> Vec<String> {
         ActionAnswer::NotSeparable { relation } => vec![relation.as_str().to_string()],
         _ => Vec::new(),
     }
+}
+
+/// Every statement of one type the report refuses, in statement order.
+fn refused(entries: &[ActionRelations], type_name: &str) -> Vec<ActionStatement> {
+    EVERY_STATEMENT
+        .into_iter()
+        .filter(|statement| entry(entries, type_name, *statement).answer == ActionAnswer::Denied)
+        .collect()
 }
 
 /// The property whose absence is the defect: a consumer can ask everything the report
@@ -264,8 +303,8 @@ fn an_upsert_names_the_insert_and_the_update_halves() {
 
 /// The returned row is the new one, and reading it needs the read gate the model
 /// already folded into `can_insert_returning`. That relation is dropped wherever it
-/// would repeat `can_insert`, and absent wherever nothing admits an insert, so the
-/// plain insert answers in both.
+/// would repeat `can_insert`, which is where the plain insert answers instead, and it is
+/// absent wherever nothing admits an insert, which is a refusal.
 #[test]
 fn an_insert_that_returns_rows_judges_the_result_through_the_read_gated_relation() {
     assert_eq!(
@@ -280,15 +319,29 @@ fn an_insert_that_returns_rows_judges_the_result_through_the_read_gated_relation
         relation_definition(&dsl(INSERT_AND_UPDATE), "notes", "can_insert_returning").is_some(),
         "the schema is pointless unless the model defines the read-gated insert"
     );
+    let one_condition = dsl(ONE_CONDITION);
+    assert!(
+        relation_definition(&one_condition, "notes", "can_insert_returning").is_none(),
+        "one condition gates the readback exactly as it gates the insert:\n{one_condition}"
+    );
     assert_eq!(
         judges(entry(
-            &report(READS_ONLY),
+            &report(ONE_CONDITION),
             "notes",
             ActionStatement::InsertReturning
         )),
         judged(&[("can_insert", RowVersion::Resulting)]),
-        "with nothing admitting an insert the model defines no read-gated insert, and \
-         the plain denial is what answers"
+        "so the plain insert answers"
+    );
+    assert_eq!(
+        entry(
+            &report(READS_ONLY),
+            "notes",
+            ActionStatement::InsertReturning
+        )
+        .answer,
+        ActionAnswer::Denied,
+        "and with nothing admitting an insert there is nothing to name"
     );
 }
 
@@ -321,21 +374,19 @@ fn a_blind_update_of_two_clauses_has_no_single_version_answer() {
     }
 }
 
-/// So a consumer can ask and be told no, rather than not knowing what to ask.
+/// So a consumer learns the answer is no, rather than being handed a relation to ask
+/// whose answer can only be no.
 #[test]
-fn an_action_granting_nobody_still_gets_an_entry() {
+fn an_action_granting_nobody_is_answered_with_the_refusal() {
     let entries = report(READS_ONLY);
     assert_eq!(
-        judges(entry(&entries, "notes", ActionStatement::Update)),
-        judged(&[
-            ("can_update", RowVersion::Existing),
-            ("can_update", RowVersion::Resulting),
-        ])
+        entry(&entries, "notes", ActionStatement::Update).answer,
+        ActionAnswer::Denied
     );
     assert_eq!(
         relation_definition(&dsl(READS_ONLY), "notes", "can_update").as_deref(),
         Some("no_access"),
-        "the entry is only worth having because the answer it names is a denial"
+        "and the refusal is what the model says"
     );
 }
 
@@ -473,41 +524,227 @@ ALTER TABLE audit ENABLE ROW LEVEL SECURITY;
     );
 }
 
-/// A table refusing some statements and granting others keeps naming relations, since
-/// the refusal is a property of the whole table and not of one statement.
+/// The defect this fixes: a table refusing writes while granting reads used to answer
+/// every refused statement with a relation to satisfy, since the refusal was read off
+/// the whole type rather than the statement.
 #[test]
-fn a_table_that_grants_reads_still_names_its_relations() {
+fn a_table_that_grants_reads_refuses_every_other_statement() {
     let entries = report(READS_ONLY);
     assert_eq!(
         judges(entry(&entries, "notes", ActionStatement::Select)),
         judged(&[("can_select", RowVersion::Existing)])
     );
     assert_eq!(
-        judges(entry(&entries, "notes", ActionStatement::Delete)),
-        judged(&[("can_delete", RowVersion::Existing)])
+        refused(&entries, "notes"),
+        EVERY_STATEMENT
+            .into_iter()
+            .filter(|statement| *statement != ActionStatement::Select)
+            .collect::<Vec<ActionStatement>>(),
+        "reads are all this table grants"
     );
+}
+
+/// The locking read is the case the notes cannot express: it calls itself a `SELECT`,
+/// which no note reports refused, while the model filters it by the `UPDATE` policies
+/// as `PostgreSQL` does.
+#[test]
+fn a_locking_read_the_update_policies_refuse_is_reported_refused() {
+    let model = dsl(READS_ONLY);
+    assert_eq!(
+        relation_definition(&model, "notes", "can_select_for_update").as_deref(),
+        Some("can_update"),
+        "the locking read carries the update half:\n{model}"
+    );
+    assert!(relation_denies(&model, "notes", "can_select_for_update"));
+    assert_eq!(
+        entry(
+            &report(READS_ONLY),
+            "notes",
+            ActionStatement::SelectForUpdate
+        )
+        .answer,
+        ActionAnswer::Denied
+    );
+    assert_eq!(
+        ActionStatement::SelectForUpdate.command(),
+        "SELECT",
+        "and the statement names a command the notes report granted"
+    );
+}
+
+/// One relation fuses the two row versions, so a consumer cannot ask it, but a fusion
+/// that grants nobody needs no asking.
+#[test]
+fn a_fused_relation_granting_nobody_is_refused_rather_than_unanswerable() {
+    let model = dsl(CHECK_DENIES_THE_RESULT);
+    let fused = relation_definition(&model, "notes", "can_update_without_reading")
+        .expect("the two clauses differ, so the model fuses them");
+    assert!(
+        relation_denies(&model, "notes", "can_update_without_reading"),
+        "one half of the fusion admits nobody, so the fusion grants nobody: {fused}"
+    );
+    let entries = report(CHECK_DENIES_THE_RESULT);
+    assert_eq!(
+        entry(&entries, "notes", ActionStatement::UpdateWithoutWhere).answer,
+        ActionAnswer::Denied
+    );
+    assert_eq!(
+        judges(entry(&entries, "notes", ActionStatement::SelectForUpdate)),
+        judged(&[
+            ("can_select", RowVersion::Existing),
+            ("can_select_for_update", RowVersion::Existing),
+        ]),
+        "and the statements it still grants keep naming their relations"
+    );
+}
+
+/// A restrictive policy with nothing permissive to narrow refuses everything, and no
+/// note says so, which is why the report has to.
+#[test]
+fn a_restrictive_policy_alone_refuses_every_statement() {
+    let entries = report(RESTRICTIVE_ONLY);
+    assert_eq!(refused(&entries, "notes"), EVERY_STATEMENT.to_vec());
+}
+
+/// One grants everybody and the other grants nobody, and both arrive through this report.
+#[test]
+fn an_unrestricted_table_is_never_refused_and_a_refused_one_is_never_unrestricted() {
+    for (label, sql) in EVERY_SCHEMA {
+        let entries = report(sql);
+        for entry in &entries {
+            let answers: Vec<&ActionAnswer> = entries
+                .iter()
+                .filter(|other| other.type_name == entry.type_name)
+                .map(|other| &other.answer)
+                .collect();
+            let open = answers.contains(&&ActionAnswer::Unrestricted);
+            let refused = answers.contains(&&ActionAnswer::Denied);
+            assert!(
+                !(open && refused),
+                "{label}: {} is both open and refused: {answers:?}",
+                entry.type_name.as_str()
+            );
+        }
+    }
+}
+
+/// The report never hands over a relation whose answer can only be no, checked against
+/// the emitted text rather than against the plan the report reads.
+#[test]
+fn no_statement_the_model_refuses_is_answered_with_a_relation_to_satisfy() {
+    for (label, sql) in EVERY_SCHEMA {
+        let model = dsl(sql);
+        for entry in report(sql) {
+            for relation in named_relations(&entry) {
+                assert!(
+                    !relation_denies(&model, entry.type_name.as_str(), &relation),
+                    "{label}: {:?} on {} names {relation}, which the model refuses:\n{model}",
+                    entry.statement,
+                    entry.type_name.as_str()
+                );
+            }
+        }
+    }
+}
+
+/// The refusals of the whole corpus, so a statement some subject can perform is never
+/// reported refused.
+#[test]
+fn every_fixture_refuses_exactly_the_statements_it_should() {
+    let all = EVERY_STATEMENT.to_vec();
+    let writes: Vec<ActionStatement> = all
+        .iter()
+        .copied()
+        .filter(|statement| *statement != ActionStatement::Select)
+        .collect();
+    let inserts = vec![
+        ActionStatement::Insert,
+        ActionStatement::InsertOnConflictUpdate,
+        ActionStatement::InsertReturning,
+    ];
+    let mut inserts_and_delete = inserts.clone();
+    inserts_and_delete.push(ActionStatement::Delete);
+    inserts_and_delete.sort_unstable();
+    for (label, sql, type_name, expected) in [
+        ("one condition", ONE_CONDITION, "notes", Vec::new()),
+        (
+            "two conditions",
+            TWO_CONDITIONS,
+            "notes",
+            inserts_and_delete.clone(),
+        ),
+        ("reads only", READS_ONLY, "notes", writes.clone()),
+        (
+            "insert and update",
+            INSERT_AND_UPDATE,
+            "notes",
+            vec![ActionStatement::Delete],
+        ),
+        (
+            "unrestricted parent",
+            UNRESTRICTED_PARENT,
+            "docs",
+            Vec::new(),
+        ),
+        (
+            "unrestricted parent",
+            UNRESTRICTED_PARENT,
+            "projects",
+            Vec::new(),
+        ),
+        ("denies everything", DENIES_EVERYTHING, "notes", all.clone()),
+        (
+            "check denies the result",
+            CHECK_DENIES_THE_RESULT,
+            "notes",
+            {
+                let mut refused = inserts_and_delete.clone();
+                refused.push(ActionStatement::Update);
+                refused.push(ActionStatement::UpdateWithoutWhere);
+                refused.sort_unstable();
+                refused
+            },
+        ),
+        (
+            "blanket update only",
+            BLANKET_UPDATE_ONLY,
+            "notes",
+            all.iter()
+                .copied()
+                .filter(|statement| *statement != ActionStatement::UpdateWithoutWhere)
+                .collect(),
+        ),
+        ("restrictive only", RESTRICTIVE_ONLY, "notes", all.clone()),
+    ] {
+        assert_eq!(
+            refused(&report(sql), type_name),
+            expected,
+            "{label}: {type_name} refuses something else"
+        );
+    }
 }
 
 /// A table whose only policy is an `UPDATE` refuses every statement that names a row,
 /// because reads are denied and a write cannot name what it cannot read, yet a blanket
-/// `UPDATE` reads nothing and still grants. So the refusal is not the table's.
+/// `UPDATE` reads nothing and still grants.
 #[test]
-fn a_table_whose_blanket_update_still_grants_is_not_a_refusal() {
-    let sql = "CREATE TABLE notes(id INTEGER PRIMARY KEY, editor TEXT);
-ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
-CREATE POLICY notes_u ON notes FOR UPDATE
-  USING (editor = current_setting('app.user_id', true));
-";
-    let entries = report(sql);
+fn a_table_whose_blanket_update_still_grants_refuses_only_the_rest() {
+    let entries = report(BLANKET_UPDATE_ONLY);
     assert_eq!(
-        judges(entry(&entries, "notes", ActionStatement::Select)),
-        judged(&[("can_select", RowVersion::Existing)]),
-        "a read is judged by can_select, which denies"
+        judges(entry(
+            &entries,
+            "notes",
+            ActionStatement::UpdateWithoutWhere
+        )),
+        judged(&[
+            ("can_update_without_reading", RowVersion::Existing),
+            ("can_update_without_reading", RowVersion::Resulting),
+        ]),
+        "the blanket update reads nothing, so it grants"
     );
-    assert!(
-        entries
-            .iter()
-            .all(|entry| entry.answer != ActionAnswer::Denied),
-        "the blanket update grants, so the table refuses less than everything: {entries:?}"
+    assert_eq!(
+        entry(&entries, "notes", ActionStatement::Select).answer,
+        ActionAnswer::Denied,
+        "while a read is refused"
     );
 }

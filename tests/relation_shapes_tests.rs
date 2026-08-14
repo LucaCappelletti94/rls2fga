@@ -1966,3 +1966,85 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
         outputs.notes()
     );
 }
+
+/// A relation that grants nobody and one that no single row can decide are different
+/// answers, and they arrived byte-identical: `from_one_row` false, no shapes, no decision.
+/// A consumer told the second delegates and is answered, a consumer told the first pays a
+/// round trip whose answer is always no, and the only local inference available to it
+/// (deny whatever has no readable recipe) turns the second into a wrong refusal.
+#[test]
+fn a_relation_that_grants_nobody_is_not_one_no_row_can_decide() {
+    let reads_only = shapes_of(
+        "CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
+",
+        ACCESSOR_REGISTRY,
+    );
+    let refused = entry(&reads_only, "docs", "can_insert");
+    assert!(
+        refused.grants_nobody,
+        "no policy admits an insert, so the model refuses it: {refused:#?}"
+    );
+    assert!(
+        refused.decision.is_none() && refused.shapes.is_empty(),
+        "which is why it looked like a relation nothing populates: {refused:#?}"
+    );
+
+    let readable = entry(&reads_only, "docs", "can_select");
+    assert!(
+        !readable.grants_nobody && readable.decision.is_some(),
+        "the owner rule grants, and one row decides it: {readable:#?}"
+    );
+
+    let membership = shapes_of(HOLDER, ACCESSOR_REGISTRY);
+    let undecidable = entry(&membership, "docs", "can_select");
+    assert!(
+        !undecidable.grants_nobody,
+        "a membership grants whoever is in the list: {undecidable:#?}"
+    );
+    assert!(
+        undecidable.decision.is_none(),
+        "it just cannot be decided from the guarded row: {undecidable:#?}"
+    );
+}
+
+/// The denial is the model's own, read through the walk the simplifier prunes with, so the
+/// report and the emitted text cannot disagree about which relation refuses.
+#[test]
+fn every_relation_reported_as_granting_nobody_denies_in_the_emitted_model() {
+    for (label, sql, registry) in [
+        ("ownership", OWNERSHIP, ACCESSOR_REGISTRY),
+        ("holder", HOLDER, ACCESSOR_REGISTRY),
+        (
+            "grants without principals",
+            GRANTS_WITHOUT_PRINCIPALS,
+            GRANT_REGISTRY,
+        ),
+    ] {
+        let model = model_at(sql, registry, ConfidenceLevel::B);
+        let mut refused = 0usize;
+        for shape in shapes_at(sql, registry, ConfidenceLevel::B) {
+            let denies = support::footgun::relation_denies(
+                &model,
+                shape.type_name.as_str(),
+                shape.relation.as_str(),
+            );
+            assert_eq!(
+                shape.grants_nobody,
+                denies,
+                "{label}: {}#{} disagrees with the model:\n{model}",
+                shape.type_name.as_str(),
+                shape.relation.as_str()
+            );
+            refused += usize::from(shape.grants_nobody);
+        }
+        assert!(
+            refused > 0,
+            "{label}: the corpus has to carry a refusal, or the check above proves nothing"
+        );
+    }
+}

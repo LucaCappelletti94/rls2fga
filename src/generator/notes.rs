@@ -156,10 +156,12 @@ pub enum TranslationNote {
         /// `PostgreSQL`'s own refusal.
         rule: String,
     },
-    /// Reads are denied, so no statement can name a row to change.
+    /// Reads are denied, so these commands cannot name a row to change.
     ReadsDeniedSoWritesCannotName {
         /// Table whose reads are denied.
         table: String,
+        /// Commands a policy covers that the read gate closes anyway.
+        commands: Vec<String>,
     },
     /// A policy's `TO` clause became a role scope relation.
     PolicyRoleScope {
@@ -406,7 +408,7 @@ impl TranslationNote {
             | Self::RowsCannotBeNamed { table, .. }
             | Self::BridgeColumnMissing { table, .. }
             | Self::RowIdentifierBudget { table, .. }
-            | Self::ReadsDeniedSoWritesCannotName { table } => table,
+            | Self::ReadsDeniedSoWritesCannotName { table, .. } => table,
             Self::ClauseBelowThreshold { policy, .. }
             | Self::UnresolvedPolicyTable { policy, .. }
             | Self::RestrictiveAttributeRefused { policy }
@@ -552,10 +554,11 @@ impl fmt::Display for TranslationNote {
                 "PostgreSQL refuses this policy outright ({rule}), so no database can hold \
                  it and the model ignores it. Fix the statement."
             ),
-            Self::ReadsDeniedSoWritesCannotName { table } => write!(
+            Self::ReadsDeniedSoWritesCannotName { table, commands } => write!(
                 f,
-                "Reads of '{table}' are denied, so UPDATE and DELETE cannot name a row either. \
-                 Add a SELECT policy the model can translate."
+                "Reads of '{table}' are denied, so {} cannot name a row either. \
+                 Add a SELECT policy the model can translate.",
+                commands.join(", ")
             ),
             Self::PolicyRoleScope {
                 roles, relation, ..

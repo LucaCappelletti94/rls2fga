@@ -10,26 +10,7 @@ use rls2fga::translator::TranslatorBuilder;
 
 mod support;
 
-use support::footgun::{db_of, relation_definition, relation_denies, translation, translator};
-
-/// Whether an action relation grants nobody, allowing for a `TO` scope: an intersection
-/// one of whose parts is `no_access` denies whatever the other parts admit.
-fn action_relation_denies(dsl: &str, type_name: &str, relation: &str) -> bool {
-    let mut name = relation.to_string();
-    for _ in 0..4 {
-        let Some(body) = relation_definition(dsl, type_name, &name) else {
-            return false;
-        };
-        if body.split(" and ").any(|part| part.trim() == "no_access") {
-            return true;
-        }
-        if body.contains(' ') {
-            return false;
-        }
-        name = body;
-    }
-    false
-}
+use support::footgun::{db_of, relation_denies, translation, translator};
 
 /// Every type the model declares with no relation under it, in declaration order.
 fn types_declaring_no_relation(dsl: &str) -> Vec<String> {
@@ -450,7 +431,7 @@ CREATE POLICY shares_read ON shares FOR SELECT {policy_tail};
             "can_select_for_update",
         ] {
             assert!(
-                action_relation_denies(&dsl, "shares", relation),
+                relation_denies(&dsl, "shares", relation),
                 "{what}: nothing can name a row of 'shares', so '{relation}' grants \
                  nobody:\n{dsl}"
             );

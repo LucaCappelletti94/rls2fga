@@ -467,6 +467,7 @@ mod tests {
                 },
             }],
             decision: None,
+            grants_nobody: false,
         }
     }
 

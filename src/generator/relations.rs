@@ -18,7 +18,9 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use crate::generator::db_lookup::resolve_pk_columns;
 use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
-use crate::generator::model_generator::{SchemaPlan, TypePlan, UsersetExpr};
+use crate::generator::model_generator::{
+    relation_grants_nothing, SchemaPlan, TypePlan, UsersetExpr,
+};
 use crate::generator::records::{RecordDerivation, RecordDescription, ValueSource};
 use crate::generator::well_known::USER_TYPE;
 use crate::parser::sql_parser::DatabaseLike;
@@ -41,6 +43,10 @@ pub struct RelationShapes {
     /// How the subjects this relation grants compose from one row, `Some` exactly
     /// when `from_one_row` is true.
     pub decision: Option<RowDecision>,
+    /// Whether the model refuses this relation for every row, so no record fills it and
+    /// no round trip is needed to be told no. False for a direct relation, which grants
+    /// whatever is written into it.
+    pub grants_nobody: bool,
 }
 
 /// How the subjects a relation grants compose from one row's records.
@@ -123,6 +129,7 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
                 from_one_row: decision.is_some(),
                 shapes: shapes_filling(type_plan.type_name.as_str(), relation, &sources, db),
                 decision,
+                grants_nobody: relation_grants_nothing(type_plan, relation),
             });
         }
     }

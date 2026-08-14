@@ -39,20 +39,35 @@ pub(crate) fn relation_definition(dsl: &str, type_name: &str, relation: &str) ->
     None
 }
 
-/// Whether a relation of `type_name` grants nobody, following a body that is only the
-/// name of another relation, which is how the derived write relations are spelled.
+/// Whether a relation of `type_name` grants nobody, resolving the body through the
+/// operators the DSL spells: a name stands for its own definition, an intersection denies
+/// as soon as one part does, a union only when every part does, and a subtraction follows
+/// its base.
 pub(crate) fn relation_denies(dsl: &str, type_name: &str, relation: &str) -> bool {
-    let mut name = relation.to_string();
-    for _ in 0..4 {
-        let Some(body) = relation_definition(dsl, type_name, &name) else {
-            return false;
-        };
-        if body == "no_access" {
-            return true;
-        }
-        name = body;
+    relation_definition(dsl, type_name, relation)
+        .is_some_and(|body| body_denies(dsl, type_name, &body, 0))
+}
+
+fn body_denies(dsl: &str, type_name: &str, body: &str, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
     }
-    false
+    if body == "no_access" {
+        return true;
+    }
+    if let Some((base, _)) = body.split_once(" but not ") {
+        return body_denies(dsl, type_name, base.trim(), depth + 1);
+    }
+    if let Some((left, right)) = body.split_once(" and ") {
+        return body_denies(dsl, type_name, left.trim(), depth + 1)
+            || body_denies(dsl, type_name, right.trim(), depth + 1);
+    }
+    if let Some((left, right)) = body.split_once(" or ") {
+        return body_denies(dsl, type_name, left.trim(), depth + 1)
+            && body_denies(dsl, type_name, right.trim(), depth + 1);
+    }
+    relation_definition(dsl, type_name, body)
+        .is_some_and(|inner| inner != body && body_denies(dsl, type_name, &inner, depth + 1))
 }
 
 /// Every relation `type_name` defines, paired with its body, in declaration order.

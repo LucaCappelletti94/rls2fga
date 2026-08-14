@@ -61,12 +61,12 @@ mod simplify;
 
 use actions::{
     action_relation_commands, action_relations, clauses_lost_to_the_threshold,
-    commands_a_permissive_policy_covers, commands_fed_by, compose_action,
-    define_blanket_update_relations, define_locking_read_relations, define_upsert_relations,
-    derived_action_relations, dropped_attribute_guards, fill_uncovered_actions_with_deny,
-    for_each_policy_target_expr, mark_narrowed, narrowed_by, policies_missing_a_clause,
-    push_action_expr, scoped_policy_expr, targets_a_policy_feeds, ActionTarget, ModeBuckets,
-    INHERITED_RELATION_PREFIX,
+    commands_a_permissive_policy_covers, commands_denied_by_barriers_alone, commands_fed_by,
+    compose_action, define_blanket_update_relations, define_locking_read_relations,
+    define_upsert_relations, derived_action_relations, dropped_attribute_guards,
+    fill_uncovered_actions_with_deny, for_each_policy_target_expr, mark_narrowed, narrowed_by,
+    policies_missing_a_clause, push_action_expr, scoped_policy_expr, targets_a_policy_feeds,
+    ActionTarget, ModeBuckets, INHERITED_RELATION_PREFIX,
 };
 use dsl::render_dsl;
 use emit_membership::{
@@ -669,14 +669,23 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                 // source can be emitted for it. Resolved once here rather than per policy.
                 let object_identifier = resolve_pk_columns(&source_table_name, db);
 
-                // UPDATE and DELETE name the row they change. INSERT does not.
-                let has_row_scoped_write_policy = table_policies.iter().any(|cp| {
-                    cp.mode() == PolicyMode::Permissive
-                        && matches!(
-                            cp.command(),
-                            PolicyCommand::Update | PolicyCommand::Delete | PolicyCommand::All
-                        )
-                });
+                // UPDATE and DELETE name the row they change, so a denied read closes them.
+                // INSERT does not name a row, and the read is the gate itself.
+                let write_targets: BTreeSet<ActionTarget> = table_policies
+                    .iter()
+                    .filter(|cp| cp.mode() == PolicyMode::Permissive)
+                    .flat_map(|cp| targets_a_policy_feeds(cp))
+                    .collect();
+                let row_scoped_write_commands: Vec<&'static str> = action_relation_commands()
+                    .into_iter()
+                    .filter(|(_, _, targets)| {
+                        targets.iter().any(|target| {
+                            matches!(target, ActionTarget::UpdateUsing | ActionTarget::Delete)
+                                && write_targets.contains(target)
+                        })
+                    })
+                    .map(|(_, command, _)| command)
+                    .collect();
 
                 // Every clause PostgreSQL evaluates that the model does not carry leaves the
                 // relations it fed diverged from the database. Collected before anything is
@@ -761,8 +770,11 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                     build.notes,
                     &source_table_name,
                     declared_here,
-                    &blocked_commands,
-                    has_row_scoped_write_policy,
+                    &SettledCommands {
+                        blocked: &blocked_commands,
+                        barrier_denied: &commands_denied_by_barriers_alone(&action_buckets),
+                        row_scoped_writes: &row_scoped_write_commands,
+                    },
                     db,
                 );
             },
@@ -1165,24 +1177,41 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
     }
 }
 
+/// What the policy loop already settled about each SQL command, so coverage reporting reads
+/// its decisions rather than re-deriving them.
+struct SettledCommands<'a> {
+    /// Commands a read loop blocks, which `PostgreSQL` raises on rather than filtering.
+    blocked: &'a BTreeSet<&'static str>,
+    /// Commands a barrier with nothing permissive to narrow refuses outright.
+    barrier_denied: &'a [&'static str],
+    /// Commands that name the row they change, so a denied read closes them.
+    row_scoped_writes: &'a [&'static str],
+}
+
 /// Fill what no surviving policy covers with a denial, and report which is which.
 ///
 /// A command denied because every policy covering it fell below the bar gets a different line
 /// from one no policy covers at all: the first says the model came out narrower than the database,
 /// the second says the database denies it too. The schema is asked, since the filtered set cannot
 /// tell them apart.
+///
+/// Coverage is read off which commands grant, not off which relations exist. A barrier with
+/// nothing permissive to narrow leaves the relation defined and granting nobody, which the
+/// absence reading missed.
 fn fill_and_report_coverage<DB: DatabaseLike>(
     plan: &mut TypePlan,
     notes: &mut Vec<TranslationNote>,
     source_table: &str,
     declared_here: &[&DB::Policy],
-    blocked_commands: &BTreeSet<&'static str>,
-    has_row_scoped_write_policy: bool,
+    settled: &SettledCommands<'_>,
     db: &DB,
 ) {
-    let uncovered: Vec<&'static str> = fill_uncovered_actions_with_deny(plan)
+    let filled = fill_uncovered_actions_with_deny(plan);
+    let uncovered: Vec<&'static str> = action_relation_commands()
         .into_iter()
-        .filter(|command| !blocked_commands.contains(command))
+        .map(|(_, command, _)| command)
+        .filter(|command| filled.contains(command) || settled.barrier_denied.contains(command))
+        .filter(|command| !settled.blocked.contains(command))
         .collect();
     if !uncovered.is_empty() {
         let covered_by_schema = commands_a_permissive_policy_covers(declared_here, db);
@@ -1211,10 +1240,20 @@ fn fill_and_report_coverage<DB: DatabaseLike>(
         });
     }
 
-    // Denying this silently would hide a schema mistake.
-    if has_row_scoped_write_policy && relation_grants_nothing(plan, &can_select_relation()) {
+    // Denying this silently would hide a schema mistake. Which writes it closes is the
+    // per-command half of the same fact, so the note carries them rather than the reader
+    // guessing from the table. Every one of them reads the row it changes through
+    // `requires_read_access`, so a denied read closes all of them.
+    if !settled.row_scoped_writes.is_empty()
+        && relation_grants_nothing(plan, &can_select_relation())
+    {
         notes.push(TranslationNote::ReadsDeniedSoWritesCannotName {
             table: source_table.to_string(),
+            commands: settled
+                .row_scoped_writes
+                .iter()
+                .map(|command| (*command).to_string())
+                .collect(),
         });
     }
 }

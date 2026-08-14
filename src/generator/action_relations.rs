@@ -62,9 +62,9 @@ pub enum ActionAnswer {
     /// The model refuses this statement for every row of the table, so nothing has to be
     /// named or asked.
     ///
-    /// Reported only where every statement is refused, which is what row-level security
-    /// with no policy at all leaves: `PostgreSQL` shows nobody anything, and a consumer
-    /// that cannot name a row of such a table would otherwise have no answer to read.
+    /// Per statement, so a table refusing writes while granting reads carries both. The
+    /// model refusing is not the database refusing: a policy the classifier could not read
+    /// falls closed to this and says so through a `BelowThreshold` note.
     Denied,
     /// One relation fuses the two versions, so no single row version answers it.
     ///
@@ -106,7 +106,11 @@ pub enum ActionStatement {
 }
 
 impl ActionStatement {
-    /// The SQL command this answers for, as the translation notes spell it.
+    /// The SQL command this answers for.
+    ///
+    /// Not a key into the notes: `SelectForUpdate` is a `SELECT` that the `UPDATE` policies
+    /// filter as well, so a note naming the commands it refuses can leave it out while the
+    /// model still refuses it. [`ActionAnswer::Denied`] is the answer to that question.
     #[must_use]
     pub fn command(&self) -> &'static str {
         match self {
@@ -282,9 +286,6 @@ pub(crate) fn action_relations<DB: DatabaseLike>(
         } else {
             EVERY_STATEMENT.map(|_| ActionAnswer::Unrestricted)
         };
-        let refuses_everything = answers
-            .iter()
-            .all(|answer| answer_grants_nobody(type_plan, answer));
         entries.extend(
             EVERY_STATEMENT
                 .into_iter()
@@ -292,7 +293,7 @@ pub(crate) fn action_relations<DB: DatabaseLike>(
                 .map(|(statement, answer)| ActionRelations {
                     type_name: type_plan.type_name.clone(),
                     statement,
-                    answer: if refuses_everything {
+                    answer: if answer_grants_nobody(type_plan, &answer) {
                         ActionAnswer::Denied
                     } else {
                         answer
