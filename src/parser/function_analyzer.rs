@@ -7,7 +7,7 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use crate::classifier::recognizers::projected_select;
+use crate::classifier::recognizers::{projected_select, unwrap_cast_or_nested};
 use crate::parser::expr::function_arg_expr;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
@@ -545,17 +545,6 @@ fn contains_current_user_accessor_marker(body_lower: &str) -> bool {
         || contains_current_user_keyword_token(&sanitized)
 }
 
-fn unwrap_accessor_expr(mut expr: &Expr) -> &Expr {
-    loop {
-        match expr {
-            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
-                expr = inner.as_ref();
-            }
-            _ => return expr,
-        }
-    }
-}
-
 /// Extract the literal setting key from `current_setting('key')` or
 /// `current_setting('key', missing_ok)`.
 ///
@@ -587,12 +576,12 @@ pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
 }
 
 fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenceSettings) -> bool {
-    match unwrap_accessor_expr(expr) {
+    match unwrap_cast_or_nested(expr) {
         Expr::Identifier(ident) => {
             ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value)
         }
         Expr::Function(func) => {
-            current_setting_literal_key(unwrap_accessor_expr(expr))
+            current_setting_literal_key(unwrap_cast_or_nested(expr))
                 .is_some_and(|key| settings.allows_current_setting_key(&key))
                 || {
                     let normalized = normalized_function_name(func);
@@ -636,7 +625,7 @@ fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenc
 /// that key.
 pub(crate) fn body_setting_key(body: &str) -> Option<String> {
     let expr = body_single_projection(body)?;
-    current_setting_literal_key(unwrap_accessor_expr(&expr))
+    current_setting_literal_key(unwrap_cast_or_nested(&expr))
 }
 
 impl FunctionSemantic {

@@ -487,7 +487,9 @@ fn json_path(expr: &Expr) -> Option<(&Expr, Vec<String>, bool)> {
         _ => return None,
     };
 
-    let mut path = vec![json_literal_key(right)?];
+    // A jsonb key is a string. An integer index addresses an array element, which names
+    // no field, so a non-string key refuses the whole path.
+    let mut path = vec![string_literal(right)?];
     let mut node = unwrap_cast_or_nested(left);
     // Walk the `->` hops leading up to the last one, innermost key last.
     while let Expr::BinaryOp {
@@ -496,7 +498,7 @@ fn json_path(expr: &Expr) -> Option<(&Expr, Vec<String>, bool)> {
         right: key,
     } = node
     {
-        path.push(json_literal_key(key)?);
+        path.push(string_literal(key)?);
         node = unwrap_cast_or_nested(inner);
     }
     path.reverse();
@@ -520,9 +522,11 @@ fn json_value_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
     }
 }
 
-/// A jsonb key written as a string literal. An integer index addresses an array
-/// element, which names no field, and a non-literal key is not static.
-fn json_literal_key(expr: &Expr) -> Option<String> {
+/// The string literal an expression spells, once its casts and parentheses are peeled.
+///
+/// A non-literal is not static and a literal of any other kind is not a string, so both
+/// refuse. Callers add their own reason for wanting one.
+pub(super) fn string_literal(expr: &Expr) -> Option<String> {
     match unwrap_cast_or_nested(expr) {
         Expr::Value(value) => match &value.value {
             Value::SingleQuotedString(key) => Some(key.clone()),
@@ -965,7 +969,7 @@ pub(crate) fn unparenthesize(mut expr: &Expr) -> &Expr {
     expr
 }
 
-fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
+pub(crate) fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
     loop {
         match expr {
             Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => expr = inner.as_ref(),

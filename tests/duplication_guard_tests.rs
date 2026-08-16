@@ -16,12 +16,42 @@ fn read_module(path: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
 }
 
+/// The production half of one module's source, with every `#[cfg(test)] mod tests` block
+/// removed and everything else kept.
+///
+/// A test spells a name on purpose and a helper it defines is not a second
+/// implementation, so test code is cut. Only the block is cut, though: truncating at the
+/// boundary instead would put any item written below the test module outside every guard
+/// in this file, which is the same fail-open shape the guards exist to prevent. A
+/// `#[cfg(test)]` item that is not `mod tests` is production-shaped and stays counted.
+fn production_code(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let opens_test_module = lines[index].trim() == "#[cfg(test)]"
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| next.trim().starts_with("mod tests"));
+        if !opens_test_module {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        // A top-level module closes on a `}` in the first column, which no brace inside
+        // it reaches under rustfmt, and `fmt --check` is a gate row.
+        index = lines[index + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .map_or(lines.len(), |offset| index + offset + 2);
+    }
+    kept.join("\n")
+}
+
 /// Every `.rs` file under `src` carrying production code, as `(path, source)`.
 ///
-/// Test code is cut at the `#[cfg(test)] mod tests` boundary and a whole `tests.rs` is
-/// skipped, since a test spells a name on purpose and a helper it defines is not a second
-/// implementation. A `#[cfg(test)]` item before that boundary is production-shaped and
-/// stays counted.
+/// A whole `tests.rs` is skipped, and every other file is reduced to its production half
+/// by [`production_code`].
 fn src_modules() -> Vec<(String, String)> {
     fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
         let mut entries: Vec<PathBuf> = fs::read_dir(dir)
@@ -47,18 +77,7 @@ fn src_modules() -> Vec<(String, String)> {
         .map(|path| {
             let source = fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-            let lines: Vec<&str> = source.lines().collect();
-            let cut = lines
-                .iter()
-                .enumerate()
-                .find(|(index, line)| {
-                    line.trim() == "#[cfg(test)]"
-                        && lines
-                            .get(index + 1)
-                            .is_some_and(|next| next.trim().starts_with("mod tests"))
-                })
-                .map_or(lines.len(), |(index, _)| index);
-            (path.display().to_string(), lines[..cut].join("\n"))
+            (path.display().to_string(), production_code(&source))
         })
         .collect()
 }
@@ -90,6 +109,70 @@ fn count_excluding(exempt: &[&str], needle: &str) -> usize {
 /// Count definitions of `name`, whether or not it carries a generic parameter list.
 fn fn_definitions(name: &str) -> usize {
     count_all(&format!("fn {name}(")) + count_all(&format!("fn {name}<"))
+}
+
+/// The function name a declaration line introduces.
+fn declared_fn_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let head = ["pub(crate) ", "pub(super) ", "pub "]
+        .iter()
+        .find_map(|prefix| trimmed.strip_prefix(prefix))
+        .unwrap_or(trimmed);
+    let head = head.strip_prefix("const ").unwrap_or(head);
+    let head = head.strip_prefix("async ").unwrap_or(head);
+    let after = head.strip_prefix("fn ")?;
+    let end = after.find(|ch: char| !ch.is_alphanumeric() && ch != '_')?;
+    after.get(..end).filter(|name| !name.is_empty())
+}
+
+/// The item beginning at `start`, and the index of the line it closes on.
+fn block_from(lines: &[&str], start: usize) -> (String, usize) {
+    let mut depth = 0usize;
+    let mut opened = false;
+    let mut body = String::new();
+    for (offset, line) in lines[start..].iter().enumerate() {
+        body.push_str(line);
+        body.push('\n');
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if opened && depth == 0 {
+            return (body, start + offset);
+        }
+    }
+    (body, lines.len().saturating_sub(1))
+}
+
+/// Every function in `src` whose body `accept` admits, as `path:line: name`.
+///
+/// A guard counting a name proves the name is unique, never that the rule is. Two byte
+/// identical peelers lived under different names while `fn unwrap_cast_or_nested(`
+/// counted one, so a rule that must exist once has to be read off the body instead.
+fn fns_whose_body(mut accept: impl FnMut(&str) -> bool) -> Vec<String> {
+    let mut found = Vec::new();
+    for (path, source) in src_modules() {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut index = 0;
+        while index < lines.len() {
+            let Some(name) = lines.get(index).and_then(|line| declared_fn_name(line)) else {
+                index += 1;
+                continue;
+            };
+            let (body, end) = block_from(&lines, index);
+            if accept(&body) {
+                found.push(format!("{path}:{}: {name}", index + 1));
+            }
+            index = end.max(index) + 1;
+        }
+    }
+    found
 }
 
 /// The walk itself, since every guard below is vacuous if it returns nothing.
@@ -136,6 +219,52 @@ fn the_walk_reaches_every_source_file() {
     assert!(
         !modules.iter().any(|(path, _)| path.ends_with("tests.rs")),
         "a whole test file reached the walk"
+    );
+}
+
+/// Cutting the test module must not cut what follows it.
+///
+/// An item written below `mod tests` is production code, and truncating at the boundary
+/// puts it outside every guard in this file, which is the fail-open shape these guards
+/// exist to prevent. Found by a P3 mutation that went unnoticed for exactly that reason.
+/// Written against a synthetic module rather than the tree, since no file has that shape
+/// today and the guard has to already hold for the one that does.
+#[test]
+fn the_walk_keeps_production_code_that_follows_a_test_module() {
+    let source = r#"fn before() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn helper_named_like_production() {
+        let unbalanced = "{";
+    }
+}
+
+fn after() {}
+"#;
+    let kept = production_code(source);
+    assert!(kept.contains("fn before()"), "the head survives:\n{kept}");
+    assert!(
+        kept.contains("fn after()"),
+        "an item below the test module is production code:\n{kept}"
+    );
+    assert!(
+        !kept.contains("helper_named_like_production"),
+        "the test module itself is still cut:\n{kept}"
+    );
+
+    // The doc claims this, so it is asserted rather than trusted: only `mod tests` is
+    // cut, and a `#[cfg(test)]` item of any other kind is production-shaped.
+    let inline = r#"#[cfg(test)]
+const SAMPLE: &str = "x";
+
+fn after() {}
+"#;
+    let kept = production_code(inline);
+    assert!(
+        kept.contains("SAMPLE") && kept.contains("fn after()"),
+        "a cfg(test) item that is not a test module stays:\n{kept}"
     );
 }
 
@@ -647,6 +776,20 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
         );
     }
 
+    // The names above are not the property. A peeler re-spelled under a new name passes
+    // every one of them, which is exactly how `unwrap_accessor_expr` sat beside
+    // `unwrap_cast_or_nested` doing the same job. A loop that rebinds through a cast is
+    // the shape, and `unparenthesize` is excluded by carrying no `Expr::Cast` arm.
+    let cast_peelers = fns_whose_body(|body| {
+        body.contains("Expr::Cast") && body.contains("expr = inner.as_ref()")
+    });
+    assert_eq!(
+        cast_peelers.len(),
+        1,
+        "one loop peels a cast, found {}: {cast_peelers:?}",
+        cast_peelers.len()
+    );
+
     // An extra membership predicate joins a conjunction of NULL guards, so every place
     // that splices one has to parenthesise it: a disjunction would otherwise break out
     // of the AND. Counting sites would break the moment a second one is added
@@ -660,6 +803,30 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
     assert_eq!(
         bare, 0,
         "every splice of an extra predicate must parenthesise it, found {bare} that do not"
+    );
+}
+
+/// One function turns a peeled expression into the string literal it spells.
+///
+/// `Value::SingleQuotedString(` is read in ten legitimate places, each accepting a
+/// different neighbouring literal kind, so counting it says nothing. The rule that must
+/// exist once is narrower: peel the casts and parentheses, then accept a single quoted
+/// string and nothing else. `json_literal_key` and `string_literal` were that rule
+/// spelled twice, in sibling modules, and no guard could see it.
+#[test]
+fn reading_a_string_literal_has_a_single_source_of_truth() {
+    // Exactly one `Value::` arm is what separates this rule from `attribute_literal`,
+    // which reads a string, a number or a boolean into one enum and is a different job.
+    let readers = fns_whose_body(|body| {
+        body.contains("unwrap_cast_or_nested(")
+            && body.contains("Value::SingleQuotedString(")
+            && body.matches("Value::").count() == 1
+    });
+    assert_eq!(
+        readers.len(),
+        1,
+        "one peel-then-read-a-literal function, found {}: {readers:?}",
+        readers.len()
     );
 }
 

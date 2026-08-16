@@ -13,7 +13,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem, Value};
+use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem};
 
 use crate::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
@@ -29,7 +29,7 @@ use crate::parser::names::normalized_function_name;
 
 use super::{
     accessor_root_and_path, accessor_root_and_value_path, current_setting_literal_key,
-    extract_column_name, projected_select, unwrap_cast_or_nested,
+    extract_column_name, projected_select, string_literal, unwrap_cast_or_nested,
 };
 
 /// A value the request carries, compared against a row column or against a constant.
@@ -345,16 +345,6 @@ fn setting_key_read_by(root: &Expr, registry: &FunctionRegistry) -> Option<Strin
     };
     match registry.get(&normalized_function_name(function))? {
         FunctionSemantic::SettingReader { key } => Some(key.clone()),
-        _ => None,
-    }
-}
-
-fn string_literal(expr: &Expr) -> Option<String> {
-    match unwrap_cast_or_nested(expr) {
-        Expr::Value(value) => match &value.value {
-            Value::SingleQuotedString(text) => Some(text.clone()),
-            _ => None,
-        },
         _ => None,
     }
 }
