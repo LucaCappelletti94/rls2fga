@@ -21,7 +21,10 @@ jobs:
   runtime-parity:
     name: runtime-parity
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 37 container tests one at a time, on top of a cold debug build of 41 targets. The
+    # test run alone measures 15 minutes locally on warm images, and the compile-only
+    # `quality` job here already budgets 35.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,8 +38,8 @@ jobs:
       - name: Verify Docker availability
         run: docker version
 
-      - name: Run runtime integration suites
-        run: cargo test --locked --lib --tests
-
-      - name: Run ignored runtime integration suites
-        run: cargo test --locked --tests -- --ignored
+      # The five server-backed targets carry `required-features = ["client"]`, and cargo
+      # omits such a target silently, so without the feature this step lists no test and
+      # passes. One thread because a fresh runner pulls both images cold.
+      - name: Run the container-backed suites
+        run: cargo test --locked --features client --tests -- --ignored --test-threads=1
