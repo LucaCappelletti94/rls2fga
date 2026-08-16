@@ -3,6 +3,8 @@
 //! The assertions come from the request recorded in `plans/action-relations.md`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::BTreeSet;
+
 mod support;
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
@@ -111,16 +113,76 @@ const EVERY_SCHEMA: [(&str, &str); 9] = [
     ("restrictive only", RESTRICTIVE_ONLY),
 ];
 
-const EVERY_STATEMENT: [ActionStatement; 8] = [
-    ActionStatement::Select,
-    ActionStatement::Insert,
-    ActionStatement::Update,
-    ActionStatement::Delete,
-    ActionStatement::SelectForUpdate,
-    ActionStatement::InsertOnConflictUpdate,
-    ActionStatement::InsertReturning,
-    ActionStatement::UpdateWithoutWhere,
-];
+/// Every statement the report answers for, read off the report rather than restated.
+///
+/// A second copy of `EVERY_STATEMENT` lived here, so a ninth variant would have been
+/// missing from both the production array and the test that should have caught it.
+/// Deriving it is only safe because
+/// `the_report_answers_for_every_statement_the_enum_declares` pins this against the enum
+/// declaration, so a short list is a failing test rather than a quietly weaker sweep.
+fn every_statement() -> Vec<ActionStatement> {
+    let mut statements: Vec<ActionStatement> = report(ONE_CONDITION)
+        .iter()
+        .filter(|entry| entry.type_name == *"notes")
+        .map(|entry| entry.statement)
+        .collect();
+    statements.sort();
+    statements.dedup();
+    assert!(
+        !statements.is_empty(),
+        "a guarded table answers for something"
+    );
+    statements
+}
+
+/// The variant names `ActionStatement` declares, from the declaration itself.
+fn declared_statements() -> BTreeSet<String> {
+    let source = std::fs::read_to_string("src/generator/action_relations.rs")
+        .expect("the module is readable");
+    source
+        .split_once("pub enum ActionStatement {")
+        .expect("ActionStatement is declared")
+        .1
+        .split_once("\n}")
+        .expect("the declaration closes")
+        .0
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_suffix(','))
+        .filter(|name| {
+            name.starts_with(|ch: char| ch.is_ascii_uppercase())
+                && name.chars().all(char::is_alphanumeric)
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// A statement the enum declares but the report never answers for is invisible.
+///
+/// `EVERY_STATEMENT` in `action_relations.rs` is `[ActionStatement; 8]`, and its length
+/// is part of its type, so a ninth variant leaves it valid and the new statement is
+/// simply never reported. `command()` is an exhaustive match and forces one edit, which
+/// is what makes the omission look handled. This is the same shape as
+/// `every_pattern_has_a_readme_row`: read the variants off the declaration, which cannot
+/// drift from itself, and require the running report to cover each one.
+#[test]
+fn the_report_answers_for_every_statement_the_enum_declares() {
+    let declared = declared_statements();
+    assert!(
+        declared.len() >= 8,
+        "only {} variants parsed out of the enum, so this proves nothing: {declared:?}",
+        declared.len()
+    );
+
+    let answered: BTreeSet<String> = every_statement()
+        .iter()
+        .map(|statement| format!("{statement:?}"))
+        .collect();
+    assert_eq!(
+        answered, declared,
+        "the report answers for {answered:?} while the enum declares {declared:?}"
+    );
+}
 
 fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
     TranslatorBuilder::new()
@@ -186,7 +248,7 @@ fn named_relations(entry: &ActionRelations) -> Vec<String> {
 
 /// Every statement of one type the report refuses, in statement order.
 fn refused(entries: &[ActionRelations], type_name: &str) -> Vec<ActionStatement> {
-    EVERY_STATEMENT
+    every_statement()
         .into_iter()
         .filter(|statement| entry(entries, type_name, *statement).answer == ActionAnswer::Denied)
         .collect()
@@ -395,7 +457,7 @@ fn an_action_granting_nobody_is_answered_with_the_refusal() {
 #[test]
 fn a_table_the_database_does_not_restrict_reports_every_action_unrestricted() {
     let entries = report(UNRESTRICTED_PARENT);
-    for statement in EVERY_STATEMENT {
+    for statement in every_statement() {
         assert_eq!(
             entry(&entries, "projects", statement).answer,
             ActionAnswer::Unrestricted
@@ -424,7 +486,7 @@ fn every_type_the_model_names_rows_of_answers_every_statement() {
                 .collect();
             assert_eq!(
                 statements,
-                EVERY_STATEMENT.to_vec(),
+                every_statement(),
                 "{label}: {} is named as a row but answers {statements:?}",
                 naming.type_name
             );
@@ -449,7 +511,7 @@ fn a_type_that_is_no_table_has_no_entry() {
 /// The statement joins the notes, which name a SQL command and not a statement shape.
 #[test]
 fn every_statement_names_the_command_it_answers() {
-    let commands: Vec<&str> = EVERY_STATEMENT
+    let commands: Vec<&str> = every_statement()
         .iter()
         .map(ActionStatement::command)
         .collect();
@@ -536,7 +598,7 @@ fn a_table_that_grants_reads_refuses_every_other_statement() {
     );
     assert_eq!(
         refused(&entries, "notes"),
-        EVERY_STATEMENT
+        every_statement()
             .into_iter()
             .filter(|statement| *statement != ActionStatement::Select)
             .collect::<Vec<ActionStatement>>(),
@@ -603,7 +665,7 @@ fn a_fused_relation_granting_nobody_is_refused_rather_than_unanswerable() {
 #[test]
 fn a_restrictive_policy_alone_refuses_every_statement() {
     let entries = report(RESTRICTIVE_ONLY);
-    assert_eq!(refused(&entries, "notes"), EVERY_STATEMENT.to_vec());
+    assert_eq!(refused(&entries, "notes"), every_statement());
 }
 
 /// One grants everybody and the other grants nobody, and both arrive through this report.
@@ -651,7 +713,7 @@ fn no_statement_the_model_refuses_is_answered_with_a_relation_to_satisfy() {
 /// reported refused.
 #[test]
 fn every_fixture_refuses_exactly_the_statements_it_should() {
-    let all = EVERY_STATEMENT.to_vec();
+    let all = every_statement();
     let writes: Vec<ActionStatement> = all
         .iter()
         .copied()
