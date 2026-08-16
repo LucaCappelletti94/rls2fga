@@ -34,6 +34,7 @@ use rls2fga::generator::records::{
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
+use rls2fga::parser::identifiers::ColumnName;
 use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
 
@@ -266,23 +267,41 @@ fn records_from_descriptions(
         .collect()
 }
 
-/// Distinct non-null values of `column` in `table`, as text.
-fn distinct_keys(conn: &mut PgConnection, table: &str, column: &str) -> Vec<String> {
-    // Both names come from the description at runtime, so the typed DSL cannot
-    // name them.
+/// Distinct values of `columns` in `table`, one entry per key tuple, as text.
+///
+/// Raw SQL rather than the typed DSL, and it stays raw: the table and every column name
+/// are discovered from the description at runtime, so no `table!` can name them. The
+/// values come back as a JSON array of the same `::text` renderings a single-column read
+/// produced, so a compound key is one row here rather than a cross product.
+fn distinct_keys(conn: &mut PgConnection, table: &str, columns: &[ColumnName]) -> Vec<Vec<String>> {
+    let rendered: Vec<String> = columns
+        .iter()
+        .map(|column| format!("\"{}\"::text", column.as_str()))
+        .collect();
+    let not_null: Vec<String> = columns
+        .iter()
+        .map(|column| format!("\"{}\" IS NOT NULL", column.as_str()))
+        .collect();
     let sql = format!(
-        "SELECT DISTINCT \"{column}\"::text AS value FROM \"{table}\" \
-         WHERE \"{column}\" IS NOT NULL ORDER BY value"
+        "SELECT DISTINCT json_build_array({})::text AS value FROM \"{table}\" \
+         WHERE {} ORDER BY value",
+        rendered.join(", "),
+        not_null.join(" AND ")
     );
     let rows: Vec<KeyRow> = diesel::sql_query(&sql)
         .load(conn)
-        .unwrap_or_else(|error| panic!("failed to read keys of {table}.{column}: {error}"));
-    rows.into_iter().map(|row| row.value).collect()
+        .unwrap_or_else(|error| panic!("failed to read keys of {table}: {error}"));
+    rows.into_iter()
+        .map(|row| {
+            serde_json::from_str::<Vec<String>>(&row.value)
+                .unwrap_or_else(|error| panic!("key tuple {} is not an array: {error}", row.value))
+        })
+        .collect()
 }
 
-/// Run a bound query for one key.
+/// Run a bound query for one key tuple.
 ///
-/// The key is substituted as a literal rather than bound as a parameter, because
+/// Each value is substituted as a literal rather than bound as a parameter, because
 /// a literal carries `unknown` type and coerces to whatever the column is, while
 /// a text-typed parameter against a `uuid` column raises `operator does not
 /// exist`. What is under test is the SQL the description carries, not the wire
@@ -291,17 +310,26 @@ fn records_from_bound_query(
     outputs: &Outputs<'_, ParserDB>,
     conn: &mut PgConnection,
     bound: &BoundQuery,
-    key: &str,
+    key: &[String],
     conditional: bool,
 ) -> BTreeSet<Record> {
-    let literal = format!("'{}'", key.replace('\'', "''"));
-    let sql = bound.sql.replace("$1", &literal);
+    let literals: Vec<String> = key
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect();
+    // Highest placeholder first, so `$1` cannot eat the head of `$10`.
+    let mut sql = bound.sql.clone();
+    for (index, literal) in literals.iter().enumerate().rev() {
+        sql = sql.replace(&format!("${}", index + 1), literal);
+    }
     // The whole-table query and its bound replay have to agree on the context too, or a
     // consumer replaying a change would answer differently from the loader.
     records_of_sql(outputs, conn, &sql, conditional, || {
         format!(
-            "bound replay of {}.{} = {literal}",
-            bound.table, bound.key_column
+            "bound replay of {} {:?} = {}",
+            bound.table,
+            bound.key_columns,
+            literals.join(", ")
         )
     })
 }
@@ -324,12 +352,12 @@ fn assert_bound_queries_account_for_every_record(
     );
 
     for bound in bound_queries {
-        let keys = distinct_keys(conn, &bound.table, bound.key_column.as_str());
+        let keys = distinct_keys(conn, &bound.table, &bound.key_columns);
         assert!(
             !keys.is_empty(),
-            "{label}: no key values in {}.{}, so the bound query is untested for {}",
+            "{label}: no key values in {} {:?}, so the bound query is untested for {}",
             bound.table,
-            bound.key_column,
+            bound.key_columns,
             query.comment
         );
 
@@ -341,10 +369,10 @@ fn assert_bound_queries_account_for_every_record(
             let invented: Vec<_> = bound_records.difference(&whole).collect();
             assert!(
                 invented.is_empty(),
-                "{label}: the bound query on {}.{} = {key} returned records the \
+                "{label}: the bound query on {} {:?} = {key:?} returned records the \
                  whole-table query does not: {invented:?}\n{}",
                 bound.table,
-                bound.key_column,
+                bound.key_columns,
                 bound.sql
             );
             narrowed |= bound_records.len() < whole.len();
@@ -354,10 +382,10 @@ fn assert_bound_queries_account_for_every_record(
         assert_eq!(
             union,
             whole,
-            "{label}: replaying every key of {}.{} must reproduce the whole table for {}\n{}\n\
+            "{label}: replaying every key of {} {:?} must reproduce the whole table for {}\n{}\n\
              missing: {:?}",
             bound.table,
-            bound.key_column,
+            bound.key_columns,
             query.comment,
             bound.sql,
             whole.difference(&union).collect::<Vec<_>>(),
@@ -367,10 +395,10 @@ fn assert_bound_queries_account_for_every_record(
         // at least one key answered with less than everything.
         assert!(
             narrowed || keys.len() == 1,
-            "{label}: the bound query on {}.{} returned every record for every one of \
+            "{label}: the bound query on {} {:?} returned every record for every one of \
              its {} keys, so it does not bind:\n{}",
             bound.table,
-            bound.key_column,
+            bound.key_columns,
             keys.len(),
             bound.sql
         );

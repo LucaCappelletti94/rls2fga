@@ -75,35 +75,46 @@ fn described(table: &str, template: RecordTemplate, guards: Vec<Guard>) -> Recor
     }
 }
 
-/// Bind the whole-table query to one value, which every joining shape's query
-/// ends in a position to accept: each closes with a `WHERE` and a `;`.
-fn bind(sql: &str, table: &str, key_column: &ColumnName, predicate: &str) -> Option<BoundQuery> {
+/// Bind the whole-table query to one row, which every joining shape's query ends in a
+/// position to accept: each closes with a `WHERE` and a `;`.
+///
+/// `None` for an empty key, since a query bound to nothing names every row.
+fn bind(sql: &str, table: &str, key_columns: &[ColumnName], predicate: &str) -> Option<BoundQuery> {
     let body = sql.strip_suffix(';')?;
-    if !body.contains("WHERE ") {
+    if key_columns.is_empty() || !body.contains("WHERE ") {
         return None;
     }
     Some(BoundQuery {
         table: table.to_string(),
-        key_column: key_column.clone(),
+        key_columns: key_columns.to_vec(),
         sql: format!("{body}\nAND {predicate};"),
     })
 }
 
-/// The condition [`bind`] appends: one column compared to the bound value.
+/// The condition [`bind`] appends: every column compared to its own bound value.
 ///
-/// The only place a bound condition is spelled, and it escapes through the renderer's
-/// own [`quote_sql_identifier`] rather than wrapping the name in quotes, because a
-/// column whose stored name carries a `"` is not the column `"a"b"` names and
-/// `PostgreSQL` does not parse it.
+/// One equality per column, numbered in order, because a compound key names a row only
+/// when all of it is given. The only place a bound condition is spelled, and it escapes
+/// through the renderer's own [`quote_sql_identifier`] rather than wrapping the name in
+/// quotes, because a column whose stored name carries a `"` is not the column `"a"b"`
+/// names and `PostgreSQL` does not parse it.
 ///
 /// `qualifier` is the alias the rendered query gave the table, absent where it gave none.
 /// It is a generated alias rather than a schema name, so it needs no escaping.
-fn bound_eq(qualifier: Option<&str>, column: &ColumnName) -> String {
-    let quoted = quote_sql_identifier(column.as_str());
-    match qualifier {
-        Some(alias) => format!("{alias}.{quoted} = $1"),
-        None => format!("{quoted} = $1"),
-    }
+fn bound_eq(qualifier: Option<&str>, columns: &[ColumnName]) -> String {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let quoted = quote_sql_identifier(column.as_str());
+            let placeholder = index + 1;
+            match qualifier {
+                Some(alias) => format!("{alias}.{quoted} = ${placeholder}"),
+                None => format!("{quoted} = ${placeholder}"),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" AND ")
 }
 
 /// The whole-table query for this one source, which is what a bound query extends.
@@ -257,24 +268,16 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if let Some(principal) = team_principal {
                 read.push(principal.table.as_str());
             }
-            let [first_key] = pk_cols.as_slice() else {
-                return None;
-            };
             Some(RecordDescription {
                 tables: tables(&read),
                 derivation: RecordDerivation::Joined {
                     queries: [
-                        bind(
-                            &sql,
-                            table,
-                            first_key,
-                            &bound_eq(Some("resource"), first_key),
-                        ),
+                        bind(&sql, table, pk_cols, &bound_eq(Some("resource"), pk_cols)),
                         bind(
                             &sql,
                             grant_table,
-                            grant_resource_col,
-                            &bound_eq(Some("og"), grant_resource_col),
+                            core::slice::from_ref(grant_resource_col),
+                            &bound_eq(Some("og"), core::slice::from_ref(grant_resource_col)),
                         ),
                     ]
                     .into_iter()
@@ -317,9 +320,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
-                        queries: bind(&sql, join_table, fk_col, &bound_eq(None, fk_col))
-                            .into_iter()
-                            .collect(),
+                        queries: bind(
+                            &sql,
+                            join_table,
+                            core::slice::from_ref(fk_col),
+                            &bound_eq(None, core::slice::from_ref(fk_col)),
+                        )
+                        .into_iter()
+                        .collect(),
                         reason: format!(
                             "the membership row carries a residual predicate only SQL can \
                              evaluate: {predicate}"
@@ -422,6 +430,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // them and the flag downstream has to say so.
         TupleSource::ConditionalAttributeGate {
             table,
+            pk_cols,
             column,
             condition,
             ..
@@ -430,7 +439,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(RecordDescription {
                 tables: tables(&[table]),
                 derivation: RecordDerivation::Joined {
-                    queries: bind(&sql, table, column, &bound_eq(None, column))
+                    // Keyed, not guarded-column keyed: the change arrives on this table's
+                    // own row, and `starts_at = $1` would answer for every row sharing a
+                    // timestamp while naming none of them.
+                    queries: bind(&sql, table, pk_cols, &bound_eq(None, pk_cols))
                         .into_iter()
                         .collect(),
                     reason: format!(
@@ -496,9 +508,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(RecordDescription {
                 tables: tables(&[join_table]),
                 derivation: RecordDerivation::Joined {
-                    queries: bind(&sql, join_table, fk_col, &bound_eq(None, fk_col))
-                        .into_iter()
-                        .collect(),
+                    queries: bind(
+                        &sql,
+                        join_table,
+                        core::slice::from_ref(fk_col),
+                        &bound_eq(None, core::slice::from_ref(fk_col)),
+                    )
+                    .into_iter()
+                    .collect(),
                     reason: format!(
                         "the grant is recorded on {join_table}, whose {member_col} the \
                          request compares against at check time through condition \
@@ -538,9 +555,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
                     derivation: RecordDerivation::Joined {
-                        queries: bind(&sql, member_table, user_col, &bound_eq(None, user_col))
-                            .into_iter()
-                            .collect(),
+                        queries: bind(
+                            &sql,
+                            member_table,
+                            core::slice::from_ref(user_col),
+                            &bound_eq(None, core::slice::from_ref(user_col)),
+                        )
+                        .into_iter()
+                        .collect(),
                         reason: format!(
                             "the member row carries a residual predicate only SQL can \
                              evaluate: {predicate}"
@@ -574,20 +596,16 @@ fn joined_ownership(
     principal_pk_col: &ColumnName,
     reason: &str,
 ) -> RecordDescription {
-    // A joined description binds its query to one column, so a compound key has
-    // no single value to bind and the shape falls back to a query per table.
-    let fallback = ColumnName::default();
-    let key_column = pk_cols.first().unwrap_or(&fallback);
     RecordDescription {
         tables: tables(&[table, principal_table]),
         derivation: RecordDerivation::Joined {
             queries: [
-                bind(sql, table, key_column, &bound_eq(None, key_column)),
+                bind(sql, table, pk_cols, &bound_eq(None, pk_cols)),
                 bind(
                     sql,
                     principal_table,
-                    principal_pk_col,
-                    &bound_eq(None, owner_col),
+                    core::slice::from_ref(principal_pk_col),
+                    &bound_eq(None, core::slice::from_ref(owner_col)),
                 ),
             ]
             .into_iter()

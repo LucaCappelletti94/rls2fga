@@ -382,6 +382,103 @@ fn no_relation_reports_the_same_shape_twice() {
     assert!(checked > 0, "no fixture produced a shape");
 }
 
+/// A role threshold over a table whose key spans two columns, which is the shape that
+/// separates binding the whole key from binding its first column.
+const COMPOSITE_KEY_GRANTS: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE readings (tenant_id TEXT, reading_id TEXT, owner_id TEXT,
+    PRIMARY KEY (tenant_id, reading_id));
+CREATE TABLE owner_grants (granted_owner_id TEXT, grantee_owner_id TEXT, role_id INT);
+CREATE FUNCTION get_owner_role(a TEXT, b TEXT) RETURNS INT LANGUAGE sql STABLE
+    AS 'SELECT 1';
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_sel ON readings FOR SELECT
+    USING (get_owner_role(current_user, owner_id) >= 2);
+";
+
+/// A bound query on the object's own table has to name one row of it.
+///
+/// The two public surfaces have to agree: `row_naming` tells a consumer which columns
+/// key a row of a type, and a `BoundQuery` on that type's own table has to bind exactly
+/// those. Binding a prefix of a compound key answers for every row sharing the prefix,
+/// so a consumer reconciling one row would be handed a whole tenant's records.
+///
+/// A bound query on some **other** table is a different contract and is excluded here.
+/// A join table's row is deliberately replayed by the object it names rather than by its
+/// own key, because a deleted row cannot be found by its key at all, and
+/// `a_share_recorded_elsewhere_is_reported_as_needing_a_query` pins that.
+#[test]
+fn a_bound_query_on_the_guarded_table_binds_its_whole_key() {
+    let mut compound = 0usize;
+    let mut checked = 0usize;
+
+    let mut cases: Vec<(String, ParserDB, FunctionRegistry)> = fixture_names()
+        .into_iter()
+        .map(|fixture| {
+            let (_, db, registry) = support::try_load_fixture_classified(&fixture);
+            (fixture, db, registry)
+        })
+        .collect();
+    let (db, registry) = parsed(COMPOSITE_KEY_GRANTS, GRANT_REGISTRY);
+    cases.push(("composite_key_grants".to_string(), db, registry));
+
+    for (name, db, registry) in &cases {
+        let planned = Translation::plan(
+            classify_policies(db, registry),
+            db,
+            registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+        // Keyed by type, not by table: the same table is the object's own in one shape
+        // and the join table of another type's shape in the next.
+        let keys: Vec<(String, String, Vec<ColumnName>)> = planned
+            .row_naming()
+            .into_iter()
+            .map(|naming| {
+                let columns = naming
+                    .key
+                    .parts()
+                    .iter()
+                    .filter_map(|part| match part {
+                        ValueSource::Column(column) => Some(column.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                (naming.table, naming.type_name, columns)
+            })
+            .collect();
+
+        for entry in planned.relations() {
+            for shape in &entry.shapes {
+                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                    continue;
+                };
+                for bound in queries {
+                    let Some((.., key)) = keys.iter().find(|(table, type_name, _)| {
+                        *table == bound.table && type_name.as_str() == entry.type_name.as_str()
+                    }) else {
+                        continue;
+                    };
+                    checked += 1;
+                    compound += usize::from(key.len() > 1);
+                    assert_eq!(
+                        &bound.key_columns, key,
+                        "{name}: {}#{} binds {:?} for a row of {} that {:?} names",
+                        entry.type_name, entry.relation, bound.key_columns, bound.table, key
+                    );
+                }
+            }
+        }
+    }
+
+    assert!(checked > 0, "no bound query names a table the model keys");
+    assert!(
+        compound > 0,
+        "no case binds a compound key, so this proves nothing"
+    );
+}
+
 /// The guarantee the describer owes: a bound query is the whole-table query plus one
 /// condition, so the two cannot drift into answering differently.
 #[test]
@@ -689,7 +786,7 @@ fn a_holder_member_list_with_a_residual_predicate_joins() {
     );
     assert_eq!(queries.len(), 1, "one table carries the change");
     assert_eq!(queries[0].table, "reviewers");
-    assert_eq!(queries[0].key_column, "user_id");
+    assert_eq!(queries[0].key_columns, ["user_id"]);
     assert!(
         queries[0].sql.contains("\"user_id\" = $1"),
         "the query binds the changed row: {}",
@@ -1863,7 +1960,8 @@ fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
     };
     assert_eq!(query.table, "paper_shares");
     assert_eq!(
-        query.key_column, "paper_id",
+        query.key_columns,
+        ["paper_id"],
         "a changed share row is replayed by the paper it names"
     );
 }

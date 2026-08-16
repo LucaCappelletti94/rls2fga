@@ -284,9 +284,12 @@ pub struct RecordContext {
 pub struct BoundQuery {
     /// Table the change arrived on.
     pub table: String,
-    /// Column the query binds.
-    pub key_column: ColumnName,
-    /// SQL taking the key value as `$1`.
+    /// Columns the query binds, in the order its placeholders take them.
+    ///
+    /// The whole key, so the query names one row. Binding a prefix of a compound key
+    /// answers for every row sharing that prefix, which is a different question.
+    pub key_columns: Vec<ColumnName>,
+    /// SQL taking the key values as `$1` through `$n`, in `key_columns` order.
     pub sql: String,
 }
 
