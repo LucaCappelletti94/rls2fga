@@ -17,7 +17,7 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::RowValues;
+use rls2fga::generator::records::{BoundQuery, RecordDerivation, RowValues};
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 
@@ -4769,6 +4769,469 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
     assert!(
         failures.is_empty(),
         "PostgreSQL/OpenFGA partitioned-table parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+// ── The replay of one changed row, against both real services ─────────────────
+
+mod clock_gate_schema {
+    diesel::table! {
+        readings (tenant_id, reading_id) {
+            tenant_id -> diesel::sql_types::Integer,
+            reading_id -> diesel::sql_types::Integer,
+        }
+    }
+}
+
+/// Keys of the readings the plain login role reads, rendered as the objects name them.
+fn postgres_readable_readings(conn: &mut PgConnection) -> BTreeSet<String> {
+    use clock_gate_schema::readings;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching has no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        let keys: Vec<(i32, i32)> = readings::table
+            .select((readings::tenant_id, readings::reading_id))
+            .load(conn)?;
+        Ok(keys
+            .into_iter()
+            .map(|(tenant, reading)| format!("{tenant}|{reading}"))
+            .collect())
+    })
+    .expect("reading the guarded table should succeed")
+}
+
+/// One replay, decoded and turned into tuples exactly as the replay says to.
+///
+/// This is the consumer's own branch: it holds the bound query and not the whole-table
+/// load it extends, so whether a row carries a condition is read from this query alone. A
+/// replay that projects the two extra columns while saying it does not yields plain
+/// tuples here, and the service refuses them, which is the failure the field prevents.
+///
+/// Raw SQL because the generated text is the artifact under test, and its placeholders
+/// take literals rather than bound parameters because a literal carries `unknown` type and
+/// coerces to whatever the column is.
+fn tuples_from_replay(
+    conn: &mut PgConnection,
+    replay: &BoundQuery,
+    key: &[&str],
+) -> Vec<(String, openfga_client::client::TupleKey)> {
+    assert_eq!(
+        key.len(),
+        replay.key_columns.len(),
+        "one value per column the replay binds"
+    );
+    let mut sql = replay.sql.clone();
+    // Highest placeholder first, so `$1` cannot eat the head of `$10`.
+    for (index, value) in key.iter().enumerate().rev() {
+        sql = sql.replace(&format!("${}", index + 1), value);
+    }
+    let failed = |error: diesel::result::Error| -> ! {
+        panic!("The replay failed in PostgreSQL 18:\n{sql}\nError: {error}")
+    };
+    let Some(condition) = replay.condition.as_deref() else {
+        let rows: Vec<TupleRow> = diesel::sql_query(&sql)
+            .load(conn)
+            .unwrap_or_else(|error| failed(error));
+        return rows
+            .into_iter()
+            .map(|row| {
+                let tuple = support::openfga::make_tuple(&row.object, &row.relation, &row.subject);
+                (row.object, tuple)
+            })
+            .collect();
+    };
+    let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&sql)
+        .load(conn)
+        .unwrap_or_else(|error| failed(error));
+    rows.into_iter()
+        .map(|row| {
+            assert_eq!(
+                row.condition, condition,
+                "the replay names {condition} while its rows carry {}",
+                row.condition
+            );
+            let tuple = support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context,
+            );
+            (row.object, tuple)
+        })
+        .collect()
+}
+
+/// A clock guard is settled at check time, so no row decides its records and a consumer
+/// watching the change stream answers a change by replaying the row it arrived on. Here
+/// the replay is the only loader: nothing runs the whole-table query, so a replay that
+/// projects the condition while claiming three columns loses it and writes an
+/// unconditional tuple, which is the wrong allow this case exists to catch.
+///
+/// Two-sided by construction: each tenant holds a reading its guard admits and one it
+/// refuses, so a model granting everything or denying everything fails. Each replay is
+/// also required to answer for its own row alone, so binding a prefix of the compound key
+/// fails rather than passing on a union that happens to match.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn clock_gated_replay_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE readings (
+    tenant_id INT,
+    reading_id INT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, reading_id)
+);
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
+";
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the clock-gate schema on PostgreSQL 18");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON readings TO app_user;")
+        .expect("Failed to create the querying role");
+    // One row each side of now() per tenant, so each tenant's guard admits one and refuses
+    // one, and a replay keyed on the tenant alone would answer for both.
+    conn.batch_execute(
+        "INSERT INTO readings (tenant_id, reading_id, starts_at) VALUES
+            (7, 9, now() - interval '1 day'),
+            (7, 10, now() + interval '1 day'),
+            (8, 9, now() - interval '1 day'),
+            (8, 10, now() + interval '1 day');",
+    )
+    .expect("Failed to seed the guarded rows");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let replays: Vec<&BoundQuery> = tuple_queries
+        .iter()
+        .filter_map(|query| match &query.description.as_ref()?.derivation {
+            RecordDerivation::Joined { queries, .. } => Some(queries),
+            RecordDerivation::FromRow { .. } => None,
+            other => panic!("unhandled derivation {other:?}"),
+        })
+        .flatten()
+        .collect();
+    let [replay] = replays.as_slice() else {
+        panic!("one replay, one table a change may arrive on, got {replays:?}");
+    };
+    assert_eq!(
+        replay.key_columns,
+        ["tenant_id", "reading_id"],
+        "the whole key names one row"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "clock-replay-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let seeded = [("7", "9"), ("7", "10"), ("8", "9"), ("8", "10")];
+    let mut writes = Vec::new();
+    for (tenant, reading) in seeded {
+        let replayed = tuples_from_replay(&mut conn, replay, &[tenant, reading]);
+        // The replay answers for the row it was bound to and no other, which is what a
+        // prefix of the key cannot do.
+        let [(object, tuple)] = replayed.as_slice() else {
+            panic!(
+                "the replay of {tenant},{reading} returned {} rows",
+                replayed.len()
+            );
+        };
+        assert_eq!(
+            object,
+            &format!("readings:{tenant}|{reading}"),
+            "the replay answers for the row it was bound to"
+        );
+        writes.push(tuple.clone());
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let context = serde_json::json!({ "request_time": postgres_now(&mut conn) });
+    let readable = postgres_readable_readings(&mut conn);
+    assert_eq!(
+        readable.len(),
+        2,
+        "one reading per tenant has started, PostgreSQL showed {readable:?}"
+    );
+
+    let mut failures = Vec::new();
+    let (mut granted, mut denied) = (0usize, 0usize);
+    for (tenant, reading) in seeded {
+        let key = format!("{tenant}|{reading}");
+        let expected = readable.contains(&key);
+        if expected {
+            granted += 1;
+        } else {
+            denied += 1;
+        }
+        let actual = support::openfga::check_allowed_with_context(
+            &client,
+            "user:anyone",
+            "can_select",
+            &format!("readings:{key}"),
+            context.clone(),
+        )
+        .await;
+        if expected != actual {
+            failures.push(format!(
+                "readings:{key}: postgres={expected}, openfga={actual}"
+            ));
+        }
+    }
+
+    assert!(granted == 2 && denied == 2, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA clock-gated replay parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The other conditional shape no row decides, loaded only by replaying a changed row.
+///
+/// `shared_paper_parity_postgres18_and_openfga` covers the same fixture through the
+/// whole-table load, and `clock_gated_replay_parity_postgres18_and_openfga` covers a replay
+/// keyed on the guarded table's own key. This is the remaining corner: a replay keyed on a
+/// foreign column, whose rows carry a condition. One changed share replays every share of
+/// the paper it names, since the object is the paper and its grant set is the union over
+/// its shares.
+///
+/// Two-sided by construction: the caller states include one holding the shared key and one
+/// without it, and the owner arm is loaded too, so a model keeping one arm or granting
+/// everything cannot pass.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn shared_paper_replay_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    conn.batch_execute(&support::read_fixture_sql("connetto_capability"))
+        .expect("Failed to apply the connetto capability schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    let papers: Vec<String> = SEEDED_PAPERS
+        .iter()
+        .map(|(id, owner)| format!("({id}, '{owner}')"))
+        .collect();
+    let shares: Vec<String> = SEEDED_SHARES
+        .iter()
+        .map(|(paper, viewer)| format!("({paper}, '{viewer}')"))
+        .collect();
+    conn.batch_execute(&format!(
+        "INSERT INTO papers (id, owner) VALUES {}; \
+         INSERT INTO paper_shares (paper_id, viewer) VALUES {};",
+        papers.join(", "),
+        shares.join(", ")
+    ))
+    .expect("Failed to seed the papers and shares");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    let share_arm = tuple_queries
+        .iter()
+        .find(|query| {
+            query.condition.is_some()
+                && query
+                    .description
+                    .as_ref()
+                    .is_some_and(|description| !description.is_pure())
+        })
+        .expect("the share arm is answered by querying and its rows carry a condition");
+    let RecordDerivation::Joined { queries: bound, .. } = &share_arm
+        .description
+        .as_ref()
+        .expect("the query carries a description")
+        .derivation
+    else {
+        panic!("the share arm is answered by querying");
+    };
+    let [replay] = bound.as_slice() else {
+        panic!("one replay, one table a change may arrive on: {bound:?}");
+    };
+    assert_eq!(
+        replay.key_columns,
+        ["paper_id"],
+        "a changed share is replayed by the paper it names"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "shared-paper-replay").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    // The share arm comes only from the replay, one per changed share row. Every other query
+    // loads whole, so the owner arm and the sharing table's own rows still answer.
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for (paper, _) in SEEDED_SHARES {
+        let replayed = tuples_from_replay(&mut conn, replay, &[&paper.to_string()]);
+        let [(object, tuple)] = replayed.as_slice() else {
+            panic!(
+                "the replay of paper {paper} returned {} rows",
+                replayed.len()
+            );
+        };
+        assert_eq!(
+            object,
+            &format!("papers:{paper}"),
+            "the replay names the paper whose grant set changed"
+        );
+        writes.push(tuple.clone());
+    }
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--")
+            || core::ptr::eq(query, share_arm)
+            || query
+                .description
+                .as_ref()
+                .is_some_and(|description| !description.is_pure())
+        {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(&mut conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut share_only = 0usize;
+    let mut denied = 0usize;
+    for (user_id, subjects) in PAPER_CALLERS {
+        let visible = papers_visible_to(&mut conn, user_id, subjects);
+        let owner_arm = papers_visible_to(&mut conn, user_id, None);
+        share_only += visible.difference(&owner_arm).count();
+
+        let caller = user_id.unwrap_or("nobody");
+        for (id, _) in SEEDED_PAPERS {
+            let expected = visible.contains(&id);
+            if !expected {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                &format!("user:{caller}"),
+                "can_select",
+                &format!("papers:{id}"),
+                serde_json::json!({ "app_subjects": caller_subject_list(subjects) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "papers:{id} for user_id={user_id:?} subjects={subjects:?}: \
+                     postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        share_only > 0,
+        "no paper is readable by a shared key alone, so the replayed arm carried nothing"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA shared-paper replay parity mismatches:\n{}",
         failures.join("\n")
     );
 }

@@ -16,7 +16,7 @@ use crate::generator::records::{
     RecordTemplate, SubjectKey, ValueSource,
 };
 use crate::generator::tuple_generator::{
-    quote_sql_identifier, render_tuple_source_inner, resolve_bridge_columns,
+    quote_sql_identifier, render_tuple_source_inner, resolve_bridge_columns, TupleQuery,
 };
 use crate::generator::tuple_generator::{NameContext, UnboundedColumns};
 use crate::generator::well_known::{
@@ -78,9 +78,17 @@ fn described(table: &str, template: RecordTemplate, guards: Vec<Guard>) -> Recor
 /// Bind the whole-table query to one row, which every joining shape's query ends in a
 /// position to accept: each closes with a `WHERE` and a `;`.
 ///
+/// Takes the rendered query rather than its text, so the condition its rows carry cannot
+/// be separated from the SQL that projects it.
+///
 /// `None` for an empty key, since a query bound to nothing names every row.
-fn bind(sql: &str, table: &str, key_columns: &[ColumnName], predicate: &str) -> Option<BoundQuery> {
-    let body = sql.strip_suffix(';')?;
+fn bind(
+    query: &TupleQuery,
+    table: &str,
+    key_columns: &[ColumnName],
+    predicate: &str,
+) -> Option<BoundQuery> {
+    let body = query.sql.strip_suffix(';')?;
     if key_columns.is_empty() || !body.contains("WHERE ") {
         return None;
     }
@@ -88,6 +96,7 @@ fn bind(sql: &str, table: &str, key_columns: &[ColumnName], predicate: &str) -> 
         table: table.to_string(),
         key_columns: key_columns.to_vec(),
         sql: format!("{body}\nAND {predicate};"),
+        condition: query.condition.clone(),
     })
 }
 
@@ -121,25 +130,24 @@ fn bound_eq(qualifier: Option<&str>, columns: &[ColumnName]) -> String {
 ///
 /// `None` where the renderer stands a comment in place of a query, since a comment
 /// loads nothing and there is no text to bind.
-fn rendered_sql<DB: DatabaseLike>(
+fn rendered<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
     only_own_rows: bool,
     db: &DB,
-) -> Option<String> {
-    // Only the SQL text is wanted here, and it is rendered per source rather than per
-    // schema, so the bounds are resolved locally. `describe` runs once per source too,
-    // so this is not on the path the cost probe measures.
+) -> Option<TupleQuery> {
+    // Rendered per source rather than per schema, so the bounds are resolved locally.
+    // `describe` runs once per source too, so this is not on the path the cost probe
+    // measures.
     let bounds = UnboundedColumns::resolve(db);
-    let sql = render_tuple_source_inner(
+    let query = render_tuple_source_inner(
         source,
         owner_type,
         only_own_rows,
         NameContext::new(&bounds, db),
         db,
-    )?
-    .sql;
-    (!sql.trim_start().starts_with("--")).then_some(sql)
+    )?;
+    (!query.sql.trim_start().starts_with("--")).then_some(query)
 }
 
 /// One value source per key column, in declared order.
@@ -222,7 +230,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_table,
             user_pk_col,
         } => Some(joined_ownership(
-            &rendered_sql(source, owner_type, only_own_rows, db)?,
+            &rendered(source, owner_type, only_own_rows, db)?,
             table,
             pk_cols,
             owner_col,
@@ -238,7 +246,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             team_table,
             team_pk_col,
         } => Some(joined_ownership(
-            &rendered_sql(source, owner_type, only_own_rows, db)?,
+            &rendered(source, owner_type, only_own_rows, db)?,
             table,
             pk_cols,
             owner_col,
@@ -260,7 +268,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if role_cases.is_empty() {
                 return None;
             }
-            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+            let query = rendered(source, owner_type, only_own_rows, db)?;
             let mut read = vec![table.as_str(), grant_table.as_str()];
             if let Some(principal) = user_principal {
                 read.push(principal.table.as_str());
@@ -272,9 +280,9 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 tables: tables(&read),
                 derivation: RecordDerivation::Joined {
                     queries: [
-                        bind(&sql, table, pk_cols, &bound_eq(Some("resource"), pk_cols)),
+                        bind(&query, table, pk_cols, &bound_eq(Some("resource"), pk_cols)),
                         bind(
-                            &sql,
+                            &query,
                             grant_table,
                             core::slice::from_ref(grant_resource_col),
                             &bound_eq(Some("og"), core::slice::from_ref(grant_resource_col)),
@@ -316,12 +324,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             if let Some(predicate) = extra_predicate_sql {
-                let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+                let query = rendered(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
                         queries: bind(
-                            &sql,
+                            &query,
                             join_table,
                             core::slice::from_ref(fk_col),
                             &bound_eq(None, core::slice::from_ref(fk_col)),
@@ -435,14 +443,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             condition,
             ..
         } => {
-            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+            let query = rendered(source, owner_type, only_own_rows, db)?;
             Some(RecordDescription {
                 tables: tables(&[table]),
                 derivation: RecordDerivation::Joined {
                     // Keyed, not guarded-column keyed: the change arrives on this table's
                     // own row, and `starts_at = $1` would answer for every row sharing a
                     // timestamp while naming none of them.
-                    queries: bind(&sql, table, pk_cols, &bound_eq(None, pk_cols))
+                    queries: bind(&query, table, pk_cols, &bound_eq(None, pk_cols))
                         .into_iter()
                         .collect(),
                     reason: format!(
@@ -504,12 +512,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             condition,
             ..
         } => {
-            let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+            let query = rendered(source, owner_type, only_own_rows, db)?;
             Some(RecordDescription {
                 tables: tables(&[join_table]),
                 derivation: RecordDerivation::Joined {
                     queries: bind(
-                        &sql,
+                        &query,
                         join_table,
                         core::slice::from_ref(fk_col),
                         &bound_eq(None, core::slice::from_ref(fk_col)),
@@ -551,12 +559,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             extra_predicate_sql,
         } => {
             if let Some(predicate) = extra_predicate_sql {
-                let sql = rendered_sql(source, owner_type, only_own_rows, db)?;
+                let query = rendered(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
                     derivation: RecordDerivation::Joined {
                         queries: bind(
-                            &sql,
+                            &query,
                             member_table,
                             core::slice::from_ref(user_col),
                             &bound_eq(None, core::slice::from_ref(user_col)),
@@ -588,7 +596,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 /// The two role-ownership shapes differ only in the principal table they filter
 /// against, so one place builds both descriptions.
 fn joined_ownership(
-    sql: &str,
+    query: &TupleQuery,
     table: &str,
     pk_cols: &[ColumnName],
     owner_col: &ColumnName,
@@ -600,9 +608,9 @@ fn joined_ownership(
         tables: tables(&[table, principal_table]),
         derivation: RecordDerivation::Joined {
             queries: [
-                bind(sql, table, pk_cols, &bound_eq(None, pk_cols)),
+                bind(query, table, pk_cols, &bound_eq(None, pk_cols)),
                 bind(
-                    sql,
+                    query,
                     principal_table,
                     core::slice::from_ref(principal_pk_col),
                     &bound_eq(None, core::slice::from_ref(owner_col)),

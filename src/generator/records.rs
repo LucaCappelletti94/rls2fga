@@ -291,6 +291,10 @@ pub struct BoundQuery {
     pub key_columns: Vec<ColumnName>,
     /// SQL taking the key values as `$1` through `$n`, in `key_columns` order.
     pub sql: String,
+    /// Condition the rows carry, when the query yields the two extra columns a
+    /// conditional tuple needs. `None` means three columns and no condition, so a
+    /// caller replaying one row knows the shape without parsing the SQL.
+    pub condition: Option<String>,
 }
 
 /// Whether a description's records follow from one row.
