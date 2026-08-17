@@ -792,6 +792,11 @@ fn a_holder_member_list_with_a_residual_predicate_joins() {
         "the query binds the changed row: {}",
         queries[0].sql
     );
+    assert_eq!(
+        queries[0].condition, None,
+        "a member row grants outright, so the replay projects three columns:\n{}",
+        queries[0].sql
+    );
 }
 
 /// A shared holder object is not decided by one row of its member table, since a
@@ -1963,6 +1968,221 @@ fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
         query.key_columns,
         ["paper_id"],
         "a changed share row is replayed by the paper it names"
+    );
+    let condition = query
+        .condition
+        .as_deref()
+        .expect("the request supplies the viewer, so the replay carries a condition");
+    assert!(
+        query.sql.contains(&format!("'{condition}' AS condition")),
+        "the replay names the condition its own SQL projects:\n{}",
+        query.sql
+    );
+}
+
+/// A clock guard is settled by the request rather than the row, so the records are
+/// reached by replaying the changed row, and that replay projects the two extra columns a
+/// conditional tuple needs. Keyed on a whole compound key, which is the shape a consumer
+/// holding one row has no other way to identify.
+const CLOCK_GATE_COMPOUND_KEY: &str = "
+CREATE TABLE readings (
+    tenant_id INT,
+    reading_id INT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, reading_id)
+);
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
+";
+
+/// A consumer holds the bound query and not the whole-table one it came from, so the
+/// bound query has to name the condition its own rows carry. Reading five columns as
+/// three drops the condition and takes a conditional wildcard at face value.
+#[test]
+fn a_clock_gated_replay_names_the_condition_its_rows_carry() {
+    let (db, registry) = parsed(CLOCK_GATE_COMPOUND_KEY, "{}");
+    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let reported = planned.relations();
+    let gate = reported
+        .iter()
+        .find(|entry| {
+            entry.type_name.as_str() == "readings" && entry.relation.as_str().starts_with("gate_")
+        })
+        .expect("a clock guard mints a gate relation on readings");
+    let [shape] = gate.shapes.as_slice() else {
+        panic!("the gate is filled by one shape, got {:?}", gate.shapes);
+    };
+    let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+        panic!(
+            "the request settles the guard, so no row decides it: {:?}",
+            shape.derivation
+        );
+    };
+    let [query] = queries.as_slice() else {
+        panic!("one bound query, one table a change may arrive on: {queries:?}");
+    };
+    assert_eq!(
+        query.key_columns,
+        ["tenant_id", "reading_id"],
+        "the whole key names one row"
+    );
+
+    let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
+        .expect("the model serializes");
+    let declared: Vec<String> = conditional_wildcards(&json)
+        .into_iter()
+        .filter(|(type_name, relation, _)| {
+            type_name == "readings" && relation == gate.relation.as_str()
+        })
+        .map(|(_, _, condition)| condition)
+        .collect();
+    let [condition] = declared.as_slice() else {
+        panic!("the gate relation names one condition, got {declared:?}");
+    };
+    assert_eq!(
+        query.condition.as_deref(),
+        Some(condition.as_str()),
+        "the replay names the condition the model declares"
+    );
+    assert!(
+        query.sql.contains(&format!("'{condition}' AS condition")),
+        "and the condition its own SQL projects:\n{}",
+        query.sql
+    );
+}
+
+/// The named shapes above pin two cases, and a bound query reaches a consumer wherever
+/// one is emitted. A field disagreeing with its own SQL is a wrong decode either way: too
+/// few columns raises on the read, too many silently drop the condition.
+#[test]
+fn every_bound_query_agrees_with_its_own_projection() {
+    let (mut conditional, mut plain) = (0usize, 0usize);
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let reported = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .relations();
+        for entry in &reported {
+            for shape in &entry.shapes {
+                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                    continue;
+                };
+                for query in queries {
+                    let named = format!("{fixture}: {}#{}", entry.type_name, entry.relation);
+                    if let Some(condition) = &query.condition {
+                        conditional += 1;
+                        assert!(
+                            query.sql.contains(&format!("'{condition}' AS condition")),
+                            "{named} names condition '{condition}' for a replay that does \
+                             not project it:\n{}",
+                            query.sql
+                        );
+                    } else {
+                        plain += 1;
+                        assert!(
+                            !query.sql.contains(" AS condition"),
+                            "{named} projects a condition its replay does not name:\n{}",
+                            query.sql
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        conditional > 0 && plain > 0,
+        "the corpus must exercise both projections, saw {conditional} conditional and \
+         {plain} plain"
+    );
+}
+
+/// The two sibling statements of the same fact, over every schema the corpus carries.
+///
+/// A loader reads a result row the way [`TupleQuery::condition`] says to, and an evaluator
+/// decides whether a record carries a request context from the template's own field. Both
+/// are minted apart from the SQL they describe, so either can drift into a silent wrong
+/// decode: claiming three columns drops the condition and takes a conditional wildcard at
+/// face value, and claiming five raises on a query that projects three.
+///
+/// The replay's own statement is swept by
+/// `every_bound_query_agrees_with_its_own_projection`. This covers the other two, so no
+/// member of the family rests on the fixtures a database-backed test happens to run.
+#[test]
+fn every_tuple_query_states_the_shape_of_its_own_rows() {
+    let (mut conditional, mut plain) = (0usize, 0usize);
+    let (mut carried, mut bare) = (0usize, 0usize);
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let outputs = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps();
+        for query in outputs.tuple_queries() {
+            let named = format!("{fixture}: {}", query.comment.trim());
+            if query.sql.trim_start().starts_with("--") {
+                assert!(
+                    query.condition.is_none(),
+                    "{named} loads nothing, so it cannot claim a projection"
+                );
+                continue;
+            }
+            if let Some(condition) = &query.condition {
+                conditional += 1;
+                assert!(
+                    query.sql.contains(&format!("'{condition}' AS condition")),
+                    "{named} names condition '{condition}' for a load that does not project \
+                     it:\n{}",
+                    query.sql
+                );
+            } else {
+                plain += 1;
+                assert!(
+                    !query.sql.contains(" AS condition"),
+                    "{named} projects a condition its load does not name:\n{}",
+                    query.sql
+                );
+            }
+
+            // The same fact as the record says it, for the shapes one row decides.
+            let Some(RecordDerivation::FromRow { template, .. }) =
+                query.description.as_ref().map(|found| &found.derivation)
+            else {
+                continue;
+            };
+            match (&template.context, &query.condition) {
+                (Some(context), Some(condition)) => {
+                    carried += 1;
+                    assert_eq!(
+                        &context.condition, condition,
+                        "{named}: the record names condition '{}' and its own query names \
+                         '{condition}', so the two grant under different rules",
+                        context.condition
+                    );
+                }
+                (None, None) => bare += 1,
+                (context, condition) => panic!(
+                    "{named}: the record says {context:?} while its own query says \
+                     {condition:?}, so one of them is wrong about every row"
+                ),
+            }
+        }
+    }
+    assert!(
+        conditional > 0 && plain > 0,
+        "the corpus must exercise both loads, saw {conditional} conditional and {plain} plain"
+    );
+    assert!(
+        carried > 0 && bare > 0,
+        "and both records, saw {carried} carrying a context and {bare} bare"
     );
 }
 

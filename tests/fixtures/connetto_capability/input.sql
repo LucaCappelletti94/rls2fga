@@ -3,10 +3,9 @@
 --
 -- `papers_p` is one policy carrying two arms: ownership by the caller's identity, and a
 -- share row whose viewer is in the caller's held set. `shares_read` is the same set
--- against a column of the guarded table with no join, and it is the shape that needs a
--- row identity `paper_shares` does not have: its key spans two columns, so no tuple can
--- name one of its rows. `shares_insert` delegates to the parent's own RLS with no
--- predicate of its own.
+-- against a column of the guarded table with no join, and its rows are named by the two
+-- columns that identify them together. `shares_insert` delegates to the parent's own RLS
+-- with no predicate of its own.
 
 CREATE TABLE papers (
     id INT PRIMARY KEY,

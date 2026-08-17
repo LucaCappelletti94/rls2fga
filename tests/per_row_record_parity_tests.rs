@@ -311,7 +311,6 @@ fn records_from_bound_query(
     conn: &mut PgConnection,
     bound: &BoundQuery,
     key: &[String],
-    conditional: bool,
 ) -> BTreeSet<Record> {
     let literals: Vec<String> = key
         .iter()
@@ -323,8 +322,9 @@ fn records_from_bound_query(
         sql = sql.replace(&format!("${}", index + 1), literal);
     }
     // The whole-table query and its bound replay have to agree on the context too, or a
-    // consumer replaying a change would answer differently from the loader.
-    records_of_sql(outputs, conn, &sql, conditional, || {
+    // consumer replaying a change would answer differently from the loader. The shape of
+    // the result is read from the bound query alone, which is all a consumer holds.
+    records_of_sql(outputs, conn, &sql, bound.condition.is_some(), || {
         format!(
             "bound replay of {} {:?} = {}",
             bound.table,
@@ -352,6 +352,12 @@ fn assert_bound_queries_account_for_every_record(
     );
 
     for bound in bound_queries {
+        assert_eq!(
+            bound.condition, query.condition,
+            "{label}: the replay of {} claims a different projection from the load it \
+             extends, so the two loaders decode the same rows differently:\n{}",
+            bound.table, bound.sql
+        );
         let keys = distinct_keys(conn, &bound.table, &bound.key_columns);
         assert!(
             !keys.is_empty(),
@@ -364,8 +370,7 @@ fn assert_bound_queries_account_for_every_record(
         let mut union = BTreeSet::new();
         let mut narrowed = false;
         for key in &keys {
-            let bound_records =
-                records_from_bound_query(outputs, conn, bound, key, query.condition.is_some());
+            let bound_records = records_from_bound_query(outputs, conn, bound, key);
             let invented: Vec<_> = bound_records.difference(&whole).collect();
             assert!(
                 invented.is_empty(),
@@ -704,6 +709,262 @@ async fn a_request_gated_description_matches_its_own_sql() {
         assert_eq!(
             records, 6,
             "{fixture}: three named teams per table and none for the NULL, got {records}"
+        );
+    }
+}
+
+/// A clock guard is settled at check time and its records are reached by replaying the
+/// changed row, so the replay projects the five columns a conditional tuple needs. Keyed
+/// on a whole compound key, since a clock column names every row sharing a timestamp.
+const CLOCK_GATE_SCHEMA: &str = "
+CREATE TABLE readings (
+    tenant_id INT,
+    reading_id INT,
+    starts_at TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, reading_id)
+);
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
+";
+
+/// Two rows per tenant, so a replay bound to one key has something to leave out and a
+/// prefix of the key would answer for a row it does not name, plus a NULL the comparison
+/// hides, which both sides have to drop.
+const CLOCK_GATE_SEED: &str = "
+INSERT INTO readings (tenant_id, reading_id, starts_at) VALUES
+  (7, 9, '2026-01-01 00:00:00+00'),
+  (7, 10, '2026-02-01 00:00:00+00'),
+  (8, 9, '2026-03-01 00:00:00+00'),
+  (8, 10, NULL);
+";
+
+/// The one combination nothing else in this file reaches: a shape no row decides whose
+/// rows also carry a condition. Every other joining shape here grants outright, and every
+/// other conditional shape is settled by the row, so a replay projecting five columns had
+/// never run. A consumer holds the bound query alone, which is why the replay is decoded
+/// from what that query says about itself rather than from the load it extends.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_clock_gated_replay_is_decoded_from_what_it_says_about_itself() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(CLOCK_GATE_SCHEMA)
+        .expect("failed to apply the clock-gate schema");
+    conn.batch_execute(CLOCK_GATE_SEED)
+        .expect("failed to seed the clock-gate schema");
+
+    let (classified, db, registry) = support::classify_sql(CLOCK_GATE_SCHEMA, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let gated: Vec<&TupleQuery> = queries
+        .iter()
+        .filter(|query| {
+            query.condition.is_some()
+                && query
+                    .description
+                    .as_ref()
+                    .is_some_and(|description| !description.is_pure())
+        })
+        .collect();
+    let [gate] = gated.as_slice() else {
+        panic!("one conditional query no row decides, got {}", gated.len());
+    };
+    let RecordDerivation::Joined { queries: bound, .. } = &gate
+        .description
+        .as_ref()
+        .expect("the query carries a description")
+        .derivation
+    else {
+        panic!("the clock guard is answered by querying");
+    };
+    let [replay] = bound.as_slice() else {
+        panic!("one bound query, one table a change may arrive on: {bound:?}");
+    };
+    assert_eq!(
+        replay.key_columns,
+        ["tenant_id", "reading_id"],
+        "the whole key names one row"
+    );
+
+    let (pure, joined, _) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "clock gate");
+    assert_eq!(joined, 1, "the clock guard is the one joining shape here");
+    assert_eq!(pure, 0, "and nothing else emits a query, got {pure}");
+
+    // Non-vacuous: the comparison above passes on two empty sets when the seed produces
+    // nothing, and every record here reached `record_from_tuple_row` as five columns.
+    let loaded = records_from_sql(&outputs, &mut conn, gate);
+    assert_eq!(
+        loaded.len(),
+        3,
+        "one record per row the comparison can judge and none for the NULL, got {loaded:?}"
+    );
+    for record in &loaded {
+        let context = record
+            .context
+            .as_ref()
+            .expect("a conditional record carries the value the request completes");
+        assert_eq!(
+            Some(context.condition.as_str()),
+            replay.condition.as_deref(),
+            "the record names the condition its replay declares"
+        );
+    }
+}
+
+/// The other member of the family the clock gate covers: a conditional shape no row
+/// decides, keyed on a foreign column rather than the guarded table's own key.
+///
+/// One changed share replays every share of the paper it names, which is required rather
+/// than sloppy: the object is the paper and its grant set is the union over its shares, so
+/// replaying a single share row would drop the others' grants. Both conditional joining
+/// shapes now run, so neither rests on structure alone.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_session_attribute_membership_replay_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(&support::read_fixture_sql("connetto_capability"))
+        .expect("failed to apply the connetto capability schema");
+    // Two papers carry a share and one carries none, so a replay has something to leave
+    // out and the union over every key still has to reproduce the whole table.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
+         INSERT INTO paper_shares (paper_id, viewer) VALUES (2, 'team-a'), (3, 'team-z');",
+    )
+    .expect("failed to seed the papers and shares");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    // Non-vacuous: without this the comparison could pass while the fixture reached only
+    // shapes a row decides, which is how this combination went uncovered.
+    let conditional_joins = queries
+        .iter()
+        .filter(|query| {
+            query.condition.is_some()
+                && query
+                    .description
+                    .as_ref()
+                    .is_some_and(|description| !description.is_pure())
+        })
+        .count();
+    assert_eq!(
+        conditional_joins, 1,
+        "the share arm is the one conditional shape here no row decides"
+    );
+
+    let (pure, joined, records) = assert_descriptions_match_their_sql(
+        &outputs,
+        &mut conn,
+        &queries,
+        "session attribute membership",
+    );
+    assert_eq!(joined, 1, "only the share arm reads more than the row");
+    assert!(
+        pure > 0,
+        "the fixture also carries shapes a row decides, saw {pure}"
+    );
+    assert!(
+        records > 0,
+        "the seed must produce records to compare, saw {records}"
+    );
+}
+
+/// The grant rule over a table two columns identify together, run rather than inspected.
+///
+/// `COMPOSITE_KEY_GRANTS` in `relation_shapes_tests` pins which columns each follow-up
+/// query binds. Nothing ran one: the single-key form is what
+/// `role_ownership_and_grant_shapes_are_marked_joining` executes, so a compound key had
+/// only ever been checked as structure, and a query naming the right columns can still
+/// fail to execute or answer for a row it was not given.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_compound_key_grant_shape_runs_and_narrows_on_its_whole_key() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(&support::read_fixture_sql("role_threshold_compound_key"))
+        .expect("failed to apply the compound-key grant schema");
+    // Two rows sharing a tenant, so a query bound to the tenant alone answers for both and
+    // the narrowing check below fails rather than passing on a union that happens to match.
+    // One row is user owned and one team owned, so both principal arms produce a record.
+    conn.batch_execute(
+        "
+INSERT INTO users (id) VALUES
+    ('00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000a2');
+INSERT INTO teams (id) VALUES ('00000000-0000-0000-0000-0000000000b1');
+INSERT INTO team_members (team_id, user_id) VALUES
+    ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000a1');
+INSERT INTO ownables (tenant_id, ownable_id, owner_id) VALUES
+    ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000d1',
+     '00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000d2',
+     '00000000-0000-0000-0000-0000000000b1');
+INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+    ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1', 3);
+",
+    )
+    .expect("failed to seed the compound-key grant schema");
+
+    let (classified, db, registry) =
+        support::load_fixture_classified("role_threshold_compound_key");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    // Non-vacuous: every shape here reads a second table, and each has to bind the whole
+    // key of whichever table it replays.
+    let (_, joined, _) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "compound key grants");
+    assert_eq!(
+        joined, 3,
+        "both principal arms and the grant expansion read more than the row, saw {joined}"
+    );
+
+    let guarded: Vec<&BoundQuery> = queries
+        .iter()
+        .filter_map(|query| match &query.description.as_ref()?.derivation {
+            RecordDerivation::Joined { queries, .. } => Some(queries),
+            RecordDerivation::FromRow { .. } => None,
+            other => panic!("unhandled derivation {other:?}"),
+        })
+        .flatten()
+        .filter(|bound| bound.table == "ownables")
+        .collect();
+    assert_eq!(
+        guarded.len(),
+        3,
+        "one replay per shape keys on the guarded table, saw {}",
+        guarded.len()
+    );
+    for bound in guarded {
+        assert_eq!(
+            bound.key_columns,
+            ["tenant_id", "ownable_id"],
+            "a replay keyed on the tenant alone answers for every row it holds"
         );
     }
 }
