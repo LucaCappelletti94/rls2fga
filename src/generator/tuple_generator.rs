@@ -927,7 +927,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             fk_col,
             user_col,
             parent_type,
-            extra_predicate_sql,
+            extra_predicates,
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
             let fk_col_sql = quote_sql_identifier(fk_col.as_str());
@@ -946,7 +946,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 core::slice::from_ref(user_col),
                 names,
             );
-            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+            let where_clause = extra_predicates.sql().map_or_else(
                 || format!("\nWHERE {null_guards}"),
                 |e| format!("\nWHERE {null_guards}\nAND ({e})"),
             );
@@ -972,7 +972,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             relation,
             condition,
             row_parameter,
-            extra_predicate_sql,
+            extra_predicates,
             ..
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
@@ -990,7 +990,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 &[],
                 names,
             );
-            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+            let where_clause = extra_predicates.sql().map_or_else(
                 || format!("\nWHERE {null_guards}"),
                 |e| format!("\nWHERE {null_guards}\nAND ({e})"),
             );
@@ -1015,7 +1015,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             holder_type,
             member_table,
             user_col,
-            extra_predicate_sql,
+            extra_predicates,
         } => {
             let member_table_sql = quote_sql_identifier(member_table);
             let user_col_sql = quote_sql_identifier(user_col.as_str());
@@ -1030,7 +1030,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             .map_or_else(String::new, |guard| format!("\nAND {guard}"));
             // DISTINCT because the holder is one object: two membership rows for the
             // same user would otherwise write the same tuple twice.
-            let where_clause = extra_predicate_sql.as_ref().map_or_else(
+            let where_clause = extra_predicates.sql().map_or_else(
                 || format!("\nWHERE {user_col_sql} IS NOT NULL{user_col_sql_guard}"),
                 |e| format!("\nWHERE {user_col_sql} IS NOT NULL{user_col_sql_guard}\nAND ({e})"),
             );

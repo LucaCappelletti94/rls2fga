@@ -17,7 +17,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let UncorrelatedMembership {
         member_table,
         user_column,
-        extra_predicate_sql,
+        extra_predicates,
     } = uncorrelated_membership;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
@@ -50,10 +50,10 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         return deny_expr(table_plan);
     };
 
-    if let Some(extra) = extra_predicate_sql {
+    if let Some(extra) = extra_predicates.sql() {
         notes.push(TranslationNote::MembershipExtraPredicate {
             policy: policy_name.to_string(),
-            predicate: extra.clone(),
+            predicate: extra,
         });
     }
 
@@ -71,14 +71,14 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         holder_type: holder_type.clone(),
         member_table: member_table.clone(),
         user_col: user_column.clone(),
-        extra_predicate_sql: extra_predicate_sql.clone(),
+        extra_predicates: extra_predicates.clone(),
     });
     if let Some(holder_plan) = all_types.get_mut(&holder_type) {
         holder_plan.add_source(TupleSource::HolderMembers {
             holder_type: holder_type.clone(),
             member_table: member_table.clone(),
             user_col: user_column.clone(),
-            extra_predicate_sql: extra_predicate_sql.clone(),
+            extra_predicates: extra_predicates.clone(),
         });
     }
     table_plan.add_source(TupleSource::HolderBridge {
@@ -107,7 +107,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         fk_column,
         outer_column,
         user_column,
-        extra_predicate_sql,
+        extra_predicates,
     } = exists_membership;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
@@ -172,10 +172,10 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         }
     }
 
-    if let Some(extra) = extra_predicate_sql {
+    if let Some(extra) = extra_predicates.sql() {
         notes.push(TranslationNote::MembershipExtraPredicate {
             policy: policy_name.to_string(),
-            predicate: extra.clone(),
+            predicate: extra,
         });
     }
 
@@ -186,7 +186,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         fk_col: fk_column.clone(),
         user_col: user_column.clone(),
         parent_type: parent_type.clone(),
-        extra_predicate_sql: extra_predicate_sql.clone(),
+        extra_predicates: extra_predicates.clone(),
     };
     table_plan.add_source(membership_source.clone());
     if let Some(parent_plan) = all_types.get_mut(&parent_type) {

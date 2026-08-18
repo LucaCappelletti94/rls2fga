@@ -17,7 +17,9 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{BoundQuery, RecordDerivation, RowValues};
+use rls2fga::generator::records::{
+    records_from_row, BoundQuery, RecordDerivation, RecordDescription, RowValues,
+};
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 
@@ -4864,19 +4866,34 @@ fn tuples_from_replay(
         .collect()
 }
 
-/// A clock guard is settled at check time, so no row decides its records and a consumer
-/// watching the change stream answers a change by replaying the row it arrived on. Here
-/// the replay is the only loader: nothing runs the whole-table query, so a replay that
-/// projects the condition while claiming three columns loses it and writes an
-/// unconditional tuple, which is the wrong allow this case exists to catch.
+/// One row read back whole as JSON, the shape the record evaluator reads.
+#[derive(QueryableByName)]
+struct JsonRow {
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    row: serde_json::Value,
+}
+
+/// Whole rows of one table as JSON. Raw SQL because the schema is a per-test
+/// string, so no `table!` exists to type the read against.
+fn rows_as_json(conn: &mut PgConnection, sql: &str) -> Vec<serde_json::Value> {
+    let rows: Vec<JsonRow> = diesel::sql_query(sql).load(conn).unwrap_or_else(|error| {
+        panic!("the row read failed in PostgreSQL 18:\n{sql}\nError: {error}")
+    });
+    rows.into_iter().map(|json| json.row).collect()
+}
+
+/// A clock guard is settled at check time, and which record exists is settled by the
+/// row alone, so a consumer watching the change stream answers a change by evaluating
+/// the description against the row it arrived on. Here that evaluation is the only
+/// loader: nothing runs the whole-table query, so a description disagreeing with its
+/// own SQL about the condition or the context writes a wrong tuple and fails.
 ///
 /// Two-sided by construction: each tenant holds a reading its guard admits and one it
-/// refuses, so a model granting everything or denying everything fails. Each replay is
-/// also required to answer for its own row alone, so binding a prefix of the compound key
-/// fails rather than passing on a union that happens to match.
+/// refuses, so a model granting everything or denying everything fails. Each record is
+/// also required to name the row it came from, whole compound key and all.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn clock_gated_replay_parity_postgres18_and_openfga() {
+async fn clock_gated_from_row_parity_postgres18_and_openfga() {
     let postgres = GenericImage::new("postgres", "18")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -4930,22 +4947,16 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let replays: Vec<&BoundQuery> = tuple_queries
+    let descriptions: Vec<&RecordDescription> = tuple_queries
         .iter()
-        .filter_map(|query| match &query.description.as_ref()?.derivation {
-            RecordDerivation::Joined { queries, .. } => Some(queries),
-            RecordDerivation::FromRow { .. } => None,
-            other => panic!("unhandled derivation {other:?}"),
-        })
-        .flatten()
+        .filter_map(|query| query.description.as_ref())
         .collect();
-    let [replay] = replays.as_slice() else {
-        panic!("one replay, one table a change may arrive on, got {replays:?}");
+    let [description] = descriptions.as_slice() else {
+        panic!("one gate, one description, got {descriptions:?}");
     };
-    assert_eq!(
-        replay.key_columns,
-        ["tenant_id", "reading_id"],
-        "the whole key names one row"
+    assert!(
+        matches!(description.derivation, RecordDerivation::FromRow { .. }),
+        "the row decides which record exists: {description:?}"
     );
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -4966,21 +4977,44 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     let seeded = [("7", "9"), ("7", "10"), ("8", "9"), ("8", "10")];
     let mut writes = Vec::new();
     for (tenant, reading) in seeded {
-        let replayed = tuples_from_replay(&mut conn, replay, &[tenant, reading]);
-        // The replay answers for the row it was bound to and no other, which is what a
-        // prefix of the key cannot do.
-        let [(object, tuple)] = replayed.as_slice() else {
-            panic!(
-                "the replay of {tenant},{reading} returned {} rows",
-                replayed.len()
-            );
+        let rows = rows_as_json(
+            &mut conn,
+            &format!(
+                "SELECT to_jsonb(r) AS row FROM readings r \
+                 WHERE tenant_id = {tenant} AND reading_id = {reading}"
+            ),
+        );
+        let [row] = rows.as_slice() else {
+            panic!("one seeded row for {tenant},{reading}, got {}", rows.len());
+        };
+        let records = records_from_row(description, &support::JsonRowValues(row))
+            .expect("the seeded row evaluates");
+        // The record answers for the row it was read from and no other, which is
+        // what a prefix of the compound key could not say.
+        let [record] = records.as_slice() else {
+            panic!("the row states one record, got {records:?}");
         };
         assert_eq!(
-            object,
-            &format!("readings:{tenant}|{reading}"),
-            "the replay answers for the row it was bound to"
+            record.object,
+            format!("readings:{tenant}|{reading}"),
+            "the record names the row it came from"
         );
-        writes.push(tuple.clone());
+        let context = record
+            .context
+            .as_ref()
+            .expect("a clock-gated record carries its context");
+        let mut context_map = serde_json::Map::new();
+        context_map.insert(
+            context.key.clone(),
+            serde_json::Value::String(context.value.clone()),
+        );
+        writes.push(support::openfga::make_conditional_tuple(
+            &record.object,
+            record.relation.as_str(),
+            &record.subject,
+            &context.condition,
+            serde_json::Value::Object(context_map),
+        ));
     }
     let client = service_client.into_client(&store_id, &model_id);
     support::openfga::write_tuples(&client, writes).await;
@@ -5026,21 +5060,23 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     );
 }
 
-/// The other conditional shape no row decides, loaded only by replaying a changed row.
+/// The share arm settles from the share row, so a consumer watching the change stream
+/// answers a changed share by evaluating the description against that row alone.
 ///
 /// `shared_paper_parity_postgres18_and_openfga` covers the same fixture through the
-/// whole-table load, and `clock_gated_replay_parity_postgres18_and_openfga` covers a replay
-/// keyed on the guarded table's own key. This is the remaining corner: a replay keyed on a
-/// foreign column, whose rows carry a condition. One changed share replays every share of
-/// the paper it names, since the object is the paper and its grant set is the union over
-/// its shares.
+/// whole-table load, and `clock_gated_from_row_parity_postgres18_and_openfga` covers a
+/// record keyed on the guarded table's own key. This is the remaining corner: a record
+/// keyed on a foreign column, so one membership row states a record about another
+/// type's object. Here the evaluation is the only loader of the share arm: nothing
+/// runs its whole-table query, so a description disagreeing with its own SQL about
+/// the object, the condition, or the context fails.
 ///
 /// Two-sided by construction: the caller states include one holding the shared key and one
 /// without it, and the owner arm is loaded too, so a model keeping one arm or granting
 /// everything cannot pass.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn shared_paper_replay_parity_postgres18_and_openfga() {
+async fn shared_paper_from_row_parity_postgres18_and_openfga() {
     let postgres = GenericImage::new("postgres", "18")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -5095,32 +5131,27 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     let model = planned().json_model();
     let tuple_queries = planned().tuple_queries();
 
+    // Two conditional shapes read `paper_shares`: the papers share arm and the
+    // sharing table's own read gate. The arm under test is the one whose records
+    // move another type's objects.
     let share_arm = tuple_queries
         .iter()
         .find(|query| {
             query.condition.is_some()
-                && query
-                    .description
-                    .as_ref()
-                    .is_some_and(|description| !description.is_pure())
+                && query.description.as_ref().is_some_and(|description| {
+                    match &description.derivation {
+                        RecordDerivation::FromRow {
+                            table, template, ..
+                        } => table == "paper_shares" && template.object_type == "papers",
+                        _ => false,
+                    }
+                })
         })
-        .expect("the share arm is answered by querying and its rows carry a condition");
-    let RecordDerivation::Joined { queries: bound, .. } = &share_arm
+        .expect("the share arm settles from the share row and its rows carry a condition");
+    let description = share_arm
         .description
         .as_ref()
-        .expect("the query carries a description")
-        .derivation
-    else {
-        panic!("the share arm is answered by querying");
-    };
-    let [replay] = bound.as_slice() else {
-        panic!("one replay, one table a change may arrive on: {bound:?}");
-    };
-    assert_eq!(
-        replay.key_columns,
-        ["paper_id"],
-        "a changed share is replayed by the paper it names"
-    );
+        .expect("the query carries a description");
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
         .with_exposed_port(8080.tcp())
@@ -5137,32 +5168,53 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 
-    // The share arm comes only from the replay, one per changed share row. Every other query
+    // The share arm comes only from evaluating each share row. Every other query
     // loads whole, so the owner arm and the sharing table's own rows still answer.
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
-    for (paper, _) in SEEDED_SHARES {
-        let replayed = tuples_from_replay(&mut conn, replay, &[&paper.to_string()]);
-        let [(object, tuple)] = replayed.as_slice() else {
-            panic!(
-                "the replay of paper {paper} returned {} rows",
-                replayed.len()
-            );
+    for (paper, viewer) in SEEDED_SHARES {
+        let rows = rows_as_json(
+            &mut conn,
+            &format!(
+                "SELECT to_jsonb(s) AS row FROM paper_shares s \
+                 WHERE paper_id = {paper} AND viewer = '{viewer}'"
+            ),
+        );
+        let [row] = rows.as_slice() else {
+            panic!("one seeded share for paper {paper}, got {}", rows.len());
+        };
+        let records = records_from_row(description, &support::JsonRowValues(row))
+            .expect("the share row evaluates");
+        let [record] = records.as_slice() else {
+            panic!("the share row states one record, got {records:?}");
         };
         assert_eq!(
-            object,
-            &format!("papers:{paper}"),
-            "the replay names the paper whose grant set changed"
+            record.object,
+            format!("papers:{paper}"),
+            "the record names the paper whose grant set the share moves"
         );
-        writes.push(tuple.clone());
+        let context = record
+            .context
+            .as_ref()
+            .expect("the share record carries the viewer it admits");
+        assert_eq!(
+            context.value, viewer,
+            "the record carries the row's own viewer"
+        );
+        let mut context_map = serde_json::Map::new();
+        context_map.insert(
+            context.key.clone(),
+            serde_json::Value::String(context.value.clone()),
+        );
+        writes.push(support::openfga::make_conditional_tuple(
+            &record.object,
+            record.relation.as_str(),
+            &record.subject,
+            &context.condition,
+            serde_json::Value::Object(context_map),
+        ));
     }
     for query in &tuple_queries {
-        if query.sql.trim_start().starts_with("--")
-            || core::ptr::eq(query, share_arm)
-            || query
-                .description
-                .as_ref()
-                .is_some_and(|description| !description.is_pure())
-        {
+        if query.sql.trim_start().starts_with("--") || core::ptr::eq(query, share_arm) {
             continue;
         }
         if query.condition.is_some() {
@@ -5231,7 +5283,244 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     );
     assert!(
         failures.is_empty(),
-        "PostgreSQL/OpenFGA shared-paper replay parity mismatches:\n{}",
+        "PostgreSQL/OpenFGA shared-paper from-row parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The conditional replay corner that remains: a share row carrying a residual only
+/// SQL can evaluate, so the shape keeps its query. The expiry is that residual: a
+/// record written once would still grant after the clock passes it, and no change
+/// event fires when it does, so the rows are loaded by replaying the changed row's
+/// paper, and the replay is keyed on a foreign column while its rows carry a
+/// condition.
+///
+/// Two-sided by construction: one live and one expired share, so a replay ignoring
+/// the residual grants the expired viewer and fails, and the owner arm is loaded too,
+/// so a model keeping one arm cannot pass.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn expiring_share_replay_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+";
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        schema_sql,
+        r#"[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]"#,
+    );
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the expiring share schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    // Paper 2 is shared live, paper 3 is shared expired, paper 1 is only owned.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob'); \
+         INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES \
+            (2, 'team-a', now() + interval '1 day'), \
+            (3, 'team-z', now() - interval '1 day');",
+    )
+    .expect("Failed to seed the papers and shares");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let share_arm = tuple_queries
+        .iter()
+        .find(|query| {
+            query.condition.is_some()
+                && query
+                    .description
+                    .as_ref()
+                    .is_some_and(|description| !description.is_pure())
+        })
+        .expect("the expiry keeps the share arm answered by querying");
+    let RecordDerivation::Joined { queries: bound, .. } = &share_arm
+        .description
+        .as_ref()
+        .expect("the query carries a description")
+        .derivation
+    else {
+        panic!("the expiry keeps the share arm joined");
+    };
+    let [replay] = bound.as_slice() else {
+        panic!("one replay, one table a change may arrive on: {bound:?}");
+    };
+    assert_eq!(
+        replay.key_columns,
+        ["paper_id"],
+        "a changed share is replayed by the paper it names"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "expiring-share-replay").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    // The share arm comes only from the replay, one per changed share row. The live
+    // share yields its tuple, and the expired one has to yield nothing: the residual
+    // is part of the replay, so a replay that lost it writes the expired grant.
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    let replayed_live = tuples_from_replay(&mut conn, replay, &["2"]);
+    let [(object, tuple)] = replayed_live.as_slice() else {
+        panic!(
+            "the replay of paper 2 returned {} rows",
+            replayed_live.len()
+        );
+    };
+    assert_eq!(
+        object, "papers:2",
+        "the replay names the live share's paper"
+    );
+    writes.push(tuple.clone());
+    let replayed_expired = tuples_from_replay(&mut conn, replay, &["3"]);
+    assert!(
+        replayed_expired.is_empty(),
+        "the expired share replays to nothing, got {replayed_expired:?}"
+    );
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--")
+            || core::ptr::eq(query, share_arm)
+            || query
+                .description
+                .as_ref()
+                .is_some_and(|description| !description.is_pure())
+        {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(&mut conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    // The oracle is what PostgreSQL shows each caller, expiry and all.
+    let callers: [(Option<&str>, Option<&str>); 5] = [
+        (None, None),
+        (Some("alice"), None),
+        (Some("bob"), None),
+        (None, Some("team-a")),
+        (None, Some("team-z")),
+    ];
+    let mut failures = Vec::new();
+    let mut share_only = 0usize;
+    let mut denied = 0usize;
+    for (user_id, subjects) in callers {
+        let visible = papers_visible_to(&mut conn, user_id, subjects);
+        let owner_arm = papers_visible_to(&mut conn, user_id, None);
+        share_only += visible.difference(&owner_arm).count();
+
+        let caller = user_id.unwrap_or("nobody");
+        for id in [1, 2, 3] {
+            let expected = visible.contains(&id);
+            if !expected {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                &format!("user:{caller}"),
+                "can_select",
+                &format!("papers:{id}"),
+                serde_json::json!({ "app_subjects": caller_subject_list(subjects) }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "papers:{id} for user_id={user_id:?} subjects={subjects:?}: \
+                     postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        share_only > 0,
+        "no paper is readable by a shared key alone, so the replayed arm carried nothing"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA expiring-share replay parity mismatches:\n{}",
         failures.join("\n")
     );
 }

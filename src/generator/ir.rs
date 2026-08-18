@@ -4,7 +4,7 @@
 //! produced once during pattern translation, so the model and the tuple queries
 //! cannot drift apart.
 
-use crate::classifier::patterns::AttributePredicate;
+use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::relations::RequestComparison;
@@ -113,8 +113,8 @@ pub(crate) enum TupleSource {
         user_col: ColumnName,
         /// Resolved from the table `fk_col` references, not from its name.
         parent_type: String,
-        /// Residual predicate no tuple can express.
-        extra_predicate_sql: Option<String>,
+        /// Residual predicate, structured where a row image alone decides it.
+        extra_predicates: ResidualPredicates,
     },
 
     /// P4/P5 child-to-parent link. Produces `(type:pk, relation, parent_type:fk_col)`.
@@ -204,7 +204,7 @@ pub(crate) enum TupleSource {
         /// Separator the policy splits that setting on, absent for a list source.
         separator: Option<String>,
         /// Residual filter on the membership row.
-        extra_predicate_sql: Option<String>,
+        extra_predicates: ResidualPredicates,
     },
 
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
@@ -235,7 +235,7 @@ pub(crate) enum TupleSource {
         holder_type: String,
         member_table: String,
         user_col: ColumnName,
-        extra_predicate_sql: Option<String>,
+        extra_predicates: ResidualPredicates,
     },
 
     /// Why no tuple query stands here. Rendered as the two comment lines that take
@@ -398,9 +398,9 @@ impl TupleSource {
                 fk_col,
                 user_col,
                 parent_type,
-                extra_predicate_sql,
+                extra_predicates,
             } => {
-                let extra = extra_predicate_sql.as_deref().unwrap_or("");
+                let extra = extra_predicates.sql().unwrap_or_default();
                 format!("p4:{join_table}:{fk_col}:{user_col}:{parent_type}:{extra}")
             }
             Self::ParentBridge {
@@ -467,13 +467,13 @@ impl TupleSource {
                 request_parameter,
                 setting_key,
                 separator,
-                extra_predicate_sql,
+                extra_predicates,
             } => {
                 let _ = (setting_key, separator);
                 format!(
                     "sessmem:{parent_type}:{join_table}:{fk_col}:{member_col}:{relation}:\
                      {condition}:{row_parameter}:{request_parameter}:{}",
-                    extra_predicate_sql.as_deref().unwrap_or_default()
+                    extra_predicates.sql().unwrap_or_default()
                 )
             }
             Self::ConstantTrue { table, pk_cols } => {
@@ -499,11 +499,11 @@ impl TupleSource {
                 holder_type,
                 member_table,
                 user_col,
-                extra_predicate_sql,
+                extra_predicates,
             } => {
                 format!(
                     "holdermembers:{holder_type}:{member_table}:{user_col}:{}",
-                    extra_predicate_sql.as_deref().unwrap_or("")
+                    extra_predicates.sql().unwrap_or_default()
                 )
             }
             Self::Skipped { reason } => {
@@ -516,6 +516,7 @@ impl TupleSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classifier::patterns::ResidualPredicate;
 
     #[test]
     fn dedup_key_differentiates_explicit_grants_across_tables() {
@@ -584,21 +585,24 @@ mod tests {
             fk_col: ColumnName::from_stored("project_id"),
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
-            extra_predicate_sql: None,
+            extra_predicates: ResidualPredicates::default(),
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
             fk_col: ColumnName::from_stored("project_id"),
             user_col: ColumnName::from_stored("member_id"),
             parent_type: "projects".to_string(),
-            extra_predicate_sql: None,
+            extra_predicates: ResidualPredicates::default(),
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
             fk_col: ColumnName::from_stored("project_id"),
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
-            extra_predicate_sql: Some("role = 'admin'".to_string()),
+            extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
+                sql: "role = 'admin'".to_string(),
+                guard: None,
+            }]),
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());
         assert_ne!(base.dedup_key(), with_predicate.dedup_key());

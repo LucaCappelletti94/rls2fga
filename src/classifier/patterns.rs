@@ -205,6 +205,74 @@ pub enum RequestValue {
     StatementTimestamp,
 }
 
+/// One residual conjunct on a membership row.
+///
+/// The SQL spelling is kept verbatim, so the query the generator renders is
+/// exactly what the policy wrote, whether or not the structure beside it
+/// exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResidualPredicate {
+    /// The conjunct as SQL, join-table qualifiers already stripped.
+    pub sql: String,
+    /// The conjunct as structure, when a row image alone decides it.
+    pub guard: Option<ResidualGuard>,
+}
+
+/// A residual conjunct a row image can evaluate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResidualGuard {
+    /// A bare boolean column, admitting only rows where it is true.
+    IsTrue(ColumnName),
+    /// `IS NOT NULL` on a column.
+    NotNull(ColumnName),
+    /// A column compared against a literal constant.
+    Compare(AttributePredicate),
+}
+
+/// Every residual conjunct of a membership shape, possibly none.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResidualPredicates(Vec<ResidualPredicate>);
+
+impl ResidualPredicates {
+    /// The conjuncts in policy order.
+    #[must_use]
+    pub fn new(conjuncts: Vec<ResidualPredicate>) -> Self {
+        Self(conjuncts)
+    }
+
+    /// True when the shape carries no residual at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The residual as the SQL filter the policy wrote, or [`None`] when
+    /// there is none.
+    #[must_use]
+    pub fn sql(&self) -> Option<String> {
+        if self.0.is_empty() {
+            return None;
+        }
+        Some(
+            self.0
+                .iter()
+                .map(|conjunct| conjunct.sql.as_str())
+                .collect::<Vec<_>>()
+                .join(" AND "),
+        )
+    }
+
+    /// One guard per conjunct, or [`None`] when any conjunct has no
+    /// structure, in which case only SQL can evaluate the residual.
+    #[must_use]
+    pub fn guards(&self) -> Option<Vec<ResidualGuard>> {
+        self.0
+            .iter()
+            .map(|conjunct| conjunct.guard.clone())
+            .collect()
+    }
+}
+
 // The shape of each pattern, one named struct per variant.
 //
 // The fields live here rather than inline in `PatternClass`, so a recognizer builds one
@@ -252,8 +320,9 @@ pub struct ExistsMembership {
     pub outer_column: ColumnName,
     /// Column of `join_table` identifying the user.
     pub user_column: ColumnName,
-    /// Residual filter such as `role = 'admin'`, which no tuple can express.
-    pub extra_predicate_sql: Option<String>,
+    /// Residual filter such as `role = 'admin'`, structured where a row
+    /// image alone decides it.
+    pub extra_predicates: ResidualPredicates,
 }
 
 /// P5: Parent permission inheritance through a foreign key.
@@ -344,8 +413,9 @@ pub struct UncorrelatedMembership {
     pub member_table: String,
     /// Column of that table holding the member.
     pub user_column: ColumnName,
-    /// Any further condition the membership row has to satisfy.
-    pub extra_predicate_sql: Option<String>,
+    /// Any further condition the membership row has to satisfy, structured
+    /// where a row image alone decides it.
+    pub extra_predicates: ResidualPredicates,
 }
 
 /// The caller's declared set holds the row's value:
@@ -415,8 +485,9 @@ pub struct MembershipInCallerSet {
     pub separator: Option<String>,
     /// The declared source, carrying the parameter the caller supplies.
     pub source: SessionAttribute,
-    /// Residual filter on the membership row, which no tuple can express.
-    pub extra_predicate_sql: Option<String>,
+    /// Residual filter on the membership row, structured where a row image
+    /// alone decides it.
+    pub extra_predicates: ResidualPredicates,
 }
 
 /// No known pattern matched.

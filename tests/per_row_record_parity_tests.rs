@@ -7,7 +7,6 @@
 
 #![cfg(not(target_os = "windows"))]
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
@@ -29,8 +28,7 @@ use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
-    ValueSource,
+    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
@@ -39,6 +37,8 @@ use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
 
 mod support;
+
+use support::{scalar_text, JsonRowValues};
 
 const PG_USER: &str = "postgres";
 const PG_PASSWORD: &str = "postgres";
@@ -88,50 +88,6 @@ struct JsonRow {
 struct KeyRow {
     #[diesel(sql_type = Text)]
     value: String,
-}
-
-/// `serde_json` view of one row, adapting it to the crate's row interface.
-struct JsonRowValues<'a>(&'a serde_json::Value);
-
-/// Text of a JSON scalar the way `PostgreSQL` renders it in `||` and `->>`.
-fn scalar_text(value: &serde_json::Value) -> Option<Cow<'_, str>> {
-    match value {
-        serde_json::Value::String(text) => Some(Cow::Borrowed(text.as_str())),
-        serde_json::Value::Number(number) => Some(Cow::Owned(number.to_string())),
-        serde_json::Value::Bool(flag) => Some(Cow::Borrowed(if *flag { "true" } else { "false" })),
-        // A JSON null has no text, and neither does an object or an array, which
-        // `||` would refuse anyway.
-        _ => None,
-    }
-}
-
-impl RowValues for JsonRowValues<'_> {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.0.get(column).and_then(scalar_text)
-    }
-
-    fn boolean(&self, column: &str) -> Option<bool> {
-        self.0.get(column).and_then(serde_json::Value::as_bool)
-    }
-
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        Some(
-            self.0
-                .get(column)?
-                .as_array()?
-                .iter()
-                .map(scalar_text)
-                .collect(),
-        )
-    }
-
-    fn json_text(&self, column: &str, path: &[String]) -> Option<Cow<'_, str>> {
-        let mut current = self.0.get(column)?;
-        for step in path {
-            current = current.get(step)?;
-        }
-        scalar_text(current)
-    }
 }
 
 fn connect_postgres_with_retry(database_url: &str) -> PgConnection {

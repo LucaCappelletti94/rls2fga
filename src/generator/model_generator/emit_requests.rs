@@ -305,7 +305,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         member_column,
         separator,
         source,
-        extra_predicate_sql,
+        extra_predicates,
     } = membership_in_caller_set;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
@@ -357,10 +357,10 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
 
-    if let Some(extra) = extra_predicate_sql {
+    if let Some(extra) = extra_predicates.sql() {
         notes.push(TranslationNote::MembershipExtraPredicate {
             policy: policy_name.to_string(),
-            predicate: extra.clone(),
+            predicate: extra,
         });
     }
 
@@ -410,7 +410,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         request_parameter,
         setting_key: source.setting_key().to_string(),
         separator: separator.clone(),
-        extra_predicate_sql: extra_predicate_sql.clone(),
+        extra_predicates: extra_predicates.clone(),
     });
     UsersetExpr::Computed(relation)
 }

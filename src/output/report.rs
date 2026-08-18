@@ -344,7 +344,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
                     fk_column: ColumnName::from_stored("doc_id"),
                     outer_column: ColumnName::from_stored("id"),
                     user_column: ColumnName::from_stored("user_id"),
-                    extra_predicate_sql: None,
+                    extra_predicates: ResidualPredicates::default(),
                 }),
                 "P4 (EXISTS doc_members)",
             ),

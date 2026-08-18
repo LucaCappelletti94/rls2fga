@@ -66,6 +66,33 @@ pub fn attribute_literal_predicate(expr: &Expr) -> Option<AttributePredicate> {
     })
 }
 
+/// The residual conjunct paired with its structure, where a row image alone
+/// decides it.
+///
+/// Anything else keeps only its SQL, and the shape carrying it keeps its
+/// query, so an inexpressible residual costs coverage rather than
+/// correctness. A bare column is the boolean test SQL makes of it, and a
+/// comparison is taken only against a literal constant, so `expires_at >
+/// now()` stays SQL: a row admitted today may not be admitted tomorrow, and
+/// no change event fires when the clock moves.
+pub fn residual_predicate(expr: &Expr) -> ResidualPredicate {
+    ResidualPredicate {
+        sql: expr.to_string(),
+        guard: residual_guard(expr),
+    }
+}
+
+fn residual_guard(expr: &Expr) -> Option<ResidualGuard> {
+    let inner = unparenthesize(expr);
+    if let Expr::IsNotNull(operand) = inner {
+        return extract_column_name(operand).map(ResidualGuard::NotNull);
+    }
+    if let Some(column) = extract_column_name(inner) {
+        return Some(ResidualGuard::IsTrue(column));
+    }
+    attribute_literal_predicate(inner).map(ResidualGuard::Compare)
+}
+
 fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
     match op {
         BinaryOperator::Eq => Some(AttributeOperator::Eq),

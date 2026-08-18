@@ -295,6 +295,80 @@ pub struct BoundQuery {
     /// conditional tuple needs. `None` means three columns and no condition, so a
     /// caller replaying one row knows the shape without parsing the SQL.
     pub condition: Option<String>,
+    /// Which stored facts this query's result fully determines. A fact in the
+    /// slice the result no longer returns is stale, which is what lets a
+    /// consumer take a withdrawn grant out of its store.
+    pub scope: ReplayScope,
+}
+
+/// The slice of stored facts one bound query's result fully determines.
+///
+/// The result is the whole truth for the slice as this shape states it, so
+/// what the result stopped returning is stale. Which slice that is belongs to
+/// the query, since nothing downstream can rediscover it from the SQL: one
+/// query is keyed on the object it moves, another on the subject it grants
+/// to, and the two reconcile against different reads.
+///
+/// Whole only as **this shape** states it: a consumer reconciling the slice
+/// must first establish that no other shape states facts in the same slice,
+/// or the reconciliation deletes the other shape's facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayScope {
+    /// Every fact `relations` state about the one object the bound key names.
+    Object {
+        /// Type the object belongs to.
+        object_type: String,
+        /// The relations this query's rows can carry.
+        relations: Vec<RelationName>,
+    },
+    /// Every fact `relation` grants on `object_type` rows to the one subject
+    /// the bound key names.
+    Subject {
+        /// Type the subject belongs to.
+        subject_type: String,
+        /// Relation the facts grant through.
+        relation: RelationName,
+        /// Type of the objects the facts are about.
+        object_type: String,
+    },
+}
+
+impl ReplayScope {
+    /// The name the bound key's values give the object or subject the slice
+    /// is keyed on, spelled the way every other name is spelled. `values` are
+    /// the replayed key values as text, one per
+    /// [`BoundQuery::key_columns`](BoundQuery::key_columns) and in that
+    /// order, rendered as the database renders them in a cast to text.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordError::RowCannotBeNamed`] when the encoded name is longer than
+    /// the target accepts, exactly as rendering the same values off a row
+    /// refuses, and [`RecordError::SubjectKeyNotSingular`] when a subject
+    /// slice is handed anything but its one key value.
+    pub fn rendered_key(&self, values: &[&str]) -> Result<String, RecordError> {
+        match self {
+            Self::Object { object_type, .. } => {
+                let name = format!("{object_type}:{}", encode_identity(values.iter().copied()));
+                if object_name_fits(&name) {
+                    Ok(name)
+                } else {
+                    Err(RecordError::RowCannotBeNamed(name.chars().count()))
+                }
+            }
+            Self::Subject { subject_type, .. } => {
+                let [value] = values else {
+                    return Err(RecordError::SubjectKeyNotSingular(values.len()));
+                };
+                let name = format!("{subject_type}:{}", encode_part(value));
+                if subject_name_fits(&name) {
+                    Ok(name)
+                } else {
+                    Err(RecordError::RowCannotBeNamed(name.len()))
+                }
+            }
+        }
+    }
 }
 
 /// Whether a description's records follow from one row.
@@ -397,6 +471,9 @@ pub enum RecordError {
     /// it either way. Shortening the name would merge two rows into one object
     /// and hand each the other's access, so this refuses rather than guesses.
     RowCannotBeNamed(usize),
+    /// A subject slice is keyed on one column, and the replayed key carried
+    /// this many values, so no subject can be named from it.
+    SubjectKeyNotSingular(usize),
 }
 
 impl core::fmt::Display for RecordError {
@@ -409,6 +486,10 @@ impl core::fmt::Display for RecordError {
             Self::RowCannotBeNamed(length) => write!(
                 f,
                 "the row renders an identifier of {length}, longer than the target accepts"
+            ),
+            Self::SubjectKeyNotSingular(count) => write!(
+                f,
+                "a subject slice is keyed on one column, and the replayed key carried {count}"
             ),
         }
     }
@@ -562,6 +643,7 @@ fn expand<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generator::well_known::member_relation;
     use alloc::collections::BTreeMap;
 
     struct Row(BTreeMap<String, String>);
@@ -708,5 +790,62 @@ mod tests {
             SubjectKey::column("owner").render("user", &row).unwrap(),
             vec!["user:~2a".to_string()]
         );
+    }
+
+    #[test]
+    fn an_object_slice_renders_its_key_as_a_row_would() {
+        let scope = ReplayScope::Object {
+            object_type: "readings".to_string(),
+            relations: vec![member_relation()],
+        };
+        // Compound keys join with the same separator, and a value carrying the
+        // separator escapes, so two keys cannot render alike.
+        assert_eq!(scope.rendered_key(&["7", "9"]).unwrap(), "readings:7|9");
+        assert_eq!(
+            scope.rendered_key(&["a|b"]).unwrap(),
+            "readings:~617c62",
+            "a value carrying the separator escapes as a row value would"
+        );
+    }
+
+    #[test]
+    fn a_subject_slice_renders_its_one_key_value() {
+        let scope = ReplayScope::Subject {
+            subject_type: "user".to_string(),
+            relation: member_relation(),
+            object_type: "docs".to_string(),
+        };
+        assert_eq!(scope.rendered_key(&["alice"]).unwrap(), "user:alice");
+        assert_eq!(
+            scope.rendered_key(&["*"]).unwrap(),
+            "user:~2a",
+            "a wildcard looking value does not become the wildcard"
+        );
+    }
+
+    #[test]
+    fn a_subject_slice_refuses_a_compound_key() {
+        let scope = ReplayScope::Subject {
+            subject_type: "user".to_string(),
+            relation: member_relation(),
+            object_type: "docs".to_string(),
+        };
+        assert_eq!(
+            scope.rendered_key(&["a", "b"]),
+            Err(RecordError::SubjectKeyNotSingular(2))
+        );
+    }
+
+    #[test]
+    fn an_oversize_slice_key_refuses_rather_than_shortening() {
+        let long = "x".repeat(600);
+        let scope = ReplayScope::Object {
+            object_type: "docs".to_string(),
+            relations: vec![member_relation()],
+        };
+        assert!(matches!(
+            scope.rendered_key(&[long.as_str()]),
+            Err(RecordError::RowCannotBeNamed(_))
+        ));
     }
 }

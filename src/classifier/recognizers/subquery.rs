@@ -867,7 +867,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                     outer_column,
                     user_column,
                     member_match: MemberMatch::Caller,
-                    extra_predicate_sql,
+                    extra_predicates,
                 },
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership(ExistsMembership {
@@ -875,7 +875,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                 fk_column,
                 outer_column,
                 user_column,
-                extra_predicate_sql,
+                extra_predicates,
             }),
             confidence: ConfidenceLevel::A,
         }),
@@ -887,7 +887,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                     outer_column,
                     user_column,
                     member_match: MemberMatch::InCallerSet { source, separator },
-                    extra_predicate_sql,
+                    extra_predicates,
                 },
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
@@ -897,19 +897,19 @@ fn classify_membership_select<DB: DatabaseLike>(
                 member_column: user_column,
                 separator,
                 source,
-                extra_predicate_sql,
+                extra_predicates,
             }),
             confidence: ConfidenceLevel::A,
         }),
         MembershipSelectAnalysis::Uncorrelated {
             member_table,
             user_column,
-            extra_predicate_sql,
+            extra_predicates,
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
                 member_table,
                 user_column,
-                extra_predicate_sql,
+                extra_predicates,
             }),
             confidence: ConfidenceLevel::A,
         }),
@@ -944,7 +944,7 @@ enum MembershipSelectAnalysis {
     Uncorrelated {
         member_table: String,
         user_column: ColumnName,
-        extra_predicate_sql: Option<String>,
+        extra_predicates: ResidualPredicates,
     },
     /// The subquery scans the guarded table itself, which `PostgreSQL` refuses to plan:
     /// reading it re-enters the policy being evaluated. Verified on `PostgreSQL` 18, which
@@ -1060,7 +1060,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     flatten_and_predicates(selection, &mut predicates);
 
     let mut user_column: Option<ColumnName> = None;
-    let mut extras: Vec<String> = Vec::new();
+    let mut extras: Vec<ResidualPredicate> = Vec::new();
     for predicate in predicates {
         match analyze_membership_eq_predicate(
             predicate,
@@ -1096,13 +1096,13 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         }
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
-        extras.push(normalized.to_string());
+        extras.push(residual_predicate(&normalized));
     }
 
     Some(MembershipSelectAnalysis::Uncorrelated {
         member_table: source.table_name.clone(),
         user_column: user_column?,
-        extra_predicate_sql: (!extras.is_empty()).then(|| extras.join(" AND ")),
+        extra_predicates: ResidualPredicates::new(extras),
     })
 }
 
@@ -1543,7 +1543,7 @@ struct MembershipColumns {
     /// Column of the scanned table naming who the row admits.
     user_column: ColumnName,
     member_match: MemberMatch,
-    extra_predicate_sql: Option<String>,
+    extra_predicates: ResidualPredicates,
 }
 
 /// A qualified or bare column reference, as the subquery spells it.
@@ -1696,7 +1696,7 @@ pub(super) fn extract_membership_columns(
     join_cols: &[String],
     outer_table: &str,
     registry: &FunctionRegistry,
-) -> Option<(ColumnName, ColumnName, ColumnName, Option<String>)> {
+) -> Option<(ColumnName, ColumnName, ColumnName, ResidualPredicates)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
         select,
         join_table,
@@ -1711,7 +1711,7 @@ pub(super) fn extract_membership_columns(
             columns.fk_column,
             columns.outer_column,
             columns.user_column,
-            columns.extra_predicate_sql,
+            columns.extra_predicates,
         )
     })
 }
@@ -1728,7 +1728,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     let mut correlated: Option<(ColumnName, ColumnName)> = None;
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<(ColumnName, MemberMatch)> = None;
-    let mut extras: Vec<String> = Vec::new();
+    let mut extras: Vec<ResidualPredicate> = Vec::new();
     let unqualified_scope = db
         .map(|db| build_unqualified_membership_scope(select, db, join_table, join_cols))
         .unwrap_or_default();
@@ -1795,7 +1795,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             // SQL literal forms that text-based rewriting would mangle.
             let mut normalized_pred = pred.clone();
             strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
-            extras.push(normalized_pred.to_string());
+            extras.push(residual_predicate(&normalized_pred));
         }
     }
 
@@ -1831,18 +1831,14 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     let (user_column, member_match) = user_col?;
     let (fk_column, outer_column) = correlated?;
 
-    let extra_predicate_sql = if extras.is_empty() {
-        None
-    } else {
-        Some(extras.join(" AND "))
-    };
+    let extra_predicates = ResidualPredicates::new(extras);
 
     Some(MembershipColumns {
         fk_column,
         outer_column,
         user_column,
         member_match,
-        extra_predicate_sql,
+        extra_predicates,
     })
 }
 fn is_join_column_ref(
