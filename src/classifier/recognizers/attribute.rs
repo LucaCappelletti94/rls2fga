@@ -10,23 +10,168 @@ pub fn attribute_request_predicate(expr: &Expr) -> Option<AttributeRequestPredic
     };
     let operator = attribute_operator(op)?;
     if let Some(column) = extract_column_name(left) {
-        if is_well_known_temporal_function(right) && !is_user_related_column_name(column.as_str()) {
-            return Some(AttributeRequestPredicate {
-                column,
-                operator,
-                request_value: RequestValue::StatementTimestamp,
-            });
+        if let Some(side) = temporal_request_side(right) {
+            if !is_user_related_column_name(column.as_str()) {
+                return Some(AttributeRequestPredicate {
+                    column,
+                    operator,
+                    request_value: RequestValue::StatementTimestamp,
+                    offset: side.into_offset(),
+                });
+            }
         }
     }
     let column = extract_column_name(right)?;
-    if !is_well_known_temporal_function(left) || is_user_related_column_name(column.as_str()) {
+    let offset = temporal_request_side(left)?.into_offset();
+    if is_user_related_column_name(column.as_str()) {
         return None;
     }
     Some(AttributeRequestPredicate {
         column,
         operator: mirrored(operator),
         request_value: RequestValue::StatementTimestamp,
+        offset,
     })
+}
+
+/// A request side of a temporal comparison: `now()` and its spellings, optionally shifted
+/// by a fixed interval such as `now() - interval '30 days'`.
+enum TemporalRequestSide {
+    /// The bare request clock.
+    Clock,
+    /// The clock shifted by a fixed offset.
+    Offset(TemporalOffset),
+}
+
+impl TemporalRequestSide {
+    /// The offset the side carries, absent for the bare clock.
+    fn into_offset(self) -> Option<TemporalOffset> {
+        match self {
+            Self::Clock => None,
+            Self::Offset(offset) => Some(offset),
+        }
+    }
+}
+
+/// The clock a temporal comparison reads, or `None` when the side is neither the clock
+/// nor the clock shifted by a fixed interval (a variable interval among them), so the
+/// caller leaves the guard in SQL and the shape stays joined.
+fn temporal_request_side(expr: &Expr) -> Option<TemporalRequestSide> {
+    let expr = unwrap_cast_or_nested(expr);
+    if is_well_known_temporal_function(expr) {
+        return Some(TemporalRequestSide::Clock);
+    }
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return None;
+    };
+    let subtract = match op {
+        BinaryOperator::Minus => true,
+        BinaryOperator::Plus => false,
+        _ => return None,
+    };
+    let left = unwrap_cast_or_nested(left);
+    let right = unwrap_cast_or_nested(right);
+    let interval = if is_well_known_temporal_function(left) {
+        right
+    } else if !subtract && is_well_known_temporal_function(right) {
+        // `interval + now()` reads the same as `now() + interval`; subtraction is
+        // one-sided, since a timestamp does not subtract from an interval.
+        left
+    } else {
+        return None;
+    };
+    let Expr::Interval(interval) = interval else {
+        return None;
+    };
+    let seconds = interval_seconds(interval)?;
+    Some(TemporalRequestSide::Offset(TemporalOffset {
+        cel_duration: cel_duration(seconds),
+        subtract,
+    }))
+}
+
+/// The fixed number of seconds a `PostgreSQL` interval spans, or `None` when it has no
+/// fixed length (months and years) or a spelling this does not carry.
+fn interval_seconds(interval: &sqlparser::ast::Interval) -> Option<i64> {
+    // Only the string spelling, `interval '30 days'`, is carried; the field-qualified
+    // form `interval '30' day` falls back.
+    if interval.leading_field.is_some() {
+        return None;
+    }
+    let Expr::Value(value) = interval.value.as_ref() else {
+        return None;
+    };
+    let Value::SingleQuotedString(text) = &value.value else {
+        return None;
+    };
+    parse_interval_seconds(text)
+}
+
+/// Sum a `PostgreSQL` interval string of fixed-length units into seconds, rejecting a
+/// month or year term and any spelling that does not parse.
+fn parse_interval_seconds(text: &str) -> Option<i64> {
+    let mut total: i64 = 0;
+    let mut magnitude: Option<i64> = None;
+    for token in text.split_whitespace() {
+        if token.contains(':') {
+            if magnitude.is_some() {
+                return None;
+            }
+            total = total.checked_add(clock_seconds(token)?)?;
+            continue;
+        }
+        if let Ok(number) = token.parse::<i64>() {
+            if magnitude.replace(number).is_some() {
+                return None;
+            }
+            continue;
+        }
+        let number = magnitude.take()?;
+        total = total.checked_add(number.checked_mul(unit_seconds(token)?)?)?;
+    }
+    (magnitude.is_none() && total > 0).then_some(total)
+}
+
+/// Seconds in one fixed-length interval unit, or `None` for a variable-length unit.
+fn unit_seconds(unit: &str) -> Option<i64> {
+    Some(match unit.trim_end_matches('s') {
+        "second" | "sec" => 1,
+        "minute" | "min" => 60,
+        "hour" | "hr" => 3_600,
+        "day" => 86_400,
+        "week" => 604_800,
+        _ => return None,
+    })
+}
+
+/// Seconds in a `HH:MM:SS` (or `HH:MM`) interval time part.
+fn clock_seconds(token: &str) -> Option<i64> {
+    let mut parts = token.split(':');
+    let hours: i64 = parts.next()?.parse().ok()?;
+    let minutes: i64 = parts.next()?.parse().ok()?;
+    let seconds: i64 = match parts.next() {
+        Some(value) => value.parse().ok()?,
+        None => 0,
+    };
+    if parts.next().is_some()
+        || hours < 0
+        || !(0..60).contains(&minutes)
+        || !(0..60).contains(&seconds)
+    {
+        return None;
+    }
+    Some(hours * 3_600 + minutes * 60 + seconds)
+}
+
+/// A fixed count of seconds as a CEL duration, using the coarsest whole unit.
+fn cel_duration(seconds: i64) -> String {
+    if seconds % 3_600 == 0 {
+        format!("{}h", seconds / 3_600)
+    } else if seconds % 60 == 0 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 /// The guard as structure, but only when the compared value is a literal constant.
@@ -64,6 +209,34 @@ pub fn attribute_literal_predicate(expr: &Expr) -> Option<AttributePredicate> {
         operator: mirrored(operator),
         value,
     })
+}
+
+/// The residual conjunct paired with its structure, where a row image alone
+/// decides it.
+///
+/// Anything else keeps only its SQL, and the shape carrying it keeps its
+/// query, so an inexpressible residual costs coverage rather than
+/// correctness. A bare column is the boolean test SQL makes of it, and a
+/// comparison is taken only against a literal constant, so `expires_at >
+/// now()` stays SQL: a row admitted today may not be admitted tomorrow, and
+/// no change event fires when the clock moves.
+pub fn residual_predicate(expr: &Expr) -> ResidualPredicate {
+    ResidualPredicate {
+        sql: expr.to_string(),
+        guard: residual_guard(expr),
+        request: attribute_request_predicate(expr),
+    }
+}
+
+fn residual_guard(expr: &Expr) -> Option<ResidualGuard> {
+    let inner = unparenthesize(expr);
+    if let Expr::IsNotNull(operand) = inner {
+        return extract_column_name(operand).map(ResidualGuard::NotNull);
+    }
+    if let Some(column) = extract_column_name(inner) {
+        return Some(ResidualGuard::IsTrue(column));
+    }
+    attribute_literal_predicate(inner).map(ResidualGuard::Compare)
 }
 
 fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
@@ -290,15 +463,13 @@ fn is_literal_value(expr: &Expr) -> bool {
     }
 }
 
-/// Returns `true` when the expression is a literal value or a well-known
-/// temporal function call (e.g. `now()`, `current_timestamp`).  Used in
-/// `is_attribute_check` so that `valid_until > now()` is recognised as an
-/// attribute condition rather than falling through to Unknown.
+/// Returns `true` when the expression is a literal value, a well-known temporal function
+/// call (`now()`, `current_timestamp`), or such a function shifted by a fixed interval
+/// (`now() - interval '30 days'`). Used in `is_attribute_check` so `valid_until > now()`
+/// and its grace-period spellings are recognised as attribute conditions rather than
+/// falling through to Unknown.
 fn is_literal_or_temporal(expr: &Expr) -> bool {
-    if is_literal_value(expr) {
-        return true;
-    }
-    is_well_known_temporal_function(expr)
+    is_literal_value(expr) || temporal_request_side(expr).is_some()
 }
 
 /// (within a statement) date/time value.

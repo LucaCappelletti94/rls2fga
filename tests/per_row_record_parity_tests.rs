@@ -7,7 +7,6 @@
 
 #![cfg(not(target_os = "windows"))]
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
@@ -29,8 +28,7 @@ use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, RowValues,
-    ValueSource,
+    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
@@ -39,6 +37,8 @@ use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
 
 mod support;
+
+use support::{scalar_text, JsonRowValues};
 
 const PG_USER: &str = "postgres";
 const PG_PASSWORD: &str = "postgres";
@@ -88,50 +88,6 @@ struct JsonRow {
 struct KeyRow {
     #[diesel(sql_type = Text)]
     value: String,
-}
-
-/// `serde_json` view of one row, adapting it to the crate's row interface.
-struct JsonRowValues<'a>(&'a serde_json::Value);
-
-/// Text of a JSON scalar the way `PostgreSQL` renders it in `||` and `->>`.
-fn scalar_text(value: &serde_json::Value) -> Option<Cow<'_, str>> {
-    match value {
-        serde_json::Value::String(text) => Some(Cow::Borrowed(text.as_str())),
-        serde_json::Value::Number(number) => Some(Cow::Owned(number.to_string())),
-        serde_json::Value::Bool(flag) => Some(Cow::Borrowed(if *flag { "true" } else { "false" })),
-        // A JSON null has no text, and neither does an object or an array, which
-        // `||` would refuse anyway.
-        _ => None,
-    }
-}
-
-impl RowValues for JsonRowValues<'_> {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.0.get(column).and_then(scalar_text)
-    }
-
-    fn boolean(&self, column: &str) -> Option<bool> {
-        self.0.get(column).and_then(serde_json::Value::as_bool)
-    }
-
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        Some(
-            self.0
-                .get(column)?
-                .as_array()?
-                .iter()
-                .map(scalar_text)
-                .collect(),
-        )
-    }
-
-    fn json_text(&self, column: &str, path: &[String]) -> Option<Cow<'_, str>> {
-        let mut current = self.0.get(column)?;
-        for step in path {
-            current = current.get(step)?;
-        }
-        scalar_text(current)
-    }
 }
 
 fn connect_postgres_with_retry(database_url: &str) -> PgConnection {
@@ -534,8 +490,8 @@ CREATE POLICY notes_members ON notes FOR SELECT
         SELECT 1 FROM note_members
         WHERE note_members.note_id = notes.id
           AND note_members.user_id = auth_current_user_id()));
--- The same membership with a residual predicate, which reaches the query as SQL
--- text no evaluator here can read, so the shape has to be answered by querying.
+-- The same membership with a residual the row image evaluates, so the shape
+-- still settles and the residual travels as a guard.
 CREATE POLICY notes_reviewers ON notes FOR SELECT
     USING (EXISTS (
         SELECT 1 FROM note_reviewers
@@ -627,14 +583,12 @@ async fn every_row_shape_description_matches_its_own_sql() {
     // Non-vacuous: the schema really does exercise the fast path, and the rows
     // really do produce records on both sides.
     assert!(
-        pure >= 10,
+        pure >= 11,
         "the schema must exercise every row-decidable shape, saw {pure}"
     );
-    // The residual predicate is the one shape here a row cannot decide, and its
-    // bound query is executed by the same comparison.
     assert_eq!(
-        joined, 1,
-        "only the residual predicate membership reads more than the row"
+        joined, 0,
+        "every residual here is decided by the row image, saw {joined}"
     );
     assert!(
         records > 20,
@@ -713,9 +667,10 @@ async fn a_request_gated_description_matches_its_own_sql() {
     }
 }
 
-/// A clock guard is settled at check time and its records are reached by replaying the
-/// changed row, so the replay projects the five columns a conditional tuple needs. Keyed
-/// on a whole compound key, since a clock column names every row sharing a timestamp.
+/// A clock guard is settled at check time, and which record exists is settled by the
+/// row alone, so the record carries the condition and the row's own timestamp in its
+/// context. Keyed on a whole compound key, since a clock column names every row
+/// sharing a timestamp.
 const CLOCK_GATE_SCHEMA: &str = "
 CREATE TABLE readings (
     tenant_id INT,
@@ -738,14 +693,12 @@ INSERT INTO readings (tenant_id, reading_id, starts_at) VALUES
   (8, 10, NULL);
 ";
 
-/// The one combination nothing else in this file reaches: a shape no row decides whose
-/// rows also carry a condition. Every other joining shape here grants outright, and every
-/// other conditional shape is settled by the row, so a replay projecting five columns had
-/// never run. A consumer holds the bound query alone, which is why the replay is decoded
-/// from what that query says about itself rather than from the load it extends.
+/// A conditional shape the row decides, over a compound key: every record here has to
+/// carry the condition and the context its own five-column SQL emits, spelled from the
+/// row alone.
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
-async fn a_clock_gated_replay_is_decoded_from_what_it_says_about_itself() {
+async fn a_clock_gated_record_is_decoded_from_its_own_row() {
     let (_container, mut conn) = start_postgres().await;
 
     conn.batch_execute(CLOCK_GATE_SCHEMA)
@@ -766,38 +719,16 @@ async fn a_clock_gated_replay_is_decoded_from_what_it_says_about_itself() {
 
     let gated: Vec<&TupleQuery> = queries
         .iter()
-        .filter(|query| {
-            query.condition.is_some()
-                && query
-                    .description
-                    .as_ref()
-                    .is_some_and(|description| !description.is_pure())
-        })
+        .filter(|query| query.condition.is_some())
         .collect();
     let [gate] = gated.as_slice() else {
-        panic!("one conditional query no row decides, got {}", gated.len());
+        panic!("one conditional query, got {}", gated.len());
     };
-    let RecordDerivation::Joined { queries: bound, .. } = &gate
-        .description
-        .as_ref()
-        .expect("the query carries a description")
-        .derivation
-    else {
-        panic!("the clock guard is answered by querying");
-    };
-    let [replay] = bound.as_slice() else {
-        panic!("one bound query, one table a change may arrive on: {bound:?}");
-    };
-    assert_eq!(
-        replay.key_columns,
-        ["tenant_id", "reading_id"],
-        "the whole key names one row"
-    );
 
     let (pure, joined, _) =
         assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "clock gate");
-    assert_eq!(joined, 1, "the clock guard is the one joining shape here");
-    assert_eq!(pure, 0, "and nothing else emits a query, got {pure}");
+    assert_eq!(pure, 1, "the clock guard settles from the row");
+    assert_eq!(joined, 0, "nothing here is left to replay, got {joined}");
 
     // Non-vacuous: the comparison above passes on two empty sets when the seed produces
     // nothing, and every record here reached `record_from_tuple_row` as five columns.
@@ -814,28 +745,119 @@ async fn a_clock_gated_replay_is_decoded_from_what_it_says_about_itself() {
             .expect("a conditional record carries the value the request completes");
         assert_eq!(
             Some(context.condition.as_str()),
-            replay.condition.as_deref(),
-            "the record names the condition its replay declares"
+            gate.condition.as_deref(),
+            "the record names the condition its query declares"
         );
     }
 }
 
-/// The other member of the family the clock gate covers: a conditional shape no row
-/// decides, keyed on a foreign column rather than the guarded table's own key.
-///
-/// One changed share replays every share of the paper it names, which is required rather
-/// than sloppy: the object is the paper and its grant set is the union over its shares, so
-/// replaying a single share row would drop the others' grants. Both conditional joining
-/// shapes now run, so neither rests on structure alone.
+/// The conditional replay corner: a share row carrying a residual only SQL can
+/// evaluate keeps its query, keyed on a foreign column while its rows carry a
+/// condition. One changed share replays every live share of the paper it names, which
+/// is required rather than sloppy: the object is the paper and its grant set is the
+/// union over its live shares, so replaying a single share row would drop the others.
+const EXPIRING_SHARE_SCHEMA: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+";
+
+/// Two papers carry a live share, one an expired share and one none, so a replay has
+/// something to leave out in both directions and the union over every key still has to
+/// reproduce the whole table.
+const EXPIRING_SHARE_SEED: &str = "
+INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob'), (4, 'bob');
+INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES
+  (2, 'team-a', '2099-01-01 00:00:00+00'),
+  (3, 'team-z', '2000-01-01 00:00:00+00'),
+  (4, 'team-a', '2099-01-01 00:00:00+00');
+";
+
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
-async fn a_session_attribute_membership_replay_matches_its_own_sql() {
+async fn an_expiring_share_settles_and_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(EXPIRING_SHARE_SCHEMA)
+        .expect("failed to apply the expiring share schema");
+    conn.batch_execute(EXPIRING_SHARE_SEED)
+        .expect("failed to seed the expiring shares");
+
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        EXPIRING_SHARE_SCHEMA,
+        r#"[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]"#,
+    );
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    // Non-vacuous: the clock now rides the share arm's condition and the row still decides
+    // the record, so a conditional shape that settles from its row has to be present.
+    let conditional_from_row = queries
+        .iter()
+        .filter(|query| {
+            query.condition.is_some()
+                && query
+                    .description
+                    .as_ref()
+                    .is_some_and(RecordDescription::is_pure)
+        })
+        .count();
+    assert_eq!(
+        conditional_from_row, 1,
+        "the expiring share arm carries a condition and settles from its own row"
+    );
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "expiring share");
+    assert_eq!(
+        joined, 0,
+        "the clock in the condition lets every arm settle from its own row"
+    );
+    assert!(
+        pure > 0,
+        "the owner arm and the conditioned share arm both settle from the row, saw {pure}"
+    );
+    assert!(
+        records > 0,
+        "the seed must produce records to compare, saw {records}"
+    );
+}
+
+/// The unexpiring sibling settles from the share row, so its context-carrying records,
+/// keyed on a foreign column, run through the pure comparison: each has to spell the
+/// object, the condition and the viewer exactly as its own five-column SQL does.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_settled_share_arm_matches_its_own_sql() {
     let (_container, mut conn) = start_postgres().await;
 
     conn.batch_execute(&support::read_fixture_sql("connetto_capability"))
         .expect("failed to apply the connetto capability schema");
-    // Two papers carry a share and one carries none, so a replay has something to leave
-    // out and the union over every key still has to reproduce the whole table.
     conn.batch_execute(
         "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
          INSERT INTO paper_shares (paper_id, viewer) VALUES (2, 'team-a'), (3, 'team-z');",
@@ -853,33 +875,12 @@ async fn a_session_attribute_membership_replay_matches_its_own_sql() {
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
-    // Non-vacuous: without this the comparison could pass while the fixture reached only
-    // shapes a row decides, which is how this combination went uncovered.
-    let conditional_joins = queries
-        .iter()
-        .filter(|query| {
-            query.condition.is_some()
-                && query
-                    .description
-                    .as_ref()
-                    .is_some_and(|description| !description.is_pure())
-        })
-        .count();
-    assert_eq!(
-        conditional_joins, 1,
-        "the share arm is the one conditional shape here no row decides"
-    );
-
-    let (pure, joined, records) = assert_descriptions_match_their_sql(
-        &outputs,
-        &mut conn,
-        &queries,
-        "session attribute membership",
-    );
-    assert_eq!(joined, 1, "only the share arm reads more than the row");
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "settled share arm");
+    assert_eq!(joined, 0, "the share row decides its record, saw {joined}");
     assert!(
-        pure > 0,
-        "the fixture also carries shapes a row decides, saw {pure}"
+        pure >= 3,
+        "the share arm runs beside the owner arm and the sharing table's own rows, saw {pure}"
     );
     assert!(
         records > 0,
@@ -1035,14 +1036,17 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
 }
 
 /// An uncorrelated membership grants the whole table at once, so the generator mints
-/// a holder object standing for the member list. Two of them: one whose list the row
-/// decides, and one carrying a predicate only SQL can read.
+/// a holder object standing for the member list. Three of them: one plain, one whose
+/// residual the row image decides, and one gated by the clock, which only SQL can
+/// read.
 const HOLDER_SCHEMA: &str = "
 CREATE TABLE users (id TEXT PRIMARY KEY);
 CREATE TABLE staff (user_id TEXT);
 CREATE TABLE reviewers (user_id TEXT, active BOOLEAN);
+CREATE TABLE vetted (user_id TEXT, expires_at TIMESTAMPTZ);
 CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
 CREATE TABLE memos (id TEXT PRIMARY KEY);
+CREATE TABLE drafts (id TEXT PRIMARY KEY);
 
 CREATE FUNCTION auth_current_user_id() RETURNS TEXT
     LANGUAGE sql STABLE
@@ -1050,6 +1054,7 @@ CREATE FUNCTION auth_current_user_id() RETURNS TEXT
 
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drafts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY docs_staff ON docs FOR SELECT
     USING (EXISTS (SELECT 1 FROM staff WHERE staff.user_id = auth_current_user_id()));
@@ -1058,11 +1063,16 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT
         SELECT 1 FROM reviewers
         WHERE reviewers.user_id = auth_current_user_id()
           AND reviewers.active));
+CREATE POLICY drafts_vetted ON drafts FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM vetted
+        WHERE vetted.user_id = auth_current_user_id()
+          AND vetted.expires_at > now()));
 ";
 
 /// A duplicated member and a null one, which is what separates a set of records from
-/// a row count, and reviewers on both sides of the predicate so a bound query has
-/// something to narrow.
+/// a row count, members on both sides of each residual so a guard and a bound query
+/// both have something to refuse.
 const HOLDER_SEED: &str = "
 INSERT INTO users (id) VALUES ('alice'), ('bob'), ('carol');
 
@@ -1075,8 +1085,14 @@ INSERT INTO reviewers (user_id, active) VALUES
     ('carol', FALSE),
     (NULL,    TRUE);
 
+INSERT INTO vetted (user_id, expires_at) VALUES
+    ('alice', '2099-01-01 00:00:00+00'),
+    ('bob',   '2000-01-01 00:00:00+00'),
+    (NULL,    '2099-01-01 00:00:00+00');
+
 INSERT INTO docs (id, owner_id) VALUES ('d1', 'alice'), ('d2', NULL);
 INSERT INTO memos (id) VALUES ('m1'), ('m2');
+INSERT INTO drafts (id) VALUES ('dr1'), ('dr2');
 ";
 
 #[tokio::test]
@@ -1106,14 +1122,15 @@ async fn holder_shapes_match_their_own_sql() {
     let (pure, joined, records) =
         assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "holder shapes");
 
-    // Two bridges and one member list the row decides, plus the guarded member list.
+    // Three bridges and the two member lists the row decides, with the residual
+    // travelling as a guard, and the clock-gated list left to its query.
     assert_eq!(
-        pure, 3,
-        "both bridges and the unguarded member list follow from one row, saw {pure}"
+        pure, 5,
+        "the bridges and the row-decided member lists follow from one row, saw {pure}"
     );
     assert_eq!(
         joined, 1,
-        "only the guarded member list reads more than the row, saw {joined}"
+        "only the clock-gated member list reads more than the row, saw {joined}"
     );
     assert!(
         records >= 6,

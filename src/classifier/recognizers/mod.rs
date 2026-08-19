@@ -25,7 +25,10 @@ mod session;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
-pub use attribute::{attribute_literal_predicate, attribute_request_predicate, is_attribute_check};
+pub use attribute::{
+    attribute_literal_predicate, attribute_request_predicate, is_attribute_check,
+    residual_predicate,
+};
 pub use session::recognize_session_attribute;
 pub(crate) use session::{caller_set, row_valued_set};
 pub(crate) use subquery::projected_select;

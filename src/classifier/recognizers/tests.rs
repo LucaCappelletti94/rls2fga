@@ -543,13 +543,13 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
             join_table,
             fk_column,
             user_column,
-            extra_predicate_sql,
+            extra_predicates,
             ..
         }) if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
-            && extra_predicate_sql
-                .as_deref()
+            && extra_predicates
+                .sql()
                 .is_some_and(|s| s.contains("role = 'admin'"))
     ));
 }
@@ -599,13 +599,13 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
             join_table,
             fk_column,
             user_column,
-            extra_predicate_sql,
+            extra_predicates,
             ..
         }) if join_table == "doc_members"
             && fk_column == "doc_id"
             && user_column == "user_id"
-            && extra_predicate_sql
-                .as_deref()
+            && extra_predicates
+                .sql()
                 .is_some_and(|s| s == "role = 'admin'")
     ));
 }
@@ -706,9 +706,9 @@ fn recognize_p4_supports_function_wrapped_membership_predicates_without_alias_le
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicate_sql, .. })
-            if extra_predicate_sql
-                .as_deref()
+        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
+            if extra_predicates
+                .sql()
                 .is_some_and(|s| {
                     let lower = s.to_ascii_lowercase();
                     lower.contains("lower(role) = 'admin'")
@@ -801,9 +801,9 @@ fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
     let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicate_sql, .. })
-            if extra_predicate_sql
-                .as_deref()
+        PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
+            if extra_predicates
+                .sql()
                 .is_some_and(|s| s.to_ascii_lowercase().contains("role = 'admin'"))
     ));
 }
@@ -944,34 +944,33 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
         recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
             .expect("expected IN-subquery match");
 
-    let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicate_sql) =
+    let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicates) =
         match exists.pattern {
             PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
                 fk_column,
                 user_column,
-                extra_predicate_sql,
+                extra_predicates,
                 ..
-            }) => (join_table, fk_column, user_column, extra_predicate_sql),
+            }) => (join_table, fk_column, user_column, extra_predicates),
             other => panic!("expected P4 EXISTS classification, got: {other:?}"),
         };
 
-    let (in_join_table, in_fk_column, in_user_column, in_extra_predicate_sql) = match in_sub.pattern
-    {
+    let (in_join_table, in_fk_column, in_user_column, in_extra_predicates) = match in_sub.pattern {
         PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
             fk_column,
             user_column,
-            extra_predicate_sql,
+            extra_predicates,
             ..
-        }) => (join_table, fk_column, user_column, extra_predicate_sql),
+        }) => (join_table, fk_column, user_column, extra_predicates),
         other => panic!("expected P4 IN-subquery classification, got: {other:?}"),
     };
 
     assert_eq!(exists_join_table, in_join_table);
     assert_eq!(exists_fk_column, in_fk_column);
     assert_eq!(exists_user_column, in_user_column);
-    assert_eq!(exists_extra_predicate_sql, in_extra_predicate_sql);
+    assert_eq!(exists_extra_predicates, in_extra_predicates);
 }
 
 #[test]
@@ -1504,10 +1503,7 @@ fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
     assert_eq!(extracted.0, "doc_id");
     assert_eq!(extracted.1, "id");
     assert_eq!(extracted.2, "user_id");
-    assert!(extracted
-        .3
-        .as_deref()
-        .is_some_and(|s| s.contains("role > 'a'")));
+    assert!(extracted.3.sql().is_some_and(|s| s.contains("role > 'a'")));
 }
 
 #[test]
@@ -2831,6 +2827,67 @@ fn is_attribute_check_handles_current_timestamp() {
     assert_eq!(
         is_attribute_check(&expr).as_ref().map(ColumnName::as_str),
         Some("created_at"),
+    );
+}
+
+#[test]
+fn residual_predicate_extracts_a_temporal_request() {
+    let conjunct = residual_predicate(&parse_expr("expires_at > now()"));
+    let request = conjunct
+        .request
+        .expect("a clock comparison is completed by the request, not the row");
+    assert_eq!(request.column.as_str(), "expires_at");
+    assert_eq!(request.operator, AttributeOperator::Gt);
+    assert_eq!(request.request_value, RequestValue::StatementTimestamp);
+    assert!(
+        conjunct.guard.is_none(),
+        "the clock is nobody's, so no row guard decides it"
+    );
+}
+
+#[test]
+fn residual_predicate_keeps_a_literal_conjunct_as_a_row_guard() {
+    let conjunct = residual_predicate(&parse_expr("role = 'admin'"));
+    assert!(
+        conjunct.request.is_none(),
+        "a literal comparison names no request value"
+    );
+    assert!(matches!(conjunct.guard, Some(ResidualGuard::Compare(_))));
+}
+
+#[test]
+fn residual_predicates_split_requests_from_the_where_they_leave_behind() {
+    let residual = ResidualPredicates::new(vec![
+        residual_predicate(&parse_expr("role = 'admin'")),
+        residual_predicate(&parse_expr("expires_at > now()")),
+    ]);
+    let decidable = residual
+        .decidable()
+        .expect("a guard and a request are both decidable off the row and the clock");
+    assert_eq!(decidable.guards.len(), 1, "the role check is the one guard");
+    assert_eq!(decidable.requests.len(), 1, "the clock is the one request");
+    assert_eq!(decidable.requests[0].column.as_str(), "expires_at");
+    assert_eq!(
+        residual.sql_excluding_requests().as_deref(),
+        Some("role = 'admin'"),
+        "only the clock leaves the WHERE, since it moves into the condition"
+    );
+    assert_eq!(
+        residual.requests().len(),
+        1,
+        "the clock is the residual's one request"
+    );
+}
+
+#[test]
+fn residual_predicates_refuse_to_decide_a_pure_sql_conjunct() {
+    let residual = ResidualPredicates::new(vec![
+        residual_predicate(&parse_expr("expires_at > now()")),
+        residual_predicate(&parse_expr("weight > other_weight")),
+    ]);
+    assert!(
+        residual.decidable().is_none(),
+        "a column-to-column comparison only SQL can evaluate keeps the shape joined"
     );
 }
 

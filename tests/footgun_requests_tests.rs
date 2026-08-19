@@ -791,6 +791,112 @@ fn only_a_zoned_timestamp_column_earns_a_condition_parameter() {
     }
 }
 
+/// A grace period spelled `expires_at > now() - interval '30 days'` is still the clock's
+/// to judge, not the writer's: the row keeps its own boundary and the check reads the
+/// request clock, taking the fixed offset from it as a CEL duration. Leaving the
+/// arithmetic in SQL would fire no boundary event, so the tuple would keep answering
+/// allowed past the grace window.
+#[test]
+fn a_fixed_temporal_offset_rides_the_request_clock_as_a_duration() {
+    for (offset_sql, offset_cel) in [
+        (
+            "now() - interval '30 days'",
+            "request_time - duration(\"720h\")",
+        ),
+        (
+            "now() + interval '2 hours'",
+            "request_time + duration(\"2h\")",
+        ),
+        (
+            "now() - interval '90 minutes'",
+            "request_time - duration(\"90m\")",
+        ),
+        (
+            "now() - interval '45 seconds'",
+            "request_time - duration(\"45s\")",
+        ),
+        (
+            "now() - interval '1 week'",
+            "request_time - duration(\"168h\")",
+        ),
+    ] {
+        let schema = format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > {offset_sql});\n"
+        );
+        let (dsl, tuples) = translation(&schema);
+        assert!(
+            dsl.contains(&format!("expires_at > {offset_cel}")),
+            "`{offset_sql}` must ride the clock as `{offset_cel}`:\n{dsl}"
+        );
+        assert!(
+            tuples.contains("jsonb_build_object('expires_at', \"expires_at\")"),
+            "the row's own boundary still travels as context:\n{tuples}"
+        );
+    }
+}
+
+/// A month or a year has no fixed number of seconds, so it cannot become a CEL duration.
+/// Rather than invent one, the offset stays in SQL and the shape falls back exactly as an
+/// inexpressible guard always has.
+#[test]
+fn a_variable_temporal_offset_stays_in_sql() {
+    for offset_sql in [
+        "now() - interval '1 month'",
+        "now() - interval '1 year'",
+        "now() - interval '2 mons'",
+    ] {
+        let schema = format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > {offset_sql});\n"
+        );
+        let (dsl, _tuples) = translation(&schema);
+        assert!(
+            !dsl.contains("duration("),
+            "`{offset_sql}` has no fixed length, so it must not become a duration:\n{dsl}"
+        );
+    }
+}
+
+/// The offset carries across the spellings a policy may use: a `HH:MM:SS` time part, a
+/// compound of fixed-length terms, the interval leading the clock, and the column on the
+/// right mirroring the comparison. Each still yields the same duration on the request
+/// clock.
+#[test]
+fn interval_offsets_carry_across_spellings() {
+    for (predicate, fragment) in [
+        (
+            "expires_at > now() - interval '01:30:00'",
+            "expires_at > request_time - duration(\"90m\")",
+        ),
+        (
+            "expires_at > now() - interval '1 day 2 hours'",
+            "expires_at > request_time - duration(\"26h\")",
+        ),
+        (
+            "expires_at > interval '2 hours' + now()",
+            "expires_at > request_time + duration(\"2h\")",
+        ),
+        (
+            "now() - interval '30 days' < expires_at",
+            "expires_at > request_time - duration(\"720h\")",
+        ),
+    ] {
+        let schema = format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING ({predicate});\n"
+        );
+        let (dsl, _tuples) = translation(&schema);
+        assert!(
+            dsl.contains(fragment),
+            "`{predicate}` must carry as `{fragment}`:\n{dsl}"
+        );
+    }
+}
+
 /// A condition name is global to the model while a `PostgreSQL` policy name is unique
 /// only per table, so one name reused across tables must not collapse two guards into
 /// one spec. Here the two guards compare opposite ways, so sharing a spec inverts one of

@@ -17,7 +17,9 @@ use testcontainers::{
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{BoundQuery, RecordDerivation, RowValues};
+use rls2fga::generator::records::{
+    records_from_row, RecordDerivation, RecordDescription, RowValues,
+};
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 
@@ -2233,6 +2235,176 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
     );
 }
 
+/// A grace period spelled `now() - interval '30 days'` must survive translation with its
+/// offset intact: the condition takes the interval from the request clock as a duration,
+/// so a row that expired inside the window still reads as allowed and one past it does
+/// not. Bare-clock translation would deny the graced row, so this pins the offset against
+/// what `PostgreSQL` itself answers.
+#[tokio::test]
+#[ignore = "requires Docker: starts PostgreSQL 18 and OpenFGA containers"]
+async fn interval_grace_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval '30 days');
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the grace-period schema");
+    conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON docs TO app_user;")
+        .expect("Failed to create the querying role");
+
+    // Seeded relative to the run clock: one still valid, one expired inside the 30-day
+    // grace, one expired past it, and one with no boundary at all.
+    conn.batch_execute(
+        "INSERT INTO docs (id, expires_at) VALUES \
+         ('g-fresh', now() + interval '5 days'), \
+         ('g-grace', now() - interval '10 days'), \
+         ('g-stale', now() - interval '40 days'), \
+         ('g-null', NULL);",
+    )
+    .expect("Failed to seed the grace-period docs");
+    let seeded = ["g-fresh", "g-grace", "g-stale", "g-null"];
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+
+    let conditional: Vec<&TupleQuery> = tuple_queries
+        .iter()
+        .filter(|query| query.condition.is_some())
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        1,
+        "the grace guard must emit exactly one conditional query, got {} queries",
+        tuple_queries.len()
+    );
+    let conditional_rows = execute_conditional_tuple_query(&mut conn, conditional[0]);
+    assert_eq!(
+        conditional_rows.len(),
+        3,
+        "every row with a boundary carries a tuple and the NULL row carries none"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "interval-grace-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = conditional_rows
+        .iter()
+        .map(|row| {
+            support::openfga::make_conditional_tuple(
+                &row.object,
+                &row.relation,
+                &row.subject,
+                &row.condition,
+                row.context.clone(),
+            )
+        })
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+
+    let mut failures = Vec::new();
+    let mut expired_between = 0usize;
+    let mut graced = 0usize;
+    for (instant, label) in [(now.as_str(), "now"), (later.as_str(), "a year on")] {
+        for doc_id in seeded {
+            let readable_now = postgres_reads_doc_as_app_user(&mut conn, doc_id);
+            let expected = if label == "now" {
+                readable_now
+            } else {
+                postgres_doc_within_grace_at(&mut conn, doc_id, instant)
+            };
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                "user:alice",
+                "can_select",
+                &format!("docs:{doc_id}"),
+                serde_json::json!({ "request_time": instant }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "docs:{doc_id} at {label}: postgres={expected}, openfga={actual}"
+                ));
+            }
+            if label == "now"
+                && readable_now
+                && !postgres_doc_unexpired_at(&mut conn, doc_id, instant)
+            {
+                graced += 1;
+            }
+            if label == "a year on" && readable_now && !expected {
+                expired_between += 1;
+            }
+        }
+    }
+
+    // A row already past its own boundary yet still readable proves the 30-day offset is
+    // applied: the bare clock would deny it.
+    assert!(
+        graced > 0,
+        "no row is admitted only by the grace window, so the offset proves nothing"
+    );
+    assert!(
+        expired_between > 0,
+        "no row loses its grant between the two instants, so the condition proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA interval-grace condition parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
 /// One row of a conditional tuple query, which yields five columns rather than three.
 #[derive(QueryableByName)]
 struct ConditionalTupleRow {
@@ -2322,6 +2494,20 @@ fn postgres_doc_unexpired_at(conn: &mut PgConnection, doc_id: &str, instant: &st
     .bind::<Text, _>(instant)
     .load(conn)
     .expect("evaluating the predicate should succeed");
+    !rows.is_empty()
+}
+
+/// Whether the grace guard admits the row at `instant`. `PostgreSQL` cannot be asked
+/// about the future, so the policy's own predicate with its interval stands in for it.
+fn postgres_doc_within_grace_at(conn: &mut PgConnection, doc_id: &str, instant: &str) -> bool {
+    let rows: Vec<InstantRow> = diesel::sql_query(
+        "SELECT id AS instant FROM docs \
+         WHERE id = $1 AND expires_at > $2::timestamptz - interval '30 days'",
+    )
+    .bind::<Text, _>(doc_id)
+    .bind::<Text, _>(instant)
+    .load(conn)
+    .expect("evaluating the grace predicate should succeed");
     !rows.is_empty()
 }
 
@@ -3820,9 +4006,9 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     let model = planned().json_model();
     let tuple_queries = planned().tuple_queries();
 
-    // Both conditional sources are emittable since phase 4 gave `paper_shares` a row
-    // identity: the gate on `papers` that the share arm mints, and `shares_read` on
-    // `paper_shares` itself, which used to render as a comment.
+    // The share arm gates a per-share object and bridges each paper to it, and
+    // `shares_read` gates the share table's own rows. Two conditional queries, plus the
+    // plain bridge that links a paper to its shares.
     let runnable: Vec<TupleQuery> = tuple_queries
         .iter()
         .filter(|query| query.sql.contains("SELECT "))
@@ -3835,25 +4021,25 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     assert_eq!(
         conditional.len(),
         2,
-        "the share arm gates `papers` and `shares_read` gates the share table's own \
-         rows, got {} runnable queries",
+        "the share arm gates the share objects and shares_read gates the share table, \
+         got {} runnable queries",
         runnable.len()
     );
-    let parent_gate = conditional
+    let share_gate = conditional
         .iter()
-        .find(|query| query.sql.contains("'papers:'"))
-        .expect("the share arm keys its facts on the paper it names");
+        .find(|query| query.sql.contains("'paper_shares_share:'"))
+        .expect("the share arm keys its gate on the per-share object");
     assert!(
-        conditional
-            .iter()
-            .any(|query| query.sql.contains("'paper_shares:'")),
-        "and the share table now names its own rows, which is what phase 4 unlocked"
+        runnable.iter().any(|query| query.condition.is_none()
+            && query.sql.contains("'papers:'")
+            && query.sql.contains("'paper_shares_share:'")),
+        "a bridge links each paper to its share objects"
     );
-    let conditional_rows = execute_conditional_tuple_query(&mut conn, parent_gate);
+    let share_rows = execute_conditional_tuple_query(&mut conn, share_gate);
     assert_eq!(
-        conditional_rows.len(),
+        share_rows.len(),
         SEEDED_SHARES.len(),
-        "one conditional fact per sharing row, keyed on the paper it names"
+        "one conditional fact per sharing row, keyed on its own share object"
     );
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -3871,18 +4057,18 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 
-    let mut writes: Vec<openfga_client::client::TupleKey> = conditional_rows
-        .iter()
-        .map(|row| {
-            support::openfga::make_conditional_tuple(
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in &conditional {
+        for row in execute_conditional_tuple_query(&mut conn, query) {
+            writes.push(support::openfga::make_conditional_tuple(
                 &row.object,
                 &row.relation,
                 &row.subject,
                 &row.condition,
                 row.context.clone(),
-            )
-        })
-        .collect();
+            ));
+        }
+    }
     let plain: Vec<TupleQuery> = runnable
         .iter()
         .filter(|query| query.condition.is_none())
@@ -3945,6 +4131,156 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     assert!(
         failures.is_empty(),
         "PostgreSQL/OpenFGA shared-paper parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// A paper shared to two viewers must load and union rather than collide. Keying every
+/// share tuple on the paper put both viewers on one `(user:*, gate, papers:1)` triple,
+/// which `OpenFGA` rejects as a duplicate write. Each share is now its own object, so the
+/// load succeeds and either viewer reaches the paper while a third does not. The reported
+/// bug's second half: the load itself is the assertion.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn two_viewers_of_one_paper_load_and_union_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (paper_id INT, viewer TEXT, PRIMARY KEY (paper_id, viewer));
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    )
+);
+CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the two-viewer schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    // Paper 1 is shared to two viewers, which the paper-keyed shape could not load.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'); \
+         INSERT INTO paper_shares (paper_id, viewer) VALUES \
+         (1, 'viewer_x'), (1, 'viewer_y'), (2, 'viewer_z');",
+    )
+    .expect("Failed to seed the papers and shares");
+
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        schema_sql,
+        r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
+    );
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_queries = planned().tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "two-viewer-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    // Writing the tuples is itself the assertion: the paper-keyed shape wrote two tuples
+    // on the same `(user:*, gate, papers:1)` triple, which OpenFGA refuses as a duplicate.
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        if query.condition.is_some() {
+            for row in execute_conditional_tuple_query(&mut conn, query) {
+                writes.push(support::openfga::make_conditional_tuple(
+                    &row.object,
+                    &row.relation,
+                    &row.subject,
+                    &row.condition,
+                    row.context.clone(),
+                ));
+            }
+        } else {
+            writes.extend(
+                execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                    .iter()
+                    .map(|key| {
+                        support::openfga::make_tuple(&key.object, &key.relation, &key.subject)
+                    }),
+            );
+        }
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for (subject, paper, expected) in [
+        ("viewer_x", 1, true),
+        ("viewer_y", 1, true),
+        ("viewer_z", 1, false),
+        ("viewer_x", 2, false),
+        ("viewer_z", 2, true),
+        ("viewer_w", 1, false),
+    ] {
+        let pg = papers_visible_to(&mut conn, None, Some(subject)).contains(&paper);
+        assert_eq!(
+            pg, expected,
+            "the oracle disagrees for {subject} on papers:{paper}"
+        );
+        let actual = support::openfga::check_allowed_with_context(
+            &client,
+            "user:reader",
+            "can_select",
+            &format!("papers:{paper}"),
+            serde_json::json!({ "app_subjects": caller_subject_list(Some(subject)) }),
+        )
+        .await;
+        if actual != expected {
+            failures.push(format!(
+                "papers:{paper} for subject {subject}: postgres={expected}, openfga={actual}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA two-viewer union parity mismatches:\n{}",
         failures.join("\n")
     );
 }
@@ -4802,81 +5138,34 @@ fn postgres_readable_readings(conn: &mut PgConnection) -> BTreeSet<String> {
     .expect("reading the guarded table should succeed")
 }
 
-/// One replay, decoded and turned into tuples exactly as the replay says to.
-///
-/// This is the consumer's own branch: it holds the bound query and not the whole-table
-/// load it extends, so whether a row carries a condition is read from this query alone. A
-/// replay that projects the two extra columns while saying it does not yields plain
-/// tuples here, and the service refuses them, which is the failure the field prevents.
-///
-/// Raw SQL because the generated text is the artifact under test, and its placeholders
-/// take literals rather than bound parameters because a literal carries `unknown` type and
-/// coerces to whatever the column is.
-fn tuples_from_replay(
-    conn: &mut PgConnection,
-    replay: &BoundQuery,
-    key: &[&str],
-) -> Vec<(String, openfga_client::client::TupleKey)> {
-    assert_eq!(
-        key.len(),
-        replay.key_columns.len(),
-        "one value per column the replay binds"
-    );
-    let mut sql = replay.sql.clone();
-    // Highest placeholder first, so `$1` cannot eat the head of `$10`.
-    for (index, value) in key.iter().enumerate().rev() {
-        sql = sql.replace(&format!("${}", index + 1), value);
-    }
-    let failed = |error: diesel::result::Error| -> ! {
-        panic!("The replay failed in PostgreSQL 18:\n{sql}\nError: {error}")
-    };
-    let Some(condition) = replay.condition.as_deref() else {
-        let rows: Vec<TupleRow> = diesel::sql_query(&sql)
-            .load(conn)
-            .unwrap_or_else(|error| failed(error));
-        return rows
-            .into_iter()
-            .map(|row| {
-                let tuple = support::openfga::make_tuple(&row.object, &row.relation, &row.subject);
-                (row.object, tuple)
-            })
-            .collect();
-    };
-    let rows: Vec<ConditionalTupleRow> = diesel::sql_query(&sql)
-        .load(conn)
-        .unwrap_or_else(|error| failed(error));
-    rows.into_iter()
-        .map(|row| {
-            assert_eq!(
-                row.condition, condition,
-                "the replay names {condition} while its rows carry {}",
-                row.condition
-            );
-            let tuple = support::openfga::make_conditional_tuple(
-                &row.object,
-                &row.relation,
-                &row.subject,
-                &row.condition,
-                row.context,
-            );
-            (row.object, tuple)
-        })
-        .collect()
+/// One row read back whole as JSON, the shape the record evaluator reads.
+#[derive(QueryableByName)]
+struct JsonRow {
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    row: serde_json::Value,
 }
 
-/// A clock guard is settled at check time, so no row decides its records and a consumer
-/// watching the change stream answers a change by replaying the row it arrived on. Here
-/// the replay is the only loader: nothing runs the whole-table query, so a replay that
-/// projects the condition while claiming three columns loses it and writes an
-/// unconditional tuple, which is the wrong allow this case exists to catch.
+/// Whole rows of one table as JSON. Raw SQL because the schema is a per-test
+/// string, so no `table!` exists to type the read against.
+fn rows_as_json(conn: &mut PgConnection, sql: &str) -> Vec<serde_json::Value> {
+    let rows: Vec<JsonRow> = diesel::sql_query(sql).load(conn).unwrap_or_else(|error| {
+        panic!("the row read failed in PostgreSQL 18:\n{sql}\nError: {error}")
+    });
+    rows.into_iter().map(|json| json.row).collect()
+}
+
+/// A clock guard is settled at check time, and which record exists is settled by the
+/// row alone, so a consumer watching the change stream answers a change by evaluating
+/// the description against the row it arrived on. Here that evaluation is the only
+/// loader: nothing runs the whole-table query, so a description disagreeing with its
+/// own SQL about the condition or the context writes a wrong tuple and fails.
 ///
 /// Two-sided by construction: each tenant holds a reading its guard admits and one it
-/// refuses, so a model granting everything or denying everything fails. Each replay is
-/// also required to answer for its own row alone, so binding a prefix of the compound key
-/// fails rather than passing on a union that happens to match.
+/// refuses, so a model granting everything or denying everything fails. Each record is
+/// also required to name the row it came from, whole compound key and all.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn clock_gated_replay_parity_postgres18_and_openfga() {
+async fn clock_gated_from_row_parity_postgres18_and_openfga() {
     let postgres = GenericImage::new("postgres", "18")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -4930,22 +5219,16 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let replays: Vec<&BoundQuery> = tuple_queries
+    let descriptions: Vec<&RecordDescription> = tuple_queries
         .iter()
-        .filter_map(|query| match &query.description.as_ref()?.derivation {
-            RecordDerivation::Joined { queries, .. } => Some(queries),
-            RecordDerivation::FromRow { .. } => None,
-            other => panic!("unhandled derivation {other:?}"),
-        })
-        .flatten()
+        .filter_map(|query| query.description.as_ref())
         .collect();
-    let [replay] = replays.as_slice() else {
-        panic!("one replay, one table a change may arrive on, got {replays:?}");
+    let [description] = descriptions.as_slice() else {
+        panic!("one gate, one description, got {descriptions:?}");
     };
-    assert_eq!(
-        replay.key_columns,
-        ["tenant_id", "reading_id"],
-        "the whole key names one row"
+    assert!(
+        matches!(description.derivation, RecordDerivation::FromRow { .. }),
+        "the row decides which record exists: {description:?}"
     );
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
@@ -4966,21 +5249,43 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     let seeded = [("7", "9"), ("7", "10"), ("8", "9"), ("8", "10")];
     let mut writes = Vec::new();
     for (tenant, reading) in seeded {
-        let replayed = tuples_from_replay(&mut conn, replay, &[tenant, reading]);
-        // The replay answers for the row it was bound to and no other, which is what a
-        // prefix of the key cannot do.
-        let [(object, tuple)] = replayed.as_slice() else {
-            panic!(
-                "the replay of {tenant},{reading} returned {} rows",
-                replayed.len()
-            );
+        let rows = rows_as_json(
+            &mut conn,
+            &format!(
+                "SELECT to_jsonb(r) AS row FROM readings r \
+                 WHERE tenant_id = {tenant} AND reading_id = {reading}"
+            ),
+        );
+        let [row] = rows.as_slice() else {
+            panic!("one seeded row for {tenant},{reading}, got {}", rows.len());
+        };
+        let records = records_from_row(description, &support::JsonRowValues(row))
+            .expect("the seeded row evaluates");
+        // The record answers for the row it was read from and no other, which is
+        // what a prefix of the compound key could not say.
+        let [record] = records.as_slice() else {
+            panic!("the row states one record, got {records:?}");
         };
         assert_eq!(
-            object,
-            &format!("readings:{tenant}|{reading}"),
-            "the replay answers for the row it was bound to"
+            record.object,
+            format!("readings:{tenant}|{reading}"),
+            "the record names the row it came from"
         );
-        writes.push(tuple.clone());
+        let context = record
+            .context
+            .as_ref()
+            .expect("a clock-gated record carries its context");
+        let mut context_map = serde_json::Map::new();
+        for (key, value) in &context.values {
+            context_map.insert(key.clone(), serde_json::Value::String(value.clone()));
+        }
+        writes.push(support::openfga::make_conditional_tuple(
+            &record.object,
+            record.relation.as_str(),
+            &record.subject,
+            &context.condition,
+            serde_json::Value::Object(context_map),
+        ));
     }
     let client = service_client.into_client(&store_id, &model_id);
     support::openfga::write_tuples(&client, writes).await;
@@ -5026,21 +5331,23 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
     );
 }
 
-/// The other conditional shape no row decides, loaded only by replaying a changed row.
+/// The share arm settles from the share row, so a consumer watching the change stream
+/// answers a changed share by evaluating the description against that row alone.
 ///
 /// `shared_paper_parity_postgres18_and_openfga` covers the same fixture through the
-/// whole-table load, and `clock_gated_replay_parity_postgres18_and_openfga` covers a replay
-/// keyed on the guarded table's own key. This is the remaining corner: a replay keyed on a
-/// foreign column, whose rows carry a condition. One changed share replays every share of
-/// the paper it names, since the object is the paper and its grant set is the union over
-/// its shares.
+/// whole-table load, and `clock_gated_from_row_parity_postgres18_and_openfga` covers a
+/// record keyed on the guarded table's own key. This is the remaining corner: a record
+/// keyed on a foreign column, so one membership row states a record about another
+/// type's object. Here the evaluation is the only loader of the share arm: nothing
+/// runs its whole-table query, so a description disagreeing with its own SQL about
+/// the object, the condition, or the context fails.
 ///
 /// Two-sided by construction: the caller states include one holding the shared key and one
 /// without it, and the owner arm is loaded too, so a model keeping one arm or granting
 /// everything cannot pass.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn shared_paper_replay_parity_postgres18_and_openfga() {
+async fn shared_paper_from_row_parity_postgres18_and_openfga() {
     let postgres = GenericImage::new("postgres", "18")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -5095,32 +5402,29 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     let model = planned().json_model();
     let tuple_queries = planned().tuple_queries();
 
+    // Two conditional shapes read `paper_shares`: the papers share arm and the
+    // sharing table's own read gate. The arm under test is the one whose records
+    // move another type's objects.
     let share_arm = tuple_queries
         .iter()
         .find(|query| {
             query.condition.is_some()
-                && query
-                    .description
-                    .as_ref()
-                    .is_some_and(|description| !description.is_pure())
+                && query.description.as_ref().is_some_and(|description| {
+                    match &description.derivation {
+                        RecordDerivation::FromRow {
+                            table, template, ..
+                        } => {
+                            table == "paper_shares" && template.object_type == "paper_shares_share"
+                        }
+                        _ => false,
+                    }
+                })
         })
-        .expect("the share arm is answered by querying and its rows carry a condition");
-    let RecordDerivation::Joined { queries: bound, .. } = &share_arm
+        .expect("the share arm settles from the share row and its rows carry a condition");
+    let description = share_arm
         .description
         .as_ref()
-        .expect("the query carries a description")
-        .derivation
-    else {
-        panic!("the share arm is answered by querying");
-    };
-    let [replay] = bound.as_slice() else {
-        panic!("one replay, one table a change may arrive on: {bound:?}");
-    };
-    assert_eq!(
-        replay.key_columns,
-        ["paper_id"],
-        "a changed share is replayed by the paper it names"
-    );
+        .expect("the query carries a description");
 
     let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
         .with_exposed_port(8080.tcp())
@@ -5137,32 +5441,52 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 
-    // The share arm comes only from the replay, one per changed share row. Every other query
+    // The share arm comes only from evaluating each share row. Every other query
     // loads whole, so the owner arm and the sharing table's own rows still answer.
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
-    for (paper, _) in SEEDED_SHARES {
-        let replayed = tuples_from_replay(&mut conn, replay, &[&paper.to_string()]);
-        let [(object, tuple)] = replayed.as_slice() else {
-            panic!(
-                "the replay of paper {paper} returned {} rows",
-                replayed.len()
-            );
+    for (paper, viewer) in SEEDED_SHARES {
+        let rows = rows_as_json(
+            &mut conn,
+            &format!(
+                "SELECT to_jsonb(s) AS row FROM paper_shares s \
+                 WHERE paper_id = {paper} AND viewer = '{viewer}'"
+            ),
+        );
+        let [row] = rows.as_slice() else {
+            panic!("one seeded share for paper {paper}, got {}", rows.len());
+        };
+        let records = records_from_row(description, &support::JsonRowValues(row))
+            .expect("the share row evaluates");
+        let [record] = records.as_slice() else {
+            panic!("the share row states one record, got {records:?}");
         };
         assert_eq!(
-            object,
-            &format!("papers:{paper}"),
-            "the replay names the paper whose grant set changed"
+            record.object,
+            format!("paper_shares_share:{paper}|{viewer}"),
+            "the record names the share row the paper reaches its grant through"
         );
-        writes.push(tuple.clone());
+        let context = record
+            .context
+            .as_ref()
+            .expect("the share record carries the viewer it admits");
+        assert!(
+            context.values.values().any(|value| *value == viewer),
+            "the record carries the row's own viewer"
+        );
+        let mut context_map = serde_json::Map::new();
+        for (key, value) in &context.values {
+            context_map.insert(key.clone(), serde_json::Value::String(value.clone()));
+        }
+        writes.push(support::openfga::make_conditional_tuple(
+            &record.object,
+            record.relation.as_str(),
+            &record.subject,
+            &context.condition,
+            serde_json::Value::Object(context_map),
+        ));
     }
     for query in &tuple_queries {
-        if query.sql.trim_start().starts_with("--")
-            || core::ptr::eq(query, share_arm)
-            || query
-                .description
-                .as_ref()
-                .is_some_and(|description| !description.is_pure())
-        {
+        if query.sql.trim_start().starts_with("--") || core::ptr::eq(query, share_arm) {
             continue;
         }
         if query.condition.is_some() {
@@ -5231,7 +5555,909 @@ async fn shared_paper_replay_parity_postgres18_and_openfga() {
     );
     assert!(
         failures.is_empty(),
-        "PostgreSQL/OpenFGA shared-paper replay parity mismatches:\n{}",
+        "PostgreSQL/OpenFGA shared-paper from-row parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The share arm with an expiry: the clock moves into the condition the share row's tuple
+/// names, so the row alone decides the record and the store stops answering allowed the
+/// instant the clock passes the boundary, with no change event. The reported bug.
+///
+/// Two-sided across two instants: at now a live share grants and an expired one does not,
+/// and a year on every share has expired, so a model ignoring the clock would keep
+/// granting the live share and fail.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn expiring_share_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+";
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        schema_sql,
+        r#"[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]"#,
+    );
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the expiring share schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    // Paper 2 is shared live, paper 3 is shared already expired, paper 1 is only owned.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob'); \
+         INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES \
+            (2, 'team-a', now() + interval '1 day'), \
+            (3, 'team-z', now() - interval '1 day');",
+    )
+    .expect("Failed to seed the papers and shares");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "expiring-share-condition").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    // Load exactly what the loader loads: every query, conditional and plain.
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(&mut conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    // Two instants: the moment PostgreSQL is at, and a year later. At the second every
+    // seeded share has expired, so only the owner arm remains, which PostgreSQL reads
+    // with no subjects, since ownership does not depend on the clock.
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+    let callers: [(Option<&str>, Option<&str>); 5] = [
+        (None, None),
+        (Some("alice"), None),
+        (Some("bob"), None),
+        (None, Some("team-a")),
+        (None, Some("team-z")),
+    ];
+    let mut failures = Vec::new();
+    let mut share_only = 0usize;
+    let mut denied = 0usize;
+    let mut expired_between = 0usize;
+    for (user_id, subjects) in callers {
+        let visible_now = papers_visible_to(&mut conn, user_id, subjects);
+        let owner_only = papers_visible_to(&mut conn, user_id, None);
+        share_only += visible_now.difference(&owner_only).count();
+        let caller = user_id.unwrap_or("nobody");
+        for id in [1, 2, 3] {
+            for (instant, expected_set, label) in [
+                (now.as_str(), &visible_now, "now"),
+                (later.as_str(), &owner_only, "a year on"),
+            ] {
+                let expected = expected_set.contains(&id);
+                if !expected {
+                    denied += 1;
+                }
+                let actual = support::openfga::check_allowed_with_context(
+                    &client,
+                    &format!("user:{caller}"),
+                    "can_select",
+                    &format!("papers:{id}"),
+                    serde_json::json!({
+                        "app_subjects": caller_subject_list(subjects),
+                        "request_time": instant,
+                    }),
+                )
+                .await;
+                if expected != actual {
+                    failures.push(format!(
+                        "papers:{id} for user_id={user_id:?} subjects={subjects:?} at {label}: \
+                         postgres={expected}, openfga={actual}"
+                    ));
+                }
+                if label == "a year on" && visible_now.contains(&id) && !expected {
+                    expired_between += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        share_only > 0,
+        "no paper is readable by a shared key alone, so the share arm carried nothing"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        expired_between > 0,
+        "no paper loses its grant between the two instants, so the clock condition proves \
+         nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA expiring-share condition parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The membership arm carries a grace period, `s.expires_at > now() - interval '30 days'`.
+/// The offset has to reach the condition and ride the request clock, so a share expired
+/// inside the window still grants and one past it does not, two-sided across two instants.
+/// The interval's single-table door has parity already; this pins the membership door the
+/// same generic path reaches.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn interval_grace_membership_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now() - interval '30 days'
+    )
+);
+";
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        schema_sql,
+        r#"[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]"#,
+    );
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the grace membership schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    // Paper 2's share expired inside the 30-day grace, paper 3's past it, paper 1 is owned.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob'); \
+         INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES \
+            (2, 'team-a', now() - interval '10 days'), \
+            (3, 'team-z', now() - interval '40 days');",
+    )
+    .expect("Failed to seed the papers and shares");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "interval-grace-membership").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(&mut conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+    let callers: [(Option<&str>, Option<&str>); 4] = [
+        (Some("alice"), None),
+        (Some("bob"), None),
+        (None, Some("team-a")),
+        (None, Some("team-z")),
+    ];
+    let mut failures = Vec::new();
+    let mut share_only = 0usize;
+    let mut denied = 0usize;
+    let mut graced = 0usize;
+    let mut expired_between = 0usize;
+    for (user_id, subjects) in callers {
+        let visible_now = papers_visible_to(&mut conn, user_id, subjects);
+        let owner_only = papers_visible_to(&mut conn, user_id, None);
+        share_only += visible_now.difference(&owner_only).count();
+        let caller = user_id.unwrap_or("nobody");
+        for id in [1, 2, 3] {
+            for (instant, expected_set, label) in [
+                (now.as_str(), &visible_now, "now"),
+                (later.as_str(), &owner_only, "a year on"),
+            ] {
+                let expected = expected_set.contains(&id);
+                if !expected {
+                    denied += 1;
+                }
+                let actual = support::openfga::check_allowed_with_context(
+                    &client,
+                    &format!("user:{caller}"),
+                    "can_select",
+                    &format!("papers:{id}"),
+                    serde_json::json!({
+                        "app_subjects": caller_subject_list(subjects),
+                        "request_time": instant,
+                    }),
+                )
+                .await;
+                if expected != actual {
+                    failures.push(format!(
+                        "papers:{id} for user_id={user_id:?} subjects={subjects:?} at {label}: \
+                         postgres={expected}, openfga={actual}"
+                    ));
+                }
+                if label == "now" && expected && subjects == Some("team-a") && id == 2 {
+                    graced += 1;
+                }
+                if label == "a year on" && visible_now.contains(&id) && !expected {
+                    expired_between += 1;
+                }
+            }
+        }
+    }
+
+    // Paper 2's share expired ten days ago yet reads allowed only because the 30-day grace
+    // rides the clock: the bare clock would deny it.
+    assert!(
+        graced > 0,
+        "no share is admitted only by the grace window, so the offset proves nothing"
+    );
+    assert!(
+        share_only > 0,
+        "no paper is readable by a shared key alone, so the share arm carried nothing"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        expired_between > 0,
+        "no paper loses its grant between the two instants, so the clock proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA interval-grace membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// One paper shared to two viewers, one live and one expired. The two shares must load as
+/// two objects rather than collide, and each viewer's own expiry has to gate it: the
+/// caller holding the live share reaches the paper, the one holding the expired share does
+/// not, and a year on neither does. Where issue 1 (per-share objects) and the clock meet.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn two_expiring_viewers_of_one_paper_gate_independently_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+";
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+        schema_sql,
+        r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
+    );
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the two-viewer expiry schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    // Paper 1 is shared to two viewers, one live and one already expired.
+    conn.batch_execute(
+        "INSERT INTO papers (id, owner) VALUES (1, 'alice'); \
+         INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES \
+            (1, 'viewer_live', now() + interval '1 day'), \
+            (1, 'viewer_gone', now() - interval '1 day');",
+    )
+    .expect("Failed to seed the paper and its two shares");
+
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "two-expiring-viewers").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    // The load itself asserts the two shares do not collide on one object.
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in &tuple_queries {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(&mut conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(&mut conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+    let mut failures = Vec::new();
+    let mut allowed = 0usize;
+    let mut denied = 0usize;
+    for (subject, instant, label) in [
+        ("viewer_live", now.as_str(), "now"),
+        ("viewer_gone", now.as_str(), "now"),
+        ("viewer_live", later.as_str(), "a year on"),
+    ] {
+        let expected = if label == "now" {
+            papers_visible_to(&mut conn, None, Some(subject)).contains(&1)
+        } else {
+            // PostgreSQL cannot be asked about the future; a year on every share has expired.
+            false
+        };
+        if expected {
+            allowed += 1;
+        } else {
+            denied += 1;
+        }
+        let actual = support::openfga::check_allowed_with_context(
+            &client,
+            "user:reader",
+            "can_select",
+            "papers:1",
+            serde_json::json!({
+                "app_subjects": caller_subject_list(Some(subject)),
+                "request_time": instant,
+            }),
+        )
+        .await;
+        if actual != expected {
+            failures.push(format!(
+                "papers:1 for subject {subject} at {label}: postgres={expected}, openfga={actual}"
+            ));
+        }
+    }
+    assert!(
+        allowed > 0 && denied > 0,
+        "the case must both grant and deny, or one viewer's expiry proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA two-expiring-viewer parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Ids of `table` a login role reads, the oracle for the membership arms whose caller is
+/// `current_user`. Raw SQL: the per-test table has no `table!` schema, and the read runs
+/// under the caller's own role so the policy sees the right `current_user`.
+fn readable_ids_as_role(conn: &mut PgConnection, role: &str, table: &str) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute(&format!("SET LOCAL ROLE {role}"))?;
+        let rows: Vec<IdRow> =
+            diesel::sql_query(format!("SELECT id FROM {table} ORDER BY id")).load(conn)?;
+        seen = rows.into_iter().map(|row| row.id).collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+/// Load every generated tuple query into `OpenFGA`, conditional and plain alike, exactly
+/// as the loader would.
+fn all_tuple_writes(
+    conn: &mut PgConnection,
+    tuple_queries: &[TupleQuery],
+) -> Vec<openfga_client::client::TupleKey> {
+    let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
+    for query in tuple_queries {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        if query.condition.is_some() {
+            writes.extend(
+                execute_conditional_tuple_query(conn, query)
+                    .iter()
+                    .map(|row| {
+                        support::openfga::make_conditional_tuple(
+                            &row.object,
+                            &row.relation,
+                            &row.subject,
+                            &row.condition,
+                            row.context.clone(),
+                        )
+                    }),
+            );
+            continue;
+        }
+        writes.extend(
+            execute_tuple_queries(conn, core::slice::from_ref(query))
+                .iter()
+                .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject)),
+        );
+    }
+    writes
+}
+
+/// The EXISTS-membership arm with an expiry: the clock rides the member tuple's condition,
+/// reached through member-from-parent, so the store stops granting the instant the clock
+/// passes the boundary. Two instants prove the flip; a model ignoring the clock keeps the
+/// live share and fails.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn expiring_exists_membership_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE doc_shares (
+    doc_id INT,
+    user_id TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (doc_id, user_id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM doc_shares s
+        WHERE s.doc_id = docs.id AND s.user_id = current_user AND s.expires_at > now()
+    )
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the expiring EXISTS-membership schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN; \
+         GRANT SELECT ON docs, doc_shares TO alice, bob;",
+    )
+    .expect("Failed to create the querying roles");
+    conn.batch_execute(
+        "INSERT INTO docs (id) VALUES (1), (2), (3); \
+         INSERT INTO doc_shares (doc_id, user_id, expires_at) VALUES \
+            (1, 'alice', now() + interval '1 day'), \
+            (2, 'bob', now() - interval '1 day'), \
+            (3, 'alice', now() + interval '1 day');",
+    )
+    .expect("Failed to seed the doc shares");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "expiring-exists").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, all_tuple_writes(&mut conn, &tuple_queries)).await;
+
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    let mut expired_between = 0usize;
+    for role in ["alice", "bob"] {
+        let readable_now = readable_ids_as_role(&mut conn, role, "docs");
+        for id in [1, 2, 3] {
+            for (instant, label) in [(now.as_str(), "now"), (later.as_str(), "a year on")] {
+                // Every seeded share expires within a day, so a year on grants nothing.
+                let expected = label == "now" && readable_now.contains(&id);
+                if expected {
+                    granted += 1;
+                } else {
+                    denied += 1;
+                }
+                let actual = support::openfga::check_allowed_with_context(
+                    &client,
+                    &format!("user:{role}"),
+                    "can_select",
+                    &format!("docs:{id}"),
+                    serde_json::json!({ "request_time": instant }),
+                )
+                .await;
+                if expected != actual {
+                    failures.push(format!(
+                        "docs:{id} for {role} at {label}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+                if label == "a year on" && readable_now.contains(&id) && !expected {
+                    expired_between += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        granted > 0,
+        "no live share grants, so the membership arm carried nothing"
+    );
+    assert!(
+        denied > 0,
+        "nothing is denied, so granting everything would pass"
+    );
+    assert!(
+        expired_between > 0,
+        "no share expires between the instants, so the clock condition proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA expiring EXISTS-membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The holder (uncorrelated) membership with an expiry over a member table with several
+/// rows per user: the clock rides an aggregated member tuple carrying the latest deadline.
+/// The aggregation is load-bearing: an expired reviewer row beside a live one must not
+/// deny, and one tuple per user is the only shape `OpenFGA` can hold on the one holder.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn expiring_holder_membership_condition_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE memos (id INT PRIMARY KEY);
+CREATE TABLE reviewers (user_id TEXT, vetted_at TIMESTAMPTZ);
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY memos_p ON memos FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM reviewers
+        WHERE reviewers.user_id = current_user AND reviewers.vetted_at > now()
+    )
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the expiring holder-membership schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN; \
+         GRANT SELECT ON memos, reviewers TO alice, bob;",
+    )
+    .expect("Failed to create the querying roles");
+    // Alice has an expired reviewer row and a live one, so her latest deadline is live and
+    // the expired row must not deny her. Bob has only an expired row.
+    conn.batch_execute(
+        "INSERT INTO memos (id) VALUES (1), (2); \
+         INSERT INTO reviewers (user_id, vetted_at) VALUES \
+            ('alice', now() - interval '1 day'), \
+            ('alice', now() + interval '1 day'), \
+            ('bob', now() - interval '1 day');",
+    )
+    .expect("Failed to seed the reviewers");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "expiring-holder").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, all_tuple_writes(&mut conn, &tuple_queries)).await;
+
+    let now = postgres_now(&mut conn);
+    let later = postgres_a_year_on(&mut conn);
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    let mut expired_between = 0usize;
+    for role in ["alice", "bob"] {
+        let readable_now = readable_ids_as_role(&mut conn, role, "memos");
+        for id in [1, 2] {
+            for (instant, label) in [(now.as_str(), "now"), (later.as_str(), "a year on")] {
+                let expected = label == "now" && readable_now.contains(&id);
+                if expected {
+                    granted += 1;
+                } else {
+                    denied += 1;
+                }
+                let actual = support::openfga::check_allowed_with_context(
+                    &client,
+                    &format!("user:{role}"),
+                    "can_select",
+                    &format!("memos:{id}"),
+                    serde_json::json!({ "request_time": instant }),
+                )
+                .await;
+                if expected != actual {
+                    failures.push(format!(
+                        "memos:{id} for {role} at {label}: postgres={expected}, openfga={actual}"
+                    ));
+                }
+                if label == "a year on" && readable_now.contains(&id) && !expected {
+                    expired_between += 1;
+                }
+            }
+        }
+    }
+    // Alice's latest reviewer row is live, so she reads every memo at now despite her
+    // expired row, and loses it a year on; bob's only row is expired, so he reads nothing.
+    assert!(
+        granted > 0,
+        "alice's live latest deadline grants nothing, so the aggregation dropped it"
+    );
+    assert!(
+        denied > 0,
+        "nothing is denied, so granting everything would pass"
+    );
+    assert!(
+        expired_between > 0,
+        "no memo loses its grant between the instants, so the clock condition proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA expiring holder-membership parity mismatches:\n{}",
         failures.join("\n")
     );
 }

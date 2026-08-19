@@ -7,12 +7,14 @@
 
 use std::collections::BTreeSet;
 
-use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::notes::TranslationNote;
-use rls2fga::generator::records::{Guard, RecordDerivation, RecordDescription, ValueSource};
+use rls2fga::generator::records::{
+    Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
+};
 use rls2fga::generator::relations::{RelationShapes, RowDecision};
 use rls2fga::generator::well_known::{
     can_select_relation, member_relation, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
@@ -43,7 +45,7 @@ const ACCESSOR_REGISTRY: &str =
 const HOLDER: &str = "
 CREATE TABLE users (id TEXT PRIMARY KEY);
 CREATE TABLE staff (user_id TEXT);
-CREATE TABLE reviewers (user_id TEXT, active BOOLEAN);
+CREATE TABLE reviewers (user_id TEXT, active BOOLEAN, vetted_at TIMESTAMPTZ);
 CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
 CREATE TABLE memos (id TEXT PRIMARY KEY);
 CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
@@ -53,7 +55,7 @@ ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_staff ON docs FOR SELECT USING (EXISTS (SELECT 1 FROM staff
     WHERE staff.user_id = auth_current_user_id()));
 CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM reviewers
-    WHERE reviewers.user_id = auth_current_user_id() AND reviewers.active));
+    WHERE reviewers.user_id = auth_current_user_id() AND reviewers.vetted_at > now()));
 ";
 
 /// A role threshold naming a grant table, with neither a users nor a teams table
@@ -86,6 +88,17 @@ fn parsed(sql: &str, registry_json: &str) -> (ParserDB, FunctionRegistry) {
     registry
         .load_from_json(registry_json)
         .expect("the registry parses");
+    (db, registry)
+}
+
+fn parsed_with_session_attributes(
+    sql: &str,
+    attributes_json: &str,
+) -> (ParserDB, FunctionRegistry) {
+    let (db, mut registry) = parsed(sql, "{}");
+    let attributes: Vec<SessionAttribute> =
+        serde_json::from_str(attributes_json).expect("the session attributes parse");
+    registry.declare_session_attributes(attributes);
     (db, registry)
 }
 
@@ -547,9 +560,9 @@ ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_members ON docs FOR SELECT USING (EXISTS (SELECT 1 FROM doc_members
     WHERE doc_members.\"do\"\"c_id\" = docs.id
       AND doc_members.\"us\"\"er_id\" = auth_current_user_id()
-      AND doc_members.role = 'admin'));
+      AND lower(doc_members.role) = 'admin'));
 CREATE POLICY memos_staff ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM staff
-    WHERE staff.\"us\"\"er_id\" = auth_current_user_id() AND staff.active));
+    WHERE staff.\"us\"\"er_id\" = auth_current_user_id() AND staff.active IS TRUE));
 ";
 
 /// The identifier a bound query's appended condition names, with any table alias
@@ -627,7 +640,8 @@ fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
 }
 
 /// Assertion 5. The shapes come from the plan the translation holds, so a setting that
-/// changes structure reaches them.
+/// changes structure reaches them: the configured request parameter collides with the
+/// row's column, and the suffix the plan chose shows in the record's own context key.
 #[test]
 fn the_shapes_read_the_plan_the_caller_configured() {
     let schema = "
@@ -640,32 +654,28 @@ CREATE POLICY jobs_sel ON jobs FOR SELECT USING (as_of > now());
         request_time_parameter: "as_of".to_string(),
     };
 
-    let bound: Vec<String> = translation(&db, &registry, &settings)
+    let context_keys: Vec<String> = translation(&db, &registry, &settings)
         .relations()
         .into_iter()
         .flat_map(|entry| entry.shapes)
         .filter_map(|shape| match shape.derivation {
-            RecordDerivation::Joined { queries, .. } => Some(queries),
+            RecordDerivation::FromRow { template, .. } => template
+                .context
+                .and_then(|context| context.entries.into_iter().next().map(|entry| entry.key)),
             _ => None,
         })
-        .flatten()
-        .map(|query| query.sql)
         .collect();
 
-    assert!(!bound.is_empty(), "the request-time gate joins");
+    assert!(!context_keys.is_empty(), "the request-time gate settles");
     // The caller's name collides with the column, so the plan suffixes the row's
     // parameter. A plan rebuilt from the defaults would not.
     assert!(
-        bound
-            .iter()
-            .all(|sql| !sql.contains("jsonb_build_object('as_of',")),
-        "the default plan's parameter name must not appear:\n{bound:#?}"
+        context_keys.iter().all(|key| key != "as_of"),
+        "the default plan's parameter name must not appear:\n{context_keys:#?}"
     );
     assert!(
-        bound
-            .iter()
-            .any(|sql| sql.contains("jsonb_build_object('as_of_")),
-        "the configured plan suffixes the row's parameter:\n{bound:#?}"
+        context_keys.iter().any(|key| key.starts_with("as_of_")),
+        "the configured plan suffixes the row's parameter:\n{context_keys:#?}"
     );
 }
 
@@ -768,34 +778,98 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
 }
 
-/// The same member list carrying a predicate no evaluator here can read has to be
-/// answered by querying, with a query bound to the changed row.
+/// The same member list carrying a clock comparison: the clock moves into the condition
+/// its member tuple names. Several rows can name one user and the holder collapses them,
+/// so the latest deadline is read by querying rather than settled from one row.
 #[test]
-fn a_holder_member_list_with_a_residual_predicate_joins() {
+fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
     let shapes = shapes_of(HOLDER, ACCESSOR_REGISTRY);
     let holder = shapes
         .iter()
         .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
         .expect("the reviewers holder is reported");
-    let RecordDerivation::Joined { queries, reason } = &holder.shapes[0].derivation else {
-        panic!("a residual predicate is not readable from the row: {holder:?}");
+    let RecordDerivation::Joined { queries, .. } = &holder.shapes[0].derivation else {
+        panic!(
+            "several rows can name one user, so the deadline is read by querying: {:?}",
+            holder.shapes[0].derivation
+        );
     };
-    assert!(
-        reason.contains("active"),
-        "the reason names the predicate: {reason}"
-    );
     assert_eq!(queries.len(), 1, "one table carries the change");
     assert_eq!(queries[0].table, "reviewers");
     assert_eq!(queries[0].key_columns, ["user_id"]);
-    assert!(
-        queries[0].sql.contains("\"user_id\" = $1"),
-        "the query binds the changed row: {}",
-        queries[0].sql
-    );
     assert_eq!(
-        queries[0].condition, None,
-        "a member row grants outright, so the replay projects three columns:\n{}",
-        queries[0].sql
+        queries[0].scope,
+        ReplayScope::Subject {
+            subject_type: "user".to_string(),
+            relation: member_relation(),
+            object_type: holder.type_name.as_str().to_string(),
+        },
+        "the replay determines what the one member holds through the holder"
+    );
+    let condition = queries[0]
+        .condition
+        .as_deref()
+        .expect("the clock rides the member tuple as a condition");
+    let sql = &queries[0].sql;
+    assert!(
+        sql.contains(&format!("'{condition}' AS condition")),
+        "the replay names the condition its own SQL projects:\n{sql}"
+    );
+    assert!(
+        sql.contains("MAX(\"vetted_at\")"),
+        "several rows collapse to the latest deadline:\n{sql}"
+    );
+    assert!(
+        sql.contains("GROUP BY \"user_id\""),
+        "the holder groups by the user it collapses:\n{sql}"
+    );
+    assert!(
+        !sql.contains("now()"),
+        "the clock left the WHERE for the condition:\n{sql}"
+    );
+    assert!(
+        sql.contains("\"user_id\" = $1"),
+        "the replay binds the changed user's slice:\n{sql}"
+    );
+}
+
+/// The same member list carrying a residual the row image can evaluate stays a
+/// function of its own row, with the residual as a guard: a delete of the
+/// member row then reports its record as removed, which a joining shape never
+/// could.
+#[test]
+fn a_holder_member_list_with_a_row_decidable_residual_settles() {
+    let schema = "
+CREATE TABLE reviewers (user_id TEXT, active BOOLEAN);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM reviewers
+    WHERE reviewers.user_id = auth_current_user_id() AND reviewers.active));
+";
+    let shapes = shapes_of(schema, ACCESSOR_REGISTRY);
+    let holder = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
+        .expect("the reviewers holder is reported");
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &holder.shapes[0].derivation
+    else {
+        panic!("the row decides the residual: {holder:?}");
+    };
+    assert_eq!(table, "reviewers");
+    assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
+    assert!(
+        matches!(
+            guards.as_slice(),
+            [Guard::NotNull(user), Guard::IsTrue(active)]
+                if user == "user_id" && active == "active"
+        ),
+        "the residual travels as a guard beside the NULL guard: {guards:?}"
     );
 }
 
@@ -1375,8 +1449,11 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                                     reported.type_name
                                 )
                             });
-                            assert_eq!(
-                                context.key, *context_key,
+                            assert!(
+                                context
+                                    .entries
+                                    .iter()
+                                    .any(|entry| entry.key == *context_key),
                                 "{fixture}: gated leaf {}#{relation} fills a different \
                                  parameter from the one the recipe names",
                                 reported.type_name
@@ -1821,19 +1898,20 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
         ),
         // `papers_p` translates whole, the ownership arm and the share arm both, and
         // `shares_insert` translates as delegation to the parent even though connetto
-        // declares no key, because the policy states the join itself. Phase 4 gave
-        // `paper_shares` a row identity built from its two-column key, so it reports no
-        // loss at all and its own reads are decidable, which is what the fixture was
-        // added to reach.
+        // declares no key, because the policy states the join itself. `paper_shares` has
+        // a row identity built from its two-column key, so it reports no loss and its own
+        // reads are decidable.
         //
-        // `papers` reads stay decidable only through ownership: the share arm is
-        // recorded on another table, so no row of `papers` settles it.
+        // The share arm now settles from the share row: each share is its own object on
+        // `paper_shares_share`, so that gate is decidable while `papers` reads stay
+        // decidable through ownership.
         (
             "connetto_capability",
             &[],
             &[
                 "paper_shares#can_select",
                 "paper_shares#gate_shares_read_abbc62d2",
+                "paper_shares_share#gate_papers_p_3b273139",
                 "papers#owner",
             ],
         ),
@@ -1913,12 +1991,13 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
     }
 }
 
-/// A grant recorded on a sharing table is not answerable from the guarded row: the
-/// deciding fact lives elsewhere. The shape has to say so and carry a query bound to the
-/// sharing table, because a consumer that read it as row-derived would take the
-/// wildcard subject at face value and grant everyone.
+/// A grant recorded on a sharing table is stated by the share row alone: the
+/// object is keyed on the row's foreign key, and the viewer the request has to
+/// hold travels in the record's context. Deleting the share then reports the
+/// record as removed, which a shape answered only by replaying never says.
+/// The recipe still delegates, because no row of the guarded table decides it.
 #[test]
-fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
+fn a_share_recorded_elsewhere_settles_from_the_share_row() {
     let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
     let planned = Translation::plan(
         classified,
@@ -1931,13 +2010,14 @@ fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
     let gate = reported
         .iter()
         .find(|shape| {
-            shape.type_name.as_str() == "papers" && shape.relation.as_str().starts_with("gate_")
+            shape.type_name.as_str() == "paper_shares_share"
+                && shape.relation.as_str().starts_with("gate_")
         })
-        .expect("the share arm mints a gate relation on papers");
+        .expect("the share arm mints a gate relation on the share type");
 
     assert!(
-        !gate.from_one_row,
-        "a paper row does not carry its own shares, so no row settles this"
+        gate.from_one_row,
+        "each share row is its own object, so the share row settles it"
     );
     let [shape] = gate.shapes.as_slice() else {
         panic!(
@@ -1950,40 +2030,128 @@ fn a_share_recorded_elsewhere_is_reported_as_needing_a_query() {
         vec!["paper_shares".to_string()],
         "the deciding rows live on the sharing table"
     );
-    let RecordDerivation::Joined { queries, reason } = &shape.derivation else {
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &shape.derivation
+    else {
         panic!(
-            "a share recorded on another table has to be queried, got {:?}",
+            "the share row alone states the record, got {:?}",
             shape.derivation
         );
     };
-    assert!(
-        reason.contains("paper_shares"),
-        "the reason names where the grant is recorded: {reason}"
-    );
-    let [query] = queries.as_slice() else {
-        panic!("one bound query, one table a change may arrive on: {queries:?}");
-    };
-    assert_eq!(query.table, "paper_shares");
+    assert_eq!(table, "paper_shares");
+    assert_eq!(template.object_type, "paper_shares_share");
     assert_eq!(
-        query.key_columns,
-        ["paper_id"],
-        "a changed share row is replayed by the paper it names"
+        template.object_key.parts(),
+        [
+            ValueSource::column("paper_id"),
+            ValueSource::column("viewer")
+        ],
+        "each share is its own object, keyed on the whole join key"
     );
-    let condition = query
-        .condition
-        .as_deref()
-        .expect("the request supplies the viewer, so the replay carries a condition");
+    assert_eq!(template.relation, gate.relation);
+    assert_eq!(template.subject_type, USER_TYPE);
+    assert_eq!(
+        template.subject_key,
+        SubjectKey::wildcard(),
+        "the request supplies the viewer, so the subject is the wildcard"
+    );
+    let context = template
+        .context
+        .as_ref()
+        .expect("the record carries the row's side of the comparison");
+    assert_eq!(
+        context.entries.len(),
+        1,
+        "the settled share carries only the viewer"
+    );
+    assert_eq!(context.entries[0].key, "viewer");
+    assert_eq!(context.entries[0].value, ValueSource::column("viewer"));
     assert!(
-        query.sql.contains(&format!("'{condition}' AS condition")),
-        "the replay names the condition its own SQL projects:\n{}",
-        query.sql
+        matches!(
+            guards.as_slice(),
+            [Guard::NotNull(member)] if member == "viewer"
+        ),
+        "the object key guards the share's own key, leaving the member NULL guard: {guards:?}"
+    );
+
+    let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
+        .expect("the model serializes");
+    let declared: Vec<String> = conditional_wildcards(&json)
+        .into_iter()
+        .filter(|(type_name, relation, _)| {
+            type_name == "paper_shares_share" && relation == gate.relation.as_str()
+        })
+        .map(|(_, _, condition)| condition)
+        .collect();
+    assert_eq!(
+        declared,
+        core::slice::from_ref(&context.condition),
+        "the record names the condition the model declares"
     );
 }
 
-/// A clock guard is settled by the request rather than the row, so the records are
-/// reached by replaying the changed row, and that replay projects the two extra columns a
-/// conditional tuple needs. Keyed on a whole compound key, which is the shape a consumer
-/// holding one row has no other way to identify.
+/// A guarded row shared to two viewers must not collide at `OpenFGA` load. Keying every
+/// share tuple on the paper put two viewers on one `(user:*, gate, papers:id)` triple,
+/// which `OpenFGA` rejects as a duplicate write. Each share row now becomes its own object
+/// reached through a tuple-to-userset, so two viewers are two objects that union.
+#[test]
+fn a_caller_set_share_gets_its_own_object_reached_by_userset() {
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let dsl = outputs.model();
+
+    assert!(
+        dsl.contains("type paper_shares_share"),
+        "each share row needs its own object type:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("define paper_shares_share: [paper_shares_share]"),
+        "papers must link to its shares:\n{dsl}"
+    );
+    assert!(
+        dsl.contains(" from paper_shares_share"),
+        "the share arm must be reached by tuple-to-userset:\n{dsl}"
+    );
+
+    let queries = outputs.tuple_queries();
+    let gate = queries
+        .iter()
+        .find(|query| query.condition.is_some() && query.sql.contains("gate_papers_p"))
+        .expect("the membership arm emits a conditional gate query");
+    assert!(
+        gate.sql.contains("'paper_shares_share:'"),
+        "the gate object is the share row, not the paper it collides on:\n{}",
+        gate.sql
+    );
+    assert!(
+        !gate.sql.contains("'papers:'"),
+        "no gate tuple may be keyed on the paper, or two viewers collide:\n{}",
+        gate.sql
+    );
+    assert!(
+        queries.iter().any(|query| {
+            query.condition.is_none()
+                && query.sql.contains("'papers:'")
+                && query.sql.contains("'paper_shares_share:'")
+        }),
+        "a bridge must link each paper to its share objects"
+    );
+}
+
+/// A clock guard is settled by the request rather than the row, so the record carries
+/// the condition and the row's own timestamp in its context, while the row alone
+/// decides which record exists. Keyed on a whole compound key, which is the shape a
+/// consumer holding one row has no other way to identify.
 const CLOCK_GATE_COMPOUND_KEY: &str = "
 CREATE TABLE readings (
     tenant_id INT,
@@ -1995,11 +2163,11 @@ ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
 ";
 
-/// A consumer holds the bound query and not the whole-table one it came from, so the
-/// bound query has to name the condition its own rows carry. Reading five columns as
-/// three drops the condition and takes a conditional wildcard at face value.
+/// A consumer holds the record and not the whole-table query it came from, so the
+/// record has to name the condition its context is judged by. Reading a conditional
+/// record as unconditional takes the wildcard subject at face value.
 #[test]
-fn a_clock_gated_replay_names_the_condition_its_rows_carry() {
+fn a_clock_gated_record_names_the_condition_its_context_carries() {
     let (db, registry) = parsed(CLOCK_GATE_COMPOUND_KEY, "{}");
     let planned = translation(&db, &registry, &GeneratorSettings::default());
     let reported = planned.relations();
@@ -2012,20 +2180,43 @@ fn a_clock_gated_replay_names_the_condition_its_rows_carry() {
     let [shape] = gate.shapes.as_slice() else {
         panic!("the gate is filled by one shape, got {:?}", gate.shapes);
     };
-    let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &shape.derivation
+    else {
         panic!(
-            "the request settles the guard, so no row decides it: {:?}",
+            "the row decides which record exists: {:?}",
             shape.derivation
         );
     };
-    let [query] = queries.as_slice() else {
-        panic!("one bound query, one table a change may arrive on: {queries:?}");
-    };
+    assert_eq!(table, "readings");
     assert_eq!(
-        query.key_columns,
-        ["tenant_id", "reading_id"],
+        template.object_key.parts(),
+        [
+            ValueSource::column("tenant_id"),
+            ValueSource::column("reading_id")
+        ],
         "the whole key names one row"
     );
+    assert!(
+        matches!(
+            guards.as_slice(),
+            [Guard::NotNull(column)] if column == "starts_at"
+        ),
+        "a row with no timestamp writes no record, as the query's WHERE drops it: {guards:?}"
+    );
+    let context = template
+        .context
+        .as_ref()
+        .expect("the record carries the row's side of the comparison");
+    assert_eq!(
+        context.entries.len(),
+        1,
+        "the clock gate carries only starts_at"
+    );
+    assert_eq!(context.entries[0].value, ValueSource::column("starts_at"));
 
     let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
         .expect("the model serializes");
@@ -2036,29 +2227,463 @@ fn a_clock_gated_replay_names_the_condition_its_rows_carry() {
         })
         .map(|(_, _, condition)| condition)
         .collect();
-    let [condition] = declared.as_slice() else {
-        panic!("the gate relation names one condition, got {declared:?}");
-    };
     assert_eq!(
-        query.condition.as_deref(),
-        Some(condition.as_str()),
-        "the replay names the condition the model declares"
+        declared,
+        core::slice::from_ref(&context.condition),
+        "the record names the condition the model declares"
+    );
+}
+
+/// The connetto share arm with an expiry on the share row. The viewer set is the
+/// request's and the clock the request's too, so both comparisons move into the
+/// condition and the share row alone decides the record.
+const EXPIRING_SHARE: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+";
+
+const EXPIRING_SHARE_ATTRIBUTES: &str = r#"[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]"#;
+
+/// A share gated by the caller's set, with a residual only SQL can evaluate (a
+/// column-to-column comparison), so the shape stays joined and its replay still carries
+/// the viewer-set condition. Keeps the conditional-join projection covered now that an
+/// expiring share settles from its row.
+const SQL_RESIDUAL_SHARE: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    granted_at TIMESTAMPTZ,
+    reviewed_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.granted_at > s.reviewed_at
+    )
+);
+";
+
+/// An expiring share settles from the share row: the clock comparison joins the viewer
+/// set inside the condition, so the row alone decides the record and its context carries
+/// the boundary. A record written today no longer grants tomorrow, because the check
+/// re-evaluates the clock the request supplies.
+#[test]
+fn an_expiring_share_settles_from_its_row_with_the_clock_in_its_condition() {
+    let (db, registry) = parsed_with_session_attributes(EXPIRING_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let reported = planned.relations();
+    let gate = reported
+        .iter()
+        .find(|entry| {
+            entry.type_name.as_str() == "paper_shares_share"
+                && entry.relation.as_str().starts_with("gate_")
+        })
+        .expect("the share arm mints a gate relation on the share type");
+    let [shape] = gate.shapes.as_slice() else {
+        panic!("the gate is filled by one shape, got {:?}", gate.shapes);
+    };
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &shape.derivation
+    else {
+        panic!(
+            "the clock in the condition lets the share row alone decide: {:?}",
+            shape.derivation
+        );
+    };
+    assert_eq!(table, "paper_shares");
+    assert_eq!(template.object_type, "paper_shares_share");
+    assert_eq!(
+        template.object_key.parts(),
+        [
+            ValueSource::column("paper_id"),
+            ValueSource::column("viewer")
+        ]
+    );
+    assert_eq!(template.subject_key, SubjectKey::wildcard());
+    let context = template
+        .context
+        .as_ref()
+        .expect("the record carries both sides the request completes");
+    assert!(
+        context
+            .entries
+            .iter()
+            .any(|entry| entry.value == ValueSource::column("viewer")),
+        "the viewer set is one comparison: {:?}",
+        context.entries
     );
     assert!(
-        query.sql.contains(&format!("'{condition}' AS condition")),
-        "and the condition its own SQL projects:\n{}",
+        context
+            .entries
+            .iter()
+            .any(|entry| entry.value == ValueSource::column("expires_at")),
+        "the clock is the other, carried in the same context: {:?}",
+        context.entries
+    );
+    assert!(
+        guards
+            .iter()
+            .any(|guard| matches!(guard, Guard::NotNull(column) if column == "expires_at")),
+        "a share with no expiry writes no record, as the query's WHERE drops it: {guards:?}"
+    );
+
+    let outputs = planned.outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert!(
+        dsl.lines()
+            .any(|line| line.contains(" in ") && line.contains("> request_time")),
+        "the condition composes the viewer set and the clock:\n{dsl}"
+    );
+
+    let queries = outputs.tuple_queries();
+    let query = queries
+        .iter()
+        .find(|query| query.condition.is_some() && query.sql.contains("paper_shares"))
+        .expect("the share arm renders a conditional query");
+    assert!(
+        !query.sql.contains("now()"),
+        "the clock left the WHERE for the condition:\n{}",
         query.sql
+    );
+    assert!(
+        query.sql.contains("\"expires_at\" IS NOT NULL"),
+        "a null expiry writes no tuple, matching PostgreSQL:\n{}",
+        query.sql
+    );
+    assert!(
+        query.sql.contains(
+            "jsonb_build_object('viewer', \"viewer\"::text, 'expires_at', \"expires_at\")"
+        ),
+        "the boundary travels in the tuple context:\n{}",
+        query.sql
+    );
+
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::CallerSuppliesConditionParameter { parameter, setting_key, .. }
+                if parameter == "request_time" && setting_key.is_none()
+        )),
+        "the request supplies the clock: {:?}",
+        outputs.notes()
+    );
+}
+
+/// The membership arm carries a grace period, `s.expires_at > now() - interval '30 days'`.
+/// The offset is the request clock's to apply, so it rides the condition as a duration
+/// beside the viewer set rather than filtering the query. The single-table door's tests
+/// cover the offset; this pins the shared path reaching the membership arm too.
+const GRACE_SHARE: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now() - interval '30 days'
+    )
+);
+";
+
+#[test]
+fn a_membership_grace_window_rides_the_clock_as_a_duration() {
+    let (db, registry) = parsed_with_session_attributes(GRACE_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    let outputs =
+        translation(&db, &registry, &GeneratorSettings::default()).outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert!(
+        dsl.lines().any(|line| {
+            line.contains(" in ") && line.contains("expires_at > request_time - duration(\"720h\")")
+        }),
+        "the membership condition composes the viewer set and the grace offset:\n{dsl}"
+    );
+
+    let queries = outputs.tuple_queries();
+    let query = queries
+        .iter()
+        .find(|query| query.condition.is_some() && query.sql.contains("paper_shares_share:"))
+        .expect("the share arm renders a conditional query on its own object");
+    assert!(
+        !query.sql.contains("interval"),
+        "the offset left the WHERE for the condition:\n{}",
+        query.sql
+    );
+    assert!(
+        query.sql.contains(
+            "jsonb_build_object('viewer', \"viewer\"::text, 'expires_at', \"expires_at\")"
+        ),
+        "the boundary travels in the tuple context:\n{}",
+        query.sql
+    );
+}
+
+/// An EXISTS membership with an expiry: the member tuple names a real user, so the clock
+/// rides that tuple as a condition and the member relation admits a conditioned user.
+const EXPIRING_EXISTS: &str = "
+CREATE TABLE docs (id UUID PRIMARY KEY);
+CREATE TABLE doc_shares (
+    doc_id UUID,
+    user_id UUID,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (doc_id, user_id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM doc_shares s
+        WHERE s.doc_id = docs.id AND s.user_id = current_user AND s.expires_at > now()
+    )
+);
+";
+
+#[test]
+fn an_expiring_exists_membership_conditions_its_member_tuple() {
+    let (db, registry) = parsed(EXPIRING_EXISTS, "{}");
+    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let reported = planned.relations();
+    let member = reported
+        .iter()
+        .find(|entry| entry.relation.as_str() == "member" && !entry.shapes.is_empty())
+        .expect("the membership feeds a member relation");
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &member.shapes[0].derivation
+    else {
+        panic!(
+            "the clock in the condition lets the share row alone decide: {:?}",
+            member.shapes[0].derivation
+        );
+    };
+    assert_eq!(table, "doc_shares");
+    assert!(
+        matches!(template.subject_key.part(), ValueSource::Column(column) if column == "user_id"),
+        "the member tuple still names the user the row supplies: {:?}",
+        template.subject_key
+    );
+    let context = template
+        .context
+        .as_ref()
+        .expect("the clock rides the member tuple as a condition");
+    assert!(
+        context
+            .entries
+            .iter()
+            .any(|entry| entry.value == ValueSource::column("expires_at")),
+        "the boundary travels in the context: {:?}",
+        context.entries
+    );
+    assert!(
+        guards
+            .iter()
+            .any(|guard| matches!(guard, Guard::NotNull(column) if column == "expires_at")),
+        "a share with no expiry writes no record: {guards:?}"
+    );
+
+    let outputs = planned.outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert!(
+        dsl.lines()
+            .any(|line| line.contains("define member:") && line.contains("user with ")),
+        "the member relation admits a conditioned user:\n{dsl}"
+    );
+    let queries = outputs.tuple_queries();
+    let query = queries
+        .iter()
+        .find(|query| query.condition.is_some() && query.sql.contains("doc_shares"))
+        .expect("the membership renders a conditional query");
+    assert!(
+        !query.sql.contains("now()"),
+        "the clock left the WHERE for the condition:\n{}",
+        query.sql
+    );
+    assert!(
+        query
+            .sql
+            .contains("jsonb_build_object('expires_at', \"expires_at\")"),
+        "the boundary travels in the tuple context:\n{}",
+        query.sql
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::CallerSuppliesConditionParameter { parameter, .. }
+                if parameter == "request_time"
+        )),
+        "the request supplies the clock: {:?}",
+        outputs.notes()
+    );
+}
+
+/// Every replay says which stored facts its result fully determines, so a consumer
+/// can take out of its store what the result stopped returning. Swept over the
+/// corpus so a new joining shape cannot omit it, and pinned on the grants fixture,
+/// where one shape is keyed on the object from two tables and its sibling
+/// role-ownership shapes carry a subject-keyed replay for the principal side.
+#[test]
+fn every_replay_declares_the_slice_its_result_determines() {
+    let mut swept = 0usize;
+    for fixture in fixture_names() {
+        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let reported = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .relations();
+        for entry in &reported {
+            for shape in &entry.shapes {
+                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                    continue;
+                };
+                for query in queries {
+                    swept += 1;
+                    match &query.scope {
+                        ReplayScope::Object {
+                            object_type,
+                            relations,
+                        } => {
+                            assert!(
+                                !object_type.is_empty() && !relations.is_empty(),
+                                "{fixture}: {}#{} declares an empty object slice",
+                                entry.type_name,
+                                entry.relation
+                            );
+                        }
+                        ReplayScope::Subject { .. } => {
+                            assert_eq!(
+                                query.key_columns.len(),
+                                1,
+                                "{fixture}: {}#{} keys a subject slice on several columns",
+                                entry.type_name,
+                                entry.relation
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(swept > 0, "the corpus produces joining shapes");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("earth_metabolome");
+    let reported = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .relations();
+    let grant_scopes: Vec<&ReplayScope> = reported
+        .iter()
+        .flat_map(|entry| &entry.shapes)
+        .filter_map(|shape| match &shape.derivation {
+            RecordDerivation::Joined { queries, .. } => Some(queries),
+            _ => None,
+        })
+        .flatten()
+        .filter(|query| query.table == "owner_grants" || query.sql.contains("og."))
+        .map(|query| &query.scope)
+        .collect();
+    assert!(
+        !grant_scopes.is_empty(),
+        "the grants fixture produces grant replays"
+    );
+    for scope in &grant_scopes {
+        let ReplayScope::Object {
+            object_type,
+            relations,
+        } = scope
+        else {
+            panic!("a grant replay is keyed on the resource it grants: {scope:?}");
+        };
+        assert_eq!(object_type, "ownables");
+        assert_eq!(
+            relations.len(),
+            3,
+            "one relation per role level the registry declares: {relations:?}"
+        );
+    }
+
+    let subject_scopes: Vec<&ReplayScope> = reported
+        .iter()
+        .flat_map(|entry| &entry.shapes)
+        .filter_map(|shape| match &shape.derivation {
+            RecordDerivation::Joined { queries, .. } => Some(queries),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|query| match &query.scope {
+            scope @ ReplayScope::Subject { .. } => Some(scope),
+            ReplayScope::Object { .. } => None,
+        })
+        .collect();
+    assert!(
+        subject_scopes.iter().any(
+            |scope| matches!(scope, ReplayScope::Subject { subject_type, object_type, .. }
+                if subject_type == "user" && object_type == "ownables")
+        ),
+        "the principal side of role ownership is a subject slice: {subject_scopes:?}"
     );
 }
 
 /// The named shapes above pin two cases, and a bound query reaches a consumer wherever
 /// one is emitted. A field disagreeing with its own SQL is a wrong decode either way: too
-/// few columns raises on the read, too many silently drop the condition.
+/// few columns raises on the read, too many silently drop the condition. The corpus no
+/// longer joins conditionally on its own, so a share whose residual only SQL can evaluate
+/// joins the sweep.
 #[test]
 fn every_bound_query_agrees_with_its_own_projection() {
     let (mut conditional, mut plain) = (0usize, 0usize);
+    let residual = parsed_with_session_attributes(SQL_RESIDUAL_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    let mut cases: Vec<(String, ParserDB, FunctionRegistry)> =
+        vec![("sql-residual share".to_string(), residual.0, residual.1)];
     for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+        let (_, db, registry) = support::try_load_fixture_classified(&fixture);
+        cases.push((fixture, db, registry));
+    }
+    for (fixture, db, registry) in cases {
+        let classified = classify_policies(&db, &registry);
         let reported = Translation::plan(
             classified,
             &db,

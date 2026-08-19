@@ -67,6 +67,10 @@ fn format_subjects(subjects: &[DirectSubject]) -> String {
                 type_name,
                 condition,
             } => format!("{type_name}:* with {condition}"),
+            DirectSubject::ConditionalType {
+                type_name,
+                condition,
+            } => format!("{type_name} with {condition}"),
         })
         .collect::<Vec<_>>();
     format!("[{}]", parts.join(", "))

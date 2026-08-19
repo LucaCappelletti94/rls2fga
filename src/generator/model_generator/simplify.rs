@@ -157,7 +157,9 @@ pub(crate) fn repoint_inlined_aliases(
                 .flatten()
                 .filter_map(|subject| match subject {
                     DirectSubject::Type(name) => aliases.get(name.as_str()),
-                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
+                    DirectSubject::Wildcard(_)
+                    | DirectSubject::ConditionalWildcard { .. }
+                    | DirectSubject::ConditionalType { .. } => None,
                 })
                 .find_map(|dropped| dropped.get(computed));
             if let Some(replacement) = replacement {
@@ -280,7 +282,9 @@ pub(crate) fn reach_userset(
                 .flatten()
                 .filter_map(|subject| match subject {
                     DirectSubject::Type(name) => by_name.get(name.as_str()),
-                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
+                    DirectSubject::Wildcard(_)
+                    | DirectSubject::ConditionalWildcard { .. }
+                    | DirectSubject::ConditionalType { .. } => None,
                 })
             {
                 if !reached.insert((target.type_name.to_string(), computed.clone())) {

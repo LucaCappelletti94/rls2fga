@@ -313,6 +313,39 @@ fn leaf_decision<DB: DatabaseLike>(
         });
     }
 
+    // A caller-set share gate is request-completed the same way: the share row settles the
+    // member value and the caller's set settles the rest. A clock composed into it is a
+    // second comparison this cannot name, so that case falls back to the model's condition.
+    if distinct
+        .iter()
+        .any(|(source, ..)| matches!(source, TupleSource::CallerSetShareGate { .. }))
+    {
+        let [(
+            source @ TupleSource::CallerSetShareGate {
+                row_parameter,
+                request_parameter,
+                temporal_context,
+                ..
+            },
+            owner_type,
+            only_own_rows,
+        )] = distinct.as_slice()
+        else {
+            return None;
+        };
+        if !temporal_context.is_empty() {
+            return None;
+        }
+        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
+        return Some(RowDecision::RequestGated {
+            relation: relation.clone(),
+            shapes: vec![description],
+            context_key: row_parameter.clone(),
+            request_parameter: request_parameter.clone(),
+            comparison: RequestComparison::CallerSetHolds,
+        });
+    }
+
     let mut unique: BTreeSet<String> = BTreeSet::new();
     let mut shapes = Vec::new();
     for (source, owner_type, only_own_rows) in feeding {
@@ -342,6 +375,11 @@ fn row_names_a_user<DB: DatabaseLike>(
         // A joining source reads a second table, so the row does not decide.
         return false;
     };
+    // A conditional record grants only while its condition holds, which a plain leaf
+    // cannot say, so the consumer must ask rather than read the subject at face value.
+    if template.context.is_some() {
+        return false;
+    }
     if template.object_type != type_name {
         return false;
     }
