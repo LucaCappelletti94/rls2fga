@@ -48,14 +48,18 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
     // 4. Create scoped client and write tuples
     let client = service_client.into_client(&store_id, &model_id);
 
+    // doc1 is owned by alice and doc2 by team alpha, so each row points at its owner and the
+    // owner carries who it is and what it grants.
     let tuples = vec![
-        support::openfga::make_tuple("ownables:doc1", "owner_user", "user:alice"),
-        support::openfga::make_tuple("ownables:doc2", "owner_team", "team:alpha"),
+        support::openfga::make_tuple("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
+        support::openfga::make_tuple("owner_grants_owner:alice", "owner_user", "user:alice"),
+        support::openfga::make_tuple("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
+        support::openfga::make_tuple("owner_grants_owner:alpha", "owner_team", "team:alpha"),
         support::openfga::make_tuple("team:alpha", "member", "user:bob"),
-        support::openfga::make_tuple("ownables:doc1", "grant_editor", "user:carol"),
-        support::openfga::make_tuple("ownables:doc1", "grant_viewer", "team:beta"),
+        support::openfga::make_tuple("owner_grants_owner:alice", "grant_editor", "user:carol"),
+        support::openfga::make_tuple("owner_grants_owner:alice", "grant_viewer", "team:beta"),
         support::openfga::make_tuple("team:beta", "member", "user:dave"),
-        support::openfga::make_tuple("ownables:doc2", "grant_admin", "user:eve"),
+        support::openfga::make_tuple("owner_grants_owner:alpha", "grant_admin", "user:eve"),
     ];
 
     support::openfga::write_tuples(&client, tuples).await;

@@ -20,11 +20,9 @@ use crate::generator::well_known::{
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
     can_upsert_relation, deny_relation, member_relation, owner_team_relation, owner_user_relation,
-    public_relation, PG_ROLE_TYPE, REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TEAM_TYPE,
-    TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
+    public_relation, scope_roles_relation, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE,
+    REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
 };
-use crate::parser::expr::extract_column_name;
-use crate::parser::expr::function_arg_expr;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::identifiers::{ColumnName, RelationName, TableId, TypeName};
 use crate::parser::names::{
@@ -38,7 +36,6 @@ use crate::parser::names::{
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
 };
-use sqlparser::ast::{Expr, Function, FunctionArguments};
 
 /// Which relation a command reads, and how a policy's clauses reach it.
 mod actions;
@@ -82,10 +79,11 @@ use emit_requests::{
     emit_request_gate, RequestSide, RowParameterSource,
 };
 use emit_roles::{
-    emit_numeric_threshold, emit_role_name_in_list, register_pg_role_scope, RoleScopeSpec,
+    emit_numeric_threshold, emit_role_name_in_list, register_pg_role_scope, OwnerScope,
+    RoleScopeSpec,
 };
 use recursion::PolicyReadRecursion;
-use role_threshold::{infer_role_threshold_resource_columns, populate_role_threshold_sources};
+use role_threshold::populate_role_threshold_sources;
 pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
     drop_implied_insert_readback, grants_nothing, inline_synthetic_rule_aliases,
@@ -453,18 +451,6 @@ pub(crate) struct SchemaPlan {
     pub conditions: BTreeMap<String, ConditionSpec>,
 }
 
-/// Pre-computed per-`(table, function_name)` resource column hints for P1/P2
-/// patterns.  Populated once per `build_schema_plan` call by walking the raw
-/// policy `Expr` AST before pattern translation begins.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RoleThresholdResourceHints {
-    /// `(table, function_name)` → resource column name (unambiguous cases).
-    pub columns: BTreeMap<(String, String), ColumnName>,
-    /// `(table, function_name)` pairs where multiple distinct resource columns
-    /// were observed; these cannot be resolved to a single tuple join column.
-    pub conflicts: BTreeSet<(String, String)>,
-}
-
 /// Render the DSL text for a plan.
 pub(crate) fn render_dsl_from_plan(plan: &SchemaPlan) -> String {
     render_dsl(&plan.types, &plan.conditions)
@@ -600,11 +586,6 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     settings: &GeneratorSettings,
     scope: TypeScope<'_>,
 ) -> SchemaPlan {
-    // Pre-compute resource column hints for P1/P2 role-threshold patterns.
-    // This walks the raw policy Expr AST once up-front so that
-    // pattern_to_expr_for_target can use the resolved column during translation.
-    let role_threshold_resource_hints = infer_role_threshold_resource_columns(policies, registry);
-
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
@@ -755,7 +736,6 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                     registry,
                     settings,
                     table_types: &table_types,
-                    hints: &role_threshold_resource_hints,
                 };
                 let action_buckets = build.translate_policies(
                     table_policies,
@@ -860,8 +840,6 @@ struct TableBuild<'a, DB: DatabaseLike> {
     settings: &'a GeneratorSettings,
     /// Which table each type name belongs to.
     table_types: &'a TableTypes,
-    /// Resource columns inferred for the role-threshold patterns.
-    hints: &'a RoleThresholdResourceHints,
 }
 
 impl<DB: DatabaseLike> TableBuild<'_, DB> {
@@ -1028,7 +1006,6 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                 &PatternCtx {
                     policy_name: cp.name(),
                     registry: self.registry,
-                    hints: self.hints,
                     db: self.db,
                     table_types: self.table_types,
                     source_table: self.source_table,
@@ -1499,6 +1476,32 @@ fn holder_type_name(member_table: &str, table_types: &TableTypes) -> String {
     base
 }
 
+/// The type standing for the owner identities `grant_table` records grants over.
+///
+/// One per role-threshold function, so every table using that function shares one owner
+/// and two functions cannot pool their ladders. Where the schema holds more than one such
+/// function, every owner type is named by its own function: nothing here can prove two
+/// grant-table spellings name different tables, and a shared name would merge two ladders
+/// whose levels differ.
+fn owner_type_name(
+    grant_table: &str,
+    function_name: &str,
+    registry: &FunctionRegistry,
+    table_types: &TableTypes,
+) -> String {
+    let base = canonical_fga_type_name(&format!("{grant_table}_owner"));
+    let one_function = registry
+        .functions
+        .values()
+        .filter(|semantic| matches!(semantic, FunctionSemantic::RoleThreshold { .. }))
+        .count()
+        <= 1;
+    if one_function && !table_types.claims(&base) {
+        return base;
+    }
+    format!("{base}_{}", stable_hex_suffix(function_name))
+}
+
 /// The type standing for the share rows of a caller-set membership on `join_table`.
 ///
 /// One per join table, so two policies sharing it agree and two over different tables do
@@ -1914,7 +1917,6 @@ fn pattern_to_expr_against(
         &PatternCtx {
             policy_name,
             registry,
-            hints: &RoleThresholdResourceHints::default(),
             db: &db,
             table_types: &TableTypes::default(),
             source_table: "test_table",
@@ -1938,8 +1940,6 @@ struct PatternCtx<'a, DB: DatabaseLike> {
     policy_name: &'a str,
     /// Function semantics, for the arms that resolve a call.
     registry: &'a FunctionRegistry,
-    /// Resource columns inferred for the role-threshold patterns.
-    hints: &'a RoleThresholdResourceHints,
     /// The schema.
     db: &'a DB,
     /// Which table each type name belongs to.
@@ -1957,7 +1957,6 @@ impl<'a, DB: DatabaseLike> PatternCtx<'a, DB> {
         Self {
             policy_name: self.policy_name,
             registry: self.registry,
-            hints: self.hints,
             db: self.db,
             table_types: self.table_types,
             source_table,

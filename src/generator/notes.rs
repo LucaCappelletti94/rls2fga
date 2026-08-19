@@ -762,15 +762,12 @@ pub(crate) enum SkippedTuples {
         parent_type: String,
         fk_col: ColumnName,
     },
-    /// Policies disagree about which column joins the grant table.
-    ExplicitGrantsConflictingColumns { table: String },
-    /// No column joins the grant table.
-    ExplicitGrantsNoResourceColumn { table: String },
     /// No table holds the user principals a role-threshold grant joins to.
     NoUserPrincipalTable { table: String },
     /// No table holds the team principals a role-threshold grant joins to.
     NoTeamPrincipalTable { table: String },
-    /// No column carries the owner a role-threshold grant reads.
+    /// No column carries the owner value a role-threshold policy compares, so no row can
+    /// point at the owner judging it.
     NoOwnerColumn { table: String },
 }
 
@@ -814,12 +811,6 @@ impl SkippedTuples {
                 "-- TODO [Level D]: skipped {table} to {parent_type} bridge \
                  (missing column '{fk_col}')"
             ),
-            Self::ExplicitGrantsConflictingColumns { table } => format!(
-                "-- TODO [Level D]: skipped explicit grants for {table} (conflicting resource join columns inferred from policies)"
-            ),
-            Self::ExplicitGrantsNoResourceColumn { table } => format!(
-                "-- TODO [Level D]: skipped explicit grants for {table} (missing resource join column)"
-            ),
             Self::NoUserPrincipalTable { table } => format!(
                 "-- TODO [Level D]: skipped user ownership tuples for {table} (unresolved user principal table)"
             ),
@@ -827,7 +818,8 @@ impl SkippedTuples {
                 "-- TODO [Level D]: skipped team ownership tuples for {table} (unresolved team principal table)"
             ),
             Self::NoOwnerColumn { table } => format!(
-                "-- TODO [Level D]: skipped ownership tuples for {table} (no owner-like column/FK found)"
+                "-- TODO [Level D]: skipped the owner pointer for {table} (no column carries \
+                 the owner the policy compares)"
             ),
         }
     }
@@ -850,12 +842,6 @@ impl SkippedTuples {
             }
             Self::NoPrincipalTypeForGrants { grant_table } => {
                 format!("-- Unresolved: SELECT ... FROM {grant_table} og ...;")
-            }
-            Self::ExplicitGrantsConflictingColumns { .. } => {
-                "-- Grant tuples not emitted; align resource arguments for role-threshold calls across policies.".to_string()
-            }
-            Self::ExplicitGrantsNoResourceColumn { .. } => {
-                "-- Grant tuples not emitted; add function metadata or owner FK.".to_string()
             }
             Self::NoUserPrincipalTable { .. } => {
                 "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string()

@@ -12,18 +12,33 @@ expression: model
       "type": "ownables",
       "relations": {
         "can_delete": {
-          "computedUserset": {
-            "relation": "role_admin"
+          "tupleToUserset": {
+            "tupleset": {
+              "relation": "owner_id"
+            },
+            "computedUserset": {
+              "relation": "role_admin"
+            }
           }
         },
         "can_insert": {
-          "computedUserset": {
-            "relation": "role_editor"
+          "tupleToUserset": {
+            "tupleset": {
+              "relation": "owner_id"
+            },
+            "computedUserset": {
+              "relation": "role_editor"
+            }
           }
         },
         "can_select": {
-          "computedUserset": {
-            "relation": "role_viewer"
+          "tupleToUserset": {
+            "tupleset": {
+              "relation": "owner_id"
+            },
+            "computedUserset": {
+              "relation": "role_viewer"
+            }
           }
         },
         "can_select_for_update": {
@@ -32,15 +47,44 @@ expression: model
           }
         },
         "can_update": {
-          "computedUserset": {
-            "relation": "role_editor"
+          "tupleToUserset": {
+            "tupleset": {
+              "relation": "owner_id"
+            },
+            "computedUserset": {
+              "relation": "role_editor"
+            }
           }
         },
         "can_update_without_reading": {
-          "computedUserset": {
-            "relation": "role_editor"
+          "tupleToUserset": {
+            "tupleset": {
+              "relation": "owner_id"
+            },
+            "computedUserset": {
+              "relation": "role_editor"
+            }
           }
         },
+        "owner_id": {
+          "this": {}
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner_id": {
+            "directly_related_user_types": [
+              {
+                "type": "owner_grants_owner"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "owner_grants_owner",
+      "relations": {
         "grant_admin": {
           "this": {}
         },

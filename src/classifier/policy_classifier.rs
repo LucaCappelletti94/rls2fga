@@ -1618,6 +1618,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         let cases: Vec<(PatternClass, &str)> = vec![
             (
                 PatternClass::P1NumericThreshold(NumericThreshold {
+                    resource_column: None,
                     function_name: "f".into(),
                     operator: ThresholdOperator::Gte,
                     threshold: 1,
@@ -1627,6 +1628,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             ),
             (
                 PatternClass::P2RoleNameInList(RoleNameInList {
+                    resource_column: None,
                     function_name: "f".into(),
                     role_names: vec!["a".into()],
                     privilege: RolePrivilege::Member,
@@ -1730,6 +1732,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         // Direct relationship patterns
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P1NumericThreshold(NumericThreshold {
+                resource_column: None,
                 function_name: "f".into(),
                 operator: ThresholdOperator::Gte,
                 threshold: 1,
@@ -1738,6 +1741,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         ));
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P2RoleNameInList(RoleNameInList {
+                resource_column: None,
                 function_name: "f".into(),
                 role_names: vec!["a".into()],
                 privilege: RolePrivilege::Member,

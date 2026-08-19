@@ -17,7 +17,8 @@ mod support;
 
 use support::footgun::{
     db_of, membership_translation, pg_role_relation, relation_definition, relation_denies,
-    translation, translator, tuples_reading_from, type_names, CORRELATION_SCHEMA,
+    scope_admits_role, translation, translator, tuples_reading_from, type_names,
+    CORRELATION_SCHEMA,
 };
 
 /// `x = ANY (SELECT ...)` is another spelling of `x IN (SELECT ...)`.
@@ -387,11 +388,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
         .outputs_accepting_gaps()
         .tuple_queries();
     assert!(
-        tuples.iter().any(|q| {
-            q.sql.contains("'docs:'")
-                && q.sql.contains(&format!("'{scope}' AS relation"))
-                && q.sql.contains("'pg_role:auditor' AS subject")
-        }),
+        scope_admits_role(&tuples, "docs:", &scope, "auditor"),
         "the scope relation needs auditor tuples on docs, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );

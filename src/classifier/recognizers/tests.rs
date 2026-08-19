@@ -79,15 +79,57 @@ fn recognize_p1_supports_gt_and_rejects_unknown_functions() {
     assert!(matches!(
         &classified.pattern,
         PatternClass::P1NumericThreshold(NumericThreshold {
+            resource_column: Some(column),
             function_name,
             operator: ThresholdOperator::Gt,
             threshold,
             command: PolicyCommand::Delete,
-        }) if function_name == "role_level" && *threshold == 2
+        }) if function_name == "role_level" && *threshold == 2 && column == "id"
     ));
 
     let unknown = parse_expr("unknown_role(auth_current_user_id(), id) >= 1");
     assert!(recognize_p1(&unknown, &db, &registry, PolicyCommand::Select).is_none());
+}
+
+/// Two calls in one clause pass two different columns, and each recognized threshold keeps
+/// its own. Collapsing them to one would judge a row by a value the call never passed.
+#[test]
+fn each_threshold_keeps_the_column_its_own_call_passes() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+
+    let columns: Vec<String> = ["id", "owner_id"]
+        .iter()
+        .map(|column| {
+            let expr = parse_expr(&format!(
+                "role_level(auth_current_user_id(), {column}) >= 2"
+            ));
+            let classified = recognize_p1(&expr, &db, &registry, PolicyCommand::Select)
+                .expect("expected P1 match");
+            let PatternClass::P1NumericThreshold(NumericThreshold {
+                resource_column: Some(column),
+                ..
+            }) = classified.pattern
+            else {
+                panic!("the call passes a column, so the pattern carries it");
+            };
+            column.as_str().to_string()
+        })
+        .collect();
+    assert_eq!(columns, ["id", "owner_id"]);
+
+    // An expression rather than a column leaves nothing to point at, and the translation
+    // falls back to the schema rather than guessing.
+    let computed = parse_expr("role_level(auth_current_user_id(), COALESCE(owner_id, id)) >= 2");
+    let classified =
+        recognize_p1(&computed, &db, &registry, PolicyCommand::Select).expect("expected P1 match");
+    assert!(matches!(
+        classified.pattern,
+        PatternClass::P1NumericThreshold(NumericThreshold {
+            resource_column: None,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -194,7 +236,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     // Register `role` (normalized form of `auth.role`, schema stripped) as a RoleAccessor.
     registry.register_if_absent(
         "role",
-        &crate::parser::function_analyzer::FunctionSemantic::RoleAccessor {
+        &FunctionSemantic::RoleAccessor {
             returns: "text".to_string(),
         },
     );
@@ -317,7 +359,7 @@ fn recognize_p3_requires_registration_for_unregistered_current_user_like_names()
     let mut registered = FunctionRegistry::new();
     registered.register_if_absent(
         "auth_current_user_id",
-        &crate::parser::function_analyzer::FunctionSemantic::CurrentUserAccessor {
+        &FunctionSemantic::CurrentUserAccessor {
             returns: "uuid".to_string(),
         },
     );
@@ -400,7 +442,7 @@ fn recognize_p3_current_setting_requires_registration() {
     let mut registered_registry = FunctionRegistry::new();
     registered_registry.register_if_absent(
         "current_setting",
-        &crate::parser::function_analyzer::FunctionSemantic::CurrentUserAccessor {
+        &FunctionSemantic::CurrentUserAccessor {
             returns: "uuid".to_string(),
         },
     );

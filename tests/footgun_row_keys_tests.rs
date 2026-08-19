@@ -372,13 +372,13 @@ AS 'SELECT 0';";
             None,
         ),
         (
-            "explicit grant",
+            "bridge tuples to 'owner_grants_owner'",
             GRANT_SCHEMA,
             "USING (get_owner_role(current_user, viewer) >= 2)",
             Some(GRANT_REGISTRY),
         ),
         (
-            "explicit grant",
+            "bridge tuples to 'owner_grants_owner'",
             GRANT_SCHEMA,
             "USING (get_owner_role(current_user, viewer) IN (2, 3))",
             Some(GRANT_REGISTRY),

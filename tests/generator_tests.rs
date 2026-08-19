@@ -686,3 +686,187 @@ fn generate_shared_policy_name_model_and_tuples() {
         tuple_generator::format_tuples(&tuples)
     );
 }
+
+// ── One owner shared by two guarded tables ───────────────────────────────────
+
+/// A grant is a fact about the owner it names, so two tables reading one role function
+/// share the owner and the grants are loaded once for both.
+///
+/// The thresholds differ, which is what shows one ladder answering two tables: a viewer
+/// reads a sample and not a spectrum.
+#[test]
+fn generate_shared_owner_grants_model_and_tuples() {
+    let (db, registry) = support::load_fixture_db_and_registry("shared_owner_grants");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let dsl = model.model();
+    assert_eq!(
+        dsl.matches("type owner_grants_owner").count(),
+        1,
+        "one owner serves both tables:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("define can_select: role_viewer from owner_id"),
+        "the sample reads at the viewer level:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("define can_select: role_editor from owner_id"),
+        "the spectrum reads at the editor level:\n{dsl}"
+    );
+    insta::assert_snapshot!("generate_shared_owner_grants_model", dsl.trim());
+
+    let tuples = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let script = tuple_generator::format_tuples(&tuples);
+    assert_eq!(
+        script.matches("Explicit grants over").count(),
+        1,
+        "the grants load once for both tables:\n{script}"
+    );
+    assert_eq!(
+        script
+            .matches("Owner identities that are rows of users")
+            .count(),
+        1,
+        "the identity facts load once for both tables:\n{script}"
+    );
+    assert_eq!(
+        script.matches("bridge for tuple-to-userset").count(),
+        2,
+        "each guarded table points its own rows at the owner:\n{script}"
+    );
+    insta::assert_snapshot!("generate_shared_owner_grants_tuples", script);
+}
+
+// ── Two owner columns on one table ───────────────────────────────────────────
+
+/// A row judged through two owner values gets one pointer per value, and the rule is the
+/// union of the two. Reading both through one pointer would judge a row by a value the call
+/// never passed, which is why this shape used to be refused outright.
+#[test]
+fn generate_two_owner_columns_model_and_tuples() {
+    let (db, registry) = support::load_fixture_db_and_registry("two_owner_columns");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let dsl = model.model();
+    assert!(
+        dsl.contains("define owner_id: [owner_grants_owner]")
+            && dsl.contains("define delegate_id: [owner_grants_owner]"),
+        "each owner value the policy names gets its own pointer:\n{dsl}"
+    );
+    assert!(
+        dsl.contains("define can_select: role_viewer from owner_id or role_admin from delegate_id"),
+        "the rule is the union, each side at the level its own call required:\n{dsl}"
+    );
+    insta::assert_snapshot!("generate_two_owner_columns_model", dsl.trim());
+
+    let tuples = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let script = tuple_generator::format_tuples(&tuples);
+    assert_eq!(
+        script.matches("bridge for tuple-to-userset").count(),
+        2,
+        "one pointer query per owner column:\n{script}"
+    );
+    assert_eq!(
+        script.matches("Explicit grants over").count(),
+        1,
+        "the grants are about the owner, so both columns read one load:\n{script}"
+    );
+    insta::assert_snapshot!("generate_two_owner_columns_tuples", script);
+}
+
+// ── Two role functions over one grant table ──────────────────────────────────
+
+/// Two functions counting one grant column on two scales get one owner each.
+///
+/// Sharing the owner would make `grant_viewer` at level 2 and `grant_clerk` at level 5 the
+/// same relation on the same object, so a grant on either scale would answer for both. The
+/// name carries the function for exactly that reason, and both take the suffix rather than
+/// the first keeping the bare name, since a name that depends on translation order is how a
+/// barrier gets overwritten.
+#[test]
+fn generate_two_role_functions_keeps_their_ladders_apart() {
+    let (db, registry) = support::load_fixture_db_and_registry("two_role_functions");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let dsl = model.model();
+    let owners: Vec<&str> = dsl
+        .lines()
+        .filter_map(|line| line.strip_prefix("type "))
+        .filter(|name| name.starts_with("owner_grants_owner"))
+        .collect();
+    assert_eq!(
+        owners.len(),
+        2,
+        "each function owns its own scale, so neither may take the bare name: {owners:?}\n{dsl}"
+    );
+    for owner in &owners {
+        assert_ne!(
+            *owner, "owner_grants_owner",
+            "both take the suffix, so the name cannot depend on which function came first"
+        );
+    }
+    // The scales stay apart: one owner carries the viewer ladder, the other the clerk one,
+    // and no owner carries both.
+    let scale_of = |relation: &str| {
+        dsl.split("\ntype ")
+            .filter(|block| block.contains(&format!("define {relation}: ")))
+            .count()
+    };
+    assert_eq!(
+        scale_of("grant_viewer"),
+        1,
+        "one owner reads the role scale:\n{dsl}"
+    );
+    assert_eq!(
+        scale_of("grant_clerk"),
+        1,
+        "one owner reads the tier scale:\n{dsl}"
+    );
+    for block in dsl.split("\ntype ") {
+        assert!(
+            !(block.contains("define grant_viewer: ") && block.contains("define grant_clerk: ")),
+            "one owner carrying both scales answers a grant on either for both:\n{dsl}"
+        );
+    }
+    insta::assert_snapshot!("generate_two_role_functions_model", dsl.trim());
+}

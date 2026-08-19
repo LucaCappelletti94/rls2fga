@@ -5,7 +5,7 @@ CREATE TABLE docs (
 
 CREATE TABLE doc_members (
   doc_id UUID,
-  user_id UUID,
+  user_id TEXT,
   member_id UUID,
   role TEXT
 );

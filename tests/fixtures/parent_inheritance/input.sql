@@ -1,7 +1,7 @@
-CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE users (id TEXT PRIMARY KEY);
 CREATE TABLE projects (
   id UUID PRIMARY KEY,
-  owner_id UUID REFERENCES users(id)
+  owner_id TEXT REFERENCES users(id)
 );
 CREATE TABLE tasks (
   id UUID PRIMARY KEY,

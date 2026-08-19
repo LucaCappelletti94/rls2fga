@@ -9,18 +9,23 @@ type user
 
 type ownables
   relations
-    define grant_admin: [user, team]
-    define grant_editor: [user, team]
-    define grant_viewer: [user, team]
     define no_access: [user]
-    define owner_team: [team]
-    define owner_user: [user]
+    define owner_id: [owner_grants_owner]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: grant_viewer or member from grant_viewer or grant_editor or member from grant_editor or grant_admin or member from grant_admin or owner_user or member from owner_team
+    define can_select: roles_viewer_editor_admin from owner_id
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
+
+type owner_grants_owner
+  relations
+    define grant_admin: [user, team]
+    define grant_editor: [user, team]
+    define grant_viewer: [user, team]
+    define owner_team: [team]
+    define owner_user: [user]
+    define roles_viewer_editor_admin: grant_viewer or member from grant_viewer or grant_editor or member from grant_editor or grant_admin or member from grant_admin or owner_user or member from owner_team
 
 type team
   relations

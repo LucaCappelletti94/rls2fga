@@ -364,6 +364,10 @@ pub struct NumericThreshold {
     pub threshold: i32,
     /// Command the threshold applies to.
     pub command: PolicyCommand,
+    /// Column whose value the call passes as the resource, absent where it passes an
+    /// expression instead. The grant is a fact about that value, so a translation reading
+    /// any other column grants on a comparison the database never makes.
+    pub resource_column: Option<ColumnName>,
 }
 
 /// P2: Role name IN-list: `role_name(user, resource) IN ('viewer', ...)`.
@@ -375,6 +379,10 @@ pub struct RoleNameInList {
     pub role_names: Vec<String>,
     /// Which kind of membership in those roles the policy asked about.
     pub privilege: RolePrivilege,
+    /// Column whose value the call passes as the resource, as
+    /// [`NumericThreshold::resource_column`]. Absent for a plain role accessor, which
+    /// takes no resource at all.
+    pub resource_column: Option<ColumnName>,
 }
 
 /// P3: Direct column equality: `owner_id = current_user_id()`.

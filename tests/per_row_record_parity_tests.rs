@@ -7,7 +7,7 @@
 
 #![cfg(not(target_os = "windows"))]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::thread;
 use std::time::Duration;
 
@@ -28,7 +28,8 @@ use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, ValueSource,
+    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, ReplayScope,
+    ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
@@ -120,6 +121,102 @@ async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgCo
     let url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{port}/{PG_DB}");
     let conn = connect_postgres_with_retry(&url);
     (container, conn)
+}
+
+/// What a fixture needs in place before `PostgreSQL` will accept its schema, for the few
+/// that name something outside their own file. A fixture absent from here needs nothing.
+const FIXTURE_PREREQUISITES: [(&str, &str); 5] = [
+    ("role_scope_inherit", "CREATE ROLE editors"),
+    ("role_scoped_membership", "CREATE ROLE auditor"),
+    ("role_scoped_restrictive", "CREATE ROLE contractor"),
+    // Both declare their own `auth.uid()`, but not the schema holding it.
+    ("supabase_auth", "CREATE SCHEMA auth"),
+    ("supabase_mfa_restrictive", "CREATE SCHEMA auth"),
+];
+
+/// Every role the cluster holds. Raw SQL because `pg_roles` is a catalog view no `table!`
+/// here describes, and nothing else in this file needs one.
+fn role_names(conn: &mut PgConnection) -> BTreeSet<String> {
+    #[derive(QueryableByName)]
+    struct RoleName {
+        #[diesel(sql_type = Text)]
+        rolname: String,
+    }
+    diesel::sql_query("SELECT rolname FROM pg_roles")
+        .load::<RoleName>(conn)
+        .expect("failed to read the cluster's roles")
+        .into_iter()
+        .map(|row| row.rolname)
+        .collect()
+}
+
+/// Every fixture schema is one `PostgreSQL` accepts.
+///
+/// A fixture the database refuses pins a translation of a policy nobody can create, so every
+/// assertion resting on it is about a rule that cannot exist. This caught three: a policy
+/// comparing a `uuid` column against `current_user`, which is of type `name`, has no operator
+/// and was rejected at creation while the corpus asserted its translation.
+///
+/// A fresh database per fixture, since a leftover policy or role from the previous one would
+/// make the next pass for the wrong reason.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn every_fixture_schema_is_one_postgres_accepts() {
+    let (container, mut admin) = start_postgres().await;
+    let port = container.get_host_port_ipv4(5432).await.unwrap();
+
+    let mut fixtures: Vec<String> = std::fs::read_dir("tests/fixtures")
+        .expect("the fixtures directory")
+        .map(|entry| entry.expect("a fixture entry").path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| path.file_name()?.to_str().map(ToString::to_string))
+        .collect();
+    fixtures.sort();
+    assert!(fixtures.len() > 20, "the corpus is read, not guessed");
+
+    // A role is cluster-wide, not per database, so one fixture's role outlives its schema and
+    // collides with the next fixture that declares the same name. Everything minted beyond
+    // the baseline goes, once the database owning it is gone.
+    let baseline = role_names(&mut admin);
+    let mut refused = Vec::new();
+    for fixture in &fixtures {
+        let database = format!("fixture_{fixture}");
+        admin
+            .batch_execute(&format!("CREATE DATABASE {database}"))
+            .expect("failed to create the fixture's own database");
+        {
+            let mut conn = connect_postgres_with_retry(&format!(
+                "postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{port}/{database}"
+            ));
+            if let Some((_, prerequisite)) = FIXTURE_PREREQUISITES
+                .iter()
+                .find(|(named, _)| named == fixture)
+            {
+                conn.batch_execute(prerequisite)
+                    .expect("failed to apply the fixture's prerequisite");
+            }
+            if let Err(error) = conn.batch_execute(&support::read_fixture_sql(fixture)) {
+                refused.push(format!("{fixture}: {error}"));
+            }
+        }
+        admin
+            .batch_execute(&format!("DROP DATABASE {database}"))
+            .expect("failed to drop the fixture's database");
+        for role in role_names(&mut admin) {
+            if !baseline.contains(&role) {
+                admin
+                    .batch_execute(&format!("DROP ROLE IF EXISTS \"{role}\""))
+                    .expect("failed to drop a role the fixture minted");
+            }
+        }
+    }
+
+    assert!(
+        refused.is_empty(),
+        "PostgreSQL refuses to create these fixtures, so nothing resting on them is about a \
+         policy that can exist:\n{}",
+        refused.join("\n")
+    );
 }
 
 /// Records the generated query returns, read back through the crate's own reader.
@@ -290,9 +387,20 @@ fn records_from_bound_query(
     })
 }
 
-/// A joining shape answers a change by querying, so every bound query has to run,
-/// return only records the whole-table query returns, and between them account for
-/// all of them. Replaying every changed row is how the consumer stays complete.
+/// A joining shape answers a change by querying, so every bound query has to run, return
+/// only records the whole-table query returns, stay inside the slice it declares, and
+/// together account for all of them. Replaying every changed row is how the consumer stays
+/// complete.
+///
+/// The slice check is what a consumer cannot do for itself: it reconciles by reading the
+/// slice the key names and deleting whatever the replay stopped returning, so a record
+/// outside that name means the declaration promises a guarantee the query does not keep, and
+/// the reconciliation either refuses or deletes another slice's facts. Spelled here rather
+/// than asked of the crate, so both sides are not the same sentence twice.
+///
+/// Completeness is asked per table rather than per query, because a change arrives on a
+/// table and every query bound to it is replayed together: one grant table replay per
+/// principal kind each answers for its own subjects, and only their union is the table.
 fn assert_bound_queries_account_for_every_record(
     outputs: &Outputs<'_, ParserDB>,
     conn: &mut PgConnection,
@@ -307,6 +415,7 @@ fn assert_bound_queries_account_for_every_record(
         query.comment
     );
 
+    let mut by_table: BTreeMap<&str, BTreeSet<Record>> = BTreeMap::new();
     for bound in bound_queries {
         assert_eq!(
             bound.condition, query.condition,
@@ -323,7 +432,6 @@ fn assert_bound_queries_account_for_every_record(
             query.comment
         );
 
-        let mut union = BTreeSet::new();
         let mut narrowed = false;
         for key in &keys {
             let bound_records = records_from_bound_query(outputs, conn, bound, key);
@@ -336,21 +444,13 @@ fn assert_bound_queries_account_for_every_record(
                 bound.key_columns,
                 bound.sql
             );
+            assert_records_lie_in_the_declared_slice(bound, key, &bound_records, label);
             narrowed |= bound_records.len() < whole.len();
-            union.extend(bound_records);
+            by_table
+                .entry(bound.table.as_str())
+                .or_default()
+                .extend(bound_records);
         }
-
-        assert_eq!(
-            union,
-            whole,
-            "{label}: replaying every key of {} {:?} must reproduce the whole table for {}\n{}\n\
-             missing: {:?}",
-            bound.table,
-            bound.key_columns,
-            query.comment,
-            bound.sql,
-            whole.difference(&union).collect::<Vec<_>>(),
-        );
 
         // A query ignoring its key would pass both checks above, so require that
         // at least one key answered with less than everything.
@@ -361,6 +461,62 @@ fn assert_bound_queries_account_for_every_record(
             bound.table,
             bound.key_columns,
             keys.len(),
+            bound.sql
+        );
+    }
+
+    for (table, union) in by_table {
+        assert_eq!(
+            union,
+            whole,
+            "{label}: replaying every key of every query bound to {table} must reproduce the \
+             whole table for {}\nmissing: {:?}",
+            query.comment,
+            whole.difference(&union).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// Every record a replay returned lies inside the slice its own declaration names.
+fn assert_records_lie_in_the_declared_slice(
+    bound: &BoundQuery,
+    key: &[String],
+    records: &BTreeSet<Record>,
+    label: &str,
+) {
+    let values: Vec<&str> = key.iter().map(String::as_str).collect();
+    let slice = bound.scope.rendered_key(&values).unwrap_or_else(|error| {
+        panic!(
+            "{label}: the replay of {} {:?} = {key:?} declares a slice its own key cannot \
+             name: {error}",
+            bound.table, bound.key_columns
+        )
+    });
+    for record in records {
+        let inside = match &bound.scope {
+            ReplayScope::Object { relations, .. } => {
+                record.object == slice && relations.contains(&record.relation)
+            }
+            ReplayScope::Subject {
+                object_type,
+                relation,
+                ..
+            } => {
+                record.subject == slice
+                    && record.relation == *relation
+                    && record.object.starts_with(&format!("{object_type}:"))
+            }
+        };
+        assert!(
+            inside,
+            "{label}: the replay of {} {:?} = {key:?} returned ({}, {}, {}) which lies outside \
+             the slice {slice} its scope {:?} names:\n{}",
+            bound.table,
+            bound.key_columns,
+            record.subject,
+            record.relation,
+            record.object,
+            bound.scope,
             bound.sql
         );
     }
@@ -890,11 +1046,9 @@ async fn a_settled_share_arm_matches_its_own_sql() {
 
 /// The grant rule over a table two columns identify together, run rather than inspected.
 ///
-/// `COMPOSITE_KEY_GRANTS` in `relation_shapes_tests` pins which columns each follow-up
-/// query binds. Nothing ran one: the single-key form is what
-/// `role_ownership_and_grant_shapes_are_marked_joining` executes, so a compound key had
-/// only ever been checked as structure, and a query naming the right columns can still
-/// fail to execute or answer for a row it was not given.
+/// Two columns naming a row is where a shape most easily answers for a row it was not
+/// given, so the pointer at the owner has to carry both, and the grant replay, which is
+/// keyed on the owner rather than on any row, has to run and narrow.
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
 async fn a_compound_key_grant_shape_runs_and_narrows_on_its_whole_key() {
@@ -936,43 +1090,50 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
-    // Non-vacuous: every shape here reads a second table, and each has to bind the whole
-    // key of whichever table it replays.
-    let (_, joined, _) =
+    // Non-vacuous: the pointer and both identity facts follow from one row and are
+    // evaluated against their own SQL, and the grant replay runs for every owner.
+    let (pure, joined, _) =
         assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "compound key grants");
     assert_eq!(
-        joined, 3,
-        "both principal arms and the grant expansion read more than the row, saw {joined}"
+        joined, 1,
+        "only the grant table is answered by querying, saw {joined}"
+    );
+    assert!(
+        pure >= 4,
+        "the pointer, both owner identities and the membership follow from one row, saw {pure}"
     );
 
-    let guarded: Vec<&BoundQuery> = queries
+    let pointer = queries
         .iter()
         .filter_map(|query| match &query.description.as_ref()?.derivation {
-            RecordDerivation::Joined { queries, .. } => Some(queries),
-            RecordDerivation::FromRow { .. } => None,
-            other => panic!("unhandled derivation {other:?}"),
+            RecordDerivation::FromRow {
+                table, template, ..
+            } if table == "ownables" => Some(template),
+            _ => None,
         })
-        .flatten()
-        .filter(|bound| bound.table == "ownables")
-        .collect();
+        .find(|template| template.subject_type == "owner_grants_owner")
+        .expect("the guarded rows point at their owner");
     assert_eq!(
-        guarded.len(),
-        3,
-        "one replay per shape keys on the guarded table, saw {}",
-        guarded.len()
+        pointer
+            .object_key
+            .parts()
+            .iter()
+            .filter_map(|part| match part {
+                ValueSource::Column(column) => Some(column.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["tenant_id", "ownable_id"],
+        "a pointer named by the tenant alone merges every row it holds into one object"
     );
-    for bound in guarded {
-        assert_eq!(
-            bound.key_columns,
-            ["tenant_id", "ownable_id"],
-            "a replay keyed on the tenant alone answers for every row it holds"
-        );
-    }
 }
 
+/// Only the grant table needs a query here, and the row owned by nobody the schema records
+/// is what separates the shapes: an identity fact exists for every principal, so a row
+/// pointing at an owner nobody is grants nobody without the pointer having to know.
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
-async fn role_ownership_and_grant_shapes_are_marked_joining() {
+async fn only_the_grant_table_is_answered_by_querying() {
     let (_container, mut conn) = start_postgres().await;
 
     let schema_sql = support::read_fixture_sql("earth_metabolome");
@@ -1023,15 +1184,15 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     let (pure, joined, _) =
         assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "earth_metabolome");
 
-    // The membership table is row-decidable; the two role-ownership shapes and the
-    // grant expansion are not, because each reads a table the row does not carry.
+    // The pointer, both owner identities and the membership all follow from one row, and
+    // only the grant table, whose grantee kind the row does not carry, needs a query.
     assert!(
-        pure >= 1,
-        "team membership follows from one row, saw {pure} pure"
+        pure >= 4,
+        "ownership stopped reading a second table, saw {pure} pure"
     );
-    assert!(
-        joined >= 3,
-        "role ownership and grant expansion read a second table, saw {joined} joining"
+    assert_eq!(
+        joined, 1,
+        "only the grant expansion reads a table the row does not carry, saw {joined} joining"
     );
 }
 
@@ -1136,6 +1297,153 @@ async fn holder_shapes_match_their_own_sql() {
         records >= 6,
         "the seed must produce records to compare, saw {records}"
     );
+}
+
+/// A correlated membership whose residual only SQL can evaluate, which is the one joining
+/// shape outside the grant family, run rather than inspected.
+///
+/// Its replay is keyed on the column naming the parent, and the object it returns is built
+/// from that same column, so this is where that slice is checked against rows instead of
+/// against the structure alone.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_membership_with_a_sql_residual_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(&support::read_fixture_sql(
+        "membership_wrapped_function_safe",
+    ))
+    .expect("failed to apply the wrapped-membership schema");
+    // Two members of one doc, so a replay bound to that doc has something to leave out, and
+    // roles on both sides of the residual, so the query has something to refuse. The mixed
+    // case is the point of the fixture: only SQL can lower it.
+    conn.batch_execute(
+        "
+INSERT INTO docs (id, owner_id) VALUES
+    ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a1'),
+    ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000a1');
+INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
+    ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a1',
+     '00000000-0000-0000-0000-0000000000c1', 'Admin'),
+    ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a2',
+     '00000000-0000-0000-0000-0000000000c2', 'admin'),
+    ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a3',
+     '00000000-0000-0000-0000-0000000000c3', 'viewer'),
+    ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000a3',
+     '00000000-0000-0000-0000-0000000000c4', 'ADMIN');
+",
+    )
+    .expect("failed to seed the wrapped-membership schema");
+
+    let (classified, db, registry) =
+        support::try_load_fixture_classified("membership_wrapped_function_safe");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "wrapped membership");
+    assert_eq!(
+        joined, 1,
+        "the residual only SQL can evaluate keeps the member list on its query, saw {joined}"
+    );
+    assert!(
+        pure >= 1,
+        "the row still points at the parent on its own, saw {pure} pure"
+    );
+    // The joining side's records are compared inside the bound-query check, which refuses an
+    // empty result and a replay that answers the same for every key. What is left to count
+    // here is the pointer each guarded row writes on its own.
+    assert_eq!(
+        records, 2,
+        "one pointer per seeded doc row reaches the evaluator, saw {records}"
+    );
+}
+
+/// A scope naming two roles over three rows stores five facts, not eight.
+///
+/// The roles a policy admits are a fact about the policy, so they belong on the scope object.
+/// Storing them per row multiplies the whole table by the roles the clause names, which is
+/// the shape this counts: three pointers and one fact per role, whatever the table holds.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_role_scope_stores_its_roles_once_not_once_per_row() {
+    let (_container, mut conn) = start_postgres().await;
+
+    let schema = "
+CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_read ON docs FOR SELECT TO auditor, support USING (TRUE);
+";
+    conn.batch_execute("CREATE ROLE auditor; CREATE ROLE support;")
+        .expect("failed to create the roles the clause names");
+    conn.batch_execute(schema)
+        .expect("failed to apply the role-scoped schema");
+    conn.batch_execute(
+        "
+INSERT INTO docs (id, title) VALUES
+    ('00000000-0000-0000-0000-0000000000d1', 'one'),
+    ('00000000-0000-0000-0000-0000000000d2', 'two'),
+    ('00000000-0000-0000-0000-0000000000d3', 'three');
+",
+    )
+    .expect("failed to seed the rows the scope judges");
+
+    let (classified, db, registry) = support::classify_sql(schema, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+
+    let mut pointers = 0usize;
+    let mut role_facts = 0usize;
+    for query in outputs.tuple_queries() {
+        if query.sql.trim_start().starts_with("--") {
+            continue;
+        }
+        let rows = rows_returned(&mut conn, &query.sql);
+        if query.comment.contains("admits PostgreSQL role") {
+            assert_eq!(
+                rows, 1,
+                "a role the scope admits is one fact however many rows it judges: {}",
+                query.sql
+            );
+            role_facts += 1;
+        } else if query.comment.contains("judged by the scope") {
+            pointers += rows;
+        }
+    }
+    assert_eq!(role_facts, 2, "both roles the clause names reach the scope");
+    assert_eq!(pointers, 3, "every row points at the scope that judges it");
+}
+
+/// How many rows the generated query returns.
+///
+/// Raw SQL because the argument is generated text this counts around, which no typed query
+/// can describe.
+fn rows_returned(conn: &mut PgConnection, sql: &str) -> usize {
+    #[derive(QueryableByName)]
+    struct Counted {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        rows: i64,
+    }
+    let counted: Counted = diesel::sql_query(format!(
+        "SELECT count(*) AS rows FROM ({}) AS emitted",
+        sql.trim().trim_end_matches(';')
+    ))
+    .get_result(conn)
+    .expect("failed to count the rows the generated query returns");
+    usize::try_from(counted.rows).expect("a row count fits")
 }
 
 /// A table keyed on two columns, carrying its own read policy, seeded with values the

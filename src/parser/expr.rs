@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::stored_ident_name;
@@ -57,6 +57,24 @@ pub fn function_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
         } => Some(expr),
         _ => None,
     }
+}
+
+/// The function call `expr` makes, through casts and parentheses.
+pub fn function_call(expr: &Expr) -> Option<&Function> {
+    match expr {
+        Expr::Function(function) => Some(function),
+        Expr::Cast { expr, .. } | Expr::Nested(expr) => function_call(expr),
+        _ => None,
+    }
+}
+
+/// The argument `function` passes at `index`, absent where it passes fewer or names them
+/// in a form that carries no expression.
+pub fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
+    let FunctionArguments::List(arg_list) = &function.args else {
+        return None;
+    };
+    function_arg_expr(arg_list.args.get(index)?)
 }
 
 /// Returns `true` when the expression is wrapped through `COALESCE` or `NULLIF`.

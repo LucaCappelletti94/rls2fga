@@ -317,6 +317,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
         let patterns = vec![
             (
                 PatternClass::P1NumericThreshold(NumericThreshold {
+                    resource_column: None,
                     function_name: "role_level".to_string(),
                     operator: ThresholdOperator::Gte,
                     threshold: 2,
@@ -326,6 +327,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
             ),
             (
                 PatternClass::P2RoleNameInList(RoleNameInList {
+                    resource_column: None,
                     function_name: "role_level".to_string(),
                     role_names: vec!["viewer".to_string(), "editor".to_string()],
                     privilege: RolePrivilege::Member,
@@ -406,6 +408,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
     #[test]
     fn format_pattern_renders_gt_threshold_operator() {
         let pattern = PatternClass::P1NumericThreshold(NumericThreshold {
+            resource_column: None,
             function_name: "role_level".to_string(),
             operator: ThresholdOperator::Gt,
             threshold: 5,

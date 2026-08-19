@@ -91,7 +91,7 @@ pub(crate) fn relation_definitions(dsl: &str, type_name: &str) -> Vec<(String, S
     defined
 }
 
-/// Name of the relation `type_name` declares with `pg_role` subjects, if any.
+/// Name of the relation `type_name` declares to reach its database-role scope, if any.
 pub(crate) fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
     let mut in_type = false;
     for line in dsl.lines() {
@@ -103,7 +103,7 @@ pub(crate) fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
         if in_type {
             if let Some(rest) = trimmed.strip_prefix("define ") {
                 if let Some((name, subjects)) = rest.split_once(':') {
-                    if subjects.trim() == "[pg_role]" {
+                    if subjects.trim() == "[pg_role_scope]" {
                         return Some(name.trim().to_string());
                     }
                 }
@@ -111,6 +111,32 @@ pub(crate) fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether the scope `scope_relation` reaches admits `role`, in both halves: a row of
+/// `object_prefix` points at the scope, and the scope holds that role.
+///
+/// The roles a scope admits are a fact about the policy, so they are stored on the scope
+/// object rather than on every row, and the two facts live in different queries.
+pub(crate) fn scope_admits_role(
+    tuples: &[TupleQuery],
+    object_prefix: &str,
+    scope_relation: &str,
+    role: &str,
+) -> bool {
+    let scope_object = format!("'pg_role_scope:{scope_relation}'");
+    let points_at_scope = tuples.iter().any(|query| {
+        query.sql.contains(&format!("'{object_prefix}'"))
+            && query
+                .sql
+                .contains(&format!("'{scope_relation}' AS relation"))
+            && query.sql.contains(&format!("{scope_object} AS subject"))
+    });
+    let holds_role = tuples.iter().any(|query| {
+        query.sql.contains(&format!("{scope_object} AS object"))
+            && query.sql.contains(&format!("'pg_role:{role}' AS subject"))
+    });
+    points_at_scope && holds_role
 }
 
 pub(crate) fn type_names(dsl: &str) -> Vec<String> {

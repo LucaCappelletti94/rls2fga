@@ -10,7 +10,7 @@ mod support;
 
 use support::footgun::{
     assert_model_is_internally_consistent, db_of, pg_role_relation, relation_definition,
-    relation_definitions, relation_denies, translator, type_names,
+    relation_definitions, relation_denies, scope_admits_role, translator, type_names,
 };
 
 /// RLS is `(permissive OR ...) AND restrictive AND ...`, so dropping a
@@ -111,10 +111,7 @@ fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
         .outputs_accepting_gaps()
         .tuple_queries();
     assert!(
-        tuples.iter().any(|query| {
-            query.sql.contains(&format!("'{scope}' AS relation"))
-                && query.sql.contains("'pg_role:contractor' AS subject")
-        }),
+        scope_admits_role(&tuples, "docs:", &scope, "contractor"),
         "the subtracted role needs its tuples, got: {:#?}",
         tuples.iter().map(|query| &query.sql).collect::<Vec<_>>()
     );
@@ -305,11 +302,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
         .tuple_queries();
     for role in ["auditor", "support"] {
         assert!(
-            tuples.iter().any(|q| {
-                q.sql.contains("'docs:'")
-                    && q.sql.contains(&format!("'{scope}' AS relation"))
-                    && q.sql.contains(&format!("'pg_role:{role}' AS subject"))
-            }),
+            scope_admits_role(&tuples, "docs:", &scope, role),
             "either role can read the membership rows, so {role} needs scope tuples, got: {:#?}",
             tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
         );

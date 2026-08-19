@@ -6,7 +6,8 @@ expression: "tuple_generator::format_tuples(&tuples)"
 SELECT 'projects:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner' AS relation, 'user:' || CASE WHEN "owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner_id"::text ELSE '~' || encode(convert_to("owner_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "projects"
 WHERE "owner_id" IS NOT NULL
-AND "id" IS NOT NULL;
+AND "id" IS NOT NULL
+AND octet_length('user:' || CASE WHEN "owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner_id"::text ELSE '~' || encode(convert_to("owner_id"::text, 'UTF8'), 'hex') END) <= 512;
 
 -- tasks to projects bridge for tuple-to-userset
 SELECT 'tasks:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'projects' AS relation, 'projects:' || CASE WHEN "project_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "project_id"::text ELSE '~' || encode(convert_to("project_id"::text, 'UTF8'), 'hex') END AS subject

@@ -2,185 +2,16 @@ use super::*;
 
 use crate::generator::db_lookup::{TEAM_PRINCIPAL_TABLES, USER_PRINCIPAL_TABLES};
 
-// Infers which column each P1/P2 role-threshold call passes as its resource
-// argument, so the tuple renderer knows the JOIN column without re-walking the AST.
-
-pub(crate) fn infer_role_threshold_resource_columns(
-    policies: &[ClassifiedPolicy],
-    registry: &FunctionRegistry,
-) -> RoleThresholdResourceHints {
-    let mut hints = RoleThresholdResourceHints::default();
-
-    for cp in policies {
-        collect_policy_resource_column(
-            cp.table_name(),
-            cp.using.as_ref(),
-            cp.using_classification.as_ref(),
-            registry,
-            &mut hints.columns,
-            &mut hints.conflicts,
-        );
-        collect_policy_resource_column(
-            cp.table_name(),
-            cp.with_check.as_ref(),
-            cp.with_check_classification.as_ref(),
-            registry,
-            &mut hints.columns,
-            &mut hints.conflicts,
-        );
-    }
-
-    hints
-}
-
-fn collect_policy_resource_column(
-    table: &str,
-    policy_expr: Option<&Expr>,
-    classified: Option<&ClassifiedExpr>,
-    registry: &FunctionRegistry,
-    out: &mut BTreeMap<(String, String), ColumnName>,
-    conflicts: &mut BTreeSet<(String, String)>,
-) {
-    let Some(expr) = policy_expr else {
-        return;
-    };
-
-    for (function_name, resource_param_index) in
-        role_threshold_functions_and_resource_params(classified, registry)
-    {
-        let key = (table.to_string(), function_name);
-        if conflicts.contains(&key) {
-            continue;
-        }
-
-        let resource_cols =
-            extract_resource_columns_for_function(expr, &key.1, resource_param_index);
-        if resource_cols.is_empty() {
-            continue;
-        }
-        if resource_cols.len() > 1 {
-            out.remove(&key);
-            conflicts.insert(key);
-            continue;
-        }
-        let Some(resource_col) = resource_cols.into_iter().next() else {
-            continue;
-        };
-
-        if let Some(existing) = out.get(&key) {
-            if existing != &resource_col {
-                out.remove(&key);
-                conflicts.insert(key);
-            }
-            continue;
-        }
-
-        out.insert(key, resource_col);
-    }
-}
-
-fn role_threshold_functions_and_resource_params(
-    classified: Option<&ClassifiedExpr>,
-    registry: &FunctionRegistry,
-) -> Vec<(String, usize)> {
-    fn walk(
-        classified: &ClassifiedExpr,
-        registry: &FunctionRegistry,
-        out: &mut BTreeSet<(String, usize)>,
-    ) {
-        match &classified.pattern {
-            PatternClass::P1NumericThreshold(NumericThreshold { function_name, .. })
-            | PatternClass::P2RoleNameInList(RoleNameInList { function_name, .. }) => {
-                let Some(FunctionSemantic::RoleThreshold {
-                    resource_param_index,
-                    ..
-                }) = registry.get(function_name)
-                else {
-                    return;
-                };
-                out.insert((function_name.clone(), *resource_param_index));
-            }
-            PatternClass::P5ParentInheritance(ParentInheritance { inner_pattern, .. }) => {
-                walk(inner_pattern, registry, out);
-            }
-            PatternClass::P7AbacAnd(AbacAnd {
-                relationship_part, ..
-            }) => {
-                walk(relationship_part, registry, out);
-            }
-            PatternClass::P8Composite(Composite { parts, .. }) => {
-                for part in parts {
-                    walk(part, registry, out);
-                }
-            }
-            PatternClass::P3DirectOwnership(DirectOwnership { .. })
-            | PatternClass::P11ArrayMembership(ArrayMembership { .. })
-            | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. })
-            | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
-            | PatternClass::P4ExistsMembership(ExistsMembership { .. })
-            | PatternClass::P6BooleanFlag(BooleanFlag { .. })
-            | PatternClass::P9AttributeCondition(AttributeCondition { .. })
-            | PatternClass::P10ConstantBool(ConstantBool { .. })
-            | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
-            | PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { .. })
-            | PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { .. })
-            | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
-            | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
-            | PatternClass::Unknown(UnclassifiedExpr { .. }) => {}
-        }
-    }
-
-    let Some(classified) = classified else {
-        return Vec::new();
-    };
-
-    let mut functions = BTreeSet::new();
-    walk(classified, registry, &mut functions);
-    functions.into_iter().collect()
-}
-
-pub(super) fn extract_resource_columns_for_function(
-    expr: &Expr,
-    function_name: &str,
-    resource_param_index: usize,
-) -> BTreeSet<ColumnName> {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::visit_expressions;
-
-    let normalized = normalize_relation_name(function_name);
-    let mut columns = BTreeSet::new();
-    let _ = visit_expressions(expr, |e| {
-        if let Expr::Function(f) = e {
-            if crate::parser::names::normalized_function_name(f) == normalized {
-                if let Some(arg) = positional_function_arg(f, resource_param_index) {
-                    if let Some(col) = extract_column_name(arg) {
-                        columns.insert(col);
-                    }
-                }
-            }
-        }
-        ControlFlow::<()>::Continue(())
-    });
-    columns
-}
-
-pub(super) fn positional_function_arg(function: &Function, index: usize) -> Option<&Expr> {
-    let FunctionArguments::List(arg_list) = &function.args else {
-        return None;
-    };
-    let arg = arg_list.args.get(index)?;
-    function_arg_expr(arg)
-}
-/// Populate `TupleSource` entries on `table_plan` (and `all_types` for team
-/// membership) for the P1/P2 role-threshold patterns.  Called once per unique
-/// `(source_table, function_name)` pair; the renderer deduplicates via
-/// [`TupleSource::dedup_key`].
+/// Populate `TupleSource` entries on `table_plan`, on the owner the ladder judges, and on
+/// `all_types` for team membership. The renderer deduplicates via
+/// [`TupleSource::dedup_key`], which is what collapses one owner's facts across every table
+/// reading them.
 pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     function_name: &str,
     source_table: &str,
     db: &DB,
     registry: &FunctionRegistry,
-    hints: &RoleThresholdResourceHints,
+    scope: &OwnerScope<'_>,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
 ) {
@@ -204,8 +35,6 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     };
 
     let has_team = team_membership_table.is_some();
-    let owner_col = resolve_owner_column(source_table, db);
-    let pk_cols = resolve_pk_columns(source_table, db);
 
     let user_principal = resolve_principal_info(
         db,
@@ -224,45 +53,37 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         None
     };
 
-    // --- Ownership sources ---
-    match (&owner_col, &pk_cols) {
-        (Some(oc), Some(pk)) => {
-            if let Some(upi) = user_principal.clone() {
-                table_plan.add_source(TupleSource::RoleOwnerUser {
-                    table: source_table.to_string(),
-                    pk_cols: pk.clone(),
-                    owner_col: oc.clone(),
-                    user_table: upi.table,
-                    user_pk_col: upi.pk_col,
-                });
-            } else {
-                table_plan.add_source(TupleSource::Skipped {
-                    reason: SkippedTuples::NoUserPrincipalTable {
-                        table: source_table.to_string(),
-                    },
-                });
-            }
-            if has_team {
-                if let Some(tpi) = team_principal.clone() {
-                    table_plan.add_source(TupleSource::RoleOwnerTeam {
-                        table: source_table.to_string(),
-                        pk_cols: pk.clone(),
-                        owner_col: oc.clone(),
-                        team_table: tpi.table,
-                        team_pk_col: tpi.pk_col,
-                    });
-                } else {
-                    table_plan.add_source(TupleSource::Skipped {
-                        reason: SkippedTuples::NoTeamPrincipalTable {
-                            table: source_table.to_string(),
-                        },
-                    });
-                }
-            }
-        }
-        _ => {
+    // --- Owner identities ---
+    // The function grants the top role when the caller *is* the owner, so that comparison
+    // becomes a fact about the owner identity rather than one per row carrying it.
+    let mut identities: Vec<TupleSource> = Vec::new();
+    if let Some(upi) = user_principal.clone() {
+        identities.push(TupleSource::OwnerIdentity {
+            owner_type: scope.type_name.to_string(),
+            principal_table: upi.table,
+            principal_pk_col: upi.pk_col,
+            subject_type: USER_TYPE.to_string(),
+            relation: owner_user_relation(),
+        });
+    } else {
+        table_plan.add_source(TupleSource::Skipped {
+            reason: SkippedTuples::NoUserPrincipalTable {
+                table: source_table.to_string(),
+            },
+        });
+    }
+    if has_team {
+        if let Some(tpi) = team_principal.clone() {
+            identities.push(TupleSource::OwnerIdentity {
+                owner_type: scope.type_name.to_string(),
+                principal_table: tpi.table,
+                principal_pk_col: tpi.pk_col,
+                subject_type: TEAM_TYPE.to_string(),
+                relation: owner_team_relation(),
+            });
+        } else {
             table_plan.add_source(TupleSource::Skipped {
-                reason: SkippedTuples::NoOwnerColumn {
+                reason: SkippedTuples::NoTeamPrincipalTable {
                     table: source_table.to_string(),
                 },
             });
@@ -270,10 +91,6 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     }
 
     // --- Team membership ---
-    // Add to table_plan first so the membership source appears in the correct position
-    // in the IR renderer (between team-ownership and explicit-grants, matching the old
-    // generate_tuple_queries ordering).  Also add to the team type for semantic
-    // correctness; the renderer deduplicates via dedup_key so it is only emitted once.
     if let (Some(tm_table), Some(tm_user), Some(tm_team)) = (
         team_membership_table,
         team_membership_user_col,
@@ -291,33 +108,17 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
             .add_source(membership_source);
     }
 
-    // --- Explicit grants ---
-    let hint_key = (source_table.to_string(), function_name.to_string());
-    if hints.conflicts.contains(&hint_key) {
-        table_plan.add_source(TupleSource::Skipped {
-            reason: SkippedTuples::ExplicitGrantsConflictingColumns {
-                table: source_table.to_string(),
-            },
+    // --- The row's pointer at the owner it carries ---
+    if bridge_is_buildable(table_plan, source_table, scope.column, scope.type_name, db) {
+        table_plan.add_source(TupleSource::ParentBridge {
+            table: source_table.to_string(),
+            fk_col: scope.column.clone(),
+            parent_type: scope.type_name.to_string(),
+            relation: scope.pointer.clone(),
         });
-        return;
     }
 
-    let grant_join_col = hints.columns.get(&hint_key).or(owner_col.as_ref());
-
-    let Some(grant_join_col) = grant_join_col else {
-        table_plan.add_source(TupleSource::Skipped {
-            reason: SkippedTuples::ExplicitGrantsNoResourceColumn {
-                table: source_table.to_string(),
-            },
-        });
-        return;
-    };
-
-    let Some(object_pk) = pk_cols else {
-        skip_source_without_row_identity(table_plan, source_table, "explicit grant tuples", db);
-        return;
-    };
-
+    // --- Explicit grants ---
     let sorted_roles = sorted_role_relation_names(role_levels);
     if sorted_roles.is_empty() {
         return;
@@ -339,10 +140,8 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         })
         .collect();
 
-    table_plan.add_source(TupleSource::ExplicitGrants {
-        table: source_table.to_string(),
-        pk_cols: object_pk,
-        grant_join_col: grant_join_col.clone(),
+    let grants = TupleSource::ExplicitGrants {
+        owner_type: scope.type_name.to_string(),
         grant_table: grant_table.clone(),
         grant_role_col: grant_role_col.clone(),
         grant_grantee_col: grant_grantee_col.clone(),
@@ -350,5 +149,14 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         role_cases,
         user_principal,
         team_principal,
-    });
+    };
+
+    // Every fact the ladder reads belongs to the owner, so they hang on its plan and two
+    // guarded tables reading one function write them once.
+    if let Some(owner_plan) = all_types.get_mut(scope.type_name) {
+        for identity in identities {
+            owner_plan.add_source(identity);
+        }
+        owner_plan.add_source(grants);
+    }
 }
