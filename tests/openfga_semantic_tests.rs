@@ -45,13 +45,17 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "earth_metabolome",
             min_confidence: ConfidenceLevel::B,
             tuples: vec![
-                ("ownables:doc1", "owner_user", "user:alice"),
-                ("ownables:doc2", "owner_team", "team:alpha"),
+                // doc1 is owned by alice and doc2 by team alpha, so each row points at its
+                // owner and the owner carries who it is and what it grants.
+                ("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
+                ("owner_grants_owner:alice", "owner_user", "user:alice"),
+                ("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
+                ("owner_grants_owner:alpha", "owner_team", "team:alpha"),
                 ("team:alpha", "member", "user:bob"),
-                ("ownables:doc1", "grant_editor", "user:carol"),
-                ("ownables:doc1", "grant_viewer", "team:beta"),
+                ("owner_grants_owner:alice", "grant_editor", "user:carol"),
+                ("owner_grants_owner:alice", "grant_viewer", "team:beta"),
                 ("team:beta", "member", "user:dave"),
-                ("ownables:doc2", "grant_admin", "user:eve"),
+                ("owner_grants_owner:alpha", "grant_admin", "user:eve"),
             ],
             checks: vec![
                 // Direct ownership: alice owns doc1
@@ -84,11 +88,12 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "role_in_list",
             min_confidence: ConfidenceLevel::B,
             tuples: vec![
-                ("ownables:res1", "owner_user", "user:alice"),
-                ("ownables:res1", "owner_team", "team:alpha"),
+                ("ownables:res1", "owner_id", "owner_grants_owner:o1"),
+                ("owner_grants_owner:o1", "owner_user", "user:alice"),
+                ("owner_grants_owner:o1", "owner_team", "team:alpha"),
                 ("team:alpha", "member", "user:bob"),
-                ("ownables:res1", "grant_viewer", "user:carol"),
-                ("ownables:res1", "grant_editor", "user:dave"),
+                ("owner_grants_owner:o1", "grant_viewer", "user:carol"),
+                ("owner_grants_owner:o1", "grant_editor", "user:dave"),
             ],
             checks: vec![
                 ("user:alice", "can_select", "ownables:res1", true),
@@ -184,10 +189,11 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "abac_status",
             min_confidence: ConfidenceLevel::C,
             tuples: vec![
-                ("ownables:item1", "owner_user", "user:alice"),
-                ("ownables:item1", "owner_team", "team:alpha"),
+                ("ownables:item1", "owner_id", "owner_grants_owner:o1"),
+                ("owner_grants_owner:o1", "owner_user", "user:alice"),
+                ("owner_grants_owner:o1", "owner_team", "team:alpha"),
                 ("team:alpha", "member", "user:bob"),
-                ("ownables:item1", "grant_editor", "user:carol"),
+                ("owner_grants_owner:o1", "grant_editor", "user:carol"),
                 // Dave's viewer grant used to be written here. The policy needs the
                 // editor rung, so `grant_viewer` reaches no permission and is no longer
                 // declared. He stays the denied case with no grant at all.
@@ -271,7 +277,16 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "pg_role_gate",
             min_confidence: ConfidenceLevel::B,
             tuples: vec![
-                ("docs:d1", "scope_docs_select_14425117", "pg_role:editor"),
+                (
+                    "docs:d1",
+                    "scope_docs_select_14425117",
+                    "pg_role_scope:scope_docs_select_14425117",
+                ),
+                (
+                    "pg_role_scope:scope_docs_select_14425117",
+                    "roles",
+                    "pg_role:editor",
+                ),
                 ("pg_role:editor", "member", "user:alice"),
             ],
             checks: vec![
