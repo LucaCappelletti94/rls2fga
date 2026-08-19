@@ -13,8 +13,7 @@ use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan}
 use crate::generator::notes::SkippedTuples;
 use crate::generator::records::{Record, RecordContextValue, RecordDescription};
 use crate::generator::well_known::{
-    owner_team_relation, owner_user_relation, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, PG_ROLE_TYPE,
-    TEAM_TYPE, USER_TYPE,
+    ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::names::{lookup_table, split_qualified_identifier_parts, table_has_column};
@@ -544,17 +543,23 @@ fn render_ownership_tuple_source<DB: DatabaseLike>(
     let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
     let subject_guard = subject_fits(&subject_sql, table, &owner_cols, names)
         .map_or_else(String::new, |guard| format!("\nAND {guard}"));
-    let where_clause = if let Some((principal_table, principal_pk_col)) = owner_filter {
+    // The owner column is the key itself where an identity names both sides, and stating
+    // one predicate twice is noise in a script an operator reads.
+    let mut predicates: Vec<&str> = Vec::new();
+    let owner_not_null = format!("{owner_col_sql} IS NOT NULL");
+    let principal_filter = owner_filter.map(|(principal_table, principal_pk_col)| {
         let principal_table_sql = quote_sql_identifier(principal_table);
         let principal_pk_col_sql = quote_sql_identifier(principal_pk_col.as_str());
-        format!(
-            "WHERE {owner_col_sql} IN (SELECT {principal_pk_col_sql} FROM {principal_table_sql})\n\
-             AND {owner_col_sql} IS NOT NULL\n\
-             AND {nameable}{subject_guard};"
-        )
-    } else {
-        format!("WHERE {owner_col_sql} IS NOT NULL\nAND {nameable}{subject_guard};")
-    };
+        format!("{owner_col_sql} IN (SELECT {principal_pk_col_sql} FROM {principal_table_sql})")
+    });
+    if let Some(filter) = &principal_filter {
+        predicates.push(filter);
+    }
+    predicates.push(&owner_not_null);
+    if nameable != owner_not_null {
+        predicates.push(&nameable);
+    }
+    let where_clause = format!("WHERE {}{subject_guard};", predicates.join("\nAND "));
 
     TupleQuery {
         comment,
@@ -727,52 +732,29 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             })
         }
 
-        TupleSource::RoleOwnerUser {
-            table,
-            pk_cols,
-            owner_col,
-            user_table,
-            user_pk_col,
+        TupleSource::OwnerIdentity {
+            owner_type: identity_type,
+            principal_table,
+            principal_pk_col,
+            subject_type,
+            relation,
         } => Some(render_ownership_tuple_source(
             ObjectSource {
-                table,
-                type_name: owner_type,
-                pk_cols,
+                table: principal_table,
+                type_name: identity_type,
+                pk_cols: core::slice::from_ref(principal_pk_col),
                 only_own_rows,
             },
-            owner_col,
-            &owner_user_relation(),
-            USER_TYPE,
-            format!("-- User ownership ({owner_col} references {user_table})"),
-            Some((user_table, user_pk_col)),
-            names,
-        )),
-
-        TupleSource::RoleOwnerTeam {
-            table,
-            pk_cols,
-            owner_col,
-            team_table,
-            team_pk_col,
-        } => Some(render_ownership_tuple_source(
-            ObjectSource {
-                table,
-                type_name: owner_type,
-                pk_cols,
-                only_own_rows,
-            },
-            owner_col,
-            &owner_team_relation(),
-            TEAM_TYPE,
-            format!("-- Team ownership ({owner_col} references {team_table})"),
-            Some((team_table, team_pk_col)),
+            principal_pk_col,
+            relation,
+            subject_type,
+            format!("-- Owner identities that are rows of {principal_table}"),
+            None,
             names,
         )),
 
         TupleSource::ExplicitGrants {
-            table,
-            pk_cols,
-            grant_join_col,
+            owner_type: granted_type,
             grant_table,
             grant_role_col,
             grant_grantee_col,
@@ -784,10 +766,6 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             if role_cases.is_empty() {
                 return None;
             }
-            let table_type = owner_type;
-            let table_sql = owner_table_reference(table, only_own_rows);
-            let pk_parts = quoted_key_parts(pk_cols);
-            let grant_join_col_sql = quote_sql_identifier(grant_join_col.as_str());
             let grant_table_sql = quote_sql_identifier(grant_table);
             let grant_role_col_sql = quote_sql_identifier(grant_role_col.as_str());
             let grant_grantee_col_sql = quote_sql_identifier(grant_grantee_col.as_str());
@@ -815,11 +793,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let grantee_ref = format!("og.{grant_grantee_col_sql}");
             let user_subject_sql = typed_name_sql(USER_TYPE, [grantee_ref.as_str()]);
             let team_subject_sql = typed_name_sql(TEAM_TYPE, [grantee_ref.as_str()]);
-            let resource_refs: Vec<String> = pk_parts
-                .iter()
-                .map(|part| format!("resource.{part}"))
-                .collect();
-            let object_sql = typed_name_sql(table_type, resource_refs.iter().map(String::as_str));
+            let owner_ref = format!("og.{grant_resource_col_sql}");
+            let object_sql = typed_name_sql(granted_type, [owner_ref.as_str()]);
             let mut subject_joins: Vec<String> = Vec::new();
             let mut principal_filter: Option<String> = None;
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
@@ -876,7 +851,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
             Some(TupleQuery {
                 comment: format!(
-                    "-- Explicit grants expanded to {table} rows ({grant_role_col}: {})",
+                    "-- Explicit grants over {granted_type} identities ({grant_role_col}: {})",
                     comment_roles.join(", ")
                 ),
                 sql: format!(
@@ -885,7 +860,6 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                      \x20 {case_expr} AS relation,\n\
                      \x20 {subject_expr} AS subject\n\
                      FROM {grant_table_sql} og\n\
-                     JOIN {table_sql} resource ON resource.{grant_join_col_sql} = og.{grant_resource_col_sql}\n\
                      {subject_join_sql}\
                      WHERE {};",
                     where_predicates.join("\nAND ")
@@ -1465,25 +1439,49 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             table,
             pk_cols,
             scope_relation,
-            pg_role,
+            scope_type,
+            scope_object,
         } => {
             let table_type = owner_type;
             let table_sql = owner_table_reference(table, only_own_rows);
             let pk_parts = quoted_key_parts(pk_cols);
             let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
             let key_not_null = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
-            let subject_sql = typed_name_literal(PG_ROLE_TYPE, pg_role);
+            let subject_sql = typed_name_literal(scope_type, scope_object);
             Some(TupleQuery {
-                comment: format!(
-                    "-- Policy scope: {table} rows require PostgreSQL role '{pg_role}' \
-                     via {scope_relation}"
-                ),
+                comment: format!("-- Every {table} row is judged by the scope {scope_object}"),
                 sql: format!(
                     "SELECT {object_sql} AS object, \
                      '{scope_relation}' AS relation, \
                      {subject_sql} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null};"
+                ),
+                description: None,
+                condition: None,
+            })
+        }
+
+        TupleSource::PolicyScopeRoles {
+            table,
+            scope_type,
+            scope_object,
+            relation,
+            pg_role,
+        } => {
+            let table_sql = owner_table_reference(table, only_own_rows);
+            let object_sql = typed_name_literal(scope_type, scope_object);
+            let subject_sql = typed_name_literal(PG_ROLE_TYPE, pg_role);
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Scope {scope_object} admits PostgreSQL role '{pg_role}', once for \
+                     every {table} row it judges"
+                ),
+                sql: format!(
+                    "SELECT DISTINCT {object_sql} AS object, \
+                     '{relation}' AS relation, \
+                     {subject_sql} AS subject\n\
+                     FROM {table_sql};"
                 ),
                 description: None,
                 condition: None,
@@ -1853,17 +1851,28 @@ CREATE POLICY docs_select ON docs FOR SELECT
         .outputs_accepting_gaps()
         .tuple_queries();
 
-        let explicit_grants = queries
+        let pointer = queries
             .iter()
-            .find(|q| q.comment.contains("Explicit grants expanded to docs rows"))
-            .expect("expected explicit grants tuple query");
-
+            .find(|q| q.comment.contains("docs to object_grants_owner bridge"))
+            .expect("expected the pointer at the owner");
         assert!(
-            explicit_grants
+            pointer
                 .sql
-                .contains("JOIN \"docs\" resource ON resource.\"id\" = og.\"resource_id\""),
-            "expected grants join to use policy resource column `id`, got:\n{}",
-            explicit_grants.sql
+                .contains("'object_grants_owner:' || CASE WHEN \"id\""),
+            "expected the row to point at the owner named by the policy's column `id`, got:\n{}",
+            pointer.sql
+        );
+        let grants = queries
+            .iter()
+            .find(|q| {
+                q.comment
+                    .contains("Explicit grants over object_grants_owner")
+            })
+            .expect("expected explicit grants tuple query");
+        assert!(
+            !grants.sql.contains("JOIN \"docs\""),
+            "a grant is a fact about the owner, so it reads no guarded table, got:\n{}",
+            grants.sql
         );
     }
 
@@ -1914,21 +1923,23 @@ CREATE POLICY docs_select ON docs FOR SELECT
         .outputs_accepting_gaps()
         .tuple_queries();
 
-        let explicit_grants = queries
+        let pointer = queries
             .iter()
-            .find(|q| q.comment.contains("Explicit grants expanded to docs rows"))
-            .expect("expected explicit grants tuple query");
+            .find(|q| q.comment.contains("docs to object_grants_owner bridge"))
+            .expect("expected the pointer at the owner");
         assert!(
-            explicit_grants
+            pointer
                 .sql
-                .contains("JOIN \"docs\" resource ON resource.\"id\" = og.\"resource_id\""),
-            "expected composite policy extraction to preserve join on `id`, got:\n{}",
-            explicit_grants.sql
+                .contains("'object_grants_owner:' || CASE WHEN \"id\""),
+            "expected composite policy extraction to keep the pointer on `id`, got:\n{}",
+            pointer.sql
         );
     }
 
+    /// Two policies naming two owner columns each get their own pointer, because a grant is
+    /// a fact about the value the call passed and the two calls passed different values.
     #[test]
-    fn generate_role_threshold_tuples_emits_todo_when_resource_columns_conflict() {
+    fn generate_role_threshold_tuples_points_at_every_owner_column() {
         let db = parse_schema(
             r"
 CREATE TABLE users(id uuid primary key);
@@ -1976,23 +1987,39 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
         .outputs_accepting_gaps()
         .tuple_queries();
 
-        assert!(
-            queries
-                .iter()
-                .any(|q| q.comment.contains("conflicting resource join columns")),
-            "expected conflict TODO when role threshold resource columns disagree"
+        let pointers: Vec<&str> = queries
+            .iter()
+            .filter(|q| q.comment.contains("docs to object_grants_owner bridge"))
+            .map(|q| q.sql.as_str())
+            .collect();
+        assert_eq!(
+            pointers.len(),
+            2,
+            "each owner column names its own pointer: {pointers:#?}"
         );
         assert!(
-            !queries
+            pointers
                 .iter()
-                .any(|q| q.comment.contains("Explicit grants expanded to docs rows")),
-            "explicit grants should be skipped when resource join column is ambiguous"
+                .any(|sql| sql.contains("'object_grants_owner:' || CASE WHEN \"id\"")),
+            "the policy naming `id` points at the owner that value names: {pointers:#?}"
+        );
+        assert!(
+            pointers
+                .iter()
+                .any(|sql| sql.contains("'object_grants_owner:' || CASE WHEN \"project_id\"")),
+            "the policy naming `project_id` points at the owner that value names: {pointers:#?}"
+        );
+        assert!(
+            queries.iter().any(|q| q
+                .comment
+                .contains("Explicit grants over object_grants_owner")),
+            "the grants are facts about the owner, so two columns do not refuse them"
         );
     }
 
+    /// The same, where one policy reaches two owner columns through an `OR`.
     #[test]
-    fn generate_role_threshold_tuples_emits_todo_when_single_policy_has_conflicting_resource_columns(
-    ) {
+    fn generate_role_threshold_tuples_points_at_both_columns_of_one_policy() {
         let db = parse_schema(
             r"
 CREATE TABLE users(id uuid primary key);
@@ -2041,17 +2068,21 @@ CREATE POLICY docs_select ON docs FOR SELECT
         .outputs_accepting_gaps()
         .tuple_queries();
 
-        assert!(
-            queries
-                .iter()
-                .any(|q| q.comment.contains("conflicting resource join columns")),
-            "expected conflict TODO for mixed resource args in one policy expression"
+        let pointers: Vec<&str> = queries
+            .iter()
+            .filter(|q| q.comment.contains("docs to object_grants_owner bridge"))
+            .map(|q| q.sql.as_str())
+            .collect();
+        assert_eq!(
+            pointers.len(),
+            2,
+            "each arm of the OR points at the owner its own call named: {pointers:#?}"
         );
         assert!(
-            !queries
-                .iter()
-                .any(|q| q.comment.contains("Explicit grants expanded to docs rows")),
-            "explicit grants should be skipped when a single policy mixes resource join columns"
+            queries.iter().any(|q| q
+                .comment
+                .contains("Explicit grants over object_grants_owner")),
+            "the grants are facts about the owner, so two columns do not refuse them"
         );
     }
 
@@ -2271,9 +2302,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         // Build the IR directly and call render_tuple_source.
         // Both user_principal and team_principal are None → fail-closed path.
         let source = TupleSource::ExplicitGrants {
-            table: "docs".to_string(),
-            pk_cols: vec![ColumnName::from_stored("id")],
-            grant_join_col: ColumnName::from_stored("doc_id"),
+            owner_type: "doc_grants_owner".to_string(),
             grant_table: "doc_grants".to_string(),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2314,9 +2343,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
         let source = TupleSource::ExplicitGrants {
-            table: "docs".to_string(),
-            pk_cols: vec![ColumnName::from_stored("id")],
-            grant_join_col: ColumnName::from_stored("id"),
+            owner_type: "doc_grants_owner".to_string(),
             grant_table: "doc_grants".to_string(),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2355,9 +2382,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
         let source = TupleSource::ExplicitGrants {
-            table: "docs".to_string(),
-            pk_cols: vec![ColumnName::from_stored("id")],
-            grant_join_col: ColumnName::from_stored("id"),
+            owner_type: "doc_grants_owner".to_string(),
             grant_table: "doc_grants".to_string(),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),

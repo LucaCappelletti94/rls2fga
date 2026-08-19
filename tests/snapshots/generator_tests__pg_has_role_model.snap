@@ -10,7 +10,7 @@ type user
 type docs
   relations
     define no_access: [user]
-    define scope_docs_select_14425117: [pg_role]
+    define scope_docs_select_14425117: [pg_role_scope]
     define can_delete: no_access
     define can_insert: no_access
     define can_select: member from scope_docs_select_14425117
@@ -21,3 +21,8 @@ type docs
 type pg_role
   relations
     define member: [user]
+
+type pg_role_scope
+  relations
+    define roles: [pg_role]
+    define member: member from roles

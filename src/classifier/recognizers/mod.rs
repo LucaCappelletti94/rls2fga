@@ -7,9 +7,10 @@ use sqlparser::ast::{
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
-use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
+use crate::parser::expr::{function_arg_expr, function_call, positional_function_arg};
 use crate::parser::function_analyzer::current_setting_literal_key;
+use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
@@ -66,6 +67,7 @@ pub fn recognize_p1<DB: DatabaseLike>(
 
         return Some(ClassifiedExpr {
             pattern: PatternClass::P1NumericThreshold(NumericThreshold {
+                resource_column: role_threshold_resource_column(func_expr, &func_name, registry),
                 function_name: func_name,
                 operator,
                 threshold,
@@ -105,6 +107,9 @@ pub fn recognize_p2<DB: DatabaseLike>(
                 if !role_names.is_empty() {
                     return Some(ClassifiedExpr {
                         pattern: PatternClass::P2RoleNameInList(RoleNameInList {
+                            resource_column: role_threshold_resource_column(
+                                inner_expr, &func_name, registry,
+                            ),
                             function_name: func_name,
                             role_names,
                             privilege: RolePrivilege::Member,
@@ -121,6 +126,26 @@ pub fn recognize_p2<DB: DatabaseLike>(
     }
 
     recognize_role_accessor_comparison(expr, registry)
+}
+
+/// The column a role-threshold call passes as its resource.
+///
+/// The registry says which argument that is, so a call passing an expression rather than a
+/// column answers `None` and the translation falls back to the schema.
+fn role_threshold_resource_column(
+    call: &Expr,
+    function_name: &str,
+    registry: &FunctionRegistry,
+) -> Option<ColumnName> {
+    let Some(FunctionSemantic::RoleThreshold {
+        resource_param_index,
+        ..
+    }) = registry.get(function_name)
+    else {
+        return None;
+    };
+    let function = function_call(call)?;
+    extract_column_name(positional_function_arg(function, *resource_param_index)?)
 }
 
 fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
@@ -169,6 +194,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
 
     Some(ClassifiedExpr {
         pattern: PatternClass::P2RoleNameInList(RoleNameInList {
+            resource_column: None,
             function_name: "pg_has_role".to_string(),
             role_names: vec![role_name],
             privilege,
@@ -213,6 +239,7 @@ fn recognize_role_accessor_comparison(
 
         return Some(ClassifiedExpr {
             pattern: PatternClass::P2RoleNameInList(RoleNameInList {
+                resource_column: None,
                 function_name: func_name,
                 role_names: vec![role_name],
                 // A role accessor names the caller's role rather than asking about a kind of
@@ -238,6 +265,7 @@ fn recognize_role_accessor_comparison(
 
         return Some(ClassifiedExpr {
             pattern: PatternClass::P2RoleNameInList(RoleNameInList {
+                resource_column: None,
                 function_name: func_name,
                 role_names,
                 privilege: RolePrivilege::Member,

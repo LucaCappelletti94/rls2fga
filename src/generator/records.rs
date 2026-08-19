@@ -322,16 +322,17 @@ pub struct RecordContextEntry {
     pub value: ValueSource,
 }
 
-/// A query bound to one row of one table by its key, for a shape whose records
-/// no single row decides.
+/// A query bound by the columns keying the slice it determines, for a shape whose
+/// records no single row decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundQuery {
     /// Table the change arrived on.
     pub table: String,
     /// Columns the query binds, in the order its placeholders take them.
     ///
-    /// The whole key, so the query names one row. Binding a prefix of a compound key
-    /// answers for every row sharing that prefix, which is a different question.
+    /// All of the columns naming the slice, since a query bound to a prefix of a
+    /// compound key answers for every row sharing that prefix, which is a different
+    /// question.
     pub key_columns: Vec<ColumnName>,
     /// SQL taking the key values as `$1` through `$n`, in `key_columns` order.
     pub sql: String,

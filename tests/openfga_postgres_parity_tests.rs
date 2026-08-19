@@ -6461,3 +6461,332 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
         failures.join("\n")
     );
 }
+
+const SAMPLE_1: &str = "00000000-0000-0000-0000-0000000000e1";
+const SAMPLE_2: &str = "00000000-0000-0000-0000-0000000000e2";
+const SPECTRUM_1: &str = "00000000-0000-0000-0000-0000000000f1";
+const SPECTRUM_2: &str = "00000000-0000-0000-0000-0000000000f2";
+
+/// The role one caller holds over the owner named by `column` on one row of `table`, asked
+/// of the database itself. A NULL there answers zero, exactly as the function's aggregate
+/// does.
+///
+/// Raw SQL because the answer comes from a schema-defined function over a table and column
+/// the caller names, which the typed DSL cannot express. Both names are constants from this
+/// file, never input.
+fn postgres_role_for_column(
+    conn: &mut PgConnection,
+    user_id: &str,
+    table: &str,
+    column: &str,
+    row_id: &str,
+) -> i32 {
+    let row: RoleRow = diesel::sql_query(format!(
+        "SELECT get_owner_role($1::text::uuid, {column}) AS role
+         FROM {table}
+         WHERE id = $2::text::uuid"
+    ))
+    .bind::<Text, _>(user_id)
+    .bind::<Text, _>(row_id)
+    .get_result(conn)
+    .unwrap();
+    row.role
+}
+
+/// Two guarded tables reading one role function share the owner the grants are about, so
+/// each grant row is one stored fact rather than one per row the owner owns, and both
+/// tables answer through it at their own threshold.
+///
+/// Seeded so the sharing is load-bearing: the granted owners own rows in both tables, so a
+/// model that fanned the grants out over rows would write more facts, and a model that
+/// pooled the two thresholds would let a viewer read a spectrum.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn shared_owner_grants_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("shared_owner_grants");
+    let (classified, db, registry) = support::load_fixture_classified("shared_owner_grants");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the shared-owner schema on PostgreSQL 18");
+    // Seeded as a script: every key here is a `uuid` column and the test driver is built
+    // without diesel's uuid feature, so the values cannot be bound through the typed DSL.
+    conn.batch_execute(&format!(
+        "
+INSERT INTO users (id) VALUES
+    ('{USER_ALICE}'), ('{USER_BOB}'), ('{USER_CAROL}'), ('{USER_DAVE}'), ('{USER_EVE}');
+INSERT INTO teams (id) VALUES ('{TEAM_ALPHA}'), ('{TEAM_BETA}');
+INSERT INTO team_members (team_id, user_id) VALUES
+    ('{TEAM_ALPHA}', '{USER_BOB}'),
+    ('{TEAM_BETA}', '{USER_CAROL}'),
+    -- Only in the team holding the viewer grant, so this caller reads a sample and not a
+    -- spectrum, which is what one shared ladder answering two thresholds means.
+    ('{TEAM_BETA}', '{USER_DAVE}');
+INSERT INTO samples (id, owner_id) VALUES
+    ('{SAMPLE_1}', '{USER_ALICE}'),
+    ('{SAMPLE_2}', '{TEAM_ALPHA}');
+INSERT INTO spectra (id, owner_id) VALUES
+    ('{SPECTRUM_1}', '{USER_ALICE}'),
+    ('{SPECTRUM_2}', '{TEAM_ALPHA}');
+INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+    ('{USER_CAROL}', '{USER_ALICE}', 3),
+    ('{TEAM_BETA}', '{USER_ALICE}', 2),
+    ('{USER_EVE}', '{TEAM_ALPHA}', 4);
+"
+    ))
+    .expect("Failed to seed the shared-owner fixture");
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+    let grant_facts = tuple_keys
+        .iter()
+        .filter(|tuple| tuple.relation.starts_with("grant_"))
+        .count();
+    assert_eq!(
+        grant_facts, 3,
+        "one stored fact per grant row, whatever either table holds: {tuple_keys:#?}"
+    );
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "shared-owner-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let (mut granted, mut denied, mut differed) = (0usize, 0usize, 0usize);
+    for user_id in [USER_ALICE, USER_BOB, USER_CAROL, USER_DAVE, USER_EVE] {
+        for (table, threshold, rows) in [
+            ("samples", 2, [SAMPLE_1, SAMPLE_2]),
+            ("spectra", 3, [SPECTRUM_1, SPECTRUM_2]),
+        ] {
+            for row_id in rows {
+                let role = postgres_role_for_column(&mut conn, user_id, table, "owner_id", row_id);
+                let expected = role >= threshold;
+                let user = format!("user:{user_id}");
+                let object = format!("{table}:{row_id}");
+                let actual =
+                    support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+                if expected {
+                    granted += 1;
+                } else {
+                    denied += 1;
+                }
+                if table == "spectra" && role == 2 {
+                    differed += 1;
+                }
+                if expected != actual {
+                    failures.push(format!(
+                        "{user} can_select {object}: postgres={expected} (role={role}), \
+                         openfga={actual}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        granted > 0,
+        "nothing is granted, so denying everything would pass"
+    );
+    assert!(
+        denied > 0,
+        "nothing is denied, so granting everything would pass"
+    );
+    assert!(
+        differed > 0,
+        "no caller sits between the two thresholds, so one shared ladder proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA shared-owner parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+const RECORD_1: &str = "00000000-0000-0000-0000-00000000ee01";
+const RECORD_2: &str = "00000000-0000-0000-0000-00000000ee02";
+
+/// One table judged through two owner values, which the translator refused outright before
+/// each value got its own pointer.
+///
+/// Seeded so the two pointers cannot be interchanged: one caller holds the viewer level over
+/// the delegate, which the delegate side does not admit, and another holds the admin level
+/// over the same delegate, which it does. Reading either side through the other flips both.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn two_owner_columns_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("two_owner_columns");
+    let (classified, db, registry) = support::load_fixture_classified("two_owner_columns");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the two-column schema on PostgreSQL 18");
+    // Seeded as a script: every key here is a `uuid` column and the test driver is built
+    // without diesel's uuid feature, so the values cannot be bound through the typed DSL.
+    conn.batch_execute(&format!(
+        "
+INSERT INTO users (id) VALUES
+    ('{USER_ALICE}'), ('{USER_BOB}'), ('{USER_CAROL}'), ('{USER_DAVE}'), ('{USER_EVE}');
+INSERT INTO records (id, owner_id, delegate_id) VALUES
+    ('{RECORD_1}', '{USER_ALICE}', '{USER_BOB}'),
+    ('{RECORD_2}', '{USER_ALICE}', NULL);
+INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+    ('{USER_CAROL}', '{USER_ALICE}', 2),
+    -- Viewer over the delegate, which the delegate side does not admit.
+    ('{USER_DAVE}', '{USER_BOB}', 2),
+    -- Admin over the same delegate, which it does.
+    ('{USER_EVE}', '{USER_BOB}', 4);
+"
+    ))
+    .expect("Failed to seed the two-column fixture");
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "two-column-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let (mut granted, mut denied, mut through_delegate) = (0usize, 0usize, 0usize);
+    for user_id in [USER_ALICE, USER_BOB, USER_CAROL, USER_DAVE, USER_EVE] {
+        for row_id in [RECORD_1, RECORD_2] {
+            let as_owner =
+                postgres_role_for_column(&mut conn, user_id, "records", "owner_id", row_id);
+            let as_delegate =
+                postgres_role_for_column(&mut conn, user_id, "records", "delegate_id", row_id);
+            let expected = as_owner >= 2 || as_delegate >= 4;
+            let user = format!("user:{user_id}");
+            let object = format!("records:{row_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            if expected && as_owner < 2 {
+                through_delegate += 1;
+            }
+            if expected != actual {
+                failures.push(format!(
+                    "{user} can_select {object}: postgres={expected} \
+                     (owner={as_owner}, delegate={as_delegate}), openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        granted > 0,
+        "nothing is granted, so denying everything would pass"
+    );
+    assert!(
+        denied > 0,
+        "nothing is denied, so granting everything would pass"
+    );
+    assert!(
+        through_delegate > 0,
+        "nobody reads a row only through its delegate, so the second pointer proves nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA two-column parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

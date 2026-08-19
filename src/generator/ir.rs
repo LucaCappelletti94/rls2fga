@@ -8,9 +8,7 @@ use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::relations::RequestComparison;
-use crate::generator::well_known::{
-    member_relation, owner_team_relation, owner_user_relation, public_relation, TEAM_TYPE,
-};
+use crate::generator::well_known::{member_relation, public_relation, TEAM_TYPE};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::parser::identifiers::{ColumnName, RelationName, TypeName};
@@ -83,33 +81,28 @@ pub(crate) enum TupleSource {
         relation: RelationName,
     },
 
-    /// P1/P2 user-side ownership. Produces `(type:pk, owner_user, user:owner_col)`
-    /// filtered to the user principal table.
-    RoleOwnerUser {
-        table: String,
-        pk_cols: Vec<ColumnName>,
-        owner_col: ColumnName,
-        user_table: String,
-        user_pk_col: ColumnName,
-    },
-
-    /// P1/P2 team-side ownership. Produces `(type:pk, owner_team, team:owner_col)`
-    /// filtered to the team principal table.
-    RoleOwnerTeam {
-        table: String,
-        pk_cols: Vec<ColumnName>,
-        owner_col: ColumnName,
-        team_table: String,
-        team_pk_col: ColumnName,
+    /// P1/P2 owner identity: `(owner_type:pk, relation, subject_type:pk)` over a
+    /// principal table.
+    ///
+    /// The policy compares the caller against the owner value itself, so this is that
+    /// comparison as a fact: the owner identity X is the principal X, true whether or
+    /// not X owns a row.
+    OwnerIdentity {
+        /// Type the owner identities belong to.
+        owner_type: String,
+        principal_table: String,
+        principal_pk_col: ColumnName,
+        /// `user` or `team`.
+        subject_type: String,
+        relation: RelationName,
     },
 
     /// P1/P2 explicit grants. Produces one
-    /// `(type:resource_col, grant_relation, user:grantee_col)` query per role case.
+    /// `(owner_type:grant_resource_col, grant_relation, user:grantee_col)` query per role
+    /// case. Reads no guarded table: a grant is a fact about the owner it names.
     ExplicitGrants {
-        table: String,
-        pk_cols: Vec<ColumnName>,
-        /// Column of `table` joined to the grant table.
-        grant_join_col: ColumnName,
+        /// Type the granted owner identities belong to.
+        owner_type: String,
         grant_table: String,
         /// Column of `grant_table` holding the integer role level.
         grant_role_col: ColumnName,
@@ -262,11 +255,31 @@ pub(crate) enum TupleSource {
         pk_cols: Vec<ColumnName>,
     },
 
-    /// Role-scoped policy. Produces `(type:pk, scope_relation, pg_role:pg_role)`.
+    /// Links every row of a role-scoped table to the scope its policy declares. Produces
+    /// `(type:pk, scope_relation, scope_type:scope_object)` per row.
+    ///
+    /// The roles the scope admits are a fact about the policy, carried once by
+    /// [`Self::PolicyScopeRoles`], so a policy naming several roles no longer writes one fact
+    /// per row per role.
     PolicyScope {
         table: String,
         pk_cols: Vec<ColumnName>,
         scope_relation: RelationName,
+        /// Synthetic type the scope objects belong to.
+        scope_type: String,
+        /// Object id standing for this policy's scope.
+        scope_object: String,
+    },
+
+    /// One role a policy's scope admits: `(scope_type:scope_object, roles, pg_role:pg_role)`.
+    ///
+    /// Read `DISTINCT` off the guarded table, which is the table whose policy asked for the
+    /// scope, so the load writes it once however many rows that table holds.
+    PolicyScopeRoles {
+        table: String,
+        scope_type: String,
+        scope_object: String,
+        relation: RelationName,
         pg_role: String,
     },
 
@@ -306,9 +319,6 @@ impl TupleSource {
             Self::DirectOwnership { .. }
             | Self::ArrayMembership { .. }
             | Self::JsonbFieldOwnership { .. }
-            | Self::RoleOwnerUser { .. }
-            | Self::RoleOwnerTeam { .. }
-            | Self::ExplicitGrants { .. }
             | Self::ParentBridge { .. }
             | Self::PublicFlag { .. }
             | Self::AttributeGate { .. }
@@ -318,7 +328,10 @@ impl TupleSource {
             | Self::PolicyScope { .. }
             | Self::HolderBridge { .. }
             | Self::CallerSetShareBridge { .. } => true,
-            Self::TeamMembership { .. }
+            Self::PolicyScopeRoles { .. }
+            | Self::OwnerIdentity { .. }
+            | Self::ExplicitGrants { .. }
+            | Self::TeamMembership { .. }
             | Self::ExistsMembership { .. }
             | Self::CallerSetShareGate { .. }
             | Self::HolderMembers { .. }
@@ -339,11 +352,18 @@ impl TupleSource {
             | Self::SessionAttributeGate { relation, .. }
             | Self::CallerSetShareBridge { relation, .. }
             | Self::HolderBridge { relation, .. } => own(relation),
-            Self::RoleOwnerUser { .. } => own(&owner_user_relation()),
-            Self::RoleOwnerTeam { .. } => own(&owner_team_relation()),
-            Self::ExplicitGrants { role_cases, .. } => role_cases
+            Self::OwnerIdentity {
+                owner_type,
+                relation,
+                ..
+            } => vec![(owner_type.clone(), relation.clone())],
+            Self::ExplicitGrants {
+                owner_type,
+                role_cases,
+                ..
+            } => role_cases
                 .iter()
-                .map(|(_, relation, _)| (owner_type.to_string(), relation.clone()))
+                .map(|(_, relation, _)| (owner_type.clone(), relation.clone()))
                 .collect(),
             Self::TeamMembership { .. } => {
                 vec![(TEAM_TYPE.to_string(), member_relation())]
@@ -363,6 +383,11 @@ impl TupleSource {
                 own(&public_relation())
             }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
+            Self::PolicyScopeRoles {
+                scope_type,
+                relation,
+                ..
+            } => vec![(scope_type.clone(), relation.clone())],
             Self::Skipped { .. } => Vec::new(),
         }
     }
@@ -401,31 +426,20 @@ impl TupleSource {
                     path.join(".")
                 )
             }
-            Self::RoleOwnerUser {
-                table,
-                pk_cols,
-                owner_col,
-                user_table,
-                user_pk_col,
+            Self::OwnerIdentity {
+                owner_type,
+                principal_table,
+                principal_pk_col,
+                subject_type,
+                relation,
             } => {
                 format!(
-                    "role_owner_user:{table}:{pk_cols:?}:{owner_col}:{user_table}:{user_pk_col}"
-                )
-            }
-            Self::RoleOwnerTeam {
-                table,
-                pk_cols,
-                owner_col,
-                team_table,
-                team_pk_col,
-            } => {
-                format!(
-                    "role_owner_team:{table}:{pk_cols:?}:{owner_col}:{team_table}:{team_pk_col}"
+                    "owner_identity:{owner_type}:{principal_table}:{principal_pk_col}:\
+                     {subject_type}:{relation}"
                 )
             }
             Self::ExplicitGrants {
-                table,
-                grant_join_col,
+                owner_type,
                 grant_table,
                 grant_role_col,
                 grant_grantee_col,
@@ -438,7 +452,7 @@ impl TupleSource {
                     .map(|(l, rel, name)| format!("{l}:{rel}:{name}"))
                     .collect();
                 format!(
-                    "grants:{table}:{grant_table}:{grant_role_col}:{grant_join_col}:\
+                    "grants:{owner_type}:{grant_table}:{grant_role_col}:\
                      {grant_grantee_col}:{grant_resource_col}:{}",
                     role_keys.join(",")
                 )
@@ -559,9 +573,19 @@ impl TupleSource {
                 table,
                 pk_cols,
                 scope_relation,
+                scope_type,
+                scope_object,
+            } => {
+                format!("scope:{table}:{pk_cols:?}:{scope_relation}:{scope_type}:{scope_object}")
+            }
+            Self::PolicyScopeRoles {
+                table,
+                scope_type,
+                scope_object,
+                relation,
                 pg_role,
             } => {
-                format!("scope:{table}:{pk_cols:?}:{scope_relation}:{pg_role}")
+                format!("scoperoles:{table}:{scope_type}:{scope_object}:{relation}:{pg_role}")
             }
             Self::HolderBridge {
                 table,
@@ -594,45 +618,63 @@ impl TupleSource {
 mod tests {
     use super::*;
     use crate::classifier::patterns::ResidualPredicate;
+    use crate::generator::well_known::owner_user_relation;
 
+    fn grants(owner_type: &str, grant_table: &str) -> TupleSource {
+        TupleSource::ExplicitGrants {
+            owner_type: owner_type.to_string(),
+            grant_table: grant_table.to_string(),
+            grant_role_col: ColumnName::from_stored("role"),
+            grant_grantee_col: ColumnName::from_stored("grantee"),
+            grant_resource_col: ColumnName::from_stored("resource_id"),
+            role_cases: vec![(
+                1,
+                RelationName::from_resolved("viewer"),
+                "viewer".to_string(),
+            )],
+            user_principal: None,
+            team_principal: None,
+        }
+    }
+
+    /// A grant is a fact about the owner it names, so two guarded tables reading one
+    /// grant table write it once. Emitting it per table is the fan-out this shape exists
+    /// to remove.
     #[test]
-    fn dedup_key_differentiates_explicit_grants_across_tables() {
-        let grants_a = TupleSource::ExplicitGrants {
-            table: "table_a".to_string(),
-            pk_cols: vec![ColumnName::from_stored("id")],
-            grant_join_col: ColumnName::from_stored("resource_id"),
-            grant_table: "grants".to_string(),
-            grant_role_col: ColumnName::from_stored("role"),
-            grant_grantee_col: ColumnName::from_stored("grantee"),
-            grant_resource_col: ColumnName::from_stored("resource_id"),
-            role_cases: vec![(
-                1,
-                RelationName::from_resolved("viewer"),
-                "viewer".to_string(),
-            )],
-            user_principal: None,
-            team_principal: None,
-        };
-        let grants_b = TupleSource::ExplicitGrants {
-            table: "table_b".to_string(),
-            pk_cols: vec![ColumnName::from_stored("id")],
-            grant_join_col: ColumnName::from_stored("resource_id"),
-            grant_table: "grants".to_string(),
-            grant_role_col: ColumnName::from_stored("role"),
-            grant_grantee_col: ColumnName::from_stored("grantee"),
-            grant_resource_col: ColumnName::from_stored("resource_id"),
-            role_cases: vec![(
-                1,
-                RelationName::from_resolved("viewer"),
-                "viewer".to_string(),
-            )],
-            user_principal: None,
-            team_principal: None,
-        };
+    fn dedup_key_collapses_explicit_grants_over_one_owner() {
+        assert_eq!(
+            grants("grants_owner", "grants").dedup_key(),
+            grants("grants_owner", "grants").dedup_key()
+        );
         assert_ne!(
-            grants_a.dedup_key(),
-            grants_b.dedup_key(),
-            "ExplicitGrants from different tables must have different dedup keys"
+            grants("grants_owner", "grants").dedup_key(),
+            grants("other_owner", "grants").dedup_key(),
+            "two owner namespaces must not pool their grants"
+        );
+    }
+
+    /// The identity fact says the owner is a principal, so it is keyed on the namespace
+    /// and the principal table, never on a guarded table.
+    #[test]
+    fn dedup_key_separates_owner_identities_by_namespace_and_principal() {
+        let identity = |owner_type: &str, principal: &str| TupleSource::OwnerIdentity {
+            owner_type: owner_type.to_string(),
+            principal_table: principal.to_string(),
+            principal_pk_col: ColumnName::from_stored("id"),
+            subject_type: "user".to_string(),
+            relation: owner_user_relation(),
+        };
+        assert_eq!(
+            identity("grants_owner", "users").dedup_key(),
+            identity("grants_owner", "users").dedup_key()
+        );
+        assert_ne!(
+            identity("grants_owner", "users").dedup_key(),
+            identity("other_owner", "users").dedup_key()
+        );
+        assert_ne!(
+            identity("grants_owner", "users").dedup_key(),
+            identity("grants_owner", "people").dedup_key()
         );
     }
 

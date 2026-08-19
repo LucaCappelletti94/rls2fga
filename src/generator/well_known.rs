@@ -17,6 +17,16 @@ pub const TEAM_TYPE: &str = "team";
 /// Subject type for a `PostgreSQL` role named in a policy's `TO` clause.
 pub const PG_ROLE_TYPE: &str = "pg_role";
 
+/// Type standing for the set of roles one policy's scope admits. One object per scope, so
+/// the roles it admits are stored once rather than once per row the policy guards.
+pub const PG_ROLE_SCOPE_TYPE: &str = "pg_role_scope";
+
+/// Relation on [`PG_ROLE_SCOPE_TYPE`] holding the roles a scope admits.
+#[must_use]
+pub fn scope_roles_relation() -> RelationName {
+    RelationName::from_resolved("roles")
+}
+
 /// Relation that grants nobody, used wherever a policy must fail closed.
 #[must_use]
 pub fn deny_relation() -> RelationName {

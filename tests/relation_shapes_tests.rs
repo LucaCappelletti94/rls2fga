@@ -13,7 +13,7 @@ use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::records::{
-    Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
+    BoundQuery, Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
 };
 use rls2fga::generator::relations::{RelationShapes, RowDecision};
 use rls2fga::generator::well_known::{
@@ -409,19 +409,18 @@ CREATE POLICY readings_sel ON readings FOR SELECT
     USING (get_owner_role(current_user, owner_id) >= 2);
 ";
 
-/// A bound query on the object's own table has to name one row of it.
+/// A shape naming a row of the object's own table has to name the whole row.
 ///
-/// The two public surfaces have to agree: `row_naming` tells a consumer which columns
-/// key a row of a type, and a `BoundQuery` on that type's own table has to bind exactly
-/// those. Binding a prefix of a compound key answers for every row sharing the prefix,
-/// so a consumer reconciling one row would be handed a whole tenant's records.
+/// The two public surfaces have to agree: `row_naming` tells a consumer which columns key
+/// a row of a type, and a shape building that type's objects out of that type's own table
+/// has to use exactly those. Naming a row by a prefix of a compound key merges every row
+/// sharing the prefix into one object, so a whole tenant would answer as one row.
 ///
-/// A bound query on some **other** table is a different contract and is excluded here.
-/// A join table's row is deliberately replayed by the object it names rather than by its
-/// own key, because a deleted row cannot be found by its key at all, and
-/// `a_share_recorded_elsewhere_is_reported_as_needing_a_query` pins that.
+/// A shape reading some **other** table names its objects from that table's own columns,
+/// which is a different contract and is excluded here: a membership row names the parent
+/// it points at, not itself.
 #[test]
-fn a_bound_query_on_the_guarded_table_binds_its_whole_key() {
+fn a_shape_naming_the_guarded_table_names_its_whole_key() {
     let mut compound = 0usize;
     let mut checked = 0usize;
 
@@ -464,31 +463,41 @@ fn a_bound_query_on_the_guarded_table_binds_its_whole_key() {
 
         for entry in planned.relations() {
             for shape in &entry.shapes {
-                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                let RecordDerivation::FromRow {
+                    table, template, ..
+                } = &shape.derivation
+                else {
                     continue;
                 };
-                for bound in queries {
-                    let Some((.., key)) = keys.iter().find(|(table, type_name, _)| {
-                        *table == bound.table && type_name.as_str() == entry.type_name.as_str()
-                    }) else {
-                        continue;
-                    };
-                    checked += 1;
-                    compound += usize::from(key.len() > 1);
-                    assert_eq!(
-                        &bound.key_columns, key,
-                        "{name}: {}#{} binds {:?} for a row of {} that {:?} names",
-                        entry.type_name, entry.relation, bound.key_columns, bound.table, key
-                    );
-                }
+                let Some((.., key)) = keys.iter().find(|(named, type_name, _)| {
+                    named == table && type_name.as_str() == entry.type_name.as_str()
+                }) else {
+                    continue;
+                };
+                let named: Vec<ColumnName> = template
+                    .object_key
+                    .parts()
+                    .iter()
+                    .filter_map(|part| match part {
+                        ValueSource::Column(column) => Some(column.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                checked += 1;
+                compound += usize::from(key.len() > 1);
+                assert_eq!(
+                    &named, key,
+                    "{name}: {}#{} names a row of {table} by {named:?}, which {key:?} keys",
+                    entry.type_name, entry.relation
+                );
             }
         }
     }
 
-    assert!(checked > 0, "no bound query names a table the model keys");
+    assert!(checked > 0, "no shape names a table the model keys");
     assert!(
         compound > 0,
-        "no case binds a compound key, so this proves nothing"
+        "no case names a compound key, so this proves nothing"
     );
 }
 
@@ -953,6 +962,50 @@ fn a_grant_with_no_principal_describes_nothing() {
             entry.shapes
         );
     }
+}
+
+/// A role threshold called on the row's own key, beside an unrelated `owner_id` column.
+const GRANTS_ON_THE_RESOURCE_KEY: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE owner_grants (granted_owner_id TEXT, grantee_owner_id TEXT, role_id INT);
+CREATE FUNCTION get_owner_role(a TEXT, b TEXT) RETURNS INT LANGUAGE sql STABLE
+    AS 'SELECT 1';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (get_owner_role(current_user, id) >= 2);
+";
+
+/// The row points at the owner the policy named, never at a column found by its name.
+///
+/// The ladder answers `get_owner_role(caller, X)` for the X the call passes, so pointing at
+/// `owner_id` here would grant whoever equals `owner_id` on a comparison the database makes
+/// against `id`, and the row would be readable by the wrong person.
+#[test]
+fn the_owner_pointer_names_the_column_the_policy_passed() {
+    let shapes = shapes_of(GRANTS_ON_THE_RESOURCE_KEY, GRANT_REGISTRY);
+    let pointers: Vec<&RecordDescription> = shapes
+        .iter()
+        .flat_map(|entry| &entry.shapes)
+        .filter(|shape| match &shape.derivation {
+            RecordDerivation::FromRow { template, .. } => {
+                template.object_type == "docs" && template.subject_type == "owner_grants_owner"
+            }
+            _ => false,
+        })
+        .collect();
+    assert_eq!(
+        pointers.len(),
+        1,
+        "one pointer per guarded table: {pointers:#?}"
+    );
+    let RecordDerivation::FromRow { template, .. } = &pointers[0].derivation else {
+        unreachable!("filtered to row-derived shapes");
+    };
+    assert_eq!(
+        template.subject_key,
+        SubjectKey::column("id"),
+        "the pointer carries the value the call passed, not the owner-like column"
+    );
 }
 
 /// Every conditional wildcard in a model, as `(type, relation, condition)`.
@@ -2554,9 +2607,9 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
 
 /// Every replay says which stored facts its result fully determines, so a consumer
 /// can take out of its store what the result stopped returning. Swept over the
-/// corpus so a new joining shape cannot omit it, and pinned on the grants fixture,
-/// where one shape is keyed on the object from two tables and its sibling
-/// role-ownership shapes carry a subject-keyed replay for the principal side.
+/// corpus so a new joining shape cannot omit it, and pinned on the grants fixture, where
+/// the grant table's replay is keyed on the owner the grant names, which is an object of
+/// its own and the only thing a grant row is about.
 #[test]
 fn every_replay_declares_the_slice_its_result_determines() {
     let mut swept = 0usize;
@@ -2589,11 +2642,17 @@ fn every_replay_declares_the_slice_its_result_determines() {
                                 entry.relation
                             );
                         }
-                        ReplayScope::Subject { .. } => {
+                        ReplayScope::Subject { relation, .. } => {
                             assert_eq!(
                                 query.key_columns.len(),
                                 1,
                                 "{fixture}: {}#{} keys a subject slice on several columns",
+                                entry.type_name,
+                                entry.relation
+                            );
+                            assert!(
+                                !relation.as_str().is_empty(),
+                                "{fixture}: {}#{} declares an empty subject slice",
                                 entry.type_name,
                                 entry.relation
                             );
@@ -2614,7 +2673,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
         &GeneratorSettings::default(),
     )
     .relations();
-    let grant_scopes: Vec<&ReplayScope> = reported
+    let joined: Vec<&BoundQuery> = reported
         .iter()
         .flat_map(|entry| &entry.shapes)
         .filter_map(|shape| match &shape.derivation {
@@ -2622,49 +2681,45 @@ fn every_replay_declares_the_slice_its_result_determines() {
             _ => None,
         })
         .flatten()
-        .filter(|query| query.table == "owner_grants" || query.sql.contains("og."))
-        .map(|query| &query.scope)
         .collect();
     assert!(
-        !grant_scopes.is_empty(),
-        "the grants fixture produces grant replays"
+        !joined.is_empty(),
+        "the grants fixture still answers one shape by querying"
     );
-    for scope in &grant_scopes {
+    // Ownership and the row's pointer follow from one row each, so the grant table is the
+    // only thing left to replay, and it reads no guarded table at all.
+    for query in &joined {
+        assert_eq!(
+            query.table, "owner_grants",
+            "only the grant table needs a replay here: {query:?}"
+        );
+        assert_eq!(
+            query.key_columns,
+            ["granted_owner_id"],
+            "a grant row is about the owner it names: {query:?}"
+        );
+        assert!(
+            !query.sql.contains("\"ownables\""),
+            "the grant query stopped fanning out over the rows an owner owns:\n{}",
+            query.sql
+        );
         let ReplayScope::Object {
             object_type,
             relations,
-        } = scope
+        } = &query.scope
         else {
-            panic!("a grant replay is keyed on the resource it grants: {scope:?}");
+            panic!(
+                "the bound owner is the object the facts are about: {:?}",
+                query.scope
+            );
         };
-        assert_eq!(object_type, "ownables");
+        assert_eq!(object_type, "owner_grants_owner");
         assert_eq!(
             relations.len(),
             3,
             "one relation per role level the registry declares: {relations:?}"
         );
     }
-
-    let subject_scopes: Vec<&ReplayScope> = reported
-        .iter()
-        .flat_map(|entry| &entry.shapes)
-        .filter_map(|shape| match &shape.derivation {
-            RecordDerivation::Joined { queries, .. } => Some(queries),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|query| match &query.scope {
-            scope @ ReplayScope::Subject { .. } => Some(scope),
-            ReplayScope::Object { .. } => None,
-        })
-        .collect();
-    assert!(
-        subject_scopes.iter().any(
-            |scope| matches!(scope, ReplayScope::Subject { subject_type, object_type, .. }
-                if subject_type == "user" && object_type == "ownables")
-        ),
-        "the principal side of role ownership is a subject slice: {subject_scopes:?}"
-    );
 }
 
 /// The named shapes above pin two cases, and a bound query reaches a consumer wherever

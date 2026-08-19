@@ -21,8 +21,7 @@ use crate::generator::tuple_generator::{
 };
 use crate::generator::tuple_generator::{NameContext, UnboundedColumns};
 use crate::generator::well_known::{
-    member_relation, owner_team_relation, owner_user_relation, public_relation, HOLDER_OBJECT_ID,
-    PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
+    member_relation, public_relation, HOLDER_OBJECT_ID, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
 };
 use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::sql_parser::DatabaseLike;
@@ -232,49 +231,26 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Vec::new(),
         )),
 
-        // The owner must appear in the principal table, which the row does not
-        // say, so a change to either side moves records.
-        TupleSource::RoleOwnerUser {
-            table,
-            pk_cols,
-            owner_col,
-            user_table,
-            user_pk_col,
-        } => Some(joined_ownership(
-            &rendered(source, owner_type, only_own_rows, db)?,
-            table,
-            pk_cols,
-            owner_col,
-            user_table,
-            user_pk_col,
-            owner_type,
-            USER_TYPE,
-            &owner_user_relation(),
-            "the owner column has to name a row of the user principal table",
-        )),
-
-        TupleSource::RoleOwnerTeam {
-            table,
-            pk_cols,
-            owner_col,
-            team_table,
-            team_pk_col,
-        } => Some(joined_ownership(
-            &rendered(source, owner_type, only_own_rows, db)?,
-            table,
-            pk_cols,
-            owner_col,
-            team_table,
-            team_pk_col,
-            owner_type,
-            TEAM_TYPE,
-            &owner_team_relation(),
-            "the owner column has to name a row of the team principal table",
+        // The owner identity is the principal of the same name, which one principal row
+        // decides on its own.
+        TupleSource::OwnerIdentity {
+            owner_type: identity_type,
+            principal_table,
+            principal_pk_col,
+            subject_type,
+            relation,
+        } => Some(from_row(
+            principal_table,
+            identity_type,
+            ObjectKey::column(principal_pk_col.as_str()),
+            relation,
+            subject_type,
+            SubjectKey::column(principal_pk_col.clone()),
+            vec![Guard::NotNull(principal_pk_col.clone())],
         )),
 
         TupleSource::ExplicitGrants {
-            table,
-            pk_cols,
+            owner_type: granted_type,
             grant_table,
             grant_resource_col,
             role_cases,
@@ -286,36 +262,36 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return None;
             }
             let query = rendered(source, owner_type, only_own_rows, db)?;
-            let mut read = vec![table.as_str(), grant_table.as_str()];
+            let mut read = vec![grant_table.as_str()];
             if let Some(principal) = user_principal {
                 read.push(principal.table.as_str());
             }
             if let Some(principal) = team_principal {
                 read.push(principal.table.as_str());
             }
+            // The grantee's type is what the row does not say, so one grant row does not
+            // decide its own record. The owner it names is the object either way, so the
+            // replay is keyed on that column and its slice is that one owner's grants.
+            let granted = core::slice::from_ref(grant_resource_col);
             Some(RecordDescription {
                 tables: tables(&read),
                 derivation: RecordDerivation::Joined {
-                    queries: [
-                        bind(
-                            &query,
-                            table,
-                            pk_cols,
-                            &bound_eq(Some("resource"), pk_cols),
-                            grant_scope(owner_type, role_cases),
-                        ),
-                        bind(
-                            &query,
-                            grant_table,
-                            core::slice::from_ref(grant_resource_col),
-                            &bound_eq(Some("og"), core::slice::from_ref(grant_resource_col)),
-                            grant_scope(owner_type, role_cases),
-                        ),
-                    ]
+                    queries: bind(
+                        &query,
+                        grant_table,
+                        granted,
+                        &bound_eq(Some("og"), granted),
+                        ReplayScope::Object {
+                            object_type: granted_type.clone(),
+                            relations: role_cases
+                                .iter()
+                                .map(|(_, relation, _)| relation.clone())
+                                .collect(),
+                        },
+                    )
                     .into_iter()
-                    .flatten()
                     .collect(),
-                    reason: "a grant row and the resource row it names are separate rows"
+                    reason: "a grant row does not say whether its grantee is a user or a team"
                         .to_string(),
                 },
             })
@@ -503,12 +479,31 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             pk_cols,
             scope_relation,
-            pg_role,
+            scope_type,
+            scope_object,
         } => Some(from_row(
             table,
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             scope_relation,
+            scope_type,
+            ValueSource::Literal(scope_object.clone()),
+            Vec::new(),
+        )),
+
+        // The roles a scope admits follow from the policy, not from any row, so every row of
+        // the table it guards yields the same record and the load writes it once.
+        TupleSource::PolicyScopeRoles {
+            table,
+            scope_type,
+            scope_object,
+            relation,
+            pg_role,
+        } => Some(from_row(
+            table,
+            scope_type,
+            ObjectKey::new(vec![ValueSource::Literal(scope_object.clone())]),
+            relation,
             PG_ROLE_TYPE,
             ValueSource::Literal(pg_role.clone()),
             Vec::new(),
@@ -861,70 +856,5 @@ fn guard_from_residual(guard: ResidualGuard) -> Guard {
         ResidualGuard::IsTrue(column) => Guard::IsTrue(column),
         ResidualGuard::NotNull(column) => Guard::NotNull(column),
         ResidualGuard::Compare(predicate) => Guard::Compare(predicate),
-    }
-}
-
-/// The slice an `ExplicitGrants` replay determines: every grant relation on the
-/// one resource the bound key names, whichever table the change arrived on.
-fn grant_scope(owner_type: &str, role_cases: &[(i32, RelationName, String)]) -> ReplayScope {
-    ReplayScope::Object {
-        object_type: owner_type.to_string(),
-        relations: role_cases
-            .iter()
-            .map(|(_, relation, _)| relation.clone())
-            .collect(),
-    }
-}
-
-/// The two role-ownership shapes differ only in the principal table they filter
-/// against, so one place builds both descriptions.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site per principal kind, and a params struct would be built and \
-              destructured in the same breath"
-)]
-fn joined_ownership(
-    query: &TupleQuery,
-    table: &str,
-    pk_cols: &[ColumnName],
-    owner_col: &ColumnName,
-    principal_table: &str,
-    principal_pk_col: &ColumnName,
-    owner_type: &str,
-    principal_type: &str,
-    relation: &RelationName,
-    reason: &str,
-) -> RecordDescription {
-    RecordDescription {
-        tables: tables(&[table, principal_table]),
-        derivation: RecordDerivation::Joined {
-            queries: [
-                bind(
-                    query,
-                    table,
-                    pk_cols,
-                    &bound_eq(None, pk_cols),
-                    ReplayScope::Object {
-                        object_type: owner_type.to_string(),
-                        relations: vec![relation.clone()],
-                    },
-                ),
-                bind(
-                    query,
-                    principal_table,
-                    core::slice::from_ref(principal_pk_col),
-                    &bound_eq(None, core::slice::from_ref(owner_col)),
-                    ReplayScope::Subject {
-                        subject_type: principal_type.to_string(),
-                        relation: relation.clone(),
-                        object_type: owner_type.to_string(),
-                    },
-                ),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-            reason: reason.to_string(),
-        },
     }
 }

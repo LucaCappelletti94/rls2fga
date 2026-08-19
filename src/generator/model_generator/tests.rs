@@ -1,6 +1,6 @@
 use super::actions::{using_targets, with_check_targets, RoleLimitedRule};
 use super::dsl::*;
-use super::emit_roles::{ensure_role_threshold_scaffold, exact_roles_expr};
+use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaffold};
 use super::role_threshold::*;
 use super::*;
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
@@ -164,12 +164,14 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     let mut notes = Vec::new();
 
     let p1 = PatternClass::P1NumericThreshold(NumericThreshold {
+        resource_column: None,
         function_name: "missing_fn".to_string(),
         operator: ThresholdOperator::Gte,
         threshold: 2,
         command: PolicyCommand::Select,
     });
     let p2 = PatternClass::P2RoleNameInList(RoleNameInList {
+        resource_column: None,
         function_name: "missing_fn".to_string(),
         role_names: vec!["viewer".to_string()],
         privilege: RolePrivilege::Member,
@@ -223,11 +225,13 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
     let mut notes = Vec::new();
 
     let p2_non_numeric = PatternClass::P2RoleNameInList(RoleNameInList {
+        resource_column: None,
         function_name: "role_level".to_string(),
         role_names: vec!["viewer".to_string()],
         privilege: RolePrivilege::Member,
     });
     let p2_numeric_without_levels = PatternClass::P2RoleNameInList(RoleNameInList {
+        resource_column: None,
         function_name: "role_level".to_string(),
         role_names: vec!["5".to_string()],
         privilege: RolePrivilege::Member,
@@ -544,7 +548,7 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
 }
 
 #[test]
-fn exact_roles_expr_does_not_conflate_roles_at_same_level() {
+fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
     // `viewer=1` and `guest=1` share the same integer level.  Selecting only
     // `'viewer'` by name must NOT include `grant_guest`.
     let mut table_plan = TypePlan::new("docs");
@@ -555,33 +559,36 @@ fn exact_roles_expr_does_not_conflate_roles_at_same_level() {
         ("editor".to_string(), 2),
     ]);
 
-    let sorted =
-        ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+    let (sorted, _) = ensure_role_threshold_scaffold(
+        &mut table_plan,
+        &mut all_types,
+        "grants_owner",
+        &ColumnName::from_stored("owner_id"),
+        &role_levels,
+        false,
+    );
 
     // Select only "viewer" by name.
     let selected = BTreeSet::from(["viewer".to_string()]);
-    let expr = exact_roles_expr(&sorted, &selected, false).expect("should produce an expression");
+    let relation =
+        ensure_exact_roles_relation(&mut all_types, "grants_owner", &sorted, &selected, false)
+            .expect("should produce a relation");
+    let expr = all_types["grants_owner"]
+        .computed_relations
+        .get(&relation)
+        .expect("the relation is declared on the owner type");
 
     // The expression must include grant_viewer.
-    let contains_viewer = match &expr {
-        UsersetExpr::Computed(n) => n == "grant_viewer",
+    let contains = |wanted: &str| match expr {
+        UsersetExpr::Computed(n) => n == wanted,
         UsersetExpr::Union(children) => children
             .iter()
-            .any(|c| matches!(c, UsersetExpr::Computed(n) if n == "grant_viewer")),
+            .any(|c| matches!(c, UsersetExpr::Computed(n) if n == wanted)),
         _ => false,
     };
-    assert!(contains_viewer, "grant_viewer must be included");
-
-    // The expression must NOT include grant_guest.
-    let contains_guest = match &expr {
-        UsersetExpr::Computed(n) => n == "grant_guest",
-        UsersetExpr::Union(children) => children
-            .iter()
-            .any(|c| matches!(c, UsersetExpr::Computed(n) if n == "grant_guest")),
-        _ => false,
-    };
+    assert!(contains("grant_viewer"), "grant_viewer must be included");
     assert!(
-        !contains_guest,
+        !contains("grant_guest"),
         "grant_guest must not be included when only 'viewer' was selected"
     );
 }
@@ -596,15 +603,34 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
         ("admin".to_string(), 3),
     ]);
 
-    let sorted =
-        ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, true);
-    assert!(table_plan.direct_relations.contains_key("owner_team"));
-    assert!(table_plan.direct_relations.contains_key("grant_admin"));
+    let (sorted, pointer) = ensure_role_threshold_scaffold(
+        &mut table_plan,
+        &mut all_types,
+        "grants_owner",
+        &ColumnName::from_stored("owner_id"),
+        &role_levels,
+        true,
+    );
+    // The ladder judges the owner, and the guarded type carries only the pointer at it,
+    // named after the column whose value picks which owner.
+    assert_eq!(pointer.as_str(), "owner_id");
+    assert!(table_plan.direct_relations.contains_key("owner_id"));
+    assert!(!table_plan.direct_relations.contains_key("owner_team"));
+    assert!(!table_plan.direct_relations.contains_key("grant_admin"));
+    let owner = &all_types["grants_owner"];
+    assert!(owner.direct_relations.contains_key("owner_team"));
+    assert!(owner.direct_relations.contains_key("grant_admin"));
     assert!(all_types.contains_key("team"));
 
     let selected = BTreeSet::from(["admin".to_string()]);
-    let expr = exact_roles_expr(&sorted, &selected, true).expect("roles should produce expression");
-    assert!(matches!(&expr, UsersetExpr::Union(children) if children
+    let relation =
+        ensure_exact_roles_relation(&mut all_types, "grants_owner", &sorted, &selected, true)
+            .expect("roles should produce a relation");
+    let expr = all_types["grants_owner"]
+        .computed_relations
+        .get(&relation)
+        .expect("the relation is declared on the owner type");
+    assert!(matches!(expr, UsersetExpr::Union(children) if children
     .iter()
     .any(|c| matches!(c, UsersetExpr::Computed(name) if name == "owner_user"))
     && children.iter().any(|c| matches!(
@@ -621,20 +647,26 @@ fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
     let role_levels =
         BTreeMap::from([("read-write".to_string(), 1), ("Team Admin".to_string(), 2)]);
 
-    ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+    ensure_role_threshold_scaffold(
+        &mut table_plan,
+        &mut all_types,
+        "grants_owner",
+        &ColumnName::from_stored("owner_id"),
+        &role_levels,
+        false,
+    );
 
+    let owner = &all_types["grants_owner"];
     assert!(
-        table_plan.direct_relations.contains_key("grant_read_write"),
+        owner.direct_relations.contains_key("grant_read_write"),
         "expected hyphenated role names to be canonicalized"
     );
     assert!(
-        table_plan.direct_relations.contains_key("grant_team_admin"),
+        owner.direct_relations.contains_key("grant_team_admin"),
         "expected spaced/cased role names to be canonicalized"
     );
     assert!(
-        table_plan
-            .computed_relations
-            .contains_key("role_read_write"),
+        owner.computed_relations.contains_key("role_read_write"),
         "expected computed role relation name to be canonicalized"
     );
 }
@@ -645,9 +677,16 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
     let mut all_types = BTreeMap::new();
     let role_levels = BTreeMap::from([("role-a".to_string(), 1), ("role a".to_string(), 2)]);
 
-    ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+    ensure_role_threshold_scaffold(
+        &mut table_plan,
+        &mut all_types,
+        "grants_owner",
+        &ColumnName::from_stored("owner_id"),
+        &role_levels,
+        false,
+    );
 
-    let grant_relations: Vec<&RelationName> = table_plan
+    let grant_relations: Vec<&RelationName> = all_types["grants_owner"]
         .direct_relations
         .keys()
         .filter(|name| name.as_str().starts_with("grant_role_a"))
@@ -866,8 +905,14 @@ fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
         ("admin".to_string(), 2),
     ]);
 
-    let sorted =
-        ensure_role_threshold_scaffold(&mut table_plan, &mut all_types, &role_levels, false);
+    let (sorted, _) = ensure_role_threshold_scaffold(
+        &mut table_plan,
+        &mut all_types,
+        "grants_owner",
+        &ColumnName::from_stored("owner_id"),
+        &role_levels,
+        false,
+    );
     let ordered: Vec<(String, i32)> = sorted
         .iter()
         .map(|role| (role.original_name.clone(), role.level))
@@ -890,12 +935,14 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
     let mut notes = Vec::new();
 
     let p1_unreachable = PatternClass::P1NumericThreshold(NumericThreshold {
+        resource_column: None,
         function_name: "role_level".to_string(),
         operator: ThresholdOperator::Gt,
         threshold: 10,
         command: PolicyCommand::Select,
     });
     let p2_mixed_case = PatternClass::P2RoleNameInList(RoleNameInList {
+        resource_column: Some(ColumnName::from_stored("project_id")),
         function_name: "role_level".to_string(),
         role_names: vec!["VIEWER".to_string()],
         privilege: RolePrivilege::Member,
@@ -923,8 +970,14 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
         UsersetExpr::Computed(RelationName::from_resolved("no_access"))
     );
     assert!(
-        matches!(p2_expr, UsersetExpr::Union(_) | UsersetExpr::Computed(_)),
-        "case-insensitive role name matching should produce a translatable expression"
+        matches!(
+            p2_expr,
+            UsersetExpr::TupleToUserset {
+                ref tupleset,
+                ref computed
+            } if tupleset.as_str() == "project_id" && computed.as_str().starts_with("roles_")
+        ),
+        "a role list is answered on the owner the row points at: {p2_expr:?}"
     );
 }
 
@@ -1181,14 +1234,17 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     let registry = role_registry(r#"{"viewer": 1, "editor": 2}"#, false);
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let hints = RoleThresholdResourceHints::default();
 
     populate_role_threshold_sources(
         "role_level",
         "docs",
         &db,
         &registry,
-        &hints,
+        &OwnerScope {
+            type_name: "object_grants_owner",
+            pointer: &RelationName::from_resolved("owner_id"),
+            column: &ColumnName::from_stored("owner_id"),
+        },
         &mut table_plan,
         &mut all_types,
     );
@@ -1230,14 +1286,17 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     let registry = role_registry(r#"{"viewer": 1}"#, true);
     let mut table_plan = TypePlan::new("docs");
     let mut all_types = BTreeMap::new();
-    let hints = RoleThresholdResourceHints::default();
 
     populate_role_threshold_sources(
         "role_level",
         "docs",
         &db,
         &registry,
-        &hints,
+        &OwnerScope {
+            type_name: "object_grants_owner",
+            pointer: &RelationName::from_resolved("owner_id"),
+            column: &ColumnName::from_stored("owner_id"),
+        },
         &mut table_plan,
         &mut all_types,
     );
@@ -1258,7 +1317,7 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
 fn positional_function_arg_returns_none_for_non_list_args() {
     use sqlparser::ast::{FunctionArguments, Ident, ObjectName, ObjectNamePart};
 
-    let func = Function {
+    let func = sqlparser::ast::Function {
         name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("test_fn"))]),
         args: FunctionArguments::None,
         filter: None,
@@ -1269,58 +1328,9 @@ fn positional_function_arg_returns_none_for_non_list_args() {
         uses_odbc_syntax: false,
     };
     assert!(
-        positional_function_arg(&func, 0).is_none(),
+        crate::parser::expr::positional_function_arg(&func, 0).is_none(),
         "FunctionArguments::None should return None"
     );
-}
-
-// extract_resource_columns_for_function, visitor-based integration
-#[test]
-fn extract_resource_columns_finds_function_in_nested_binary_op() {
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    let expr = Parser::new(&PostgreSqlDialect {})
-        .try_with_sql("my_func(x, col_a) AND my_func(x, col_b)")
-        .unwrap()
-        .parse_expr()
-        .unwrap();
-
-    let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
-    assert_eq!(cols.len(), 2);
-    assert!(cols.contains("col_a"));
-    assert!(cols.contains("col_b"));
-}
-
-#[test]
-fn extract_resource_columns_finds_function_inside_subquery() {
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    let expr = Parser::new(&PostgreSqlDialect {})
-        .try_with_sql("EXISTS (SELECT my_func(x, col_a) FROM t)")
-        .unwrap()
-        .parse_expr()
-        .unwrap();
-
-    let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
-    assert_eq!(cols.len(), 1);
-    assert!(cols.contains("col_a"));
-}
-
-#[test]
-fn extract_resource_columns_returns_empty_for_non_matching_function() {
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    let expr = Parser::new(&PostgreSqlDialect {})
-        .try_with_sql("other_func(x, col_a)")
-        .unwrap()
-        .parse_expr()
-        .unwrap();
-
-    let cols = extract_resource_columns_for_function(&expr, "my_func", 1);
-    assert!(cols.is_empty());
 }
 
 // resolve_owner_column, returns None
@@ -1355,19 +1365,17 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     let registry = role_registry(r#"{"viewer": 1}"#, false);
     let mut table_plan = TypePlan::new("things");
     let mut all_types = BTreeMap::new();
-    let mut hints = RoleThresholdResourceHints::default();
-    // Provide a resource column hint so we get past the grant_join_col check
-    hints.columns.insert(
-        ("things".to_string(), "role_level".to_string()),
-        ColumnName::from_stored("name"),
-    );
 
     populate_role_threshold_sources(
         "role_level",
         "things",
         &db,
         &registry,
-        &hints,
+        &OwnerScope {
+            type_name: "object_grants_owner",
+            pointer: &RelationName::from_resolved("owner_id"),
+            column: &ColumnName::from_stored("owner_id"),
+        },
         &mut table_plan,
         &mut all_types,
     );

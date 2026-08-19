@@ -48,11 +48,36 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
     } = spec;
     if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
         ensure_pg_role_relation(all_types, walked);
-        table_plan.ensure_direct(
-            scope_relation.clone(),
+        // The roles a scope admits are a fact about the policy, so they hang on one scope
+        // object and the row carries only a pointer at it. Storing them per row instead
+        // multiplies the whole table by the number of roles the clause names.
+        let scope_object = scope_relation.as_str().to_string();
+        let scope_plan = all_types
+            .entry(PG_ROLE_SCOPE_TYPE.to_string())
+            .or_insert_with(|| TypePlan::new(PG_ROLE_SCOPE_TYPE));
+        let roles = scope_plan.ensure_direct(
+            scope_roles_relation(),
             vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
         );
+        scope_plan.ensure_computed(
+            walked.as_str().to_string(),
+            UsersetExpr::TupleToUserset {
+                tupleset: roles.clone(),
+                computed: walked.clone(),
+            },
+        );
+        table_plan.ensure_direct(
+            scope_relation.clone(),
+            vec![DirectSubject::Type(PG_ROLE_SCOPE_TYPE.to_string())],
+        );
         notes.push(scope_note);
+        table_plan.add_source(TupleSource::PolicyScope {
+            table: source_table.to_string(),
+            pk_cols,
+            scope_relation: scope_relation.clone(),
+            scope_type: PG_ROLE_SCOPE_TYPE.to_string(),
+            scope_object: scope_object.clone(),
+        });
         for role in role_names {
             let pg_role = canonical_fga_type_name(role);
             // A quoted role can rewrite onto a different existing role, which
@@ -64,10 +89,11 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
                     pg_role: pg_role.clone(),
                 });
             }
-            table_plan.add_source(TupleSource::PolicyScope {
+            table_plan.add_source(TupleSource::PolicyScopeRoles {
                 table: source_table.to_string(),
-                pk_cols: pk_cols.clone(),
-                scope_relation: scope_relation.clone(),
+                scope_type: PG_ROLE_SCOPE_TYPE.to_string(),
+                scope_object: scope_object.clone(),
+                relation: roles.clone(),
                 pg_role,
             });
         }
@@ -146,11 +172,13 @@ pub(crate) fn emit_numeric_threshold<DB: DatabaseLike>(
         function_name,
         operator,
         threshold,
+        resource_column,
         ..
     } = numeric_threshold;
     let Some(prepared) = prepare_role_threshold_translation(
         function_name,
         "Role-threshold",
+        resource_column.as_ref(),
         ctx,
         table_plan,
         all_types,
@@ -158,9 +186,9 @@ pub(crate) fn emit_numeric_threshold<DB: DatabaseLike>(
     ) else {
         return deny_expr(table_plan);
     };
-    if !prepared.rows_can_be_named {
+    let Some(owner) = &prepared.owner else {
         return deny_expr(table_plan);
-    }
+    };
 
     let min_level = match operator {
         ThresholdOperator::Gte => *threshold,
@@ -168,7 +196,10 @@ pub(crate) fn emit_numeric_threshold<DB: DatabaseLike>(
     };
 
     if let Some(role_relation) = role_for_level(&prepared.sorted_roles, min_level) {
-        UsersetExpr::Computed(role_relation)
+        UsersetExpr::TupleToUserset {
+            tupleset: owner.pointer.clone(),
+            computed: role_relation,
+        }
     } else {
         deny_expr(table_plan)
     }
@@ -186,10 +217,12 @@ pub(crate) fn emit_role_name_in_list<DB: DatabaseLike>(
         function_name,
         role_names,
         privilege,
+        resource_column,
     } = role_name_in_list;
     let Some(prepared) = prepare_role_threshold_translation(
         function_name,
         "Role-list",
+        resource_column.as_ref(),
         ctx,
         table_plan,
         all_types,
@@ -199,9 +232,9 @@ pub(crate) fn emit_role_name_in_list<DB: DatabaseLike>(
         // fall back to scope-style direct relations per role name.
         return handle_p2_role_gate(role_names, *privilege, ctx, table_plan, all_types, notes);
     };
-    if !prepared.rows_can_be_named {
+    let Some(owner) = prepared.owner.clone() else {
         return deny_expr(table_plan);
-    }
+    };
 
     // Matched by name, not by level, so `viewer=1` and `guest=1` stay
     // distinct. A numeric item means every role at that level.
@@ -224,12 +257,17 @@ pub(crate) fn emit_role_name_in_list<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
 
-    if let Some(expr) = exact_roles_expr(
+    if let Some(relation) = ensure_exact_roles_relation(
+        all_types,
+        &owner.type_name,
         &prepared.sorted_roles,
         &selected_names,
         prepared.has_team_support,
     ) {
-        expr
+        UsersetExpr::TupleToUserset {
+            tupleset: owner.pointer,
+            computed: relation,
+        }
     } else {
         deny_expr(table_plan)
     }
@@ -239,14 +277,22 @@ pub(crate) fn emit_role_name_in_list<DB: DatabaseLike>(
 pub(crate) struct RoleThresholdPrepared {
     sorted_roles: Vec<RoleRelationName>,
     has_team_support: bool,
-    /// Whether a tuple can name a row of the guarded table. Every grant a role
-    /// threshold mints is keyed on one, so without it the whole rule falls closed.
-    rows_can_be_named: bool,
+    /// The owner the ladder lives on, absent where no row can point at one, which is
+    /// where the whole rule falls closed.
+    owner: Option<OwnerLadder>,
+}
+
+/// The owner a guarded row is judged through.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnerLadder {
+    type_name: String,
+    pointer: RelationName,
 }
 
 pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     function_name: &str,
     function_kind_label: &str,
+    resource_column: Option<&ColumnName>,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
@@ -255,11 +301,11 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     let policy_name = ctx.policy_name;
     let source_table = ctx.source_table;
     let registry = ctx.registry;
-    let hints = ctx.hints;
     let db = ctx.db;
     let Some(FunctionSemantic::RoleThreshold {
         role_levels,
         team_membership_table,
+        grant_table,
         ..
     }) = registry.get(function_name)
     else {
@@ -272,14 +318,60 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     };
 
     let has_team_support = team_membership_table.is_some();
-    let sorted_roles =
-        ensure_role_threshold_scaffold(table_plan, all_types, role_levels, has_team_support);
+    let owner_type = owner_type_name(grant_table, function_name, registry, ctx.table_types);
+    let refuse = |table_plan: &mut TypePlan, reason: SkippedTuples| {
+        table_plan.add_source(TupleSource::Skipped { reason });
+        Some(RoleThresholdPrepared {
+            sorted_roles: sorted_role_relation_names(role_levels),
+            has_team_support,
+            owner: None,
+        })
+    };
+    // Before any minting: without a row identity or a column to read the owner from, no row
+    // can point at its owner, so the ladder is unreachable and a type minted here would
+    // outlive the rule that justified it.
+    if resolve_pk_columns(source_table, db).is_none() {
+        return refuse(
+            table_plan,
+            SkippedTuples::NoBridge {
+                table: source_table.to_string(),
+                parent_type: owner_type,
+                reason: missing_object_identifier_reason(source_table, db),
+            },
+        );
+    }
+    // The column the call itself passes, falling back to the schema only where the call
+    // passes an expression: the ladder judges the value the function was given, so reading
+    // any other column grants on a comparison the database never makes.
+    let owner_column = resource_column
+        .cloned()
+        .or_else(|| resolve_owner_column(source_table, db));
+    let Some(owner_column) = owner_column else {
+        return refuse(
+            table_plan,
+            SkippedTuples::NoOwnerColumn {
+                table: source_table.to_string(),
+            },
+        );
+    };
+    let (sorted_roles, pointer) = ensure_role_threshold_scaffold(
+        table_plan,
+        all_types,
+        &owner_type,
+        &owner_column,
+        role_levels,
+        has_team_support,
+    );
     populate_role_threshold_sources(
         function_name,
         source_table,
         db,
         registry,
-        hints,
+        &OwnerScope {
+            type_name: &owner_type,
+            pointer: &pointer,
+            column: &owner_column,
+        },
         table_plan,
         all_types,
     );
@@ -287,29 +379,59 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     Some(RoleThresholdPrepared {
         sorted_roles,
         has_team_support,
-        rows_can_be_named: resolve_pk_columns(source_table, db).is_some(),
+        owner: Some(OwnerLadder {
+            type_name: owner_type,
+            pointer,
+        }),
     })
 }
 
+/// Where a role threshold's facts live: the type carrying the ladder, and the relation a
+/// guarded row points at it with.
+pub(crate) struct OwnerScope<'a> {
+    pub(crate) type_name: &'a str,
+    pub(crate) pointer: &'a RelationName,
+    /// Column of the guarded table whose value names the owner.
+    pub(crate) column: &'a ColumnName,
+}
+
+/// Declare the role ladder on the owner type and the relation a guarded row points at it
+/// with.
+///
+/// The ladder judges `(caller, owner value)`, which is what the function takes, so it lives
+/// on the owner rather than on every row carrying that value. The pointer is named after
+/// the column filling it, because one table can reach the same owner through more than one
+/// column and the type name alone cannot tell those apart.
 pub(crate) fn ensure_role_threshold_scaffold(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
+    owner_type: &str,
+    owner_column: &ColumnName,
     role_levels: &BTreeMap<String, i32>,
     has_team_support: bool,
-) -> Vec<RoleRelationName> {
+) -> (Vec<RoleRelationName>, RelationName) {
     let sorted_roles = sorted_role_relation_names(role_levels);
 
-    table_plan.ensure_direct(
+    let pointer = table_plan.ensure_direct(
+        clamp_relation_name(canonical_fga_type_name(owner_column.as_str())),
+        vec![DirectSubject::Type(owner_type.to_string())],
+    );
+    if has_team_support {
+        ensure_member_type(all_types, TEAM_TYPE);
+    }
+    let owner_plan = all_types
+        .entry(owner_type.to_string())
+        .or_insert_with(|| TypePlan::new(owner_type));
+
+    owner_plan.ensure_direct(
         owner_user_relation(),
         vec![DirectSubject::Type(USER_TYPE.to_string())],
     );
-
     if has_team_support {
-        table_plan.ensure_direct(
+        owner_plan.ensure_direct(
             owner_team_relation(),
             vec![DirectSubject::Type(TEAM_TYPE.to_string())],
         );
-        ensure_member_type(all_types, TEAM_TYPE);
     }
 
     let grant_subjects = if has_team_support {
@@ -322,7 +444,7 @@ pub(crate) fn ensure_role_threshold_scaffold(
     };
 
     for role in &sorted_roles {
-        table_plan.ensure_direct(role.grant_relation(), grant_subjects.clone());
+        owner_plan.ensure_direct(role.grant_relation(), grant_subjects.clone());
     }
 
     let mut descending = sorted_roles.clone();
@@ -353,11 +475,11 @@ pub(crate) fn ensure_role_threshold_scaffold(
         }
 
         if let Some(expr) = combine_union(children) {
-            table_plan.ensure_computed(role.role_relation(), expr);
+            owner_plan.ensure_computed(role.role_relation(), expr);
         }
     }
 
-    sorted_roles
+    (sorted_roles, pointer)
 }
 
 pub(crate) fn role_for_level(
@@ -370,19 +492,25 @@ pub(crate) fn role_for_level(
         .map(RoleRelationName::role_relation)
 }
 
-/// Userset for a P2 role-name-in-list policy.
+/// The owner-type relation a P2 role-name-in-list policy admits, declared there because a
+/// guarded row reaches the ladder through one name and an indirection cannot walk a union.
 ///
 /// Keyed on the listed role names, so a same-level role with a different name
-/// (`guest=1` beside `viewer=1`) is not admitted.
-pub(crate) fn exact_roles_expr(
+/// (`guest=1` beside `viewer=1`) is not admitted, and named after the names it lists, so
+/// two policies listing the same set share it.
+pub(crate) fn ensure_exact_roles_relation(
+    all_types: &mut BTreeMap<String, TypePlan>,
+    owner_type: &str,
     sorted_roles: &[RoleRelationName],
     selected_names: &BTreeSet<String>,
     has_team_support: bool,
-) -> Option<UsersetExpr> {
+) -> Option<RelationName> {
     let mut children = Vec::new();
+    let mut listed = Vec::new();
 
     for role in sorted_roles {
         if selected_names.contains(&role.original_name.to_lowercase()) {
+            listed.push(role.token.clone());
             let grant_name = role.grant_relation();
             children.push(UsersetExpr::Computed(grant_name.clone()));
             if has_team_support {
@@ -411,5 +539,9 @@ pub(crate) fn exact_roles_expr(
         }
     }
 
-    combine_union(children)
+    let expr = combine_union(children)?;
+    let owner_plan = all_types
+        .entry(owner_type.to_string())
+        .or_insert_with(|| TypePlan::new(owner_type));
+    Some(owner_plan.ensure_computed(format!("roles_{}", listed.join("_")), expr))
 }

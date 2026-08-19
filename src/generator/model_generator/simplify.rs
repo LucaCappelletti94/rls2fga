@@ -18,13 +18,14 @@ pub(crate) fn select_gate_rule(expr: &UsersetExpr) -> Option<&UsersetExpr> {
     (*gate == can_select_relation()).then_some(rule)
 }
 
-/// Whether `rule` can only hold where `visible` holds. Unrecognized shapes keep the
-/// gate.
+/// Whether `rule` can only hold where `visible` holds, both read on `plan`. Unrecognized
+/// shapes keep the gate.
 pub(crate) fn rule_implies(
     rule: &UsersetExpr,
     visible: &UsersetExpr,
-    relations: &BTreeMap<RelationName, UsersetExpr>,
-    seen: &mut BTreeSet<RelationName>,
+    plan: &TypePlan,
+    by_name: &BTreeMap<&str, &TypePlan>,
+    seen: &mut BTreeSet<(String, RelationName)>,
 ) -> bool {
     if userset_key(rule) == userset_key(visible) {
         return true;
@@ -33,21 +34,59 @@ pub(crate) fn rule_implies(
         // Any branch that admits the rule admits it for the whole union.
         UsersetExpr::Union(branches) => branches
             .iter()
-            .any(|branch| rule_implies(rule, branch, relations, seen)),
+            .any(|branch| rule_implies(rule, branch, plan, by_name, seen)),
         // Every conjunct has to admit it.
         UsersetExpr::Intersection(children) => children
             .iter()
-            .all(|child| rule_implies(rule, child, relations, seen)),
+            .all(|child| rule_implies(rule, child, plan, by_name, seen)),
         // A named relation stands for its own definition. Levels of a role
         // hierarchy chain through here, and `seen` keeps a cycle from looping.
         UsersetExpr::Computed(name) => {
-            seen.insert(name.clone())
-                && relations
+            seen.insert((plan.type_name.to_string(), name.clone()))
+                && plan
+                    .computed_relations
                     .get(name)
-                    .is_some_and(|expr| rule_implies(rule, expr, relations, seen))
+                    .is_some_and(|expr| rule_implies(rule, expr, plan, by_name, seen))
+        }
+        // Both sides walking one relation reach the same objects, so the question moves to
+        // the type they reach: a role ladder answered through a pointer chains here.
+        UsersetExpr::TupleToUserset { tupleset, computed } => {
+            let UsersetExpr::TupleToUserset {
+                tupleset: walked,
+                computed: held,
+            } = rule
+            else {
+                return false;
+            };
+            if walked != tupleset {
+                return false;
+            }
+            let targets: Vec<&TypePlan> = plan
+                .direct_relations
+                .get(tupleset)
+                .into_iter()
+                .flatten()
+                .filter_map(|subject| match subject {
+                    DirectSubject::Type(name) => by_name.get(name.as_str()).copied(),
+                    DirectSubject::Wildcard(_)
+                    | DirectSubject::ConditionalWildcard { .. }
+                    | DirectSubject::ConditionalType { .. } => None,
+                })
+                .collect();
+            // A pointer this plan cannot resolve is no evidence, so the gate stays.
+            !targets.is_empty()
+                && targets.iter().all(|target| {
+                    rule_implies(
+                        &UsersetExpr::Computed(held.clone()),
+                        &UsersetExpr::Computed(computed.clone()),
+                        target,
+                        by_name,
+                        seen,
+                    )
+                })
         }
         // An exclusion can remove the rule's own members, so it admits nothing.
-        UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => false,
+        UsersetExpr::Exclusion { .. } => false,
     }
 }
 
@@ -58,9 +97,18 @@ pub(crate) fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
 
 /// Drop a `can_select` gate the rule already implies.
 pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
+    // A rule reaching its read through a pointer is answered on the type it points at, so
+    // the whole plan is read while one type is rewritten.
+    let snapshot: Vec<TypePlan> = all_types.values().cloned().collect();
+    let by_name: BTreeMap<&str, &TypePlan> = snapshot
+        .iter()
+        .map(|plan| (plan.type_name.as_str(), plan))
+        .collect();
     for plan in all_types.values_mut() {
-        let relations = plan.computed_relations.clone();
-        let Some(visible) = relations.get(&can_select_relation()) else {
+        let Some(read) = by_name.get(plan.type_name.as_str()).copied() else {
+            continue;
+        };
+        let Some(visible) = read.computed_relations.get(&can_select_relation()) else {
             continue;
         };
         for (relation, expr) in &mut plan.computed_relations {
@@ -70,7 +118,7 @@ pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, T
             let Some(rule) = select_gate_rule(expr) else {
                 continue;
             };
-            if rule_implies(rule, visible, &relations, &mut BTreeSet::new()) {
+            if rule_implies(rule, visible, read, &by_name, &mut BTreeSet::new()) {
                 *expr = rule.clone();
             }
         }
