@@ -13,8 +13,8 @@ use crate::classifier::patterns::{ResidualGuard, ResidualPredicates};
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::RowParameter;
 use crate::generator::records::{
-    BoundQuery, Guard, ObjectKey, RecordContext, RecordDerivation, RecordDescription,
-    RecordTemplate, ReplayScope, SubjectKey, ValueSource,
+    BoundQuery, Guard, ObjectKey, RecordContext, RecordContextEntry, RecordDerivation,
+    RecordDescription, RecordTemplate, ReplayScope, SubjectKey, ValueSource,
 };
 use crate::generator::tuple_generator::{
     quote_sql_identifier, render_tuple_source_inner, resolve_bridge_columns, TupleQuery,
@@ -95,10 +95,17 @@ fn bind(
     if key_columns.is_empty() || !body.contains("WHERE ") {
         return None;
     }
+    // The bound predicate filters rows, so it belongs in the WHERE. An aggregated query
+    // ends in GROUP BY, so the predicate goes just before it; a plain query ends in its
+    // WHERE, so it goes at the end.
+    let sql = match body.split_once("\nGROUP BY ") {
+        Some((filter, grouping)) => format!("{filter}\nAND {predicate}\nGROUP BY {grouping};"),
+        None => format!("{body}\nAND {predicate};"),
+    };
     Some(BoundQuery {
         table: table.to_string(),
         key_columns: key_columns.to_vec(),
-        sql: format!("{body}\nAND {predicate};"),
+        sql,
         condition: query.condition.clone(),
         scope,
     })
@@ -342,9 +349,52 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_col,
             parent_type,
             extra_predicates,
+            gate,
         } => {
-            let Some(residual) = residual_guards(extra_predicates) else {
-                let predicate = extra_predicates.sql().unwrap_or_default();
+            let mut guards = vec![
+                Guard::NotNull(fk_col.clone()),
+                Guard::NotNull(user_col.clone()),
+            ];
+            let Some(gate) = gate else {
+                let Some(residual) = residual_guards(extra_predicates) else {
+                    let predicate = extra_predicates.sql().unwrap_or_default();
+                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    return Some(RecordDescription {
+                        tables: tables(&[join_table]),
+                        derivation: RecordDerivation::Joined {
+                            queries: bind(
+                                &query,
+                                join_table,
+                                core::slice::from_ref(fk_col),
+                                &bound_eq(None, core::slice::from_ref(fk_col)),
+                                ReplayScope::Object {
+                                    object_type: parent_type.clone(),
+                                    relations: vec![member_relation()],
+                                },
+                            )
+                            .into_iter()
+                            .collect(),
+                            reason: format!(
+                                "the membership row carries a residual predicate only SQL can \
+                                 evaluate: {predicate}"
+                            ),
+                        },
+                    });
+                };
+                guards.extend(residual);
+                return Some(from_row(
+                    join_table,
+                    parent_type,
+                    ValueSource::Column(fk_col.clone()),
+                    &member_relation(),
+                    USER_TYPE,
+                    ValueSource::Column(user_col.clone()),
+                    guards,
+                ));
+            };
+            if gate.aggregate {
+                // Several rows can key the same (object, user), so the latest deadline is
+                // read by querying the changed parent's slice; the row alone cannot say it.
                 let query = rendered(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
@@ -362,24 +412,43 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         .into_iter()
                         .collect(),
                         reason: format!(
-                            "the membership row carries a residual predicate only SQL can \
-                             evaluate: {predicate}"
+                            "several membership rows can grant one (object, user), so the \
+                             latest deadline is read by querying: condition {}",
+                            gate.condition
                         ),
                     },
                 });
-            };
-            let mut guards = vec![
-                Guard::NotNull(fk_col.clone()),
-                Guard::NotNull(user_col.clone()),
-            ];
-            guards.extend(residual);
-            Some(from_row(
+            }
+            // The clock joined the condition, so the member row alone decides the record:
+            // its guards are the residual's row-decidable conjuncts, and each carried column
+            // enters the context the check reads the clock against.
+            guards.extend(
+                extra_predicates
+                    .row_guards()
+                    .into_iter()
+                    .map(guard_from_residual),
+            );
+            let mut entries = Vec::with_capacity(gate.context.len());
+            for column in &gate.context {
+                guards.push(Guard::NotNull(column.column.clone()));
+                entries.push(RecordContextEntry {
+                    key: column.parameter.clone(),
+                    value: ValueSource::Column(column.column.clone()),
+                });
+            }
+            Some(described(
                 join_table,
-                parent_type,
-                ValueSource::Column(fk_col.clone()),
-                &member_relation(),
-                USER_TYPE,
-                ValueSource::Column(user_col.clone()),
+                RecordTemplate {
+                    object_type: parent_type.clone(),
+                    object_key: ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
+                    relation: member_relation(),
+                    subject_type: USER_TYPE.to_string(),
+                    subject_key: SubjectKey::column(user_col.clone()),
+                    context: Some(RecordContext {
+                        condition: gate.condition.clone(),
+                        entries,
+                    }),
+                },
                 guards,
             ))
         }
@@ -482,8 +551,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 subject_key: SubjectKey::wildcard(),
                 context: Some(RecordContext {
                     condition: condition.clone(),
-                    key: row_parameter.clone(),
-                    value: ValueSource::Column(column.clone()),
+                    entries: vec![RecordContextEntry {
+                        key: row_parameter.clone(),
+                        value: ValueSource::Column(column.clone()),
+                    }],
                 }),
             },
             vec![Guard::NotNull(column.clone())],
@@ -523,75 +594,122 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
-                        key: row_parameter.parameter().to_string(),
-                        value,
+                        entries: vec![RecordContextEntry {
+                            key: row_parameter.parameter().to_string(),
+                            value,
+                        }],
                     }),
                 },
                 guards,
             ))
         }
 
-        // The record is a function of the membership row alone: the object is
-        // keyed on its foreign key, and the comparison the request completes
-        // travels in the record's context, exactly as the sibling
-        // session-attribute gate carries it. A residual only SQL can evaluate
-        // leaves the shape joined, and its query is then what keeps the
-        // records current.
-        TupleSource::SessionAttributeMembershipGate {
+        // The record is a function of the share row alone: the object is keyed on the
+        // share's own primary key, and the comparison the request completes travels in
+        // the record's context, exactly as the sibling session-attribute gate carries it.
+        // A residual only SQL can evaluate leaves the shape joined, and its query is then
+        // what keeps the records current.
+        TupleSource::CallerSetShareGate {
             join_table,
-            fk_col,
+            pk_cols,
+            share_type,
             member_col,
-            parent_type,
             relation,
             condition,
             row_parameter,
             extra_predicates,
+            temporal_context,
             ..
         } => {
-            let Some(residual) = residual_guards(extra_predicates) else {
-                let predicate = extra_predicates.sql().unwrap_or_default();
-                let query = rendered(source, owner_type, only_own_rows, db)?;
-                return Some(RecordDescription {
-                    tables: tables(&[join_table]),
-                    derivation: RecordDerivation::Joined {
-                        queries: bind(
-                            &query,
-                            join_table,
-                            core::slice::from_ref(fk_col),
-                            &bound_eq(None, core::slice::from_ref(fk_col)),
-                            ReplayScope::Object {
-                                object_type: parent_type.clone(),
-                                relations: vec![relation.clone()],
-                            },
-                        )
+            let mut entries = vec![RecordContextEntry {
+                key: row_parameter.clone(),
+                value: ValueSource::Column(member_col.clone()),
+            }];
+            let mut guards = vec![Guard::NotNull(member_col.clone())];
+            if temporal_context.is_empty() {
+                let Some(residual) = residual_guards(extra_predicates) else {
+                    let predicate = extra_predicates.sql().unwrap_or_default();
+                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    return Some(RecordDescription {
+                        tables: tables(&[join_table]),
+                        derivation: RecordDerivation::Joined {
+                            queries: bind(
+                                &query,
+                                join_table,
+                                pk_cols,
+                                &bound_eq(None, pk_cols),
+                                ReplayScope::Object {
+                                    object_type: share_type.clone(),
+                                    relations: vec![relation.clone()],
+                                },
+                            )
+                            .into_iter()
+                            .collect(),
+                            reason: format!(
+                                "the share row carries a residual predicate only SQL can \
+                                 evaluate: {predicate}"
+                            ),
+                        },
+                    });
+                };
+                guards.extend(residual);
+            } else {
+                // The clock joined the condition, so the row alone decides the record: its
+                // guards are the residual's row-decidable conjuncts, and each carried column
+                // enters the context beside the member the set compares.
+                guards.extend(
+                    extra_predicates
+                        .row_guards()
                         .into_iter()
-                        .collect(),
-                        reason: format!(
-                            "the membership row carries a residual predicate only SQL can \
-                             evaluate: {predicate}"
-                        ),
-                    },
-                });
-            };
-            let mut guards = vec![
-                Guard::NotNull(fk_col.clone()),
-                Guard::NotNull(member_col.clone()),
-            ];
-            guards.extend(residual);
+                        .map(guard_from_residual),
+                );
+                for gate in temporal_context {
+                    guards.push(Guard::NotNull(gate.column.clone()));
+                    entries.push(RecordContextEntry {
+                        key: gate.parameter.clone(),
+                        value: ValueSource::Column(gate.column.clone()),
+                    });
+                }
+            }
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: parent_type.clone(),
-                    object_key: ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
+                    object_type: share_type.clone(),
+                    object_key: ObjectKey::new(key_parts(pk_cols)),
                     relation: relation.clone(),
                     subject_type: USER_TYPE.to_string(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
-                        key: row_parameter.clone(),
-                        value: ValueSource::Column(member_col.clone()),
+                        entries,
                     }),
                 },
+                guards,
+            ))
+        }
+
+        // Each share row links its guarded object to its own share object, so the record
+        // follows from the one join row: the object is the guarded row named by the
+        // foreign key, the subject the share named by the join table's own key.
+        TupleSource::CallerSetShareBridge {
+            join_table,
+            fk_col,
+            pk_cols,
+            guarded_type,
+            share_type,
+            relation,
+        } => {
+            // An empty key names no share, so the source produces no records to describe.
+            let (first, rest) = pk_cols.split_first()?;
+            let mut guards = vec![Guard::NotNull(fk_col.clone())];
+            guards.extend(pk_cols.iter().cloned().map(Guard::NotNull));
+            Some(from_row(
+                join_table,
+                guarded_type,
+                ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
+                relation,
+                share_type,
+                SubjectKey::composite(first, rest),
                 guards,
             ))
         }
@@ -622,9 +740,51 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             member_table,
             user_col,
             extra_predicates,
+            gate,
         } => {
-            let Some(residual) = residual_guards(extra_predicates) else {
-                let predicate = extra_predicates.sql().unwrap_or_default();
+            let mut guards = vec![Guard::NotNull(user_col.clone())];
+            let Some(gate) = gate else {
+                let Some(residual) = residual_guards(extra_predicates) else {
+                    let predicate = extra_predicates.sql().unwrap_or_default();
+                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    return Some(RecordDescription {
+                        tables: tables(&[member_table]),
+                        derivation: RecordDerivation::Joined {
+                            queries: bind(
+                                &query,
+                                member_table,
+                                core::slice::from_ref(user_col),
+                                &bound_eq(None, core::slice::from_ref(user_col)),
+                                ReplayScope::Subject {
+                                    subject_type: USER_TYPE.to_string(),
+                                    relation: member_relation(),
+                                    object_type: holder_type.clone(),
+                                },
+                            )
+                            .into_iter()
+                            .collect(),
+                            reason: format!(
+                                "the member row carries a residual predicate only SQL can \
+                                 evaluate: {predicate}"
+                            ),
+                        },
+                    });
+                };
+                guards.extend(residual);
+                return Some(from_row(
+                    member_table,
+                    holder_type,
+                    ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
+                    &member_relation(),
+                    USER_TYPE,
+                    ValueSource::Column(user_col.clone()),
+                    guards,
+                ));
+            };
+            if gate.aggregate {
+                // Several member rows can name one user with different deadlines, and the
+                // holder collapses them, so the latest deadline is read by querying that
+                // user's slice rather than settled from one row.
                 let query = rendered(source, owner_type, only_own_rows, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
@@ -643,21 +803,43 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         .into_iter()
                         .collect(),
                         reason: format!(
-                            "the member row carries a residual predicate only SQL can \
-                             evaluate: {predicate}"
+                            "several member rows can name one user, so the latest deadline is \
+                             read by querying: condition {}",
+                            gate.condition
                         ),
                     },
                 });
-            };
-            let mut guards = vec![Guard::NotNull(user_col.clone())];
-            guards.extend(residual);
-            Some(from_row(
+            }
+            // The clock joined the condition, so the member row alone decides the record.
+            guards.extend(
+                extra_predicates
+                    .row_guards()
+                    .into_iter()
+                    .map(guard_from_residual),
+            );
+            let mut entries = Vec::with_capacity(gate.context.len());
+            for column in &gate.context {
+                guards.push(Guard::NotNull(column.column.clone()));
+                entries.push(RecordContextEntry {
+                    key: column.parameter.clone(),
+                    value: ValueSource::Column(column.column.clone()),
+                });
+            }
+            Some(described(
                 member_table,
-                holder_type,
-                ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
-                &member_relation(),
-                USER_TYPE,
-                ValueSource::Column(user_col.clone()),
+                RecordTemplate {
+                    object_type: holder_type.clone(),
+                    object_key: ObjectKey::new(vec![ValueSource::Literal(
+                        HOLDER_OBJECT_ID.to_string(),
+                    )]),
+                    relation: member_relation(),
+                    subject_type: USER_TYPE.to_string(),
+                    subject_key: SubjectKey::column(user_col.clone()),
+                    context: Some(RecordContext {
+                        condition: gate.condition.clone(),
+                        entries,
+                    }),
+                },
                 guards,
             ))
         }
@@ -668,16 +850,18 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
 /// The residual as guards, or [`None`] when any conjunct needs SQL.
 fn residual_guards(residuals: &ResidualPredicates) -> Option<Vec<Guard>> {
-    residuals.guards().map(|guards| {
-        guards
-            .into_iter()
-            .map(|guard| match guard {
-                ResidualGuard::IsTrue(column) => Guard::IsTrue(column),
-                ResidualGuard::NotNull(column) => Guard::NotNull(column),
-                ResidualGuard::Compare(predicate) => Guard::Compare(predicate),
-            })
-            .collect()
-    })
+    residuals
+        .guards()
+        .map(|guards| guards.into_iter().map(guard_from_residual).collect())
+}
+
+/// One residual guard as the record guard that decides it.
+fn guard_from_residual(guard: ResidualGuard) -> Guard {
+    match guard {
+        ResidualGuard::IsTrue(column) => Guard::IsTrue(column),
+        ResidualGuard::NotNull(column) => Guard::NotNull(column),
+        ResidualGuard::Compare(predicate) => Guard::Compare(predicate),
+    }
 }
 
 /// The slice an `ExplicitGrants` replay determines: every grant relation on the

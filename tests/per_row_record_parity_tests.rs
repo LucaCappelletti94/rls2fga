@@ -790,7 +790,7 @@ INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES
 
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
-async fn an_expiring_share_replay_matches_its_own_sql() {
+async fn an_expiring_share_settles_and_matches_its_own_sql() {
     let (_container, mut conn) = start_postgres().await;
 
     conn.batch_execute(EXPIRING_SHARE_SCHEMA)
@@ -815,32 +815,32 @@ async fn an_expiring_share_replay_matches_its_own_sql() {
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
-    // Non-vacuous: without this the comparison could pass while the fixture reached only
-    // shapes a row decides, which is how this combination went uncovered.
-    let conditional_joins = queries
+    // Non-vacuous: the clock now rides the share arm's condition and the row still decides
+    // the record, so a conditional shape that settles from its row has to be present.
+    let conditional_from_row = queries
         .iter()
         .filter(|query| {
             query.condition.is_some()
                 && query
                     .description
                     .as_ref()
-                    .is_some_and(|description| !description.is_pure())
+                    .is_some_and(RecordDescription::is_pure)
         })
         .count();
     assert_eq!(
-        conditional_joins, 1,
-        "the expiring share arm is the one conditional shape here no row decides"
+        conditional_from_row, 1,
+        "the expiring share arm carries a condition and settles from its own row"
     );
 
     let (pure, joined, records) =
         assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "expiring share");
     assert_eq!(
-        joined, 1,
-        "only the expiring share arm reads more than the row"
+        joined, 0,
+        "the clock in the condition lets every arm settle from its own row"
     );
     assert!(
         pure > 0,
-        "the owner arm still settles from the row, saw {pure}"
+        "the owner arm and the conditioned share arm both settle from the row, saw {pure}"
     );
     assert!(
         records > 0,

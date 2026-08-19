@@ -50,7 +50,28 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         return deny_expr(table_plan);
     };
 
-    if let Some(extra) = extra_predicates.sql() {
+    // Temporal comparisons on the member row move into the condition its member tuple
+    // names. Declared on this plan, referenced by name from the holder's member relation.
+    let gate = declare_temporal_condition(
+        extra_predicates,
+        member_table,
+        policy_name,
+        table_plan,
+        &ctx.settings.request_time_parameter,
+        db,
+    )
+    .map(|(condition, context)| MembershipGate {
+        condition,
+        context,
+        aggregate: !row_uniquely_keys(member_table, &[user_column], db),
+    });
+
+    let announced = if gate.is_some() {
+        extra_predicates.sql_excluding_requests()
+    } else {
+        extra_predicates.sql()
+    };
+    if let Some(extra) = announced {
         notes.push(TranslationNote::MembershipExtraPredicate {
             policy: policy_name.to_string(),
             predicate: extra,
@@ -62,6 +83,17 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // ones must not pool their members.
     let holder_type = holder_type_name(member_table, table_types);
     ensure_member_type(all_types, &holder_type);
+    // A clock composed into the grant widens the holder's `member` to admit the
+    // conditioned user beside the plain one.
+    if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
+        holder_plan.add_direct_subject(
+            &member_relation(),
+            DirectSubject::ConditionalType {
+                type_name: USER_TYPE.to_string(),
+                condition: gate.condition.clone(),
+            },
+        );
+    }
     // Named after the type it points at, as the parent link is.
     let holder_relation = table_plan.ensure_direct(
         clamp_relation_name(holder_type.clone()),
@@ -72,6 +104,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         member_table: member_table.clone(),
         user_col: user_column.clone(),
         extra_predicates: extra_predicates.clone(),
+        gate: gate.clone(),
     });
     if let Some(holder_plan) = all_types.get_mut(&holder_type) {
         holder_plan.add_source(TupleSource::HolderMembers {
@@ -79,6 +112,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             member_table: member_table.clone(),
             user_col: user_column.clone(),
             extra_predicates: extra_predicates.clone(),
+            gate: gate.clone(),
         });
     }
     table_plan.add_source(TupleSource::HolderBridge {
@@ -149,6 +183,24 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
 
+    // A temporal comparison such as `expires_at > now()` is completed by the request, so
+    // it rides the member tuple as a condition rather than filtering the query. Declared on
+    // this plan and referenced by name from the member relation, wherever that lives.
+    let gate = declare_temporal_condition(
+        extra_predicates,
+        join_table,
+        policy_name,
+        table_plan,
+        &ctx.settings.request_time_parameter,
+        db,
+    );
+    let conditional_member = gate
+        .as_ref()
+        .map(|(condition, _)| DirectSubject::ConditionalType {
+            type_name: USER_TYPE.to_string(),
+            condition: condition.clone(),
+        });
+
     // The relation is named after the parent type, but relation names have a
     // tighter length limit, so use the name the plan actually registered.
     let parent_relation = table_plan.ensure_direct(
@@ -156,15 +208,24 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         vec![DirectSubject::Type(parent_type.clone())],
     );
     // The plan for `source_table` is held here, not in `all_types`, so a
-    // self-referential membership has to register `member` on it directly or
-    // the re-insert at the end of the loop drops it.
+    // self-referential membership has to register `member` on it directly or the re-insert
+    // at the end of the loop drops it. A clock composed into the grant widens `member` to
+    // admit the conditioned user beside the plain one.
     if parent_type == table_plan.type_name.as_str() {
         table_plan.ensure_direct(
             member_relation(),
             vec![DirectSubject::Type(USER_TYPE.to_string())],
         );
+        if let Some(subject) = &conditional_member {
+            table_plan.add_direct_subject(&member_relation(), subject.clone());
+        }
     } else {
         ensure_member_type(all_types, &parent_type);
+        if let (Some(subject), Some(parent_plan)) =
+            (&conditional_member, all_types.get_mut(&parent_type))
+        {
+            parent_plan.add_direct_subject(&member_relation(), subject.clone());
+        }
         // Only a declared reference names a table. The fallback derives the type
         // from the column's name, and no row of any table is named by it.
         if let Some(referenced) = referenced_table_for_fk_col(db, join_table, fk_column) {
@@ -172,7 +233,13 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         }
     }
 
-    if let Some(extra) = extra_predicates.sql() {
+    // The clock moved into the condition, so only what remains needs announcing.
+    let announced = if gate.is_some() {
+        extra_predicates.sql_excluding_requests()
+    } else {
+        extra_predicates.sql()
+    };
+    if let Some(extra) = announced {
         notes.push(TranslationNote::MembershipExtraPredicate {
             policy: policy_name.to_string(),
             predicate: extra,
@@ -187,6 +254,11 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         user_col: user_column.clone(),
         parent_type: parent_type.clone(),
         extra_predicates: extra_predicates.clone(),
+        gate: gate.map(|(condition, context)| MembershipGate {
+            condition,
+            context,
+            aggregate: !row_uniquely_keys(join_table, &[fk_column, user_column], db),
+        }),
     };
     table_plan.add_source(membership_source.clone());
     if let Some(parent_plan) = all_types.get_mut(&parent_type) {

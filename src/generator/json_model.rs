@@ -267,6 +267,14 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
                     wildcard: Some(EmptyObject {}),
                     condition: Some(condition),
                 },
+                DirectSubject::ConditionalType {
+                    type_name,
+                    condition,
+                } => RelationReference {
+                    type_name,
+                    wildcard: None,
+                    condition: Some(condition),
+                },
             })
             .collect::<Vec<_>>();
 

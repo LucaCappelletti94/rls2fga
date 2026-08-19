@@ -977,6 +977,63 @@ CREATE POLICY papers_shared ON papers FOR SELECT USING (
     );
 }
 
+/// A caller-set share becomes one object per share row, keyed on the join table's own
+/// primary key, so two viewers of one row do not collide on one object. A join table with
+/// no primary key cannot name its rows apart, so the arm refuses and falls closed rather
+/// than emit a load `OpenFGA` rejects as a duplicate.
+#[test]
+fn a_caller_set_membership_over_a_keyless_share_table_falls_closed() {
+    let sql = "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (paper_id INT, viewer TEXT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    )
+);
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build();
+    let (classified, registry) = translator.classify_with_effective_registry(&db);
+    let outputs = rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
+    let model = outputs.model();
+
+    assert!(
+        model.contains("define can_select: no_access"),
+        "the share arm is the only grant on papers, so a refusal falls closed:\n{model}"
+    );
+    assert!(
+        !model.contains("paper_shares_share"),
+        "no per-share type is minted when the share rows cannot be named apart:\n{model}"
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::ExpressionRefused { policy, reason }
+                if policy == "papers_p" && reason.contains("no primary key")
+        )),
+        "the reason the grant vanished is named: {:?}",
+        outputs.notes()
+    );
+}
+
 /// The column of `table` a bridge shape on it reads to name the parent.
 fn bridge_subject_column(relations: &[RelationShapes], table: &str) -> Option<String> {
     relations

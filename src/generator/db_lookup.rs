@@ -56,6 +56,20 @@ pub(crate) fn single_pk_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option
     columns.next().is_none().then_some(only)
 }
 
+/// True when `key_cols` uniquely keys a row of `table`: its primary key is a subset, so
+/// no two rows share those columns. False when unknown (no primary key), since then two
+/// rows may key the same tuple and a per-row conditional tuple would collide.
+pub(crate) fn row_uniquely_keys<DB: DatabaseLike>(
+    table: &str,
+    key_cols: &[&ColumnName],
+    db: &DB,
+) -> bool {
+    let Some(pk) = resolve_pk_columns(table, db) else {
+        return false;
+    };
+    !pk.is_empty() && pk.iter().all(|pk_col| key_cols.contains(&pk_col))
+}
+
 /// True when a unique index over `column` alone constrains `table`.
 pub(crate) fn uniquely_constrained<DB: DatabaseLike>(column: &str, table: &str, db: &DB) -> bool {
     let Some(table_info) = lookup_table(db, table) else {

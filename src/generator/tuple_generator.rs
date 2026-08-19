@@ -224,43 +224,49 @@ fn row_context(
     let Some(condition) = row.condition else {
         return if subjects
             .iter()
-            .any(|subject| !matches!(subject, DirectSubject::ConditionalWildcard { .. }))
+            .any(|subject| matches!(subject, DirectSubject::Type(_) | DirectSubject::Wildcard(_)))
         {
             Ok(None)
         } else {
             Err(mismatch(None))
         };
     };
-    if !subjects.iter().any(|subject| {
-        matches!(subject, DirectSubject::ConditionalWildcard { condition: named, .. }
-            if named == condition.name)
+    if !subjects.iter().any(|subject| match subject {
+        DirectSubject::ConditionalWildcard {
+            condition: named, ..
+        }
+        | DirectSubject::ConditionalType {
+            condition: named, ..
+        } => named == condition.name,
+        DirectSubject::Type(_) | DirectSubject::Wildcard(_) => false,
     }) {
         return Err(mismatch(Some(condition.name)));
     }
-    let (key, value) = single_context_entry(condition.context)
+    let values = context_entries(condition.context)
         .ok_or_else(|| TupleRowError::MalformedContext(condition.context.to_string()))?;
     Ok(Some(RecordContextValue {
         condition: condition.name.to_string(),
-        key,
-        value,
+        values,
     }))
 }
 
-/// The one key and scalar a conditional tuple's context holds, rendered as the
-/// tuple SQL renders it.
-fn single_context_entry(context: &str) -> Option<(String, String)> {
+/// Every key and scalar a conditional tuple's context holds, rendered as the tuple
+/// SQL renders it. [`None`] for an empty or non-scalar context, which no conditional
+/// tuple should carry.
+fn context_entries(context: &str) -> Option<BTreeMap<String, String>> {
     let parsed: serde_json::Value = serde_json::from_str(context).ok()?;
     let object = parsed.as_object()?;
-    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
-        return None;
-    };
-    let text = match value {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Number(number) => number.to_string(),
-        serde_json::Value::Bool(flag) => (if *flag { "true" } else { "false" }).to_string(),
-        _ => return None,
-    };
-    Some((key.clone(), text))
+    let mut values = BTreeMap::new();
+    for (key, value) in object {
+        let text = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Number(number) => number.to_string(),
+            serde_json::Value::Bool(flag) => (if *flag { "true" } else { "false" }).to_string(),
+            _ => return None,
+        };
+        values.insert(key.clone(), text);
+    }
+    (!values.is_empty()).then_some(values)
 }
 
 /// Generate tuple SQL queries from a pre-built [`SchemaPlan`].
@@ -928,6 +934,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             user_col,
             parent_type,
             extra_predicates,
+            gate,
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
             let fk_col_sql = quote_sql_identifier(fk_col.as_str());
@@ -946,68 +953,194 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 core::slice::from_ref(user_col),
                 names,
             );
-            let where_clause = extra_predicates.sql().map_or_else(
-                || format!("\nWHERE {null_guards}"),
-                |e| format!("\nWHERE {null_guards}\nAND ({e})"),
-            );
+            let Some(gate) = gate else {
+                let where_clause = extra_predicates.sql().map_or_else(
+                    || format!("\nWHERE {null_guards}"),
+                    |e| format!("\nWHERE {null_guards}\nAND ({e})"),
+                );
+                return Some(TupleQuery {
+                    comment: format!("-- {parent_type} membership from {join_table}"),
+                    sql: format!(
+                        "SELECT {object_sql} AS object, 'member' AS relation, \
+                         {subject_sql} AS subject\n\
+                         FROM {join_table_sql}{where_clause};"
+                    ),
+                    description: None,
+                    condition: None,
+                });
+            };
+            // The clock rides the member tuple as a condition, so the query drops its
+            // comparison and carries each column the check reads it against. When several
+            // rows can key the same (object, user) it groups by that key and carries the
+            // latest deadline, since MAX(deadline) is unpassed exactly when some row is.
+            let mut context = String::new();
+            let mut clauses: Vec<String> = extra_predicates
+                .sql_excluding_requests()
+                .into_iter()
+                .collect();
+            for (index, column) in gate.context.iter().enumerate() {
+                let column_sql = quote_sql_identifier(column.column.as_str());
+                let key_sql = quote_sql_string_literal(&column.parameter);
+                let carried = if gate.aggregate {
+                    format!("MAX({column_sql})")
+                } else {
+                    column_sql.clone()
+                };
+                if index > 0 {
+                    context.push_str(", ");
+                }
+                let _ = write!(context, "{key_sql}, {carried}");
+                clauses.push(format!("{column_sql} IS NOT NULL"));
+            }
+            let where_clause = if clauses.is_empty() {
+                format!("\nWHERE {null_guards}")
+            } else {
+                format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
+            };
+            let group_by = if gate.aggregate {
+                format!("\nGROUP BY {fk_col_sql}, {user_col_sql}")
+            } else {
+                String::new()
+            };
             Some(TupleQuery {
-                comment: format!("-- {parent_type} membership from {join_table}"),
+                comment: format!(
+                    "-- {parent_type} membership from {join_table}, evaluated by condition {}",
+                    gate.condition
+                ),
                 sql: format!(
                     "SELECT {object_sql} AS object, 'member' AS relation, \
-                     {subject_sql} AS subject\n\
-                     FROM {join_table_sql}{where_clause};"
+                     {subject_sql} AS subject,\n\
+                     \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
+                     FROM {join_table_sql}{where_clause}{group_by};",
+                    gate.condition
                 ),
                 description: None,
-                condition: None,
+                condition: Some(gate.condition.clone()),
             })
         }
 
-        // The facts are read from the join table while the objects are named after the
-        // parent, so one membership row grants one parent object, conditionally.
-        TupleSource::SessionAttributeMembershipGate {
+        // Each share row is its own object, keyed on the join table's own primary key, so
+        // two viewers of one guarded row become two objects rather than colliding on one.
+        TupleSource::CallerSetShareGate {
             join_table,
-            fk_col,
+            pk_cols,
+            share_type,
             member_col,
-            parent_type,
             relation,
             condition,
             row_parameter,
             extra_predicates,
+            temporal_context,
             ..
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
-            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
             let member_col_sql = quote_sql_identifier(member_col.as_str());
             let parameter_sql = quote_sql_string_literal(row_parameter);
-            let null_guards = format!("{fk_col_sql} IS NOT NULL AND {member_col_sql} IS NOT NULL");
-            let object_sql = typed_name_sql(parent_type, [fk_col_sql.as_str()]);
+            let pk_parts = quoted_key_parts(pk_cols);
+            let object_sql = typed_name_sql(share_type, pk_parts.iter().map(String::as_str));
+            let mut null_cols = pk_parts.clone();
+            if !pk_cols.contains(member_col) {
+                null_cols.push(member_col_sql.clone());
+            }
+            let null_guards = null_cols
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .collect::<Vec<_>>()
+                .join(" AND ");
             let null_guards = join_row_is_nameable(
                 &null_guards,
                 &object_sql,
                 None,
                 join_table,
-                core::slice::from_ref(fk_col),
+                pk_cols,
                 &[],
                 names,
             );
-            let where_clause = extra_predicates.sql().map_or_else(
+            // The member the set compares, plus every column a clock comparison carries.
+            let mut context = format!("{parameter_sql}, {member_col_sql}::text");
+            for gate in temporal_context {
+                let column_sql = quote_sql_identifier(gate.column.as_str());
+                let key_sql = quote_sql_string_literal(&gate.parameter);
+                let _ = write!(context, ", {key_sql}, {column_sql}");
+            }
+            // The clock's own comparison moved into the condition, so only what remains
+            // filters, and each carried column must be present for the context to be read.
+            let residual = if temporal_context.is_empty() {
+                extra_predicates.sql()
+            } else {
+                let mut clauses: Vec<String> = extra_predicates
+                    .sql_excluding_requests()
+                    .into_iter()
+                    .collect();
+                for gate in temporal_context {
+                    clauses.push(format!(
+                        "{} IS NOT NULL",
+                        quote_sql_identifier(gate.column.as_str())
+                    ));
+                }
+                (!clauses.is_empty()).then(|| clauses.join(" AND "))
+            };
+            let where_clause = residual.map_or_else(
                 || format!("\nWHERE {null_guards}"),
                 |e| format!("\nWHERE {null_guards}\nAND ({e})"),
             );
             Some(TupleQuery {
                 comment: format!(
-                    "-- Request-scoped gate on {parent_type} carrying {join_table}.{member_col}, \
+                    "-- Caller-set share on {share_type} carrying {join_table}.{member_col}, \
                      evaluated by condition {condition}"
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      'user:*' AS subject,\n\
                      \x20 '{condition}' AS condition, \
-                     jsonb_build_object({parameter_sql}, {member_col_sql}::text) AS context\n\
+                     jsonb_build_object({context}) AS context\n\
                      FROM {join_table_sql}{where_clause};"
                 ),
                 description: None,
                 condition: Some(condition.clone()),
+            })
+        }
+
+        // Each share row links its guarded object to its own share object, so a caller a
+        // share admits reaches the guarded row through the share.
+        TupleSource::CallerSetShareBridge {
+            join_table,
+            pk_cols,
+            fk_col,
+            guarded_type,
+            share_type,
+            relation,
+        } => {
+            let join_table_sql = quote_sql_identifier(join_table);
+            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
+            let pk_parts = quoted_key_parts(pk_cols);
+            let object_sql = typed_name_sql(guarded_type, [fk_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(share_type, pk_parts.iter().map(String::as_str));
+            let mut base = format!("{fk_col_sql} IS NOT NULL");
+            for (col, part) in pk_cols.iter().zip(&pk_parts) {
+                if col != fk_col {
+                    let _ = write!(base, "\nAND {part} IS NOT NULL");
+                }
+            }
+            let guards = join_row_is_nameable(
+                &base,
+                &object_sql,
+                Some(&subject_sql),
+                join_table,
+                core::slice::from_ref(fk_col),
+                pk_cols,
+                names,
+            );
+            Some(TupleQuery {
+                comment: format!("-- {guarded_type} to {share_type} bridge for tuple-to-userset"),
+                sql: format!(
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
+                     {subject_sql} AS subject\n\
+                     FROM {join_table_sql}\n\
+                     WHERE {guards};"
+                ),
+                description: None,
+                condition: None,
             })
         }
 
@@ -1016,6 +1149,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             member_table,
             user_col,
             extra_predicates,
+            gate,
         } => {
             let member_table_sql = quote_sql_identifier(member_table);
             let user_col_sql = quote_sql_identifier(user_col.as_str());
@@ -1028,21 +1162,72 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 names,
             )
             .map_or_else(String::new, |guard| format!("\nAND {guard}"));
-            // DISTINCT because the holder is one object: two membership rows for the
-            // same user would otherwise write the same tuple twice.
-            let where_clause = extra_predicates.sql().map_or_else(
-                || format!("\nWHERE {user_col_sql} IS NOT NULL{user_col_sql_guard}"),
-                |e| format!("\nWHERE {user_col_sql} IS NOT NULL{user_col_sql_guard}\nAND ({e})"),
-            );
+            let null_guards = format!("{user_col_sql} IS NOT NULL{user_col_sql_guard}");
+            // DISTINCT because the holder is one object: two membership rows for the same
+            // user would otherwise write the same tuple twice.
+            let Some(gate) = gate else {
+                let where_clause = extra_predicates.sql().map_or_else(
+                    || format!("\nWHERE {null_guards}"),
+                    |e| format!("\nWHERE {null_guards}\nAND ({e})"),
+                );
+                return Some(TupleQuery {
+                    comment: format!("-- Everyone listed in {member_table}, held by {holder_type}"),
+                    sql: format!(
+                        "SELECT DISTINCT {object_sql} AS object, \
+                         'member' AS relation, {subject_sql} AS subject\n\
+                         FROM {member_table_sql}{where_clause};"
+                    ),
+                    description: None,
+                    condition: None,
+                });
+            };
+            let mut context = String::new();
+            let mut clauses: Vec<String> = extra_predicates
+                .sql_excluding_requests()
+                .into_iter()
+                .collect();
+            for (index, column) in gate.context.iter().enumerate() {
+                let column_sql = quote_sql_identifier(column.column.as_str());
+                let key_sql = quote_sql_string_literal(&column.parameter);
+                let carried = if gate.aggregate {
+                    format!("MAX({column_sql})")
+                } else {
+                    column_sql.clone()
+                };
+                if index > 0 {
+                    context.push_str(", ");
+                }
+                let _ = write!(context, "{key_sql}, {carried}");
+                clauses.push(format!("{column_sql} IS NOT NULL"));
+            }
+            let where_clause = if clauses.is_empty() {
+                format!("\nWHERE {null_guards}")
+            } else {
+                format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
+            };
+            // Grouping by the user collapses several deadlines to their latest, which the
+            // one holder object needs. Where the row already keys the user, DISTINCT is
+            // enough and the row alone decides the record.
+            let (distinct, group_by) = if gate.aggregate {
+                ("", format!("\nGROUP BY {user_col_sql}"))
+            } else {
+                ("DISTINCT ", String::new())
+            };
             Some(TupleQuery {
-                comment: format!("-- Everyone listed in {member_table}, held by {holder_type}"),
+                comment: format!(
+                    "-- Everyone listed in {member_table}, held by {holder_type}, \
+                     evaluated by condition {}",
+                    gate.condition
+                ),
                 sql: format!(
-                    "SELECT DISTINCT {object_sql} AS object, \
-                     'member' AS relation, {subject_sql} AS subject\n\
-                     FROM {member_table_sql}{where_clause};"
+                    "SELECT {distinct}{object_sql} AS object, 'member' AS relation, \
+                     {subject_sql} AS subject,\n\
+                     \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
+                     FROM {member_table_sql}{where_clause}{group_by};",
+                    gate.condition
                 ),
                 description: None,
-                condition: None,
+                condition: Some(gate.condition.clone()),
             })
         }
 

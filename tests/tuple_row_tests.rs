@@ -261,7 +261,15 @@ fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
             let context_json = record
                 .context
                 .as_ref()
-                .map(|context| format!(r#"{{"{}":"{}"}}"#, context.key, context.value))
+                .map(|context| {
+                    let body = context
+                        .values
+                        .iter()
+                        .map(|(key, value)| format!(r#""{key}":"{value}""#))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!("{{{body}}}")
+                })
                 .unwrap_or_default();
             let back: Record = outputs
                 .record_from_tuple_row(TupleRow {
@@ -285,7 +293,7 @@ fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
 }
 
 #[test]
-fn a_context_carrying_more_than_the_row_s_one_value_is_refused() {
+fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
     let (classified, db, registry) = support::try_load_fixture_classified("tenant_setting");
     let outputs = Translation::plan(
         classified,
@@ -320,13 +328,11 @@ fn a_context_carrying_more_than_the_row_s_one_value_is_refused() {
             subject: "user:*",
             condition: Some(TupleCondition {
                 name: condition,
-                context: r#"{"tenant_id":"t1","smuggled":"t2"}"#,
+                context: "{}",
             }),
         }),
-        Err(TupleRowError::MalformedContext(
-            r#"{"tenant_id":"t1","smuggled":"t2"}"#.to_string()
-        )),
-        "a second key is a value nobody declared, so the tuple is not the one the model expects"
+        Err(TupleRowError::MalformedContext("{}".to_string())),
+        "a conditional tuple whose context reads no value is not one the model emits"
     );
 
     assert_eq!(

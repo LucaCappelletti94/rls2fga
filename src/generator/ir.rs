@@ -23,6 +23,31 @@ pub(crate) struct PrincipalInfo {
     pub pk_col: ColumnName,
 }
 
+/// One condition-context entry a conditional membership tuple carries: the parameter
+/// name the row fills and the column its value is read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GateContextColumn {
+    /// Condition parameter the value fills.
+    pub parameter: String,
+    /// Column of the join table the value is read from.
+    pub column: ColumnName,
+}
+
+/// The condition a temporal membership tuple names, with every column its context
+/// carries. Present on a membership source only when a clock comparison rides its member
+/// tuple; absent for a plain member tuple.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MembershipGate {
+    /// The condition the member tuple names, declared on the parent or holder type.
+    pub condition: String,
+    /// Columns the row fills the condition context with, one per clock comparison.
+    pub context: Vec<GateContextColumn>,
+    /// True when several member rows can key the same `(object, user)`, so the query
+    /// groups by it and carries `MAX(deadline)`, and the shape joins rather than settling
+    /// from one row. False when the row uniquely keys the tuple, which stays `FromRow`.
+    pub aggregate: bool,
+}
+
 /// One kind of access-control fact, expressible as a static SQL query.
 ///
 /// Data only: rendering lives in [`crate::generator::tuple_generator`].
@@ -115,6 +140,8 @@ pub(crate) enum TupleSource {
         parent_type: String,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
+        /// The clock condition its member tuple names, absent for a plain membership.
+        gate: Option<MembershipGate>,
     },
 
     /// P4/P5 child-to-parent link. Produces `(type:pk, relation, parent_type:fk_col)`.
@@ -179,32 +206,54 @@ pub(crate) enum TupleSource {
         comparison: RequestComparison,
     },
 
-    /// A membership row whose member column holds a value the caller's declared set has
-    /// to contain. Produces `(parent_type:fk, relation, user:*, condition, context)` per
-    /// **membership** row, so the objects are named after the parent while the facts are
-    /// read from the join table.
-    SessionAttributeMembershipGate {
+    /// A share row keyed on its own join-table primary key, gated by a conditional
+    /// wildcard: the caller passes only when the row's member value is in the caller's
+    /// set (and any composed clock still holds). Produces
+    /// `(share_type:pk, relation, user:*, condition, context)` per share row, so two
+    /// viewers of one guarded row become two objects rather than colliding on one.
+    CallerSetShareGate {
         /// Table whose rows record the grants.
         join_table: String,
-        /// Column of `join_table` naming the guarded row, which the object is keyed on.
-        fk_col: ColumnName,
-        /// Column of `join_table` holding the value the caller's set must contain.
-        member_col: ColumnName,
-        /// Type the objects belong to, named here because the facts are read from the
-        /// join table rather than from the type's own rows.
-        parent_type: String,
+        /// Primary key of `join_table`, which the share object is keyed on so each row is
+        /// its own object.
+        pk_cols: Vec<ColumnName>,
+        /// Synthetic type the share objects belong to.
+        share_type: String,
         relation: RelationName,
         condition: String,
-        /// Condition parameter the membership row supplies.
+        /// Condition parameter the share row supplies.
         row_parameter: String,
+        /// Column of `join_table` holding the value the caller's set must contain.
+        member_col: ColumnName,
         /// Condition parameter the caller supplies in every check context.
         request_parameter: String,
         /// Session setting the caller's value mirrors, so the contract can name it.
         setting_key: String,
         /// Separator the policy splits that setting on, absent for a list source.
         separator: Option<String>,
-        /// Residual filter on the membership row.
+        /// Residual filter on the share row.
         extra_predicates: ResidualPredicates,
+        /// Temporal comparisons composed into the condition: each carries its row column
+        /// in the context and compares it against the request clock. Empty when the arm
+        /// carries no clock, in which case the shape may still join on its residual.
+        temporal_context: Vec<GateContextColumn>,
+    },
+
+    /// Links a guarded row to each of its share objects, so a caller a share admits
+    /// reaches the guarded row through the share. Produces
+    /// `(guarded_type:fk_col, relation, share_type:pk)` per share row, read from the join
+    /// table.
+    CallerSetShareBridge {
+        join_table: String,
+        /// Primary key of `join_table`, which the share subject is keyed on.
+        pk_cols: Vec<ColumnName>,
+        /// Column of `join_table` naming the guarded row the share is on.
+        fk_col: ColumnName,
+        /// The guarded table's own type, which the objects belong to.
+        guarded_type: String,
+        /// Synthetic type the share subjects belong to.
+        share_type: String,
+        relation: RelationName,
     },
 
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
@@ -236,6 +285,8 @@ pub(crate) enum TupleSource {
         member_table: String,
         user_col: ColumnName,
         extra_predicates: ResidualPredicates,
+        /// The clock condition its member tuple names, absent for a plain membership.
+        gate: Option<MembershipGate>,
     },
 
     /// Why no tuple query stands here. Rendered as the two comment lines that take
@@ -265,10 +316,11 @@ impl TupleSource {
             | Self::SessionAttributeGate { .. }
             | Self::ConstantTrue { .. }
             | Self::PolicyScope { .. }
-            | Self::HolderBridge { .. } => true,
+            | Self::HolderBridge { .. }
+            | Self::CallerSetShareBridge { .. } => true,
             Self::TeamMembership { .. }
             | Self::ExistsMembership { .. }
-            | Self::SessionAttributeMembershipGate { .. }
+            | Self::CallerSetShareGate { .. }
             | Self::HolderMembers { .. }
             | Self::Skipped { .. } => false,
         }
@@ -285,7 +337,7 @@ impl TupleSource {
             | Self::ParentBridge { relation, .. }
             | Self::ConditionalAttributeGate { relation, .. }
             | Self::SessionAttributeGate { relation, .. }
-            | Self::SessionAttributeMembershipGate { relation, .. }
+            | Self::CallerSetShareBridge { relation, .. }
             | Self::HolderBridge { relation, .. } => own(relation),
             Self::RoleOwnerUser { .. } => own(&owner_user_relation()),
             Self::RoleOwnerTeam { .. } => own(&owner_team_relation()),
@@ -302,6 +354,11 @@ impl TupleSource {
             Self::HolderMembers { holder_type, .. } => {
                 vec![(holder_type.clone(), member_relation())]
             }
+            Self::CallerSetShareGate {
+                share_type,
+                relation,
+                ..
+            } => vec![(share_type.clone(), relation.clone())],
             Self::PublicFlag { .. } | Self::AttributeGate { .. } | Self::ConstantTrue { .. } => {
                 own(&public_relation())
             }
@@ -399,9 +456,10 @@ impl TupleSource {
                 user_col,
                 parent_type,
                 extra_predicates,
+                gate,
             } => {
                 let extra = extra_predicates.sql().unwrap_or_default();
-                format!("p4:{join_table}:{fk_col}:{user_col}:{parent_type}:{extra}")
+                format!("p4:{join_table}:{fk_col}:{user_col}:{parent_type}:{extra}:{gate:?}")
             }
             Self::ParentBridge {
                 table,
@@ -456,11 +514,11 @@ impl TupleSource {
                     row_parameter.column().map_or("", ColumnName::as_str)
                 )
             }
-            Self::SessionAttributeMembershipGate {
+            Self::CallerSetShareGate {
                 join_table,
-                fk_col,
+                pk_cols,
+                share_type,
                 member_col,
-                parent_type,
                 relation,
                 condition,
                 row_parameter,
@@ -468,12 +526,30 @@ impl TupleSource {
                 setting_key,
                 separator,
                 extra_predicates,
+                temporal_context,
             } => {
                 let _ = (setting_key, separator);
+                let temporal = temporal_context
+                    .iter()
+                    .map(|gate| format!("{}={}", gate.parameter, gate.column))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!(
-                    "sessmem:{parent_type}:{join_table}:{fk_col}:{member_col}:{relation}:\
-                     {condition}:{row_parameter}:{request_parameter}:{}",
+                    "sharegate:{share_type}:{join_table}:{pk_cols:?}:{member_col}:{relation}:\
+                     {condition}:{row_parameter}:{request_parameter}:{}:{temporal}",
                     extra_predicates.sql().unwrap_or_default()
+                )
+            }
+            Self::CallerSetShareBridge {
+                join_table,
+                pk_cols,
+                fk_col,
+                guarded_type,
+                share_type,
+                relation,
+            } => {
+                format!(
+                    "sharebridge:{guarded_type}:{join_table}:{pk_cols:?}:{fk_col}:{share_type}:{relation}"
                 )
             }
             Self::ConstantTrue { table, pk_cols } => {
@@ -500,9 +576,10 @@ impl TupleSource {
                 member_table,
                 user_col,
                 extra_predicates,
+                gate,
             } => {
                 format!(
-                    "holdermembers:{holder_type}:{member_table}:{user_col}:{}",
+                    "holdermembers:{holder_type}:{member_table}:{user_col}:{}:{gate:?}",
                     extra_predicates.sql().unwrap_or_default()
                 )
             }
@@ -586,6 +663,7 @@ mod tests {
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
             extra_predicates: ResidualPredicates::default(),
+            gate: None,
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
@@ -593,6 +671,7 @@ mod tests {
             user_col: ColumnName::from_stored("member_id"),
             parent_type: "projects".to_string(),
             extra_predicates: ResidualPredicates::default(),
+            gate: None,
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
@@ -602,7 +681,9 @@ mod tests {
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
                 sql: "role = 'admin'".to_string(),
                 guard: None,
+                request: None,
             }]),
+            gate: None,
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());
         assert_ne!(base.dedup_key(), with_predicate.dedup_key());

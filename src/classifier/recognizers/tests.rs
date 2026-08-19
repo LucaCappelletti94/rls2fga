@@ -2830,6 +2830,67 @@ fn is_attribute_check_handles_current_timestamp() {
     );
 }
 
+#[test]
+fn residual_predicate_extracts_a_temporal_request() {
+    let conjunct = residual_predicate(&parse_expr("expires_at > now()"));
+    let request = conjunct
+        .request
+        .expect("a clock comparison is completed by the request, not the row");
+    assert_eq!(request.column.as_str(), "expires_at");
+    assert_eq!(request.operator, AttributeOperator::Gt);
+    assert_eq!(request.request_value, RequestValue::StatementTimestamp);
+    assert!(
+        conjunct.guard.is_none(),
+        "the clock is nobody's, so no row guard decides it"
+    );
+}
+
+#[test]
+fn residual_predicate_keeps_a_literal_conjunct_as_a_row_guard() {
+    let conjunct = residual_predicate(&parse_expr("role = 'admin'"));
+    assert!(
+        conjunct.request.is_none(),
+        "a literal comparison names no request value"
+    );
+    assert!(matches!(conjunct.guard, Some(ResidualGuard::Compare(_))));
+}
+
+#[test]
+fn residual_predicates_split_requests_from_the_where_they_leave_behind() {
+    let residual = ResidualPredicates::new(vec![
+        residual_predicate(&parse_expr("role = 'admin'")),
+        residual_predicate(&parse_expr("expires_at > now()")),
+    ]);
+    let decidable = residual
+        .decidable()
+        .expect("a guard and a request are both decidable off the row and the clock");
+    assert_eq!(decidable.guards.len(), 1, "the role check is the one guard");
+    assert_eq!(decidable.requests.len(), 1, "the clock is the one request");
+    assert_eq!(decidable.requests[0].column.as_str(), "expires_at");
+    assert_eq!(
+        residual.sql_excluding_requests().as_deref(),
+        Some("role = 'admin'"),
+        "only the clock leaves the WHERE, since it moves into the condition"
+    );
+    assert_eq!(
+        residual.requests().len(),
+        1,
+        "the clock is the residual's one request"
+    );
+}
+
+#[test]
+fn residual_predicates_refuse_to_decide_a_pure_sql_conjunct() {
+    let residual = ResidualPredicates::new(vec![
+        residual_predicate(&parse_expr("expires_at > now()")),
+        residual_predicate(&parse_expr("weight > other_weight")),
+    ]);
+    assert!(
+        residual.decidable().is_none(),
+        "a column-to-column comparison only SQL can evaluate keeps the shape joined"
+    );
+}
+
 // ── Gap 3: COALESCE/NULLIF → P3 ────────────────────────────────────────
 
 #[test]

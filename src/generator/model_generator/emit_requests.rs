@@ -186,7 +186,10 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
         table_plan,
         policy_name,
         ConditionSpec {
-            expression: format!("{row_parameter} {operator} {request_parameter}"),
+            expression: format!(
+                "{row_parameter} {operator} {}",
+                clock_expr(&request_parameter, request.offset.as_ref())
+            ),
             parameters: [
                 (
                     row_parameter.clone(),
@@ -236,6 +239,20 @@ pub(crate) fn condition_operator(operator: AttributeOperator) -> &'static str {
     }
 }
 
+/// The request clock as a CEL expression, shifted by a fixed offset when the guard
+/// carried one (`now() - interval '30 days'` becomes `request_time - duration("720h")`).
+pub(crate) fn clock_expr(request_time_parameter: &str, offset: Option<&TemporalOffset>) -> String {
+    match offset {
+        None => request_time_parameter.to_string(),
+        // `{:?}` wraps the CEL duration in the quotes it needs without hand-writing them.
+        Some(offset) => format!(
+            "{request_time_parameter} {} duration({:?})",
+            if offset.subtract { "-" } else { "+" },
+            offset.cel_duration
+        ),
+    }
+}
+
 /// The condition parameter type for a column, or `None` when the schema does not say
 /// or the type has no `OpenFGA` counterpart.
 pub(crate) fn condition_parameter_type<DB: DatabaseLike>(
@@ -258,6 +275,116 @@ pub(crate) fn condition_parameter_type<DB: DatabaseLike>(
         "timestamptz" | "timestamp with time zone"
     )
     .then_some(TIMESTAMP_PARAMETER_TYPE)
+}
+
+/// One temporal comparison lifted into a condition: the parameter the row fills, the
+/// column it reads, and the CEL fragment comparing it against the request clock.
+pub(crate) struct TemporalGate {
+    pub(crate) parameter: String,
+    pub(crate) column: ColumnName,
+    pub(crate) fragment: String,
+}
+
+/// Turn a residual's temporal comparisons (`col > now()`) into condition fragments
+/// against the clock the request supplies, minting each row parameter free of `used`.
+///
+/// [`None`] when the residual is not decidable off the row and the clock, or a temporal
+/// column has no timestamp parameter type: the caller then leaves the residual in SQL and
+/// the shape stays joined, exactly as it did before the clock could be a condition.
+pub(crate) fn temporal_gates<DB: DatabaseLike>(
+    residual: &ResidualPredicates,
+    table: &str,
+    request_time_parameter: &str,
+    used: &mut Vec<String>,
+    db: &DB,
+) -> Option<Vec<TemporalGate>> {
+    let decision = residual.decidable()?;
+    let mut gates = Vec::with_capacity(decision.requests.len());
+    for request in &decision.requests {
+        // A zoned column has a timestamp parameter; anything else cannot be a faithful
+        // condition, so the whole residual stays in SQL.
+        condition_parameter_type(table, request.column.as_str(), db)?;
+        let parameter = unique_condition_parameter(request.column.as_str(), used);
+        gates.push(TemporalGate {
+            fragment: format!(
+                "{parameter} {} {}",
+                condition_operator(request.operator),
+                clock_expr(request_time_parameter, request.offset.as_ref())
+            ),
+            column: request.column.clone(),
+            parameter,
+        });
+    }
+    Some(gates)
+}
+
+/// A condition parameter name free of `used`, derived from a column and recorded in it.
+fn unique_condition_parameter(column: &str, used: &mut Vec<String>) -> String {
+    let mut name = normalize_relation_name(column);
+    if used.iter().any(|taken| taken == &name) {
+        name = format!("{name}_{}", stable_hex_suffix(column));
+    }
+    used.push(name.clone());
+    name
+}
+
+/// Declare a condition comparing one or more row columns against the request clock, and
+/// answer with its name and the context columns a tuple must carry.
+///
+/// [`None`] when the residual is not decidable off the row and the clock, or carries no
+/// clock at all: the caller then keeps the residual in SQL and the shape stays joined.
+pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
+    residual: &ResidualPredicates,
+    table: &str,
+    policy_name: &str,
+    table_plan: &mut TypePlan,
+    request_time_parameter: &str,
+    db: &DB,
+) -> Option<(String, Vec<GateContextColumn>)> {
+    let mut used = vec![request_time_parameter.to_string()];
+    let gates = temporal_gates(residual, table, request_time_parameter, &mut used, db)?;
+    let [first, ..] = gates.as_slice() else {
+        return None;
+    };
+    let expression = gates
+        .iter()
+        .map(|gate| gate.fragment.as_str())
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let mut parameters: BTreeMap<String, ConditionParameter> = gates
+        .iter()
+        .map(|gate| {
+            (
+                gate.parameter.clone(),
+                ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
+            )
+        })
+        .collect();
+    parameters.insert(
+        request_time_parameter.to_string(),
+        ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
+    );
+    let row_parameter = RowParameter::Column {
+        parameter: first.parameter.clone(),
+        column: first.column.clone(),
+    };
+    let condition = declare_condition(
+        table_plan,
+        policy_name,
+        ConditionSpec {
+            expression,
+            parameters,
+            row_parameter,
+        },
+    );
+    let context = gates
+        .into_iter()
+        .map(|gate| GateContextColumn {
+            parameter: gate.parameter,
+            column: gate.column,
+        })
+        .collect();
+    Some((condition, context))
 }
 
 /// The gate a request-scoped comparison earns, for all four of the declared shapes.
@@ -295,6 +422,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     membership_in_caller_set: &MembershipInCallerSet,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<String, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -310,9 +438,9 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let policy_name = ctx.policy_name;
     let db = ctx.db;
     let source_table = ctx.source_table;
-    // The gate names the guarded row by the join table's own column, so that
-    // column has to hold the row's identifier. Correlated against anything else,
-    // the object named is another row's, or no row at all.
+    // The bridge names the guarded row by the join table's own column, so that column has
+    // to hold the row's identifier. Correlated against anything else, the object named is
+    // another row's, or no row at all.
     if single_pk_column(source_table, db).as_ref() != Some(outer_column) {
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
@@ -356,13 +484,19 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         });
         return deny_expr(table_plan);
     }
-
-    if let Some(extra) = extra_predicates.sql() {
-        notes.push(TranslationNote::MembershipExtraPredicate {
+    // Each share row becomes its own object, keyed on the join table's own primary key, so
+    // two viewers of one guarded row never collide on one `(user:*, gate, object)` triple.
+    // With no key to name the share rows apart, that collision is unavoidable, so refuse.
+    let Some(pk_cols) = resolve_pk_columns(join_table, db) else {
+        notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
-            predicate: extra,
+            reason: format!(
+                "{join_table} has no primary key, so its share rows cannot be named apart \
+                     and two viewers of one row would collide at load"
+            ),
         });
-    }
+        return deny_expr(table_plan);
+    };
 
     let request_parameter = source.request_parameter().to_string();
     let mut row_parameter = normalize_relation_name(member_column.as_str());
@@ -372,45 +506,124 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
             stable_hex_suffix(member_column.as_str())
         );
     }
+
+    // A temporal comparison such as `expires_at > now()` is completed by the request, not
+    // the row, so it joins the viewer set inside the condition rather than filtering the
+    // query. Everything else stays in the residual: a row guard the query keeps, or an
+    // inexpressible conjunct that keeps the shape joined.
+    let request_time = ctx.settings.request_time_parameter.clone();
+    let mut used = vec![
+        row_parameter.clone(),
+        request_parameter.clone(),
+        request_time.clone(),
+    ];
+    let temporal = temporal_gates(extra_predicates, join_table, &request_time, &mut used, db)
+        .unwrap_or_default();
+
+    let announced = if temporal.is_empty() {
+        extra_predicates.sql()
+    } else {
+        extra_predicates.sql_excluding_requests()
+    };
+    if let Some(extra) = announced {
+        notes.push(TranslationNote::MembershipExtraPredicate {
+            policy: policy_name.to_string(),
+            predicate: extra,
+        });
+    }
+
+    let mut expression = format!("{row_parameter} in {request_parameter}");
+    let mut parameters = vec![
+        (
+            row_parameter.clone(),
+            ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
+        ),
+        (
+            request_parameter.clone(),
+            ConditionParameter::ListOf(STRING_PARAMETER_TYPE),
+        ),
+    ];
+    for gate in &temporal {
+        expression = format!("{expression} && {}", gate.fragment);
+        parameters.push((
+            gate.parameter.clone(),
+            ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
+        ));
+    }
+    if !temporal.is_empty() {
+        parameters.push((
+            request_time.clone(),
+            ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
+        ));
+    }
     let spec = ConditionSpec {
-        expression: format!("{row_parameter} in {request_parameter}"),
-        parameters: [
-            (
-                row_parameter.clone(),
-                ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
-            ),
-            (
-                request_parameter.clone(),
-                ConditionParameter::ListOf(STRING_PARAMETER_TYPE),
-            ),
-        ]
-        .into_iter()
-        .collect(),
+        expression,
+        parameters: parameters.into_iter().collect(),
         row_parameter: RowParameter::Column {
             parameter: row_parameter.clone(),
             column: member_column.clone(),
         },
     };
-    let condition = declare_condition(table_plan, policy_name, spec);
-    let relation = table_plan.ensure_direct(
-        conditional_gate_relation_name(policy_name),
-        vec![DirectSubject::ConditionalWildcard {
-            type_name: USER_TYPE.to_string(),
-            condition: condition.clone(),
-        }],
-    );
-    table_plan.add_source(TupleSource::SessionAttributeMembershipGate {
+
+    // The gate rides the share type, keyed on the share row; the guarded type links to it
+    // and reaches the gate by tuple-to-userset, so two viewers union rather than collide.
+    let share_type = share_type_name(join_table, ctx.table_types);
+    let (gate_relation, condition) = {
+        let share_plan = all_types
+            .entry(share_type.clone())
+            .or_insert_with(|| TypePlan::new(&share_type));
+        let condition = declare_condition(share_plan, policy_name, spec);
+        let gate_relation = share_plan.ensure_direct(
+            conditional_gate_relation_name(policy_name),
+            vec![DirectSubject::ConditionalWildcard {
+                type_name: USER_TYPE.to_string(),
+                condition: condition.clone(),
+            }],
+        );
+        (gate_relation, condition)
+    };
+
+    let temporal_context: Vec<GateContextColumn> = temporal
+        .into_iter()
+        .map(|gate| GateContextColumn {
+            parameter: gate.parameter,
+            column: gate.column,
+        })
+        .collect();
+    let gate_source = TupleSource::CallerSetShareGate {
         join_table: join_table.clone(),
-        fk_col: fk_column.clone(),
-        member_col: member_column.clone(),
-        parent_type: table_plan.type_name.to_string(),
-        relation: relation.clone(),
+        pk_cols: pk_cols.clone(),
+        share_type: share_type.clone(),
+        relation: gate_relation.clone(),
         condition,
         row_parameter,
+        member_col: member_column.clone(),
         request_parameter,
         setting_key: source.setting_key().to_string(),
         separator: separator.clone(),
         extra_predicates: extra_predicates.clone(),
+        temporal_context,
+    };
+    if let Some(share_plan) = all_types.get_mut(&share_type) {
+        share_plan.add_source(gate_source.clone());
+    }
+
+    let guarded_type = table_plan.type_name.to_string();
+    let link_relation = table_plan.ensure_direct(
+        clamp_relation_name(share_type.clone()),
+        vec![DirectSubject::Type(share_type.clone())],
+    );
+    table_plan.add_source(gate_source);
+    table_plan.add_source(TupleSource::CallerSetShareBridge {
+        join_table: join_table.clone(),
+        pk_cols,
+        fk_col: fk_column.clone(),
+        guarded_type,
+        share_type,
+        relation: link_relation.clone(),
     });
-    UsersetExpr::Computed(relation)
+    UsersetExpr::TupleToUserset {
+        tupleset: link_relation,
+        computed: gate_relation,
+    }
 }

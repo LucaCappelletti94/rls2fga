@@ -7,10 +7,10 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    composite_primary_key_columns, resolve_pk_columns, single_pk_column,
+    composite_primary_key_columns, resolve_pk_columns, row_uniquely_keys, single_pk_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
-use crate::generator::ir::{PrincipalInfo, TupleSource};
+use crate::generator::ir::{GateContextColumn, MembershipGate, PrincipalInfo, TupleSource};
 use crate::generator::notes::{SkippedTuples, TranslationNote};
 use crate::generator::relations::RequestComparison;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
@@ -78,8 +78,8 @@ use emit_ownership::{
     emit_unclassified,
 };
 use emit_requests::{
-    conditional_gate_expr, emit_membership_in_caller_set, emit_request_gate, RequestSide,
-    RowParameterSource,
+    conditional_gate_expr, declare_temporal_condition, emit_membership_in_caller_set,
+    emit_request_gate, RequestSide, RowParameterSource,
 };
 use emit_roles::{
     emit_numeric_threshold, emit_role_name_in_list, register_pg_role_scope, RoleScopeSpec,
@@ -103,6 +103,13 @@ pub(crate) enum DirectSubject {
     /// A wildcard every tuple of which carries a condition, so the grant holds only
     /// while the condition evaluates true at check time.
     ConditionalWildcard {
+        type_name: String,
+        condition: String,
+    },
+    /// A directly related type every tuple of which carries a condition, so a named
+    /// subject grants only while the condition evaluates true at check time. The member
+    /// tuple a temporal membership emits is one.
+    ConditionalType {
         type_name: String,
         condition: String,
     },
@@ -177,6 +184,10 @@ fn subject_key(subjects: &[DirectSubject]) -> String {
                 type_name,
                 condition,
             } => format!("wc:{type_name}:{condition}"),
+            DirectSubject::ConditionalType {
+                type_name,
+                condition,
+            } => format!("tc:{type_name}:{condition}"),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -357,6 +368,17 @@ impl TypePlan {
             .entry(relation.clone())
             .or_insert(subjects);
         relation
+    }
+
+    /// Add one directly-assignable subject to `relation`, creating it if absent. Unlike
+    /// [`Self::ensure_direct`], this widens an existing relation rather than yielding a new
+    /// name, which is what a shared relation like `member` needs when a conditioned variant
+    /// joins its plain one.
+    fn add_direct_subject(&mut self, relation: &RelationName, subject: DirectSubject) {
+        let subjects = self.direct_relations.entry(relation.clone()).or_default();
+        if !subjects.contains(&subject) {
+            subjects.push(subject);
+        }
     }
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> RelationName {
@@ -1346,15 +1368,9 @@ fn note_request_contracts(
     let mut contracts: BTreeSet<(String, Option<String>, Option<String>)> = BTreeSet::new();
     for source in &plan.table_tuple_sources {
         match source {
-            // One arm for both, because a set carried against a row column and one
-            // carried against a membership row state the same contract.
+            // A set carried against a row column and one carried against a membership row
+            // state the same caller contract.
             TupleSource::SessionAttributeGate {
-                request_parameter,
-                setting_key,
-                separator,
-                ..
-            }
-            | TupleSource::SessionAttributeMembershipGate {
                 request_parameter,
                 setting_key,
                 separator,
@@ -1366,9 +1382,28 @@ fn note_request_contracts(
                     separator.clone(),
                 ));
             }
-            // The clock has had the same contract since it was built and never
-            // announced it either.
-            TupleSource::ConditionalAttributeGate { .. } => {
+            TupleSource::CallerSetShareGate {
+                request_parameter,
+                setting_key,
+                separator,
+                temporal_context,
+                ..
+            } => {
+                contracts.insert((
+                    request_parameter.clone(),
+                    Some(setting_key.clone()),
+                    separator.clone(),
+                ));
+                // A clock composed into the gate is a second value the caller supplies.
+                if !temporal_context.is_empty() {
+                    contracts.insert((settings.request_time_parameter.clone(), None, None));
+                }
+            }
+            // The clock is a request value the caller supplies, whether it gates a single
+            // row or rides a member tuple.
+            TupleSource::ConditionalAttributeGate { .. }
+            | TupleSource::ExistsMembership { gate: Some(_), .. }
+            | TupleSource::HolderMembers { gate: Some(_), .. } => {
                 contracts.insert((settings.request_time_parameter.clone(), None, None));
             }
             _ => {}
@@ -1406,7 +1441,8 @@ fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<String, ConditionSpec> {
         .flat_map(|plan| plan.direct_relations.values())
         .flatten()
         .filter_map(|subject| match subject {
-            DirectSubject::ConditionalWildcard { condition, .. } => Some(condition.as_str()),
+            DirectSubject::ConditionalWildcard { condition, .. }
+            | DirectSubject::ConditionalType { condition, .. } => Some(condition.as_str()),
             DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
         })
         .collect();
@@ -1459,6 +1495,19 @@ fn holder_type_name(member_table: &str, table_types: &TableTypes) -> String {
     let base = canonical_fga_type_name(&format!("{member_table}_holder"));
     if table_types.claims(&base) {
         return format!("{base}_{}", stable_hex_suffix(member_table));
+    }
+    base
+}
+
+/// The type standing for the share rows of a caller-set membership on `join_table`.
+///
+/// One per join table, so two policies sharing it agree and two over different tables do
+/// not pool their rows. Disambiguated against the table types, which are all assigned
+/// before any policy is translated, so a schema declaring this name keeps it.
+fn share_type_name(join_table: &str, table_types: &TableTypes) -> String {
+    let base = canonical_fga_type_name(&format!("{join_table}_share"));
+    if table_types.claims(&base) {
+        return format!("{base}_{}", stable_hex_suffix(join_table));
     }
     base
 }
@@ -1995,6 +2044,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 membership_in_caller_set,
                 ctx,
                 table_plan,
+                all_types,
                 notes,
                 readability,
             )

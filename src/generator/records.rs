@@ -9,6 +9,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use alloc::borrow::Cow;
+use alloc::collections::BTreeMap;
 
 use crate::classifier::patterns::{AttributeLiteral, AttributeOperator, AttributePredicate};
 use crate::generator::identity::{
@@ -41,10 +42,9 @@ pub struct Record {
 pub struct RecordContextValue {
     /// Condition the tuple names, declared by the model.
     pub condition: String,
-    /// Condition parameter the value fills.
-    pub key: String,
-    /// The value, rendered as the tuple SQL renders it.
-    pub value: String,
+    /// Each parameter the row fills in the condition context, keyed by parameter
+    /// name and rendered as the tuple SQL renders it.
+    pub values: BTreeMap<String, String>,
 }
 
 /// Where one side of a record takes its value on the row.
@@ -163,6 +163,9 @@ impl ObjectKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubjectKey {
     part: ValueSource,
+    /// Further parts when the subject is a composite-key object, joined the way an
+    /// object key is. Empty for the ordinary single-column or wildcard subject.
+    rest: Vec<ValueSource>,
     /// The typed wildcard, which is the crate's own spelling for "every user"
     /// rather than a value read out of a row.
     ///
@@ -178,6 +181,19 @@ impl SubjectKey {
     pub fn new(part: ValueSource) -> Self {
         Self {
             part,
+            rest: Vec::new(),
+            wildcard: false,
+        }
+    }
+
+    /// A key naming the subject through several columns, encoded together the way a
+    /// composite [`ObjectKey`] is, so the subject names one object rather than a list of
+    /// users. Takes the first column and the rest apart, so an empty key is unspellable.
+    #[must_use]
+    pub fn composite(first: &ColumnName, rest: &[ColumnName]) -> Self {
+        Self {
+            part: ValueSource::Column(first.clone()),
+            rest: rest.iter().cloned().map(ValueSource::Column).collect(),
             wildcard: false,
         }
     }
@@ -195,6 +211,7 @@ impl SubjectKey {
     pub fn wildcard() -> Self {
         Self {
             part: ValueSource::Literal(WILDCARD_SUBJECT_ID.to_string()),
+            rest: Vec::new(),
             wildcard: true,
         }
     }
@@ -218,6 +235,26 @@ impl SubjectKey {
     ) -> Result<Vec<String>, RecordError> {
         if self.wildcard {
             return Ok(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
+        }
+        if !self.rest.is_empty() {
+            // A composite key names one object, so every part must be present and none
+            // expands: a missing part names no subject, exactly as a null object key does.
+            let mut values = Vec::with_capacity(1 + self.rest.len());
+            for source in core::iter::once(&self.part).chain(&self.rest) {
+                let Some(value) = single_value(source, row) else {
+                    return Ok(Vec::new());
+                };
+                values.push(value);
+            }
+            let name = format!(
+                "{subject_type}:{}",
+                encode_identity(values.iter().map(String::as_str))
+            );
+            return if subject_name_fits(&name) {
+                Ok(vec![name])
+            } else {
+                Err(RecordError::RowCannotBeNamed(name.len()))
+            };
         }
         expand(&self.part, row)
             .into_iter()
@@ -266,12 +303,19 @@ pub struct RecordTemplate {
     pub context: Option<RecordContext>,
 }
 
-/// One key a record puts in its condition context, under the condition the tuple
-/// has to name.
+/// How a record's condition context is built from a row: the condition it names and
+/// each parameter the row fills.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordContext {
     /// Condition the tuple names, declared by the model.
     pub condition: String,
+    /// Each parameter the row fills, in the order the emitter recorded them.
+    pub entries: Vec<RecordContextEntry>,
+}
+
+/// One parameter a record's condition context fills, and where its value comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordContextEntry {
     /// Condition parameter the value fills.
     pub key: String,
     /// Where the value comes from.
@@ -535,14 +579,21 @@ pub fn records_from_row<R: RowValues + ?Sized>(
     // A context the row cannot fill yields no record at all, exactly as the tuple SQL
     // skips a row whose carried column is NULL.
     let context = match &template.context {
-        Some(context) => match single_value(&context.value, row) {
-            Some(value) => Some(RecordContextValue {
+        Some(context) => {
+            let mut values = BTreeMap::new();
+            for entry in &context.entries {
+                match single_value(&entry.value, row) {
+                    Some(value) => {
+                        values.insert(entry.key.clone(), value);
+                    }
+                    None => return Ok(Vec::new()),
+                }
+            }
+            Some(RecordContextValue {
                 condition: context.condition.clone(),
-                key: context.key.clone(),
-                value,
-            }),
-            None => return Ok(Vec::new()),
-        },
+                values,
+            })
+        }
         None => None,
     };
 
@@ -686,6 +737,79 @@ mod tests {
         ]);
         let row = Row::of(&[("paper_id", "1")]);
         assert_eq!(key.render("paper_shares", &row).unwrap(), None);
+    }
+
+    fn share_description_with_two_context_parameters() -> RecordDescription {
+        RecordDescription {
+            tables: vec!["paper_shares".to_string()],
+            derivation: RecordDerivation::FromRow {
+                table: "paper_shares".to_string(),
+                template: Box::new(RecordTemplate {
+                    object_type: "papers".to_string(),
+                    object_key: ObjectKey::column("paper_id"),
+                    relation: member_relation(),
+                    subject_type: "user".to_string(),
+                    subject_key: SubjectKey::wildcard(),
+                    context: Some(RecordContext {
+                        condition: "when_share".to_string(),
+                        entries: vec![
+                            RecordContextEntry {
+                                key: "viewer".to_string(),
+                                value: ValueSource::column("viewer"),
+                            },
+                            RecordContextEntry {
+                                key: "expires_at".to_string(),
+                                value: ValueSource::column("expires_at"),
+                            },
+                        ],
+                    }),
+                }),
+                guards: vec![
+                    Guard::NotNull(ColumnName::from_stored("viewer")),
+                    Guard::NotNull(ColumnName::from_stored("expires_at")),
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn a_record_context_carries_every_parameter_the_row_fills() {
+        let description = share_description_with_two_context_parameters();
+        let row = Row::of(&[
+            ("paper_id", "1"),
+            ("viewer", "team-a"),
+            ("expires_at", "2099-01-01T00:00:00Z"),
+        ]);
+        let records = records_from_row(&description, &row).expect("the row evaluates");
+        let [record] = records.as_slice() else {
+            panic!("one record, got {records:?}");
+        };
+        let context = record
+            .context
+            .as_ref()
+            .expect("a conditional record carries its context");
+        assert_eq!(context.condition, "when_share");
+        assert_eq!(
+            context.values.get("viewer").map(String::as_str),
+            Some("team-a")
+        );
+        assert_eq!(
+            context.values.get("expires_at").map(String::as_str),
+            Some("2099-01-01T00:00:00Z"),
+            "both row parameters travel, not just the first"
+        );
+    }
+
+    #[test]
+    fn a_record_context_missing_one_parameter_yields_no_record() {
+        let description = share_description_with_two_context_parameters();
+        let row = Row::of(&[("paper_id", "1"), ("viewer", "team-a")]);
+        assert!(
+            records_from_row(&description, &row)
+                .expect("the row evaluates")
+                .is_empty(),
+            "a row that cannot fill every context parameter states no record"
+        );
     }
 
     #[test]

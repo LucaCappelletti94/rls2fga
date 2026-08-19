@@ -195,6 +195,9 @@ pub struct AttributeRequestPredicate {
     pub operator: AttributeOperator,
     /// What the request supplies.
     pub request_value: RequestValue,
+    /// A fixed offset applied to the request clock, from `now() - interval '30 days'`
+    /// and its spellings. `None` when the guard compares against the bare clock.
+    pub offset: Option<TemporalOffset>,
 }
 
 /// A value the request supplies rather than the row.
@@ -203,6 +206,15 @@ pub struct AttributeRequestPredicate {
 pub enum RequestValue {
     /// The moment the statement runs, from `now()` and its spellings.
     StatementTimestamp,
+}
+
+/// A fixed-length shift of the request clock, lifted from a `PostgreSQL` interval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemporalOffset {
+    /// The offset as a CEL duration, such as `720h` for `interval '30 days'`.
+    pub cel_duration: String,
+    /// `true` subtracts it from the clock (`now() - interval`), `false` adds it.
+    pub subtract: bool,
 }
 
 /// One residual conjunct on a membership row.
@@ -216,6 +228,10 @@ pub struct ResidualPredicate {
     pub sql: String,
     /// The conjunct as structure, when a row image alone decides it.
     pub guard: Option<ResidualGuard>,
+    /// The conjunct as a request-completed comparison, when the row settles one side
+    /// and the clock the other. A temporal guard such as `expires_at > now()` is
+    /// nobody's to decide from the row alone, so it becomes a condition, not a tuple.
+    pub request: Option<AttributeRequestPredicate>,
 }
 
 /// A residual conjunct a row image can evaluate.
@@ -271,6 +287,65 @@ impl ResidualPredicates {
             .map(|conjunct| conjunct.guard.clone())
             .collect()
     }
+
+    /// The request-completed conjuncts, each a comparison the clock finishes.
+    #[must_use]
+    pub fn requests(&self) -> Vec<AttributeRequestPredicate> {
+        self.0
+            .iter()
+            .filter_map(|conjunct| conjunct.request.clone())
+            .collect()
+    }
+
+    /// The row-decidable conjuncts as guards, ignoring request-completed and SQL-only
+    /// ones. Total, unlike [`Self::guards`], so a caller that has already separated the
+    /// requests takes the guards without a second fallible pass.
+    #[must_use]
+    pub fn row_guards(&self) -> Vec<ResidualGuard> {
+        self.0
+            .iter()
+            .filter_map(|conjunct| conjunct.guard.clone())
+            .collect()
+    }
+
+    /// The residual as the SQL filter with the request-completed conjuncts dropped,
+    /// since those move into the condition. [`None`] when nothing is left to filter.
+    #[must_use]
+    pub fn sql_excluding_requests(&self) -> Option<String> {
+        let kept: Vec<&str> = self
+            .0
+            .iter()
+            .filter(|conjunct| conjunct.request.is_none())
+            .map(|conjunct| conjunct.sql.as_str())
+            .collect();
+        (!kept.is_empty()).then(|| kept.join(" AND "))
+    }
+
+    /// The residual split into row guards and request-completed comparisons, or
+    /// [`None`] when a conjunct is neither: only SQL can evaluate it, so the shape
+    /// stays joined.
+    #[must_use]
+    pub fn decidable(&self) -> Option<ResidualDecision> {
+        let mut guards = Vec::new();
+        let mut requests = Vec::new();
+        for conjunct in &self.0 {
+            match (&conjunct.guard, &conjunct.request) {
+                (Some(guard), _) => guards.push(guard.clone()),
+                (None, Some(request)) => requests.push(request.clone()),
+                (None, None) => return None,
+            }
+        }
+        Some(ResidualDecision { guards, requests })
+    }
+}
+
+/// A residual every conjunct of which a row image or the request can evaluate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResidualDecision {
+    /// Conjuncts a row image alone decides, in policy order.
+    pub guards: Vec<ResidualGuard>,
+    /// Conjuncts the request completes, in policy order.
+    pub requests: Vec<AttributeRequestPredicate>,
 }
 
 // The shape of each pattern, one named struct per variant.
