@@ -1,6 +1,5 @@
 #![no_main]
 
-use std::borrow::Cow;
 use std::hint::black_box;
 
 use libfuzzer_sys::fuzz_target;
@@ -9,7 +8,7 @@ use rls2fga::classifier::patterns::{
     ClassifiedExpr, ConfidenceLevel, ConstantBool, PatternClass,
 };
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{records_from_row, RowValues};
+use rls2fga::generator::records::{records_from_row, ColumnKind, RowCell, RowList, RowValues};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::{PlanningError, Translation, TranslatorBuilder};
@@ -48,23 +47,37 @@ impl FuzzRow<'_> {
 }
 
 impl RowValues for FuzzRow<'_> {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        (!self.mix(column).is_multiple_of(4)).then_some(Cow::Borrowed(self.0))
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        if self.mix(column).is_multiple_of(4) {
+            return RowCell::Absent;
+        }
+        match kind {
+            ColumnKind::Text => RowCell::Text(self.0.into()),
+            ColumnKind::Integer => RowCell::Integer("1".into()),
+            ColumnKind::Decimal => RowCell::Decimal("1.0".into()),
+            ColumnKind::Bool => RowCell::Bool(self.mix(column).is_multiple_of(2)),
+            ColumnKind::Date => RowCell::Date("2026-01-01".into()),
+            ColumnKind::Time => RowCell::Time("01:02:03".into()),
+            ColumnKind::Timestamp => RowCell::Timestamp("2026-01-01T01:02:03".into()),
+            ColumnKind::TimestampTz => RowCell::TimestampTz("2026-01-01T01:02:03+00:00".into()),
+            ColumnKind::Uuid => RowCell::Uuid("00000000-0000-0000-0000-000000000000".into()),
+            _ => RowCell::Undecodable,
+        }
     }
 
-    fn boolean(&self, column: &str) -> Option<bool> {
-        let mixed = self.mix(column);
-        (!mixed.is_multiple_of(5)).then(|| mixed.is_multiple_of(2))
+    fn list(&self, column: &str, kind: ColumnKind) -> RowList<'_> {
+        if self.mix(column).is_multiple_of(6) {
+            return RowList::Absent;
+        }
+        RowList::Values(vec![self.cell(column, kind), RowCell::Null, RowCell::Text("".into())])
     }
 
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        (!self.mix(column).is_multiple_of(6))
-            .then(|| vec![Some(Cow::Borrowed(self.0)), None, Some(Cow::Borrowed(""))])
-    }
-
-    fn json_text(&self, column: &str, path: &[String]) -> Option<Cow<'_, str>> {
-        (!self.mix(column).wrapping_add(path.len()).is_multiple_of(7))
-            .then_some(Cow::Borrowed(self.0))
+    fn json_text(&self, column: &str, path: &[String]) -> RowCell<'_> {
+        if self.mix(column).wrapping_add(path.len()).is_multiple_of(7) {
+            RowCell::Absent
+        } else {
+            RowCell::Text(self.0.into())
+        }
     }
 }
 

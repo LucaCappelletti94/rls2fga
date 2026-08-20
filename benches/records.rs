@@ -5,7 +5,6 @@
 //! pipeline rather than hand-built literals, so a bench cannot drift from the
 //! shapes production actually emits.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -13,7 +12,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::records::{
-    records_from_row, RecordDerivation, RecordDescription, RowValues, ValueSource,
+    records_from_row, ColumnKind, RecordDerivation, RecordDescription, RowCell, RowList, RowValues,
+    ValueSource,
 };
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
@@ -27,18 +27,34 @@ struct MapRow {
 }
 
 impl RowValues for MapRow {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.text.get(column).map(|v| Cow::Borrowed(v.as_str()))
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        match self.text.get(column) {
+            Some(value) => match kind {
+                ColumnKind::Text => RowCell::Text(value.as_str().into()),
+                ColumnKind::Uuid => RowCell::Uuid(value.as_str().into()),
+                _ => RowCell::Undecodable,
+            },
+            None => RowCell::Absent,
+        }
     }
 
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        Some(
-            self.lists
-                .get(column)?
-                .iter()
-                .map(|v| Some(Cow::Borrowed(v.as_str())))
-                .collect(),
-        )
+    fn list(&self, column: &str, kind: ColumnKind) -> RowList<'_> {
+        if kind != ColumnKind::Text {
+            return RowList::Undecodable;
+        }
+        match self.lists.get(column) {
+            Some(values) => RowList::Values(
+                values
+                    .iter()
+                    .map(|value| RowCell::Text(value.as_str().into()))
+                    .collect(),
+            ),
+            None => RowList::Absent,
+        }
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
     }
 }
 

@@ -47,12 +47,14 @@ pub fn format_tuples(tuples: &[TupleQuery]) -> String {
         out.push_str(&query.sql);
         out.push_str("\n\n");
     }
-    // Normalise to exactly one trailing newline.
     let trimmed = out.trim_end_matches('\n');
     if trimmed.is_empty() {
         return String::new();
     }
-    let mut result = trimmed.to_string();
+    let mut result =
+        "SET TIME ZONE 'UTC';\nSET DateStyle = 'ISO, MDY';\nSET bytea_output = 'hex';\n\n"
+            .to_string();
+    result.push_str(trimmed);
     result.push('\n');
     result
 }
@@ -76,8 +78,7 @@ pub struct TupleRow<'a> {
 pub struct TupleCondition<'a> {
     /// The `condition` column, the condition the tuple names.
     pub name: &'a str,
-    /// The `context` column, as the JSON text of the one-key object the query
-    /// builds.
+    /// The `context` column, as JSON text of the object the query builds.
     pub context: &'a str,
 }
 
@@ -108,7 +109,7 @@ pub enum TupleRowError {
     MalformedObject(String),
     /// The subject is not a `type:key` name.
     MalformedSubject(String),
-    /// The context is not a one-key object of a scalar, carrying the text read.
+    /// The context is not a non-empty object of scalars.
     MalformedContext(String),
     /// The relation is the one the model denies with. Nothing populates it, so a row
     /// naming it is a mistake, and reading it back would hand the caller a fact the
@@ -149,10 +150,9 @@ impl core::fmt::Display for TupleRowError {
             ),
             Self::MalformedObject(name) => write!(f, "the object {name} is not a type:key name"),
             Self::MalformedSubject(name) => write!(f, "the subject {name} is not a type:key name"),
-            Self::MalformedContext(text) => write!(
-                f,
-                "the context {text} is not an object of one key holding a scalar"
-            ),
+            Self::MalformedContext(text) => {
+                write!(f, "the context {text} is not a non-empty object of scalars")
+            }
             Self::RelationGrantsNobody {
                 type_name,
                 relation,
@@ -1678,6 +1678,20 @@ mod tests {
         // Must end with exactly one newline after the last SQL statement.
         assert!(formatted.ends_with("SELECT 2;\n"));
         assert!(!formatted.ends_with("SELECT 2;\n\n"));
+    }
+
+    #[test]
+    fn format_tuples_pins_session_output_settings() {
+        let tuples = [TupleQuery {
+            comment: "-- one".to_string(),
+            sql: "SELECT 1;".to_string(),
+            description: None,
+            condition: None,
+        }];
+
+        assert!(format_tuples(&tuples).starts_with(
+            "SET TIME ZONE 'UTC';\nSET DateStyle = 'ISO, MDY';\nSET bytea_output = 'hex';\n\n"
+        ));
     }
 
     #[test]

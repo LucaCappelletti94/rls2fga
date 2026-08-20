@@ -1002,7 +1002,7 @@ fn row_subject_columns(shapes: &[RelationShapes]) -> Vec<(RelationName, ColumnNa
         for shape in &entry.shapes {
             if let RecordDerivation::FromRow { template, .. } = &shape.derivation {
                 if let ValueSource::Column(column) = template.subject_key.part() {
-                    out.push((entry.relation.clone(), column.clone()));
+                    out.push((entry.relation.clone(), column.column().clone()));
                 }
             }
         }

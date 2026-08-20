@@ -1,7 +1,8 @@
+use crate::generator::records::ColumnKind;
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::parser::identifiers::ColumnName;
-use crate::parser::names::lookup_table;
+use crate::parser::names::{lookup_table, same_identifier};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, IndexLike, TableLike};
 
 /// SQL tables a user principal conventionally lives in, most specific first.
@@ -86,6 +87,34 @@ pub(crate) fn uniquely_constrained<DB: DatabaseLike>(column: &str, table: &str, 
                 .is_some_and(|c| c.stored_column_name() == column)
                 && columns.next().is_none()
         })
+}
+
+fn declared_column_type<DB: DatabaseLike>(table: &str, column: &str, db: &DB) -> Option<String> {
+    let table = lookup_table(db, table)?;
+    let column = table
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .find(|candidate| same_identifier(&candidate.stored_column_name(), column))?;
+    Some(column.data_type(db).to_string())
+}
+
+/// The modelled kind of one stored scalar column.
+pub(crate) fn column_kind<DB: DatabaseLike>(table: &str, column: &str, db: &DB) -> ColumnKind {
+    declared_column_type(table, column, db).map_or(ColumnKind::Unsupported, |declared| {
+        ColumnKind::from_declared(&declared)
+    })
+}
+
+/// The modelled element kind of one stored list column.
+pub(crate) fn list_element_kind<DB: DatabaseLike>(
+    table: &str,
+    column: &str,
+    db: &DB,
+) -> ColumnKind {
+    declared_column_type(table, column, db).map_or(ColumnKind::Unsupported, |declared| {
+        ColumnKind::from_array_declared(&declared)
+    })
 }
 
 /// Column names of `table`'s primary key when it spans more than one column.

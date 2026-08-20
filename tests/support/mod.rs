@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::records::RowValues;
+use rls2fga::generator::records::{ColumnKind, RowCell, RowList, RowValues};
 use rls2fga::parser::sql_parser::{self, ParserDB};
 
 /// `serde_json` view of one row, adapting it to the crate's row interface.
@@ -29,32 +29,99 @@ pub(crate) fn scalar_text(value: &serde_json::Value) -> Option<Cow<'_, str>> {
     }
 }
 
-impl RowValues for JsonRowValues<'_> {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.0.get(column).and_then(scalar_text)
+fn parse_bytea(text: &str) -> Option<Vec<u8>> {
+    let hex = text.strip_prefix("\\x")?;
+    let mut chunks = hex.as_bytes().chunks_exact(2);
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    for pair in &mut chunks {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        out.push((high << 4) | low);
     }
+    chunks.remainder().is_empty().then_some(out)
+}
 
-    fn boolean(&self, column: &str) -> Option<bool> {
-        self.0.get(column).and_then(serde_json::Value::as_bool)
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
+}
 
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        Some(
-            self.0
-                .get(column)?
-                .as_array()?
-                .iter()
-                .map(scalar_text)
-                .collect(),
-        )
-    }
-
-    fn json_text(&self, column: &str, path: &[String]) -> Option<Cow<'_, str>> {
-        let mut current = self.0.get(column)?;
-        for step in path {
-            current = current.get(step)?;
+fn scalar_cell(value: &serde_json::Value, kind: ColumnKind) -> RowCell<'_> {
+    match (value, kind) {
+        (serde_json::Value::Null, _) => RowCell::Null,
+        (serde_json::Value::String(text), ColumnKind::Text) => {
+            RowCell::Text(Cow::Borrowed(text.as_str()))
         }
-        scalar_text(current)
+        (serde_json::Value::String(text), ColumnKind::Uuid) => {
+            RowCell::Uuid(Cow::Borrowed(text.as_str()))
+        }
+        (serde_json::Value::String(text), ColumnKind::Date) => {
+            RowCell::Date(Cow::Borrowed(text.as_str()))
+        }
+        (serde_json::Value::String(text), ColumnKind::Time) => {
+            RowCell::Time(Cow::Borrowed(text.as_str()))
+        }
+        (serde_json::Value::String(text), ColumnKind::Timestamp) => {
+            RowCell::Timestamp(Cow::Borrowed(text.as_str()))
+        }
+        (serde_json::Value::String(text), ColumnKind::TimestampTz) => {
+            RowCell::TimestampTz(Cow::Borrowed(text.as_str()))
+        }
+        (serde_json::Value::String(text), ColumnKind::Bytea) => parse_bytea(text)
+            .map_or(RowCell::Undecodable, |bytes| {
+                RowCell::Bytea(Cow::Owned(bytes))
+            }),
+        (serde_json::Value::Number(number), ColumnKind::Integer) => {
+            RowCell::Integer(Cow::Owned(number.to_string()))
+        }
+        (serde_json::Value::Number(number), ColumnKind::Decimal) => {
+            RowCell::Decimal(Cow::Owned(number.to_string()))
+        }
+        (serde_json::Value::Bool(flag), ColumnKind::Bool) => RowCell::Bool(*flag),
+        _ => RowCell::Undecodable,
+    }
+}
+
+impl RowValues for JsonRowValues<'_> {
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        self.0
+            .get(column)
+            .map_or(RowCell::Absent, |value| scalar_cell(value, kind))
+    }
+
+    fn list(&self, column: &str, kind: ColumnKind) -> RowList<'_> {
+        match self.0.get(column) {
+            Some(serde_json::Value::Null) => RowList::Null,
+            Some(serde_json::Value::Array(values)) => RowList::Values(
+                values
+                    .iter()
+                    .map(|value| scalar_cell(value, kind))
+                    .collect(),
+            ),
+            Some(_) => RowList::Undecodable,
+            None => RowList::Absent,
+        }
+    }
+
+    fn json_text(&self, column: &str, path: &[String]) -> RowCell<'_> {
+        let Some(mut current) = self.0.get(column) else {
+            return RowCell::Absent;
+        };
+        for step in path {
+            let Some(next) = current.get(step) else {
+                return RowCell::Null;
+            };
+            current = next;
+        }
+        match scalar_text(current) {
+            Some(text) => RowCell::Text(text),
+            None if current.is_null() => RowCell::Null,
+            None => RowCell::Undecodable,
+        }
     }
 }
 

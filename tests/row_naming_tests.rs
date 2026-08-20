@@ -3,10 +3,11 @@
 //! The assertions come from the request recorded in `plans/row-naming.md`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::borrow::Cow;
-
 use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::records::{records_from_row, RecordDerivation, RowValues, ValueSource};
+use rls2fga::generator::records::{
+    records_from_row, ColumnKind, RecordDerivation, RecordError, RowCell, RowList, RowValues,
+    ValueSource,
+};
 use rls2fga::generator::row_naming::RowNaming;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translation, TranslatorBuilder};
@@ -48,11 +49,29 @@ fn entry<'a>(entries: &'a [RowNaming], table: &str) -> &'a RowNaming {
 struct Row(Vec<(String, String)>);
 
 impl RowValues for Row {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.0
-            .iter()
-            .find(|(name, _)| name == column)
-            .map(|(_, value)| Cow::Borrowed(value.as_str()))
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        let Some((_, value)) = self.0.iter().find(|(name, _)| name == column) else {
+            return RowCell::Absent;
+        };
+        match kind {
+            ColumnKind::Text => RowCell::Text(value.as_str().into()),
+            ColumnKind::Integer => RowCell::Integer(value.as_str().into()),
+            ColumnKind::Decimal => RowCell::Decimal(value.as_str().into()),
+            ColumnKind::Date => RowCell::Date(value.as_str().into()),
+            ColumnKind::Time => RowCell::Time(value.as_str().into()),
+            ColumnKind::Timestamp => RowCell::Timestamp(value.as_str().into()),
+            ColumnKind::TimestampTz => RowCell::TimestampTz(value.as_str().into()),
+            ColumnKind::Uuid => RowCell::Uuid(value.as_str().into()),
+            _ => RowCell::Undecodable,
+        }
+    }
+
+    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+        RowList::Absent
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
     }
 }
 
@@ -129,6 +148,27 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     assert!(
         records.iter().any(|record| record.object == rendered),
         "the entry renders the object the records carry, got {rendered} against {records:?}"
+    );
+}
+
+#[test]
+fn an_array_key_is_not_treated_as_element_text() {
+    let sql = "CREATE TABLE docs(id TEXT[] PRIMARY KEY, owner TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id', true));
+";
+    let db: ParserDB = parse_schema(sql).expect("the schema should parse");
+    let planned = translate(&db);
+    let entries = planned.row_naming();
+    let docs = entry(&entries, "docs");
+    let subject = row(&[("id", "{a,b}"), ("owner", "alice")]);
+
+    assert_eq!(
+        docs.key.render(docs.type_name.as_str(), &subject),
+        Err(RecordError::ColumnTypeUnsupported {
+            column: "id".to_string(),
+            kind: ColumnKind::Unsupported,
+        })
     );
 }
 

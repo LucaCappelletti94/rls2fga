@@ -2,6 +2,10 @@
 source: tests/generator_tests.rs
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
+SET TIME ZONE 'UTC';
+SET DateStyle = 'ISO, MDY';
+SET bytea_output = 'hex';
+
 -- Constant TRUE policy (all rows are visible)
 SELECT 'paper_shares:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "viewer"::text ~ '^[A-Za-z0-9._@-]+$' THEN "viewer"::text ELSE '~' || encode(convert_to("viewer"::text, 'UTF8'), 'hex') END AS object, 'public_viewer' AS relation, 'user:*' AS subject
 FROM "paper_shares"

@@ -47,22 +47,210 @@ pub struct RecordContextValue {
     pub values: BTreeMap<String, String>,
 }
 
+/// Column type family the row interface can render like `PostgreSQL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnKind {
+    /// Text types.
+    Text,
+    /// UUID values.
+    Uuid,
+    /// Boolean values.
+    Bool,
+    /// Exact whole numbers.
+    Integer,
+    /// Exact decimal numbers.
+    Decimal,
+    /// Date values.
+    Date,
+    /// Times without a time zone.
+    Time,
+    /// Timestamps without a time zone.
+    Timestamp,
+    /// Timestamps with a time zone.
+    TimestampTz,
+    /// Byte arrays.
+    Bytea,
+    /// JSON values.
+    Json,
+    /// A type this evaluator cannot print.
+    Unsupported,
+}
+
+impl ColumnKind {
+    /// Map a declared type to the supported family.
+    #[must_use]
+    pub fn from_declared(declared: &str) -> Self {
+        let lowered = declared.trim().to_ascii_lowercase();
+        if lowered.trim_end().ends_with("[]") {
+            return Self::Unsupported;
+        }
+        let base = lowered.split('(').next().unwrap_or(&lowered).trim();
+        match base {
+            "text" | "varchar" | "character varying" => Self::Text,
+            "uuid" => Self::Uuid,
+            "bool" | "boolean" => Self::Bool,
+            "smallint" | "int2" | "integer" | "int" | "int4" | "bigint" | "int8"
+            | "smallserial" | "serial" | "bigserial" => Self::Integer,
+            "numeric" | "decimal" => Self::Decimal,
+            "date" => Self::Date,
+            "time" | "time without time zone" => Self::Time,
+            "timestamp" | "timestamp without time zone" => Self::Timestamp,
+            "timestamptz" | "timestamp with time zone" => Self::TimestampTz,
+            "bytea" => Self::Bytea,
+            "json" | "jsonb" => Self::Json,
+            _ => Self::Unsupported,
+        }
+    }
+
+    /// Map an array declared type to its element family.
+    #[must_use]
+    pub fn from_array_declared(declared: &str) -> Self {
+        let lowered = declared.trim().to_ascii_lowercase();
+        let Some(element) = lowered.trim_end().strip_suffix("[]") else {
+            return Self::Unsupported;
+        };
+        Self::from_declared(element.trim_end())
+    }
+}
+
+/// One column read with the type the schema declares.
+#[derive(Debug, Clone)]
+pub struct ColumnRead {
+    column: ColumnName,
+    kind: ColumnKind,
+}
+
+impl ColumnRead {
+    /// A resolved column and the type family it carries.
+    #[must_use]
+    pub fn new(column: ColumnName, kind: ColumnKind) -> Self {
+        Self { column, kind }
+    }
+
+    /// A text column named as stored in the schema.
+    #[must_use]
+    pub fn text(name: impl Into<String>) -> Self {
+        Self::new(ColumnName::from_stored(name), ColumnKind::Text)
+    }
+
+    /// The stored column name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.column.as_str()
+    }
+
+    /// The type family this read expects.
+    #[must_use]
+    pub const fn kind(&self) -> ColumnKind {
+        self.kind
+    }
+
+    /// The stored column name as an identifier.
+    #[must_use]
+    pub const fn column(&self) -> &ColumnName {
+        &self.column
+    }
+}
+
+impl core::ops::Deref for ColumnRead {
+    type Target = ColumnName;
+
+    fn deref(&self) -> &Self::Target {
+        &self.column
+    }
+}
+
+impl core::fmt::Display for ColumnRead {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.column.fmt(f)
+    }
+}
+
+impl PartialEq for ColumnRead {
+    fn eq(&self, other: &Self) -> bool {
+        self.column == other.column
+    }
+}
+
+impl PartialEq<str> for ColumnRead {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for ColumnRead {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl Eq for ColumnRead {}
+
+/// One row cell as decoded by the consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowCell<'a> {
+    /// The row image has no such column.
+    Absent,
+    /// The cell is SQL NULL.
+    Null,
+    /// The consumer could not decode this cell.
+    Undecodable,
+    /// A text value.
+    Text(Cow<'a, str>),
+    /// A UUID value.
+    Uuid(Cow<'a, str>),
+    /// A boolean value.
+    Bool(bool),
+    /// A whole number spelling.
+    Integer(Cow<'a, str>),
+    /// A decimal spelling.
+    Decimal(Cow<'a, str>),
+    /// A date spelling.
+    Date(Cow<'a, str>),
+    /// A time spelling.
+    Time(Cow<'a, str>),
+    /// A timestamp spelling without a time zone.
+    Timestamp(Cow<'a, str>),
+    /// A timestamp spelling with a time zone.
+    TimestampTz(Cow<'a, str>),
+    /// Raw bytes.
+    Bytea(Cow<'a, [u8]>),
+}
+
+/// One list column as decoded by the consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowList<'a> {
+    /// The row image has no such column.
+    Absent,
+    /// The list cell is SQL NULL.
+    Null,
+    /// The consumer could not decode the list.
+    Undecodable,
+    /// The decoded list elements.
+    Values(Vec<RowCell<'a>>),
+}
+
+/// One condition context spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextRendering {
+    /// Render like tuple SQL text.
+    SqlText,
+    /// Render like condition context JSON.
+    Json,
+}
+
 /// Where one side of a record takes its value on the row.
-///
-/// `#[non_exhaustive]`: a new tuple shape adds a variant, and a caller matching
-/// this outside the crate keeps a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValueSource {
-    /// A scalar column, read as text. One record per row.
-    Column(ColumnName),
-    /// A list column, one record per element. An empty or null list yields none,
-    /// and a null element is dropped, which is how `= ANY` refuses it.
-    ListElements(ColumnName),
-    /// A path into a JSON column, read as text. A missing key yields no record.
+    /// A scalar column. One record per row.
+    Column(ColumnRead),
+    /// A list column, one record per element.
+    ListElements(ColumnRead),
+    /// A path into a JSON column, read as text.
     JsonPath {
         /// The JSON column.
-        column: ColumnName,
+        column: ColumnRead,
         /// Field names, outermost first.
         path: Vec<String>,
     },
@@ -72,14 +260,15 @@ pub enum ValueSource {
 
 impl ValueSource {
     /// Read a scalar column named as the caller already resolved it.
-    ///
-    /// The one place outside the crate that turns text into a
-    /// [`crate::parser::identifiers::ColumnName`]. It can only ever make a column, so it cannot
-    /// be the confusion the name kinds exist to stop, and keeping it to one function is what
-    /// stops a second spelling of the same door appearing.
     #[must_use]
     pub fn column(name: impl Into<String>) -> Self {
-        Self::Column(ColumnName::from_stored(name))
+        Self::Column(ColumnRead::text(name))
+    }
+
+    #[must_use]
+    /// Read a scalar column with its schema type.
+    pub fn typed_column(name: ColumnName, kind: ColumnKind) -> Self {
+        Self::Column(ColumnRead::new(name, kind))
     }
 }
 
@@ -88,12 +277,30 @@ impl ValueSource {
 #[non_exhaustive]
 pub enum Guard {
     /// The column is not SQL NULL.
-    NotNull(ColumnName),
+    NotNull(ColumnRead),
     /// The boolean column is true.
-    IsTrue(ColumnName),
-    /// The column compares as stated against a literal constant. A NULL column
-    /// fails every comparison, exactly as SQL's three-valued logic filters it.
-    Compare(AttributePredicate),
+    IsTrue(ColumnRead),
+    /// The column compares as stated against a literal constant.
+    Compare {
+        /// The column being tested.
+        column: ColumnRead,
+        /// The predicate to apply.
+        predicate: AttributePredicate,
+    },
+}
+
+impl Guard {
+    #[must_use]
+    /// Require that a column is not SQL NULL.
+    pub fn not_null(column: ColumnRead) -> Self {
+        Self::NotNull(column)
+    }
+
+    #[must_use]
+    /// Require that a boolean column is true.
+    pub fn is_true(column: ColumnRead) -> Self {
+        Self::IsTrue(column)
+    }
 }
 
 /// How an object's name is built from a row.
@@ -138,21 +345,35 @@ impl ObjectKey {
         object_type: &str,
         row: &R,
     ) -> Result<Option<String>, RecordError> {
+        match self.evaluate(object_type, row) {
+            Eval::Value(name) => Ok(Some(name)),
+            Eval::Empty => Ok(None),
+            Eval::Refuse(error) => Err(error),
+        }
+    }
+
+    fn evaluate<R: RowValues + ?Sized>(&self, object_type: &str, row: &R) -> Eval<String> {
         let mut values = Vec::with_capacity(self.parts.len());
         for part in &self.parts {
-            let Some(value) = single_value(part, row) else {
-                return Ok(None);
-            };
-            values.push(value);
+            match single_value(part, row) {
+                Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
+                Eval::Value(cell) => {
+                    let Some(value) = render_sql_text(&cell) else {
+                        return Eval::Refuse(render_source_failure(part, &cell));
+                    };
+                    values.push(value);
+                }
+                Eval::Refuse(error) => return Eval::Refuse(error),
+            }
         }
         let name = format!(
             "{object_type}:{}",
             encode_identity(values.iter().map(String::as_str))
         );
         if object_name_fits(&name) {
-            Ok(Some(name))
+            Eval::Value(name)
         } else {
-            Err(RecordError::RowCannotBeNamed(name.chars().count()))
+            Eval::Refuse(RecordError::RowCannotBeNamed(name.chars().count()))
         }
     }
 }
@@ -192,8 +413,21 @@ impl SubjectKey {
     #[must_use]
     pub fn composite(first: &ColumnName, rest: &[ColumnName]) -> Self {
         Self {
-            part: ValueSource::Column(first.clone()),
-            rest: rest.iter().cloned().map(ValueSource::Column).collect(),
+            part: ValueSource::Column(ColumnRead::text(first.as_str())),
+            rest: rest
+                .iter()
+                .map(|column| ValueSource::Column(ColumnRead::text(column.as_str())))
+                .collect(),
+            wildcard: false,
+        }
+    }
+
+    #[must_use]
+    /// A subject key from already typed sources.
+    pub fn composite_sources(first: ValueSource, rest: Vec<ValueSource>) -> Self {
+        Self {
+            part: first,
+            rest,
             wildcard: false,
         }
     }
@@ -233,40 +467,57 @@ impl SubjectKey {
         subject_type: &str,
         row: &R,
     ) -> Result<Vec<String>, RecordError> {
+        match self.evaluate(subject_type, row) {
+            Eval::Value(subjects) => Ok(subjects),
+            Eval::Empty => Ok(Vec::new()),
+            Eval::Refuse(error) => Err(error),
+        }
+    }
+
+    fn evaluate<R: RowValues + ?Sized>(&self, subject_type: &str, row: &R) -> Eval<Vec<String>> {
         if self.wildcard {
-            return Ok(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
+            return Eval::Value(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
         }
         if !self.rest.is_empty() {
-            // A composite key names one object, so every part must be present and none
-            // expands: a missing part names no subject, exactly as a null object key does.
             let mut values = Vec::with_capacity(1 + self.rest.len());
             for source in core::iter::once(&self.part).chain(&self.rest) {
-                let Some(value) = single_value(source, row) else {
-                    return Ok(Vec::new());
-                };
-                values.push(value);
+                match single_value(source, row) {
+                    Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
+                    Eval::Value(cell) => {
+                        let Some(value) = render_sql_text(&cell) else {
+                            return Eval::Refuse(render_source_failure(source, &cell));
+                        };
+                        values.push(value);
+                    }
+                    Eval::Refuse(error) => return Eval::Refuse(error),
+                }
             }
             let name = format!(
                 "{subject_type}:{}",
                 encode_identity(values.iter().map(String::as_str))
             );
             return if subject_name_fits(&name) {
-                Ok(vec![name])
+                Eval::Value(vec![name])
             } else {
-                Err(RecordError::RowCannotBeNamed(name.len()))
+                Eval::Refuse(RecordError::RowCannotBeNamed(name.len()))
             };
         }
-        expand(&self.part, row)
-            .into_iter()
-            .map(|value| {
-                let name = format!("{subject_type}:{}", encode_part(&value));
-                if subject_name_fits(&name) {
-                    Ok(name)
-                } else {
-                    Err(RecordError::RowCannotBeNamed(name.len()))
+        match expand(&self.part, row) {
+            Eval::Value(values) => {
+                let mut subjects = Vec::with_capacity(values.len());
+                for value in values {
+                    let name = format!("{subject_type}:{}", encode_part(&value));
+                    if subject_name_fits(&name) {
+                        subjects.push(name);
+                    } else {
+                        return Eval::Refuse(RecordError::RowCannotBeNamed(name.len()));
+                    }
                 }
-            })
-            .collect()
+                Eval::Value(subjects)
+            }
+            Eval::Empty => Eval::Empty,
+            Eval::Refuse(error) => Eval::Refuse(error),
+        }
     }
 }
 
@@ -320,6 +571,8 @@ pub struct RecordContextEntry {
     pub key: String,
     /// Where the value comes from.
     pub value: ValueSource,
+    /// How the tuple SQL spells this value inside `jsonb_build_object`.
+    pub rendering: ContextRendering,
 }
 
 /// A query bound by the columns keying the slice it determines, for a shape whose
@@ -478,56 +731,49 @@ impl RecordDescription {
 }
 
 /// One row's column values, as seen by [`records_from_row`].
-///
-/// Every method defaults to "the row does not say", which yields no record
-/// rather than a wrong one. A shape added later therefore reads as absent to an
-/// existing implementation instead of failing to compile.
 pub trait RowValues {
-    /// Text of a scalar column, `None` when SQL NULL or absent.
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        let _ = column;
-        None
-    }
+    /// Read one scalar cell.
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_>;
 
-    /// A boolean column, `None` when SQL NULL, absent, or not boolean.
-    fn boolean(&self, column: &str) -> Option<bool> {
-        let _ = column;
-        None
-    }
+    /// Read one list cell.
+    fn list(&self, column: &str, kind: ColumnKind) -> RowList<'_>;
 
-    /// Elements of a list column, `None` when the column is SQL NULL or absent.
-    /// A null element is `None` inside the list.
-    fn list(&self, column: &str) -> Option<Vec<Option<Cow<'_, str>>>> {
-        let _ = column;
-        None
-    }
-
-    /// Text at a path inside a JSON column, `None` when the column is SQL NULL,
-    /// absent, the path is missing, or the value at it is JSON null.
-    fn json_text(&self, column: &str, path: &[String]) -> Option<Cow<'_, str>> {
-        let _ = (column, path);
-        None
-    }
+    /// Read a JSON leaf as text.
+    fn json_text(&self, column: &str, path: &[String]) -> RowCell<'_>;
 }
 
 /// Why a description's records could not be produced from a row.
-///
-/// `#[non_exhaustive]`: every arm is a refusal, so a caller's wildarm still
-/// falls closed, and a later reason costs it no rewrite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RecordError {
-    /// The description reads more than the one row, so querying is the only
-    /// answer. Carries the reason the description recorded.
+    /// The description reads more than the one row.
     NotDerivableFromOneRow(String),
-    /// The row's values render a name longer than the target accepts, carrying
-    /// that length. The whole-table SQL leaves such a row out, so no fact names
-    /// it either way. Shortening the name would merge two rows into one object
-    /// and hand each the other's access, so this refuses rather than guesses.
+    /// The row's values render a name longer than the target accepts.
     RowCannotBeNamed(usize),
-    /// A subject slice is keyed on one column, and the replayed key carried
-    /// this many values, so no subject can be named from it.
+    /// A subject slice is keyed on one column, and the replayed key carried this many values.
     SubjectKeyNotSingular(usize),
+    /// The row image did not carry a column this record needs.
+    ColumnAbsent(String),
+    /// The row image carried a column value the consumer could not decode.
+    ColumnUndecodable(String),
+    /// The schema declares a type this row evaluator refuses to print.
+    ColumnTypeUnsupported {
+        /// The requested column.
+        column: String,
+        /// The unsupported type family.
+        kind: ColumnKind,
+    },
+    /// The decoded cell kind does not match the schema.
+    ColumnTypeMismatch {
+        /// The requested column.
+        column: String,
+        /// The schema type family.
+        expected: ColumnKind,
+        /// The decoded type family.
+        actual: ColumnKind,
+    },
+    /// The database needs state the row image does not carry to compare this column.
+    ComparisonNeedsQuery(String),
 }
 
 impl core::fmt::Display for RecordError {
@@ -545,65 +791,93 @@ impl core::fmt::Display for RecordError {
                 f,
                 "a subject slice is keyed on one column, and the replayed key carried {count}"
             ),
+            Self::ColumnAbsent(column) => write!(f, "the row image did not carry {column}"),
+            Self::ColumnUndecodable(column) => {
+                write!(f, "the row image carried an undecodable value for {column}")
+            }
+            Self::ColumnTypeUnsupported { column, kind } => {
+                write!(f, "the row column {column} has unsupported type {kind:?}")
+            }
+            Self::ColumnTypeMismatch {
+                column,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "the row column {column} decoded as {actual:?}, not {expected:?}"
+            ),
+            Self::ComparisonNeedsQuery(column) => {
+                write!(f, "the row comparison on {column} needs the database")
+            }
         }
     }
 }
 
 impl core::error::Error for RecordError {}
 
+enum Eval<T> {
+    Value(T),
+    Empty,
+    Refuse(RecordError),
+}
+
 /// Produce the records one row implies.
-///
-/// # Errors
-///
-/// Returns [`RecordError::NotDerivableFromOneRow`] for a joining description,
-/// since an empty set would read as "this row implies nothing", which is a
-/// different and wrong answer.
 pub fn records_from_row<R: RowValues + ?Sized>(
     description: &RecordDescription,
     row: &R,
 ) -> Result<Vec<Record>, RecordError> {
-    let (table, template, guards) = match &description.derivation {
+    let (template, guards) = match &description.derivation {
         RecordDerivation::FromRow {
-            table,
-            template,
-            guards,
-        } => (table, template, guards),
+            template, guards, ..
+        } => (template, guards),
         RecordDerivation::Joined { reason, .. } => {
             return Err(RecordError::NotDerivableFromOneRow(reason.clone()))
         }
-        // Answering with the fact would read as "this row implies it", which is what
-        // withdrawing it on a delete then acts on.
         RecordDerivation::Constant { .. } => {
             return Err(RecordError::NotDerivableFromOneRow(
                 "the fact follows from the translation, so no row decides it".to_string(),
             ))
         }
     };
-    let _ = table;
 
-    if !guards.iter().all(|guard| guard_holds(guard, row)) {
-        return Ok(Vec::new());
+    let mut refusal = None;
+    for guard in guards {
+        match guard_holds(guard, row) {
+            Eval::Value(()) => {}
+            Eval::Empty => return Ok(Vec::new()),
+            Eval::Refuse(error) => {
+                if refusal.is_none() {
+                    refusal = Some(error);
+                }
+            }
+        }
     }
 
-    // The object side never expands, so a missing value drops the whole record
-    // exactly as the SQL's NULL guard does. A name the target cannot spell is a
-    // refusal rather than an empty set, which would read as "this row grants
-    // nobody" and be believed.
-    let Some(object) = template.object_key.render(&template.object_type, row)? else {
-        return Ok(Vec::new());
+    let object = match template.object_key.evaluate(&template.object_type, row) {
+        Eval::Value(object) => object,
+        Eval::Empty => return Ok(Vec::new()),
+        Eval::Refuse(error) => {
+            if refusal.is_none() {
+                refusal = Some(error);
+            }
+            String::new()
+        }
     };
 
-    // A context the row cannot fill yields no record at all, exactly as the tuple SQL
-    // skips a row whose carried column is NULL.
     let context = match &template.context {
         Some(context) => {
             let mut values = BTreeMap::new();
             for entry in &context.entries {
-                match single_value(&entry.value, row) {
-                    Some(value) => {
+                match context_value(entry, row) {
+                    Eval::Value(value) => {
                         values.insert(entry.key.clone(), value);
                     }
-                    None => return Ok(Vec::new()),
+                    Eval::Empty => return Ok(Vec::new()),
+                    Eval::Refuse(error) => {
+                        if refusal.is_none() {
+                            refusal = Some(error);
+                        }
+                    }
                 }
             }
             Some(RecordContextValue {
@@ -614,9 +888,22 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         None => None,
     };
 
-    Ok(template
-        .subject_key
-        .render(&template.subject_type, row)?
+    let subjects = match template.subject_key.evaluate(&template.subject_type, row) {
+        Eval::Value(subjects) => subjects,
+        Eval::Empty => return Ok(Vec::new()),
+        Eval::Refuse(error) => {
+            if refusal.is_none() {
+                refusal = Some(error);
+            }
+            Vec::new()
+        }
+    };
+
+    if let Some(error) = refusal {
+        return Err(error);
+    }
+
+    Ok(subjects
         .into_iter()
         .map(|subject| Record {
             object: object.clone(),
@@ -627,50 +914,65 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         .collect())
 }
 
-fn guard_holds<R: RowValues + ?Sized>(guard: &Guard, row: &R) -> bool {
+fn guard_holds<R: RowValues + ?Sized>(guard: &Guard, row: &R) -> Eval<()> {
     match guard {
-        Guard::NotNull(column) => row.text(column.as_str()).is_some(),
-        Guard::IsTrue(column) => row.boolean(column.as_str()) == Some(true),
-        Guard::Compare(predicate) => compare_holds(predicate, row),
+        Guard::NotNull(column) => match checked_cell(row, column) {
+            Eval::Value(RowCell::Null) | Eval::Empty => Eval::Empty,
+            Eval::Value(_) => Eval::Value(()),
+            Eval::Refuse(error) => Eval::Refuse(error),
+        },
+        Guard::IsTrue(column) => match checked_cell(row, column) {
+            Eval::Value(RowCell::Bool(true)) => Eval::Value(()),
+            Eval::Value(RowCell::Bool(false) | RowCell::Null) | Eval::Empty => Eval::Empty,
+            Eval::Value(cell) => Eval::Refuse(type_mismatch(column, &cell)),
+            Eval::Refuse(error) => Eval::Refuse(error),
+        },
+        Guard::Compare { column, predicate } => compare_holds(column, predicate, row),
     }
 }
 
-/// A column against a literal, ordered numerically when both sides are numbers and
-/// lexically otherwise, which is what the column's own type decides in SQL.
-///
-/// A NULL or absent column fails every comparison, `<>` included, mirroring the way
-/// three-valued logic filters the row rather than admitting it.
-fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R) -> bool {
-    let ordering = match &predicate.value {
-        AttributeLiteral::Boolean(flag) => {
-            let Some(actual) = row.boolean(predicate.column.as_str()) else {
-                return false;
-            };
-            actual.cmp(flag)
-        }
-        AttributeLiteral::Number(number) => {
-            let Some(actual) = row.text(predicate.column.as_str()) else {
-                return false;
-            };
-            // A number the row or the policy spells unparseably cannot be ordered, so
-            // the guard refuses rather than falling back to text.
-            let (Ok(left), Ok(right)) = (actual.parse::<f64>(), number.parse::<f64>()) else {
-                return false;
-            };
-            let Some(ordering) = left.partial_cmp(&right) else {
-                return false;
+fn compare_holds<R: RowValues + ?Sized>(
+    column: &ColumnRead,
+    predicate: &AttributePredicate,
+    row: &R,
+) -> Eval<()> {
+    let cell = match checked_cell(row, column) {
+        Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
+        Eval::Value(cell) => cell,
+        Eval::Refuse(error) => return Eval::Refuse(error),
+    };
+    let ordering = match (&cell, &predicate.value) {
+        (RowCell::Bool(actual), AttributeLiteral::Boolean(expected)) => actual.cmp(expected),
+        (
+            RowCell::Integer(actual) | RowCell::Decimal(actual),
+            AttributeLiteral::Number(expected),
+        ) => {
+            let Some(ordering) = compare_decimals(actual.as_ref(), expected) else {
+                return Eval::Refuse(RecordError::ComparisonNeedsQuery(column.to_string()));
             };
             ordering
         }
-        AttributeLiteral::Text(text) => {
-            let Some(actual) = row.text(predicate.column.as_str()) else {
-                return false;
-            };
-            actual.as_ref().cmp(text.as_str())
+        (RowCell::Text(actual), AttributeLiteral::Text(expected)) => {
+            if !matches!(
+                predicate.operator,
+                AttributeOperator::Eq | AttributeOperator::NotEq
+            ) {
+                return Eval::Refuse(RecordError::ComparisonNeedsQuery(column.to_string()));
+            }
+            actual.as_ref().cmp(expected.as_str())
         }
+        _ => return Eval::Refuse(RecordError::ComparisonNeedsQuery(column.to_string())),
     };
 
-    match predicate.operator {
+    if ordering_matches(predicate.operator, ordering) {
+        Eval::Value(())
+    } else {
+        Eval::Empty
+    }
+}
+
+fn ordering_matches(operator: AttributeOperator, ordering: core::cmp::Ordering) -> bool {
+    match operator {
         AttributeOperator::Eq => ordering.is_eq(),
         AttributeOperator::NotEq => ordering.is_ne(),
         AttributeOperator::Gt => ordering.is_gt(),
@@ -680,31 +982,329 @@ fn compare_holds<R: RowValues + ?Sized>(predicate: &AttributePredicate, row: &R)
     }
 }
 
-/// The one value a non-expanding source yields.
-fn single_value<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Option<String> {
-    match source {
-        ValueSource::Column(column) => row.text(column.as_str()).map(Cow::into_owned),
-        ValueSource::JsonPath { column, path } => {
-            row.json_text(column.as_str(), path).map(Cow::into_owned)
-        }
-        ValueSource::Literal(value) => Some(value.clone()),
-        // A list on the object side is not a shape the crate emits, and guessing
-        // an element would key the record on an arbitrary one.
-        ValueSource::ListElements(_) => None,
+fn context_value<R: RowValues + ?Sized>(entry: &RecordContextEntry, row: &R) -> Eval<String> {
+    match single_value(&entry.value, row) {
+        Eval::Value(RowCell::Null) | Eval::Empty => Eval::Empty,
+        Eval::Value(cell) => render_context_cell(&cell, entry.rendering).map_or_else(
+            || Eval::Refuse(render_source_failure(&entry.value, &cell)),
+            Eval::Value,
+        ),
+        Eval::Refuse(error) => Eval::Refuse(error),
     }
 }
 
-/// Every value a source yields, which is at most one except for a list.
-fn expand<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Vec<String> {
+fn single_value<'a, R: RowValues + ?Sized>(
+    source: &'a ValueSource,
+    row: &'a R,
+) -> Eval<RowCell<'a>> {
     match source {
-        ValueSource::ListElements(column) => row
-            .list(column.as_str())
-            .unwrap_or_default()
-            .into_iter()
-            .flatten()
-            .map(Cow::into_owned)
-            .collect(),
-        other => single_value(other, row).into_iter().collect(),
+        ValueSource::Column(column) => checked_cell(row, column),
+        ValueSource::JsonPath { column, path } => match row.json_text(column.as_str(), path) {
+            RowCell::Absent => Eval::Refuse(RecordError::ColumnAbsent(column.to_string())),
+            RowCell::Null => Eval::Empty,
+            RowCell::Undecodable => {
+                Eval::Refuse(RecordError::ColumnUndecodable(column.to_string()))
+            }
+            cell => Eval::Value(cell),
+        },
+        ValueSource::Literal(value) => Eval::Value(RowCell::Text(Cow::Borrowed(value.as_str()))),
+        ValueSource::ListElements(_) => Eval::Empty,
+    }
+}
+
+fn expand<R: RowValues + ?Sized>(source: &ValueSource, row: &R) -> Eval<Vec<String>> {
+    match source {
+        ValueSource::ListElements(column) => match row.list(column.as_str(), column.kind()) {
+            RowList::Absent => Eval::Refuse(RecordError::ColumnAbsent(column.to_string())),
+            RowList::Null => Eval::Empty,
+            RowList::Undecodable => {
+                Eval::Refuse(RecordError::ColumnUndecodable(column.to_string()))
+            }
+            RowList::Values(values) => {
+                let mut out = Vec::new();
+                for value in values {
+                    match checked_list_cell(column, value) {
+                        Eval::Value(RowCell::Null) | Eval::Empty => {}
+                        Eval::Value(cell) => {
+                            let Some(rendered) = render_sql_text(&cell) else {
+                                return Eval::Refuse(render_cell_failure(column, &cell));
+                            };
+                            out.push(rendered);
+                        }
+                        Eval::Refuse(error) => return Eval::Refuse(error),
+                    }
+                }
+                if out.is_empty() {
+                    Eval::Empty
+                } else {
+                    Eval::Value(out)
+                }
+            }
+        },
+        other => match single_value(other, row) {
+            Eval::Value(RowCell::Null) | Eval::Empty => Eval::Empty,
+            Eval::Value(cell) => render_sql_text(&cell).map_or_else(
+                || Eval::Refuse(render_source_failure(other, &cell)),
+                |value| Eval::Value(vec![value]),
+            ),
+            Eval::Refuse(error) => Eval::Refuse(error),
+        },
+    }
+}
+
+fn checked_cell<'a, R: RowValues + ?Sized>(row: &'a R, column: &ColumnRead) -> Eval<RowCell<'a>> {
+    match column.kind() {
+        ColumnKind::Unsupported | ColumnKind::Json => {
+            return Eval::Refuse(RecordError::ColumnTypeUnsupported {
+                column: column.to_string(),
+                kind: column.kind(),
+            })
+        }
+        _ => {}
+    }
+    checked_list_cell(column, row.cell(column.as_str(), column.kind()))
+}
+
+fn checked_list_cell<'a>(column: &ColumnRead, cell: RowCell<'a>) -> Eval<RowCell<'a>> {
+    match cell {
+        RowCell::Absent => Eval::Refuse(RecordError::ColumnAbsent(column.to_string())),
+        RowCell::Null => Eval::Value(RowCell::Null),
+        RowCell::Undecodable => Eval::Refuse(RecordError::ColumnUndecodable(column.to_string())),
+        cell => {
+            if cell_kind(&cell) == Some(column.kind()) {
+                Eval::Value(cell)
+            } else {
+                Eval::Refuse(type_mismatch(column, &cell))
+            }
+        }
+    }
+}
+
+fn cell_kind(cell: &RowCell<'_>) -> Option<ColumnKind> {
+    match cell {
+        RowCell::Text(_) => Some(ColumnKind::Text),
+        RowCell::Uuid(_) => Some(ColumnKind::Uuid),
+        RowCell::Bool(_) => Some(ColumnKind::Bool),
+        RowCell::Integer(_) => Some(ColumnKind::Integer),
+        RowCell::Decimal(_) => Some(ColumnKind::Decimal),
+        RowCell::Date(_) => Some(ColumnKind::Date),
+        RowCell::Time(_) => Some(ColumnKind::Time),
+        RowCell::Timestamp(_) => Some(ColumnKind::Timestamp),
+        RowCell::TimestampTz(_) => Some(ColumnKind::TimestampTz),
+        RowCell::Bytea(_) => Some(ColumnKind::Bytea),
+        RowCell::Absent | RowCell::Null | RowCell::Undecodable => None,
+    }
+}
+
+fn type_mismatch(column: &ColumnRead, cell: &RowCell<'_>) -> RecordError {
+    RecordError::ColumnTypeMismatch {
+        column: column.to_string(),
+        expected: column.kind(),
+        actual: cell_kind(cell).unwrap_or(ColumnKind::Unsupported),
+    }
+}
+
+fn render_cell_failure(column: &ColumnRead, cell: &RowCell<'_>) -> RecordError {
+    if matches!(cell, RowCell::TimestampTz(_)) {
+        RecordError::ColumnUndecodable(column.to_string())
+    } else {
+        type_mismatch(column, cell)
+    }
+}
+
+fn render_source_failure(source: &ValueSource, cell: &RowCell<'_>) -> RecordError {
+    match source {
+        ValueSource::Column(column)
+        | ValueSource::ListElements(column)
+        | ValueSource::JsonPath { column, .. }
+            if matches!(cell, RowCell::TimestampTz(_)) =>
+        {
+            RecordError::ColumnUndecodable(column.to_string())
+        }
+        _ => type_mismatch_source(source, cell),
+    }
+}
+
+fn type_mismatch_source(source: &ValueSource, cell: &RowCell<'_>) -> RecordError {
+    match source {
+        ValueSource::Column(column) | ValueSource::ListElements(column) => {
+            type_mismatch(column, cell)
+        }
+        ValueSource::JsonPath { column, .. } => type_mismatch(column, cell),
+        ValueSource::Literal(_) => RecordError::ColumnTypeMismatch {
+            column: "literal".to_string(),
+            expected: ColumnKind::Text,
+            actual: cell_kind(cell).unwrap_or(ColumnKind::Unsupported),
+        },
+    }
+}
+
+fn render_sql_text(cell: &RowCell<'_>) -> Option<String> {
+    match cell {
+        RowCell::Absent | RowCell::Null | RowCell::Undecodable => None,
+        RowCell::Text(value)
+        | RowCell::Uuid(value)
+        | RowCell::Integer(value)
+        | RowCell::Decimal(value)
+        | RowCell::Date(value)
+        | RowCell::Time(value) => Some(value.to_string()),
+        RowCell::Bool(flag) => Some(if *flag { "true" } else { "false" }.to_string()),
+        RowCell::Timestamp(value) => Some(timestamp_sql_text(value.as_ref())),
+        RowCell::TimestampTz(value) => timestamptz_sql_text(value.as_ref()),
+        RowCell::Bytea(bytes) => Some(bytea_sql_text(bytes.as_ref())),
+    }
+}
+
+fn render_context_cell(cell: &RowCell<'_>, rendering: ContextRendering) -> Option<String> {
+    match rendering {
+        ContextRendering::SqlText => render_sql_text(cell),
+        ContextRendering::Json => render_json_text(cell),
+    }
+}
+
+fn render_json_text(cell: &RowCell<'_>) -> Option<String> {
+    match cell {
+        RowCell::Absent | RowCell::Null | RowCell::Undecodable => None,
+        RowCell::Text(value)
+        | RowCell::Uuid(value)
+        | RowCell::Integer(value)
+        | RowCell::Decimal(value)
+        | RowCell::Date(value)
+        | RowCell::Time(value) => Some(value.to_string()),
+        RowCell::Bool(flag) => Some(if *flag { "true" } else { "false" }.to_string()),
+        RowCell::Timestamp(value) => Some(timestamp_json_text(value.as_ref())),
+        RowCell::TimestampTz(value) => timestamptz_json_text(value.as_ref()),
+        RowCell::Bytea(bytes) => Some(bytea_sql_text(bytes.as_ref())),
+    }
+}
+
+fn timestamp_sql_text(value: &str) -> String {
+    value.replace('T', " ")
+}
+
+fn timestamp_json_text(value: &str) -> String {
+    value.replacen(' ', "T", 1)
+}
+
+fn utc_timestamptz_base(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    for suffix in ["+00:00", "-00:00", "+00", "-00", "Z"] {
+        if let Some(base) = trimmed.strip_suffix(suffix) {
+            return Some(base);
+        }
+    }
+    None
+}
+
+fn timestamptz_sql_text(value: &str) -> Option<String> {
+    let base = utc_timestamptz_base(value)?;
+    let mut text = timestamp_sql_text(base);
+    text.push_str("+00");
+    Some(text)
+}
+
+fn timestamptz_json_text(value: &str) -> Option<String> {
+    let base = utc_timestamptz_base(value)?;
+    let mut text = timestamp_json_text(base);
+    text.push_str("+00:00");
+    Some(text)
+}
+
+fn bytea_sql_text(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("\\x");
+    for byte in bytes {
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+    out
+}
+
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => char::from(b'0' + nibble),
+        10..=15 => char::from(b'a' + (nibble - 10)),
+        _ => char::from(b'0'),
+    }
+}
+
+fn compare_decimals(left: &str, right: &str) -> Option<core::cmp::Ordering> {
+    let (left_negative, mut left_digits, left_scale) = parse_decimal(left)?;
+    let (right_negative, mut right_digits, right_scale) = parse_decimal(right)?;
+    if left_negative != right_negative {
+        return Some(if left_negative {
+            core::cmp::Ordering::Less
+        } else {
+            core::cmp::Ordering::Greater
+        });
+    }
+    let scale = left_scale.max(right_scale);
+    left_digits.extend(core::iter::repeat_n('0', scale - left_scale));
+    right_digits.extend(core::iter::repeat_n('0', scale - right_scale));
+    trim_leading_zeroes(&mut left_digits);
+    trim_leading_zeroes(&mut right_digits);
+    let ordering = left_digits
+        .len()
+        .cmp(&right_digits.len())
+        .then_with(|| left_digits.cmp(&right_digits));
+    Some(if left_negative {
+        ordering.reverse()
+    } else {
+        ordering
+    })
+}
+
+fn parse_decimal(input: &str) -> Option<(bool, String, usize)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.contains(['e', 'E']) {
+        return None;
+    }
+    let (negative, unsigned) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, trimmed)
+    };
+    let mut parts = unsigned.split('.');
+    let whole = parts.next()?;
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some() || whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    if !whole
+        .bytes()
+        .chain(fraction.bytes())
+        .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut digits = String::with_capacity(whole.len() + fraction.len());
+    digits.push_str(whole);
+    digits.push_str(fraction);
+    let mut scale = fraction.len();
+    while scale > 0 && digits.ends_with('0') {
+        digits.pop();
+        scale -= 1;
+    }
+    trim_leading_zeroes(&mut digits);
+    if digits == "0" {
+        Some((false, digits, 0))
+    } else {
+        Some((negative, digits, scale))
+    }
+}
+
+fn trim_leading_zeroes(digits: &mut String) {
+    let first_non_zero = digits
+        .bytes()
+        .position(|byte| byte != b'0')
+        .unwrap_or(digits.len());
+    if first_non_zero == digits.len() {
+        digits.clear();
+        digits.push('0');
+    } else if first_non_zero > 0 {
+        digits.drain(..first_non_zero);
     }
 }
 
@@ -728,16 +1328,48 @@ mod tests {
     }
 
     impl RowValues for Row {
-        fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-            self.0.get(column).map(|v| Cow::Borrowed(v.as_str()))
+        fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+            match self.0.get(column) {
+                Some(value) if kind == ColumnKind::Text => RowCell::Text(Cow::Borrowed(value)),
+                Some(_) => RowCell::Undecodable,
+                None => RowCell::Absent,
+            }
+        }
+
+        fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+            RowList::Absent
+        }
+
+        fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+            RowCell::Absent
+        }
+    }
+
+    struct TimestampTzRow(&'static str);
+
+    impl RowValues for TimestampTzRow {
+        fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+            if column == "observed_at" && kind == ColumnKind::TimestampTz {
+                RowCell::TimestampTz(Cow::Borrowed(self.0))
+            } else {
+                RowCell::Absent
+            }
+        }
+
+        fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+            RowList::Absent
+        }
+
+        fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+            RowCell::Absent
         }
     }
 
     #[test]
     fn an_object_name_joins_every_key_part_encoded() {
         let key = ObjectKey::new(vec![
-            ValueSource::Column(ColumnName::from_stored("paper_id")),
-            ValueSource::Column(ColumnName::from_stored("viewer")),
+            ValueSource::column("paper_id"),
+            ValueSource::column("viewer"),
         ]);
         let row = Row::of(&[("paper_id", "1"), ("viewer", "a|b")]);
         assert_eq!(
@@ -749,11 +1381,28 @@ mod tests {
     #[test]
     fn a_missing_key_part_yields_no_record_rather_than_a_short_name() {
         let key = ObjectKey::new(vec![
-            ValueSource::Column(ColumnName::from_stored("paper_id")),
-            ValueSource::Column(ColumnName::from_stored("viewer")),
+            ValueSource::column("paper_id"),
+            ValueSource::column("viewer"),
         ]);
         let row = Row::of(&[("paper_id", "1")]);
-        assert_eq!(key.render("paper_shares", &row).unwrap(), None);
+        assert_eq!(
+            key.render("paper_shares", &row),
+            Err(RecordError::ColumnAbsent("viewer".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_non_utc_timestamptz_key_is_refused() {
+        let key = ObjectKey::new(vec![ValueSource::typed_column(
+            ColumnName::from_stored("observed_at"),
+            ColumnKind::TimestampTz,
+        )]);
+        let row = TimestampTzRow("2026-01-01T01:00:00+01:00");
+
+        assert_eq!(
+            key.render("readings", &row),
+            Err(RecordError::ColumnUndecodable("observed_at".to_string()))
+        );
     }
 
     fn share_description_with_two_context_parameters() -> RecordDescription {
@@ -773,17 +1422,19 @@ mod tests {
                             RecordContextEntry {
                                 key: "viewer".to_string(),
                                 value: ValueSource::column("viewer"),
+                                rendering: ContextRendering::SqlText,
                             },
                             RecordContextEntry {
                                 key: "expires_at".to_string(),
                                 value: ValueSource::column("expires_at"),
+                                rendering: ContextRendering::SqlText,
                             },
                         ],
                     }),
                 }),
                 guards: vec![
-                    Guard::NotNull(ColumnName::from_stored("viewer")),
-                    Guard::NotNull(ColumnName::from_stored("expires_at")),
+                    Guard::NotNull(ColumnRead::text("viewer")),
+                    Guard::NotNull(ColumnRead::text("expires_at")),
                 ],
             },
         }
@@ -818,14 +1469,13 @@ mod tests {
     }
 
     #[test]
-    fn a_record_context_missing_one_parameter_yields_no_record() {
+    fn a_record_context_missing_one_parameter_is_refused() {
         let description = share_description_with_two_context_parameters();
         let row = Row::of(&[("paper_id", "1"), ("viewer", "team-a")]);
-        assert!(
-            records_from_row(&description, &row)
-                .expect("the row evaluates")
-                .is_empty(),
-            "a row that cannot fill every context parameter states no record"
+        assert_eq!(
+            records_from_row(&description, &row),
+            Err(RecordError::ColumnAbsent("expires_at".to_string())),
+            "a missing context parameter would load a mismatched condition"
         );
     }
 
@@ -988,5 +1638,907 @@ mod tests {
             scope.rendered_key(&[long.as_str()]),
             Err(RecordError::RowCannotBeNamed(_))
         ));
+    }
+
+    #[derive(Default)]
+    struct FullRow {
+        cells: BTreeMap<String, RowCell<'static>>,
+        lists: BTreeMap<String, RowList<'static>>,
+        json: BTreeMap<String, RowCell<'static>>,
+    }
+
+    impl FullRow {
+        fn with_cell(mut self, column: &str, cell: RowCell<'static>) -> Self {
+            self.cells.insert(column.to_string(), cell);
+            self
+        }
+
+        fn with_list(mut self, column: &str, list: RowList<'static>) -> Self {
+            self.lists.insert(column.to_string(), list);
+            self
+        }
+
+        fn with_json(mut self, column: &str, cell: RowCell<'static>) -> Self {
+            self.json.insert(column.to_string(), cell);
+            self
+        }
+    }
+
+    impl RowValues for FullRow {
+        fn cell(&self, column: &str, _kind: ColumnKind) -> RowCell<'_> {
+            self.cells.get(column).cloned().unwrap_or(RowCell::Absent)
+        }
+
+        fn list(&self, column: &str, _kind: ColumnKind) -> RowList<'_> {
+            self.lists.get(column).cloned().unwrap_or(RowList::Absent)
+        }
+
+        fn json_text(&self, column: &str, _path: &[String]) -> RowCell<'_> {
+            self.json.get(column).cloned().unwrap_or(RowCell::Absent)
+        }
+    }
+
+    fn read(column: &str, kind: ColumnKind) -> ColumnRead {
+        ColumnRead::new(ColumnName::from_stored(column), kind)
+    }
+
+    fn predicate(
+        column: &str,
+        operator: AttributeOperator,
+        value: AttributeLiteral,
+    ) -> AttributePredicate {
+        AttributePredicate {
+            column: ColumnName::from_stored(column),
+            operator,
+            value,
+        }
+    }
+
+    fn single_row_description(
+        object_key: ObjectKey,
+        subject_key: SubjectKey,
+        guards: Vec<Guard>,
+        context: Option<RecordContext>,
+    ) -> RecordDescription {
+        RecordDescription {
+            tables: vec!["docs".to_string()],
+            derivation: RecordDerivation::FromRow {
+                table: "docs".to_string(),
+                template: Box::new(RecordTemplate {
+                    object_type: "docs".to_string(),
+                    object_key,
+                    relation: member_relation(),
+                    subject_type: "user".to_string(),
+                    subject_key,
+                    context,
+                }),
+                guards,
+            },
+        }
+    }
+
+    #[test]
+    fn column_reads_and_guard_builders_keep_their_kind() {
+        let id = read("id", ColumnKind::Text);
+
+        assert_eq!(id.column().as_str(), "id");
+        assert_eq!(id.kind(), ColumnKind::Text);
+        assert!(<ColumnRead as PartialEq<str>>::eq(&id, "id"));
+        let literal: &str = "id";
+        assert!(<ColumnRead as PartialEq<&str>>::eq(&id, &literal));
+        assert_eq!(Guard::not_null(id.clone()), Guard::NotNull(id.clone()));
+        assert_eq!(Guard::is_true(id.clone()), Guard::IsTrue(id));
+        assert_eq!(ColumnKind::from_declared("inet"), ColumnKind::Unsupported);
+        assert_eq!(
+            ColumnKind::from_array_declared("text"),
+            ColumnKind::Unsupported
+        );
+        assert_eq!(ColumnKind::from_array_declared("text[]"), ColumnKind::Text);
+    }
+
+    #[test]
+    fn render_helpers_cover_supported_cells_and_refusals() {
+        assert_eq!(render_sql_text(&RowCell::Absent), None);
+        assert_eq!(render_sql_text(&RowCell::Null), None);
+        assert_eq!(render_sql_text(&RowCell::Undecodable), None);
+        assert_eq!(
+            render_sql_text(&RowCell::Integer(Cow::Borrowed("7"))),
+            Some("7".to_string())
+        );
+        assert_eq!(
+            render_sql_text(&RowCell::Decimal(Cow::Borrowed("7.5"))),
+            Some("7.5".to_string())
+        );
+        assert_eq!(
+            render_sql_text(&RowCell::Bool(true)),
+            Some("true".to_string())
+        );
+        assert_eq!(
+            render_sql_text(&RowCell::Timestamp(Cow::Borrowed("2026-01-01T00:00:00"))),
+            Some("2026-01-01 00:00:00".to_string())
+        );
+        assert_eq!(
+            render_sql_text(&RowCell::TimestampTz(Cow::Borrowed("2026-01-01T00:00:00Z"))),
+            Some("2026-01-01 00:00:00+00".to_string())
+        );
+        assert_eq!(
+            render_context_cell(
+                &RowCell::TimestampTz(Cow::Borrowed("2026-01-01 00:00:00+00")),
+                ContextRendering::Json
+            ),
+            Some("2026-01-01T00:00:00+00:00".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Bytea(Cow::Owned(vec![0, 15, 255]))),
+            Some("\\x000fff".to_string())
+        );
+        assert_eq!(timestamptz_sql_text("2026-01-01T00:00:00+01:00"), None);
+        assert_eq!(hex_digit(15), 'f');
+        assert_eq!(hex_digit(16), '0');
+    }
+
+    #[test]
+    fn decimal_comparison_covers_scale_sign_and_invalid_spelling() {
+        assert_eq!(compare_decimals("-1", "0"), Some(core::cmp::Ordering::Less));
+        assert_eq!(
+            compare_decimals("1", "-1"),
+            Some(core::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_decimals("+001.2300", "1.23"),
+            Some(core::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_decimals("-2.0", "-1.5"),
+            Some(core::cmp::Ordering::Less)
+        );
+        assert_eq!(compare_decimals("1e2", "100"), None);
+        assert_eq!(compare_decimals(".", "0"), None);
+        assert_eq!(compare_decimals("abc", "0"), None);
+        assert_eq!(compare_decimals("1.2.3", "0"), None);
+    }
+
+    #[test]
+    fn record_error_display_covers_new_refusals() {
+        assert_eq!(
+            RecordError::ColumnAbsent("id".to_string()).to_string(),
+            "the row image did not carry id"
+        );
+        assert_eq!(
+            RecordError::ColumnUndecodable("id".to_string()).to_string(),
+            "the row image carried an undecodable value for id"
+        );
+        assert_eq!(
+            RecordError::ColumnTypeUnsupported {
+                column: "id".to_string(),
+                kind: ColumnKind::Json,
+            }
+            .to_string(),
+            "the row column id has unsupported type Json"
+        );
+        assert_eq!(
+            RecordError::ColumnTypeMismatch {
+                column: "id".to_string(),
+                expected: ColumnKind::Text,
+                actual: ColumnKind::Bool,
+            }
+            .to_string(),
+            "the row column id decoded as Bool, not Text"
+        );
+        assert_eq!(
+            RecordError::ComparisonNeedsQuery("id".to_string()).to_string(),
+            "the row comparison on id needs the database"
+        );
+    }
+
+    #[test]
+    fn guards_cover_empty_match_and_refusal_paths() {
+        let active = read("active", ColumnKind::Bool);
+        let priority = read("priority", ColumnKind::Decimal);
+        let status = read("status", ColumnKind::Text);
+
+        let active_true = FullRow::default().with_cell("active", RowCell::Bool(true));
+        assert!(matches!(
+            guard_holds(&Guard::IsTrue(active.clone()), &active_true),
+            Eval::Value(())
+        ));
+
+        let active_false = FullRow::default().with_cell("active", RowCell::Bool(false));
+        assert!(matches!(
+            guard_holds(&Guard::IsTrue(active.clone()), &active_false),
+            Eval::Empty
+        ));
+
+        let active_null = FullRow::default().with_cell("active", RowCell::Null);
+        assert!(matches!(
+            guard_holds(&Guard::NotNull(active.clone()), &active_null),
+            Eval::Empty
+        ));
+        assert!(matches!(
+            guard_holds(&Guard::IsTrue(active.clone()), &active_null),
+            Eval::Empty
+        ));
+
+        let active_text =
+            FullRow::default().with_cell("active", RowCell::Text(Cow::Borrowed("true")));
+        assert!(matches!(
+            guard_holds(&Guard::IsTrue(active.clone()), &active_text),
+            Eval::Refuse(RecordError::ColumnTypeMismatch { .. })
+        ));
+
+        let priority_row =
+            FullRow::default().with_cell("priority", RowCell::Decimal(Cow::Borrowed("10.50")));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority.clone(),
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::GtEq,
+                        AttributeLiteral::Number("10.5".to_string())
+                    ),
+                },
+                &priority_row
+            ),
+            Eval::Value(())
+        ));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority.clone(),
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::Gt,
+                        AttributeLiteral::Number("9".to_string())
+                    ),
+                },
+                &priority_row
+            ),
+            Eval::Value(())
+        ));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority.clone(),
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::Lt,
+                        AttributeLiteral::Number("10".to_string())
+                    ),
+                },
+                &priority_row
+            ),
+            Eval::Empty
+        ));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority.clone(),
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::Eq,
+                        AttributeLiteral::Number("1e1".to_string())
+                    ),
+                },
+                &priority_row
+            ),
+            Eval::Refuse(RecordError::ComparisonNeedsQuery(_))
+        ));
+        let integer_priority = read("priority_int", ColumnKind::Integer);
+        let priority_integer =
+            FullRow::default().with_cell("priority_int", RowCell::Integer(Cow::Borrowed("10")));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: integer_priority,
+                    predicate: predicate(
+                        "priority_int",
+                        AttributeOperator::GtEq,
+                        AttributeLiteral::Number("10".to_string())
+                    ),
+                },
+                &priority_integer
+            ),
+            Eval::Value(())
+        ));
+
+        let status_row =
+            FullRow::default().with_cell("status", RowCell::Text(Cow::Borrowed("published")));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: status.clone(),
+                    predicate: predicate(
+                        "status",
+                        AttributeOperator::NotEq,
+                        AttributeLiteral::Text("draft".to_string())
+                    ),
+                },
+                &status_row
+            ),
+            Eval::Value(())
+        ));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: status.clone(),
+                    predicate: predicate(
+                        "status",
+                        AttributeOperator::Gt,
+                        AttributeLiteral::Text("draft".to_string())
+                    ),
+                },
+                &status_row
+            ),
+            Eval::Refuse(RecordError::ComparisonNeedsQuery(_))
+        ));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: status,
+                    predicate: predicate(
+                        "status",
+                        AttributeOperator::Eq,
+                        AttributeLiteral::Boolean(true)
+                    ),
+                },
+                &status_row
+            ),
+            Eval::Refuse(RecordError::ComparisonNeedsQuery(_))
+        ));
+
+        let text_flag = FullRow::default().with_cell("flag", RowCell::Text(Cow::Borrowed("yes")));
+        assert!(matches!(
+            guard_holds(&Guard::IsTrue(read("flag", ColumnKind::Text)), &text_flag),
+            Eval::Refuse(RecordError::ColumnTypeMismatch { .. })
+        ));
+
+        let missing_priority = FullRow::default();
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority.clone(),
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::Eq,
+                        AttributeLiteral::Number("1".to_string())
+                    ),
+                },
+                &missing_priority
+            ),
+            Eval::Refuse(RecordError::ColumnAbsent(_))
+        ));
+
+        let null_priority = FullRow::default().with_cell("priority", RowCell::Null);
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: priority,
+                    predicate: predicate(
+                        "priority",
+                        AttributeOperator::Eq,
+                        AttributeLiteral::Number("1".to_string())
+                    ),
+                },
+                &null_priority
+            ),
+            Eval::Empty
+        ));
+
+        let active_bool = FullRow::default().with_cell("active", RowCell::Bool(true));
+        assert!(matches!(
+            guard_holds(
+                &Guard::Compare {
+                    column: active,
+                    predicate: predicate(
+                        "active",
+                        AttributeOperator::Eq,
+                        AttributeLiteral::Boolean(true)
+                    ),
+                },
+                &active_bool
+            ),
+            Eval::Value(())
+        ));
+    }
+
+    #[test]
+    fn record_evaluation_keeps_empty_records_ahead_of_refusals() {
+        let description = single_row_description(
+            ObjectKey::new(vec![ValueSource::typed_column(
+                ColumnName::from_stored("id"),
+                ColumnKind::Text,
+            )]),
+            SubjectKey::column("owner"),
+            vec![Guard::not_null(read("gate", ColumnKind::Text))],
+            Some(RecordContext {
+                condition: "when_row_matches".to_string(),
+                entries: vec![RecordContextEntry {
+                    key: "ctx".to_string(),
+                    value: ValueSource::typed_column(
+                        ColumnName::from_stored("ctx"),
+                        ColumnKind::Text,
+                    ),
+                    rendering: ContextRendering::SqlText,
+                }],
+            }),
+        );
+
+        let empty_by_guard = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell("owner", RowCell::Text(Cow::Borrowed("alice")))
+            .with_cell("gate", RowCell::Null)
+            .with_cell("ctx", RowCell::Text(Cow::Borrowed("v")));
+        assert_eq!(
+            records_from_row(&description, &empty_by_guard).unwrap(),
+            Vec::new()
+        );
+
+        let empty_by_object = FullRow::default()
+            .with_cell("id", RowCell::Null)
+            .with_cell("owner", RowCell::Undecodable)
+            .with_cell("gate", RowCell::Text(Cow::Borrowed("ok")))
+            .with_cell("ctx", RowCell::Text(Cow::Borrowed("v")));
+        assert_eq!(
+            records_from_row(&description, &empty_by_object).unwrap(),
+            Vec::new()
+        );
+
+        let empty_by_context = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell("owner", RowCell::Undecodable)
+            .with_cell("gate", RowCell::Text(Cow::Borrowed("ok")))
+            .with_cell("ctx", RowCell::Null);
+        assert_eq!(
+            records_from_row(&description, &empty_by_context).unwrap(),
+            Vec::new()
+        );
+
+        let subject_refusal = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell("owner", RowCell::Undecodable)
+            .with_cell("gate", RowCell::Text(Cow::Borrowed("ok")))
+            .with_cell("ctx", RowCell::Text(Cow::Borrowed("v")));
+        assert_eq!(
+            records_from_row(&description, &subject_refusal),
+            Err(RecordError::ColumnUndecodable("owner".to_string()))
+        );
+
+        let context_refusal = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell("owner", RowCell::Text(Cow::Borrowed("alice")))
+            .with_cell("gate", RowCell::Text(Cow::Borrowed("ok")))
+            .with_cell("ctx", RowCell::Undecodable);
+        assert_eq!(
+            records_from_row(&description, &context_refusal),
+            Err(RecordError::ColumnUndecodable("ctx".to_string()))
+        );
+    }
+
+    #[test]
+    fn subject_keys_cover_composite_and_list_sources() {
+        let composite = SubjectKey::composite(
+            &ColumnName::from_stored("tenant_id"),
+            &[ColumnName::from_stored("user_id")],
+        );
+        let row = FullRow::default()
+            .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
+            .with_cell("user_id", RowCell::Text(Cow::Borrowed("u|1")));
+        assert_eq!(
+            composite.render("account", &row).unwrap(),
+            vec!["account:t1|~757c31".to_string()]
+        );
+
+        let null_composite = FullRow::default()
+            .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
+            .with_cell("user_id", RowCell::Null);
+        assert_eq!(
+            composite.render("account", &null_composite).unwrap(),
+            Vec::<String>::new()
+        );
+
+        let long_composite = FullRow::default()
+            .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
+            .with_cell("user_id", RowCell::Text(Cow::Owned("x".repeat(600))));
+        assert!(matches!(
+            composite.render("account", &long_composite),
+            Err(RecordError::RowCannotBeNamed(_))
+        ));
+
+        let list_subject =
+            SubjectKey::new(ValueSource::ListElements(read("editors", ColumnKind::Text)));
+        let list_row = FullRow::default().with_list(
+            "editors",
+            RowList::Values(vec![
+                RowCell::Text(Cow::Borrowed("alice")),
+                RowCell::Null,
+                RowCell::Text(Cow::Borrowed("bob smith")),
+            ]),
+        );
+        assert_eq!(
+            list_subject.render("user", &list_row).unwrap(),
+            vec![
+                "user:alice".to_string(),
+                "user:~626f6220736d697468".to_string()
+            ]
+        );
+
+        let empty_list = FullRow::default().with_list(
+            "editors",
+            RowList::Values(vec![RowCell::Null, RowCell::Null]),
+        );
+        assert_eq!(
+            list_subject.render("user", &empty_list).unwrap(),
+            Vec::<String>::new()
+        );
+
+        let null_list = FullRow::default().with_list("editors", RowList::Null);
+        assert_eq!(
+            list_subject.render("user", &null_list).unwrap(),
+            Vec::<String>::new()
+        );
+
+        let undecodable_list = FullRow::default().with_list("editors", RowList::Undecodable);
+        assert_eq!(
+            list_subject.render("user", &undecodable_list),
+            Err(RecordError::ColumnUndecodable("editors".to_string()))
+        );
+
+        let absent_list = FullRow::default();
+        assert_eq!(
+            list_subject.render("user", &absent_list),
+            Err(RecordError::ColumnAbsent("editors".to_string()))
+        );
+
+        let mismatched_list = FullRow::default().with_list(
+            "editors",
+            RowList::Values(vec![RowCell::Integer(Cow::Borrowed("1"))]),
+        );
+        assert!(matches!(
+            list_subject.render("user", &mismatched_list),
+            Err(RecordError::ColumnTypeMismatch { .. })
+        ));
+
+        let zoned_list = SubjectKey::new(ValueSource::ListElements(read(
+            "instants",
+            ColumnKind::TimestampTz,
+        )));
+        let bad_zone = FullRow::default().with_list(
+            "instants",
+            RowList::Values(vec![RowCell::TimestampTz(Cow::Borrowed(
+                "2026-01-01T01:00:00+01:00",
+            ))]),
+        );
+        assert_eq!(
+            zoned_list.render("instant", &bad_zone),
+            Err(RecordError::ColumnUndecodable("instants".to_string()))
+        );
+    }
+
+    #[test]
+    fn json_path_sources_keep_absent_null_and_decode_failures_distinct() {
+        let json_source = ValueSource::JsonPath {
+            column: read("meta", ColumnKind::Json),
+            path: vec!["owner".to_string()],
+        };
+        let object_key = ObjectKey::new(vec![json_source.clone()]);
+
+        let absent = FullRow::default();
+        assert_eq!(
+            object_key.render("docs", &absent),
+            Err(RecordError::ColumnAbsent("meta".to_string()))
+        );
+
+        let null = FullRow::default().with_json("meta", RowCell::Null);
+        assert_eq!(object_key.render("docs", &null).unwrap(), None);
+
+        let undecodable = FullRow::default().with_json("meta", RowCell::Undecodable);
+        assert_eq!(
+            object_key.render("docs", &undecodable),
+            Err(RecordError::ColumnUndecodable("meta".to_string()))
+        );
+
+        let owner = FullRow::default().with_json("meta", RowCell::Text(Cow::Borrowed("alice")));
+        assert_eq!(
+            object_key.render("docs", &owner).unwrap(),
+            Some("docs:alice".to_string())
+        );
+
+        let bad_zone = FullRow::default().with_json(
+            "meta",
+            RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00")),
+        );
+        assert_eq!(
+            object_key.render("docs", &bad_zone),
+            Err(RecordError::ColumnUndecodable("meta".to_string()))
+        );
+    }
+
+    #[test]
+    fn typed_cell_checks_cover_unsupported_and_mismatched_kinds() {
+        let json_column = read("meta", ColumnKind::Json);
+        let unsupported_column = read("id", ColumnKind::Unsupported);
+        let text_column = read("id", ColumnKind::Text);
+
+        let row = FullRow::default().with_cell("id", RowCell::Bool(true));
+        assert!(matches!(
+            checked_cell(&row, &json_column),
+            Eval::Refuse(RecordError::ColumnTypeUnsupported { .. })
+        ));
+        assert!(matches!(
+            checked_cell(&row, &unsupported_column),
+            Eval::Refuse(RecordError::ColumnTypeUnsupported { .. })
+        ));
+        assert!(matches!(
+            checked_cell(&row, &text_column),
+            Eval::Refuse(RecordError::ColumnTypeMismatch { .. })
+        ));
+
+        assert_eq!(
+            cell_kind(&RowCell::Uuid(Cow::Borrowed("u"))),
+            Some(ColumnKind::Uuid)
+        );
+        assert_eq!(
+            cell_kind(&RowCell::Decimal(Cow::Borrowed("1.2"))),
+            Some(ColumnKind::Decimal)
+        );
+        assert_eq!(
+            cell_kind(&RowCell::Time(Cow::Borrowed("12:00:00"))),
+            Some(ColumnKind::Time)
+        );
+        assert_eq!(
+            cell_kind(&RowCell::Timestamp(Cow::Borrowed("2026-01-01T00:00:00"))),
+            Some(ColumnKind::Timestamp)
+        );
+        assert_eq!(
+            cell_kind(&RowCell::Bytea(Cow::Owned(vec![1]))),
+            Some(ColumnKind::Bytea)
+        );
+        assert_eq!(cell_kind(&RowCell::Absent), None);
+    }
+
+    #[test]
+    fn remaining_record_branches_cover_refusals_and_fallbacks() {
+        let composite = SubjectKey::composite_sources(
+            ValueSource::typed_column(ColumnName::from_stored("seen_at"), ColumnKind::TimestampTz),
+            vec![ValueSource::typed_column(
+                ColumnName::from_stored("user_id"),
+                ColumnKind::Text,
+            )],
+        );
+        let bad_zone = FullRow::default()
+            .with_cell(
+                "seen_at",
+                RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00")),
+            )
+            .with_cell("user_id", RowCell::Text(Cow::Borrowed("alice")));
+        assert_eq!(
+            composite.render("account", &bad_zone),
+            Err(RecordError::ColumnUndecodable("seen_at".to_string()))
+        );
+
+        let missing_rest = FullRow::default().with_cell(
+            "seen_at",
+            RowCell::TimestampTz(Cow::Borrowed("2026-01-01T00:00:00Z")),
+        );
+        assert_eq!(
+            composite.render("account", &missing_rest),
+            Err(RecordError::ColumnAbsent("user_id".to_string()))
+        );
+
+        let object_refuses = single_row_description(
+            ObjectKey::column("id"),
+            SubjectKey::wildcard(),
+            Vec::new(),
+            None,
+        );
+        let bad_object = FullRow::default().with_cell("id", RowCell::Undecodable);
+        assert_eq!(
+            records_from_row(&object_refuses, &bad_object),
+            Err(RecordError::ColumnUndecodable("id".to_string()))
+        );
+
+        let subject_empty = single_row_description(
+            ObjectKey::column("id"),
+            SubjectKey::column("owner"),
+            Vec::new(),
+            None,
+        );
+        let null_subject = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell("owner", RowCell::Null);
+        assert_eq!(
+            records_from_row(&subject_empty, &null_subject).unwrap(),
+            Vec::new()
+        );
+
+        let bad_context = single_row_description(
+            ObjectKey::column("id"),
+            SubjectKey::wildcard(),
+            Vec::new(),
+            Some(RecordContext {
+                condition: "when_seen".to_string(),
+                entries: vec![RecordContextEntry {
+                    key: "seen_at".to_string(),
+                    value: ValueSource::typed_column(
+                        ColumnName::from_stored("seen_at"),
+                        ColumnKind::TimestampTz,
+                    ),
+                    rendering: ContextRendering::Json,
+                }],
+            }),
+        );
+        let bad_context_row = FullRow::default()
+            .with_cell("id", RowCell::Text(Cow::Borrowed("d1")))
+            .with_cell(
+                "seen_at",
+                RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00")),
+            );
+        assert_eq!(
+            records_from_row(&bad_context, &bad_context_row),
+            Err(RecordError::ColumnUndecodable("seen_at".to_string()))
+        );
+    }
+
+    #[test]
+    fn helper_branches_cover_literal_list_and_render_failures() {
+        assert!(matches!(
+            single_value(&ValueSource::Literal("fixed".to_string()), &FullRow::default()),
+            Eval::Value(RowCell::Text(value)) if value == "fixed"
+        ));
+        assert!(matches!(
+            single_value(
+                &ValueSource::ListElements(read("editors", ColumnKind::Text)),
+                &FullRow::default()
+            ),
+            Eval::Empty
+        ));
+
+        let null_row = FullRow::default().with_cell("id", RowCell::Null);
+        assert!(matches!(
+            expand(&ValueSource::column("id"), &null_row),
+            Eval::Empty
+        ));
+
+        let bad_zone = FullRow::default().with_cell(
+            "seen_at",
+            RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00")),
+        );
+        assert!(matches!(
+            expand(
+                &ValueSource::typed_column(
+                    ColumnName::from_stored("seen_at"),
+                    ColumnKind::TimestampTz
+                ),
+                &bad_zone
+            ),
+            Eval::Refuse(RecordError::ColumnUndecodable(_))
+        ));
+
+        let bad_row = FullRow::default().with_cell("id", RowCell::Undecodable);
+        assert!(matches!(
+            expand(&ValueSource::column("id"), &bad_row),
+            Eval::Refuse(RecordError::ColumnUndecodable(_))
+        ));
+
+        let text_column = read("id", ColumnKind::Text);
+        assert!(matches!(
+            render_cell_failure(&text_column, &RowCell::Bool(true)),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert!(matches!(
+            render_source_failure(
+                &ValueSource::ListElements(read("seen_at", ColumnKind::TimestampTz)),
+                &RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00"))
+            ),
+            RecordError::ColumnUndecodable(_)
+        ));
+        assert!(matches!(
+            render_source_failure(&ValueSource::column("id"), &RowCell::Bool(true)),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert!(matches!(
+            render_source_failure(
+                &ValueSource::Literal("fixed".to_string()),
+                &RowCell::Bool(true)
+            ),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert!(matches!(
+            type_mismatch_source(&ValueSource::column("id"), &RowCell::Bool(true)),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert!(matches!(
+            type_mismatch_source(
+                &ValueSource::ListElements(read("ids", ColumnKind::Text)),
+                &RowCell::Bool(true)
+            ),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert!(matches!(
+            type_mismatch_source(
+                &ValueSource::JsonPath {
+                    column: read("meta", ColumnKind::Json),
+                    path: vec!["owner".to_string()],
+                },
+                &RowCell::Bool(true)
+            ),
+            RecordError::ColumnTypeMismatch { .. }
+        ));
+        assert_eq!(
+            type_mismatch_source(&ValueSource::Literal("fixed".to_string()), &RowCell::Null),
+            RecordError::ColumnTypeMismatch {
+                column: "literal".to_string(),
+                expected: ColumnKind::Text,
+                actual: ColumnKind::Unsupported,
+            }
+        );
+    }
+
+    #[test]
+    fn json_and_sql_rendering_cover_every_added_cell_arm() {
+        assert_eq!(
+            render_sql_text(&RowCell::Bytea(Cow::Owned(vec![222, 173]))),
+            Some("\\xdead".to_string())
+        );
+        assert_eq!(render_json_text(&RowCell::Absent), None);
+        assert_eq!(render_json_text(&RowCell::Null), None);
+        assert_eq!(render_json_text(&RowCell::Undecodable), None);
+        assert_eq!(
+            render_json_text(&RowCell::Text(Cow::Borrowed("alice"))),
+            Some("alice".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Uuid(Cow::Borrowed(
+                "00000000-0000-0000-0000-000000000001"
+            ))),
+            Some("00000000-0000-0000-0000-000000000001".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Integer(Cow::Borrowed("42"))),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Decimal(Cow::Borrowed("42.5"))),
+            Some("42.5".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Date(Cow::Borrowed("2026-01-01"))),
+            Some("2026-01-01".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Time(Cow::Borrowed("12:34:56"))),
+            Some("12:34:56".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Bool(false)),
+            Some("false".to_string())
+        );
+        assert_eq!(
+            render_json_text(&RowCell::Timestamp(Cow::Borrowed("2026-01-01 12:34:56"))),
+            Some("2026-01-01T12:34:56".to_string())
+        );
+    }
+
+    #[test]
+    fn local_test_rows_cover_their_non_text_paths() {
+        let row = Row::of(&[("id", "not-a-uuid")]);
+        assert_eq!(row.cell("id", ColumnKind::Uuid), RowCell::Undecodable);
+        assert_eq!(row.list("id", ColumnKind::Text), RowList::Absent);
+        assert_eq!(row.json_text("id", &["owner".to_string()]), RowCell::Absent);
+
+        let timestamp = TimestampTzRow("2026-01-01T00:00:00Z");
+        assert_eq!(
+            timestamp.cell("other", ColumnKind::TimestampTz),
+            RowCell::Absent
+        );
+        assert_eq!(
+            timestamp.list("observed_at", ColumnKind::TimestampTz),
+            RowList::Absent
+        );
+        assert_eq!(
+            timestamp.json_text("observed_at", &["owner".to_string()]),
+            RowCell::Absent
+        );
     }
 }
