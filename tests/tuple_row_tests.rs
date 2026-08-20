@@ -80,6 +80,14 @@ fn ownership_outputs(db: &ParserDB) -> Outputs<'_, ParserDB> {
         .outputs_accepting_gaps()
 }
 
+#[test]
+fn malformed_context_display_names_scalar_object_requirement() {
+    assert_eq!(
+        TupleRowError::MalformedContext("{}".to_string()).to_string(),
+        "the context {} is not a non-empty object of scalars"
+    );
+}
+
 /// The record every other case here varies one column of.
 fn owner_row<'a>() -> TupleRow<'a> {
     TupleRow {

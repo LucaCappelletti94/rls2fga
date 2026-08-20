@@ -1307,6 +1307,89 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM r
     );
 }
 
+#[test]
+fn a_text_ordering_attribute_gate_stays_joined() {
+    let schema = "
+CREATE TABLE docs (id TEXT PRIMARY KEY, status TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_status ON docs FOR SELECT USING (status > 'draft');
+";
+    let shapes = shapes_of(schema, "{}");
+    let gate = entry(&shapes, "docs", "public_viewer");
+    let [shape] = gate.shapes.as_slice() else {
+        panic!("one attribute gate shape, got {:?}", gate.shapes);
+    };
+    let RecordDerivation::Joined { queries, reason } = &shape.derivation else {
+        panic!("text ordering needs SQL: {:?}", shape.derivation);
+    };
+    assert!(reason.contains("row comparison on status needs SQL"));
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].table, "docs");
+    assert_eq!(queries[0].key_columns.len(), 1);
+    assert_eq!(queries[0].key_columns[0].as_str(), "id");
+}
+
+#[test]
+fn a_unique_holder_clock_settles_from_its_member_row() {
+    let schema = "
+CREATE TABLE reviewers (user_id TEXT PRIMARY KEY, active BOOLEAN, vetted_at TIMESTAMPTZ);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM reviewers
+    WHERE reviewers.user_id = auth_current_user_id()
+      AND reviewers.active
+      AND reviewers.active IS NOT NULL
+      AND reviewers.vetted_at > now()));
+";
+    let shapes = shapes_of(schema, ACCESSOR_REGISTRY);
+    let holder = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
+        .expect("the reviewers holder is reported");
+    let RecordDerivation::FromRow {
+        table,
+        template,
+        guards,
+    } = &holder.shapes[0].derivation
+    else {
+        panic!("one unique member row decides the holder member: {holder:?}");
+    };
+    assert_eq!(table, "reviewers");
+    assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
+    let context = template
+        .context
+        .as_ref()
+        .expect("the clock rides the member tuple");
+    assert!(
+        context
+            .entries
+            .iter()
+            .any(|entry| entry.value == ValueSource::column("vetted_at")),
+        "the row's timestamp reaches the condition: {:?}",
+        context.entries
+    );
+    assert!(
+        guards
+            .iter()
+            .any(|guard| matches!(guard, Guard::NotNull(column) if column == "vetted_at")),
+        "a null timestamp writes no tuple: {guards:?}"
+    );
+    assert!(
+        guards
+            .iter()
+            .any(|guard| matches!(guard, Guard::IsTrue(column) if column == "active")),
+        "the residual boolean stays a row guard: {guards:?}"
+    );
+    assert!(
+        guards
+            .iter()
+            .any(|guard| matches!(guard, Guard::NotNull(column) if column == "active")),
+        "the residual not-null check stays a row guard: {guards:?}"
+    );
+}
+
 /// A shared holder object is not decided by one row of its member table, since a
 /// second row naming the same user keeps the record alive.
 #[test]
