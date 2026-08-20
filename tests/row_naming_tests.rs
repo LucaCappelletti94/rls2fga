@@ -19,6 +19,7 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(db)
+        .expect("translation should plan")
 }
 
 fn naming(sql: &str) -> Vec<RowNaming> {

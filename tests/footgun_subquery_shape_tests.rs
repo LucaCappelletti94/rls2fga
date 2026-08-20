@@ -8,8 +8,9 @@ use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass, UnclassifiedE
 mod support;
 
 use support::footgun::{
-    db_of, membership_translation, relation_definition, shaped_membership_subquery_complaints,
-    translator, tuples_reading_from, type_names, TEAMS_SCHEMA,
+    db_of, is_structural_type, membership_translation, relation_definition,
+    shaped_membership_subquery_complaints, translator, tuples_reading_from, type_names,
+    TEAMS_SCHEMA,
 };
 
 /// `IN (SELECT ... LIMIT 1)` tests membership of one arbitrary row, not of the whole
@@ -336,7 +337,10 @@ fn refused_teams_policy_complaints(clause: &str, reason_names: &str) -> Vec<Stri
         classified => complaints.push(format!("`{clause}` must not classify, got {classified:?}")),
     }
 
-    let outputs = translator.translate(&db).outputs_accepting_gaps();
+    let outputs = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
     let dsl = outputs.model();
     let can_select = relation_definition(&dsl, "teams", "can_select");
     if can_select.as_deref() != Some("no_access") {
@@ -353,7 +357,7 @@ fn refused_teams_policy_complaints(clause: &str, reason_names: &str) -> Vec<Stri
     // A type named after the projected column is the shape the phantom holder takes.
     let phantom: Vec<String> = type_names(&dsl)
         .into_iter()
-        .filter(|name| name != "teams" && name != "user" && name != "members")
+        .filter(|name| name != "teams" && name != "members" && !is_structural_type(name))
         .collect();
     if !phantom.is_empty() {
         complaints.push(format!("`{clause}` invented the types {phantom:?}"));
@@ -434,7 +438,10 @@ fn an_in_subquery_carrying_two_correlations_is_refused() {
             "{TENANT_SCHEMA}CREATE POLICY docs_members ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let outputs = translator.translate(&db).outputs_accepting_gaps();
+        let outputs = translator
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps();
         let dsl = outputs.model();
         let can_select = relation_definition(&dsl, "docs", "can_select");
         if can_select.as_deref() != Some("no_access") {

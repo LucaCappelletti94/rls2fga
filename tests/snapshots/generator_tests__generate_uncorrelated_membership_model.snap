@@ -7,34 +7,38 @@ model
 
 type user
 
-type campaigns
+type docs
   relations
-    define gate_visible_now_7dce72fa: [user:* with when_campaigns_visible_now_d8ae5d2b]
     define no_access: [nobody]
+    define staff_holder: [staff_holder]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: gate_visible_now_7dce72fa
+    define can_select: member from staff_holder
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
 
-type embargoes
+type memos
   relations
-    define gate_visible_now_7dce72fa: [user:* with when_embargoes_visible_now_b550f981]
     define no_access: [nobody]
+    define reviewers_holder: [reviewers_holder]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: gate_visible_now_7dce72fa
+    define can_select: member from reviewers_holder
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
 
 type nobody
 
-condition when_campaigns_visible_now_d8ae5d2b(request_time: timestamp, starts_at: timestamp) {
-  starts_at <= request_time
-}
+type reviewers_holder
+  relations
+    define member: [user with when_memos_memos_reviewers_0f827662]
 
-condition when_embargoes_visible_now_b550f981(lifts_at: timestamp, request_time: timestamp) {
-  lifts_at > request_time
+type staff_holder
+  relations
+    define member: [user]
+
+condition when_memos_memos_reviewers_0f827662(request_time: timestamp, vetted_at: timestamp) {
+  vetted_at > request_time
 }

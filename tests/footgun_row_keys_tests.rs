@@ -10,7 +10,7 @@ use rls2fga::translator::TranslatorBuilder;
 
 mod support;
 
-use support::footgun::{db_of, relation_denies, translation, translator};
+use support::footgun::{db_of, is_structural_type, relation_denies, translation, translator};
 
 /// Every type the model declares with no relation under it, in declaration order.
 fn types_declaring_no_relation(dsl: &str) -> Vec<String> {
@@ -49,6 +49,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -85,6 +86,7 @@ CREATE POLICY p ON {table} FOR SELECT USING (owner_id = current_user);
         ));
         translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .notes()
             .iter()
@@ -133,7 +135,9 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
-    let translation = translator(ConfidenceLevel::B).translate(&db);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
     assert_eq!(
         translation
             .clone()
@@ -165,6 +169,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -198,6 +203,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -227,6 +233,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -401,7 +408,11 @@ CREATE POLICY shares_read ON shares FOR SELECT {policy_tail};
         if let Some(json) = registry_json {
             builder = builder.with_registry_json(json).expect("registry json");
         }
-        let outputs = builder.build().translate(&db).outputs_accepting_gaps();
+        let outputs = builder
+            .build()
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps();
         let dsl = outputs.model();
 
         let sources: Vec<String> = outputs
@@ -446,8 +457,8 @@ CREATE POLICY shares_read ON shares FOR SELECT {policy_tail};
             "{what}: no tuple can fill a scope on 'shares', so none may be declared:\n{dsl}"
         );
         for empty in types_declaring_no_relation(&dsl) {
-            assert_eq!(
-                empty, "user",
+            assert!(
+                is_structural_type(&empty),
                 "{what}: '{empty}' outlived the expression that minted it:\n{dsl}"
             );
         }
@@ -472,6 +483,7 @@ CREATE POLICY b_read ON b FOR SELECT USING (EXISTS (SELECT 1 FROM a WHERE a.k = 
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(
@@ -508,6 +520,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let reported = outputs.notes().iter().any(|note| {
@@ -540,6 +553,7 @@ CREATE POLICY p ON paper_shares FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let bridge = outputs
@@ -575,6 +589,7 @@ CREATE POLICY p ON projects FOR SELECT USING (EXISTS (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(

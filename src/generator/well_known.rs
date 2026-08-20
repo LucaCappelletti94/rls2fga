@@ -6,20 +6,64 @@
 //! `const`. That is the point: the names the generator uses most are relation names by
 //! construction, so none of them can be handed to a place wanting a column or a type.
 
+#[cfg(not(feature = "std"))]
+use crate::no_std_prelude::*;
+
 use crate::parser::identifiers::RelationName;
 
-/// Subject type for a database user.
+/// Default subject type for a database user.
 pub const USER_TYPE: &str = "user";
 
-/// Subject type for a team, minted by role threshold translation.
+/// Default subject type for a team, minted by role threshold translation.
 pub const TEAM_TYPE: &str = "team";
 
-/// Subject type for a `PostgreSQL` role named in a policy's `TO` clause.
+/// Default subject type for a `PostgreSQL` role named in a policy's `TO` clause.
 pub const PG_ROLE_TYPE: &str = "pg_role";
 
-/// Type standing for the set of roles one policy's scope admits. One object per scope, so
-/// the roles it admits are stored once rather than once per row the policy guards.
+/// Default subject type of the denial, which nothing is.
+pub const NOBODY_TYPE: &str = "nobody";
+
+/// Default type standing for the set of roles one policy's scope admits.
 pub const PG_ROLE_SCOPE_TYPE: &str = "pg_role_scope";
+
+/// Caller-chosen type names the generator treats as its own vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WellKnownTypes {
+    /// Type of database users.
+    pub user: String,
+    /// Type of teams.
+    pub team: String,
+    /// Type of database roles.
+    pub pg_role: String,
+    /// Type of role-scope objects.
+    pub pg_role_scope: String,
+    /// Type that cannot grant any caller.
+    pub nobody: String,
+}
+
+impl WellKnownTypes {
+    pub(crate) fn reserved(&self) -> [(&'static str, &str); 5] {
+        [
+            ("user", self.user.as_str()),
+            ("team", self.team.as_str()),
+            ("pg_role", self.pg_role.as_str()),
+            ("pg_role_scope", self.pg_role_scope.as_str()),
+            ("nobody", self.nobody.as_str()),
+        ]
+    }
+}
+
+impl Default for WellKnownTypes {
+    fn default() -> Self {
+        Self {
+            user: USER_TYPE.to_string(),
+            team: TEAM_TYPE.to_string(),
+            pg_role: PG_ROLE_TYPE.to_string(),
+            pg_role_scope: PG_ROLE_SCOPE_TYPE.to_string(),
+            nobody: NOBODY_TYPE.to_string(),
+        }
+    }
+}
 
 /// Relation on [`PG_ROLE_SCOPE_TYPE`] holding the roles a scope admits.
 #[must_use]

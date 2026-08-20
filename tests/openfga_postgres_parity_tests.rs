@@ -184,6 +184,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -193,6 +194,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -433,6 +435,7 @@ async fn insert_readback_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -442,6 +445,7 @@ async fn insert_readback_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -638,6 +642,7 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -647,6 +652,7 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -827,6 +833,7 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -836,6 +843,7 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -953,6 +961,7 @@ async fn noinherit_member_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -962,6 +971,7 @@ async fn noinherit_member_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1169,6 +1179,7 @@ async fn upsert_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1178,6 +1189,7 @@ async fn upsert_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1368,6 +1380,7 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1377,6 +1390,7 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1565,6 +1579,7 @@ async fn locking_read_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1574,6 +1589,7 @@ async fn locking_read_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1673,6 +1689,7 @@ async fn absent_clause_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1682,6 +1699,7 @@ async fn absent_clause_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1781,6 +1799,7 @@ async fn altered_policy_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1790,6 +1809,7 @@ async fn altered_policy_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -1971,6 +1991,7 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -1980,6 +2001,7 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -2124,6 +2146,7 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -2133,6 +2156,7 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
 
@@ -2289,6 +2313,7 @@ CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -2298,6 +2323,7 @@ CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
 
@@ -2610,6 +2636,7 @@ CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now()
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -2619,6 +2646,7 @@ CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now()
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
 
@@ -2838,6 +2866,7 @@ CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_curre
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -3016,6 +3045,7 @@ CREATE POLICY docs_staff ON docs FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -3196,6 +3226,7 @@ CREATE POLICY doc_links_visible ON doc_links FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -3396,6 +3427,7 @@ async fn read_recursion_parity_postgres18_and_openfga() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -3562,6 +3594,7 @@ CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -3785,6 +3818,7 @@ async fn session_attribute_parity_postgres18_and_openfga() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
     };
     let model = planned().json_model();
@@ -4001,6 +4035,7 @@ async fn shared_paper_parity_postgres18_and_openfga() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
     };
     let model = planned().json_model();
@@ -4200,6 +4235,7 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
     };
     let model = planned().json_model();
@@ -4417,6 +4453,7 @@ async fn token_claim_set_parity_postgres18_and_openfga() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
     };
     let model = planned().json_model();
@@ -4638,6 +4675,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -4833,6 +4871,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -5014,7 +5053,8 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
 
     // The object every question names comes from the report, not from this test.
     let naming = translation.row_naming();
@@ -5215,6 +5255,7 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -5397,6 +5438,7 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
     };
     let model = planned().json_model();
@@ -5637,6 +5679,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -5765,7 +5808,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
 /// The membership arm carries a grace period, `s.expires_at > now() - interval '30 days'`.
 /// The offset has to reach the condition and ride the request clock, so a share expired
 /// inside the window still grants and one past it does not, two-sided across two instants.
-/// The interval's single-table door has parity already; this pins the membership door the
+/// The interval's single-table door has parity already. This pins the membership door the
 /// same generic path reaches.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
@@ -5837,6 +5880,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -6038,6 +6082,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -6102,7 +6147,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
         let expected = if label == "now" {
             papers_visible_to(&mut conn, None, Some(subject)).contains(&1)
         } else {
-            // PostgreSQL cannot be asked about the future; a year on every share has expired.
+            // PostgreSQL cannot be asked about the future. A year on every share has expired.
             false
         };
         if expected {
@@ -6192,7 +6237,7 @@ fn all_tuple_writes(
 
 /// The EXISTS-membership arm with an expiry: the clock rides the member tuple's condition,
 /// reached through member-from-parent, so the store stops granting the instant the clock
-/// passes the boundary. Two instants prove the flip; a model ignoring the clock keeps the
+/// passes the boundary. Two instants prove the flip. A model ignoring the clock keeps the
 /// live share and fails.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
@@ -6252,6 +6297,7 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -6386,6 +6432,7 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
@@ -6442,7 +6489,7 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
         }
     }
     // Alice's latest reviewer row is live, so she reads every memo at now despite her
-    // expired row, and loses it a year on; bob's only row is expired, so he reads nothing.
+    // expired row and loses it a year on. Bob's only row is expired, so he reads nothing.
     assert!(
         granted > 0,
         "alice's live latest deadline grants nothing, so the aggregation dropped it"
@@ -6557,6 +6604,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -6566,6 +6614,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -6708,6 +6757,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let tuple_queries = Translation::plan(
@@ -6717,6 +6767,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
@@ -6789,4 +6840,161 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         "PostgreSQL/OpenFGA two-column parity mismatches:\n{}",
         failures.join("\n")
     );
+}
+
+/// Two tables carrying a policy of the same name, scoped to different roles.
+///
+/// The scope object used to be named after the policy, so both tables landed on one object
+/// and each one's roles were written onto it. Every row of both then admitted the union,
+/// which handed each table the other's role. Schema written inline rather than as a fixture:
+/// the shape is two tables and two policies, and the corpus already carries five role
+/// scopes.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn same_policy_name_on_two_tables_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO auditor USING (TRUE);
+CREATE POLICY p ON memos FOR SELECT TO support USING (TRUE);
+";
+    // The policies name the roles, so they exist before the schema is applied and before
+    // the schema is classified.
+    conn.batch_execute("CREATE ROLE auditor; CREATE ROLE support;")
+        .expect("Failed to create the scoped roles");
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the shared policy name schema on PostgreSQL 18");
+    conn.batch_execute(
+        "INSERT INTO docs (id) VALUES ('d1'); \
+         INSERT INTO memos (id) VALUES ('m1');",
+    )
+    .expect("Failed to seed the guarded rows");
+
+    // One caller per role, each holding exactly one of the two.
+    let readers = [("alice", "auditor"), ("bob", "support")];
+    for (user, role) in readers {
+        conn.batch_execute(&format!(
+            "CREATE ROLE {user} LOGIN; \
+             GRANT SELECT ON docs TO {user}; \
+             GRANT SELECT ON memos TO {user}; \
+             GRANT {role} TO {user};"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, &planned().tuple_queries());
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "shared-policy-name-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let mut writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    // A `TO` clause is `has_privs_of_role`, so the caller's grant is usage of the role.
+    for (user, role) in readers {
+        writes.push(support::openfga::make_tuple(
+            &format!("pg_role:{role}"),
+            "usage",
+            &format!("user:{user}"),
+        ));
+    }
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for (user, _) in readers {
+        for (table, row) in [("docs", "d1"), ("memos", "m1")] {
+            let expected = postgres_row_is_visible(&mut conn, user, table, row);
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("{table}:{row}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "user:{user} can_select {table}:{row}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA shared policy name parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Whether `login_role` sees `row` of `table` under row level security.
+///
+/// Raw SQL because the table is chosen per case and role switching has no query DSL form.
+fn postgres_row_is_visible(
+    conn: &mut PgConnection,
+    login_role: &str,
+    table: &str,
+    row: &str,
+) -> bool {
+    #[derive(QueryableByName)]
+    struct Counted {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        rows: i64,
+    }
+
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        diesel::sql_query(format!("SET LOCAL ROLE {login_role}")).execute(conn)?;
+        let counted: Counted = diesel::sql_query(format!(
+            "SELECT count(*) AS rows FROM {table} WHERE id = $1"
+        ))
+        .bind::<Text, _>(row)
+        .get_result(conn)?;
+        Ok(counted.rows == 1)
+    })
+    .expect("reading under row level security should not error")
 }

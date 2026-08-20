@@ -10,6 +10,7 @@ use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{records_from_row, Record, RecordDerivation, RowValues};
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleRow, TupleRowError};
+use rls2fga::generator::well_known::deny_relation;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Outputs, Translation, TranslatorBuilder};
 
@@ -57,6 +58,7 @@ fn ownership_outputs(db: &ParserDB) -> Outputs<'_, ParserDB> {
         .expect("the registry should parse")
         .build()
         .translate(db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
 }
 
@@ -117,6 +119,34 @@ fn a_computed_relation_takes_no_tuples() {
             relation: "can_select".to_string(),
         }),
         "can_select is computed from owner, so a tuple on it is a mistake the server also refuses"
+    );
+}
+
+/// The relation every uncovered command denies with takes no tuple either.
+///
+/// `no_access` is a direct relation nothing populates, so the denial rests on nobody
+/// writing it. One hand-written row turns `can_insert`, `can_update` and `can_delete`
+/// from a denial into a grant, and this reader is the surface that has to say no.
+#[test]
+fn a_row_naming_the_denial_relation_is_refused() {
+    let db = ownership_db();
+    let outputs = ownership_outputs(&db);
+    let denial = deny_relation();
+
+    let forged = TupleRow {
+        relation: denial.as_str(),
+        ..owner_row()
+    };
+    assert!(
+        outputs.record_from_tuple_row(forged).is_err(),
+        "a row naming the relation the model denies with must be refused, not read back"
+    );
+
+    // The companion half, so refusing everything does not pass: a relation that does
+    // grant still reads back.
+    assert!(
+        outputs.record_from_tuple_row(owner_row()).is_ok(),
+        "a relation that grants has to keep reading back"
     );
 }
 
@@ -187,6 +217,7 @@ fn a_gated_record_names_the_condition_its_tuple_has_to_carry() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let queries = outputs.tuple_queries();
@@ -239,6 +270,7 @@ fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let mut checked = 0usize;
@@ -302,6 +334,7 @@ fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let queries = outputs.tuple_queries();

@@ -10,8 +10,8 @@ use rls2fga::parser::sql_parser::ParserDB;
 mod support;
 
 use support::footgun::{
-    assert_model_is_internally_consistent, db_of, feeds, relation_definition,
-    subtracted_relations_on_the_object, translator,
+    assert_model_is_internally_consistent, db_of, feeds, relation_definition, relation_definitions,
+    subtracted_relations_on_the_object, translator, type_names,
 };
 
 /// The DSL and the JSON model are rendered from one plan, so they must describe
@@ -42,9 +42,14 @@ ALTER TABLE audit ENABLE ROW LEVEL SECURITY;
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
     let json = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .json_model();
 
@@ -106,6 +111,7 @@ fn no_userset_references_an_undefined_relation() {
     ));
     let json = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .json_model();
 
@@ -137,6 +143,7 @@ CREATE POLICY notes_sel ON notes FOR SELECT USING (
     assert_model_is_internally_consistent(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -169,6 +176,7 @@ CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -190,6 +198,7 @@ CREATE POLICY docs_e_parent ON docs FOR SELECT USING (
     assert_model_is_internally_consistent(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -208,7 +217,11 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
     // The recursive policy makes every read fail.
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
@@ -220,6 +233,7 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
 
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -295,10 +309,12 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
         let translator = translator(ConfidenceLevel::B);
         let json = translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model();
         let queries = translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries();
 
@@ -456,7 +472,8 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
-        );
+        )
+        .expect("translation should plan");
         let shapes = planned.relations();
         let json = planned.clone().outputs_accepting_gaps().json_model();
         let queries = planned.outputs_accepting_gaps().tuple_queries();
@@ -676,6 +693,7 @@ fn no_type_declares_a_relation_no_permission_names() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps();
         let dsl = outputs.model();
 
@@ -715,4 +733,49 @@ fn relation_names_definitions_use(dsl: &str) -> std::collections::BTreeSet<Strin
                 .collect::<Vec<String>>()
         })
         .collect()
+}
+
+/// The denial admits a type no caller is, so no fact can make it grant.
+///
+/// Pointed at `user`, the relation held for whoever a fact said it held for, and v1.11.6
+/// accepts such a write: probed, one hand-written tuple turned `can_insert` from denied
+/// into allowed. The type declares no relation of its own, so an object of it reaches
+/// nothing either.
+#[test]
+fn the_denial_admits_nobody_and_nobody_reaches_nothing() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_read ON docs FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let dsl = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+
+    // The companion half: the commands no policy covers really are denied here, so the
+    // relation under test is load bearing rather than absent.
+    for command in ["can_insert", "can_update", "can_delete"] {
+        assert_eq!(
+            relation_definition(&dsl, "docs", command).as_deref(),
+            Some("no_access"),
+            "{command} has no policy, so it denies:\n{dsl}"
+        );
+    }
+    assert_eq!(
+        relation_definition(&dsl, "docs", "no_access").as_deref(),
+        Some("[nobody]"),
+        "a denial admitting a person is a denial a fact can lift:\n{dsl}"
+    );
+    assert!(
+        type_names(&dsl).iter().any(|name| name == "nobody"),
+        "the model has to declare the type it denies through:\n{dsl}"
+    );
+    assert!(
+        relation_definitions(&dsl, "nobody").is_empty(),
+        "nobody reaches nothing, or an object of it would carry access:\n{dsl}"
+    );
 }

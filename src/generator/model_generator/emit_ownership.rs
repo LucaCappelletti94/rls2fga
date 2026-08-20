@@ -22,7 +22,7 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
     let relation = table_plan.ownership_relation(memo_key, name_source);
     table_plan.ensure_direct(
         relation.clone(),
-        vec![DirectSubject::Type(USER_TYPE.to_string())],
+        vec![DirectSubject::Type(table_plan.well_known.user.clone())],
     );
     let Some(pk_cols) = resolve_pk_columns(ctx.source_table, ctx.db) else {
         skip_source_without_row_identity(table_plan, ctx.source_table, missing_what, ctx.db);

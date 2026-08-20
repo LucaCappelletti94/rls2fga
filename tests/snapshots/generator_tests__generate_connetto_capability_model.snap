@@ -1,0 +1,48 @@
+---
+source: tests/generator_tests.rs
+expression: model.model().trim()
+---
+model
+  schema 1.1
+
+type user
+
+type nobody
+
+type paper_shares
+  relations
+    define gate_shares_read_abbc62d2: [user:* with when_paper_shares_shares_read_4b407a75]
+    define no_access: [nobody]
+    define papers: [papers]
+    define public_viewer: [user:*]
+    define can_delete: public_viewer and can_select
+    define can_insert: can_select from papers
+    define can_insert_returning: can_select from papers and can_select
+    define can_select: gate_shares_read_abbc62d2
+    define can_select_for_update: can_update
+    define can_update: no_access
+    define can_update_without_reading: can_update
+    define can_upsert: can_insert and can_update
+
+type paper_shares_share
+  relations
+    define gate_papers_p_3b273139: [user:* with when_paper_shares_share_papers_p_44c31f28]
+
+type papers
+  relations
+    define owner: [user]
+    define paper_shares_share: [paper_shares_share]
+    define can_delete: owner or gate_papers_p_3b273139 from paper_shares_share
+    define can_insert: owner or gate_papers_p_3b273139 from paper_shares_share
+    define can_select: owner or gate_papers_p_3b273139 from paper_shares_share
+    define can_select_for_update: can_update
+    define can_update: owner or gate_papers_p_3b273139 from paper_shares_share
+    define can_update_without_reading: owner or gate_papers_p_3b273139 from paper_shares_share
+
+condition when_paper_shares_share_papers_p_44c31f28(app_subjects: list<string>, viewer: string) {
+  viewer in app_subjects
+}
+
+condition when_paper_shares_shares_read_4b407a75(app_subjects: list<string>, viewer: string) {
+  viewer in app_subjects
+}

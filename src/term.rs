@@ -36,7 +36,7 @@ use crate::generator::notes::TranslationNote;
 use crate::generator::records::{RecordDerivation, RecordTemplate, ValueSource};
 use crate::generator::relations::{relation_shapes, RelationShapes};
 use crate::generator::row_naming::row_naming;
-use crate::generator::well_known::{can_select_relation, USER_TYPE};
+use crate::generator::well_known::can_select_relation;
 use crate::parser::identifiers::RelationName;
 use crate::parser::names::{lookup_table, same_identifier};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
@@ -133,7 +133,8 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         registry,
         &GeneratorSettings::default(),
         TypeScope::AndAlso(guarded_table),
-    );
+    )
+    .map_err(|err| refuse(err.to_string()))?;
 
     let relations = relation_shapes(&plan, db);
     // One source for "what is this table called", shared with `Translation::row_naming`,
@@ -143,8 +144,13 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         .into_iter()
         .find(|entry| same_table(db, &entry.table, guarded_table))
         .map_or(Err(0), |entry| {
-            derive_chain(&relations, guarded_table, &entry.type_name)
-                .map(|chain| (entry.type_name, chain))
+            derive_chain(
+                &relations,
+                guarded_table,
+                &entry.type_name,
+                &plan.well_known.user,
+            )
+            .map(|chain| (entry.type_name, chain))
         });
 
     // Asked before the notes, since a related table carrying policies of its own makes
@@ -308,6 +314,7 @@ fn derive_chain(
     relations: &[RelationShapes],
     guarded_table: &str,
     object_type: &str,
+    user_type: &str,
 ) -> Result<TermChain, usize> {
     let mut links: Vec<(RelationName, String)> = Vec::new();
     for entry in relations {
@@ -332,12 +339,12 @@ fn derive_chain(
     let [(relation, subject_type)] = links.as_slice() else {
         return Err(links.len());
     };
-    if subject_type == USER_TYPE {
+    if subject_type == user_type {
         return Ok(TermChain::Direct {
             relation: relation.clone(),
         });
     }
-    let member = member_relation(relations, subject_type).ok_or(0_usize)?;
+    let member = member_relation(relations, subject_type, user_type).ok_or(0_usize)?;
     Ok(TermChain::Through {
         link: relation.clone(),
         through_type: subject_type.clone(),
@@ -374,7 +381,11 @@ fn links_out_of_its_own_row(entry: &RelationShapes, template: &RecordTemplate) -
 }
 
 /// The relation on `type_name` whose records name a caller, when exactly one does.
-fn member_relation(relations: &[RelationShapes], type_name: &str) -> Option<RelationName> {
+fn member_relation(
+    relations: &[RelationShapes],
+    type_name: &str,
+    user_type: &str,
+) -> Option<RelationName> {
     let mut naming = relations.iter().filter(|entry| {
         entry.type_name.as_str() == type_name
             && entry.shapes.iter().any(|shape| {
@@ -382,7 +393,7 @@ fn member_relation(relations: &[RelationShapes], type_name: &str) -> Option<Rela
                     &shape.derivation,
                     RecordDerivation::FromRow { template, .. }
                         if template.object_type == type_name
-                            && template.subject_type == USER_TYPE
+                            && template.subject_type == user_type
                 )
             })
     });
@@ -444,6 +455,7 @@ fn caller_side_table(
 mod tests {
     use super::*;
     use crate::generator::records::{ObjectKey, RecordDescription, SubjectKey};
+    use crate::generator::well_known::WellKnownTypes;
     use crate::parser::identifiers::TypeName;
 
     fn naming_user(type_name: &str, relation: &str, table: &str) -> RelationShapes {
@@ -459,7 +471,7 @@ mod tests {
                         object_type: type_name.to_string(),
                         object_key: ObjectKey::column("id"),
                         relation: RelationName::from_resolved(relation),
-                        subject_type: USER_TYPE.to_string(),
+                        subject_type: WellKnownTypes::default().user,
                         subject_key: SubjectKey::column("user_id"),
                         context: None,
                     }),
@@ -480,7 +492,7 @@ mod tests {
     fn a_type_naming_the_caller_twice_has_no_single_member_relation() {
         let one = [naming_user("orders", "customer", "orders")];
         assert_eq!(
-            member_relation(&one, "orders")
+            member_relation(&one, "orders", &WellKnownTypes::default().user)
                 .as_ref()
                 .map(RelationName::as_str),
             Some("customer")
@@ -490,6 +502,9 @@ mod tests {
             naming_user("orders", "customer", "orders"),
             naming_user("orders", "buyer", "orders"),
         ];
-        assert_eq!(member_relation(&two, "orders"), None);
+        assert_eq!(
+            member_relation(&two, "orders", &WellKnownTypes::default().user),
+            None
+        );
     }
 }

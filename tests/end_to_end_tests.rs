@@ -25,6 +25,7 @@ fn end_to_end_earth_metabolome() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("emi_model", model.model().trim());
 
@@ -36,6 +37,7 @@ fn end_to_end_earth_metabolome() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(&tuples));
@@ -68,6 +70,7 @@ fn end_to_end_emi_role_hierarchy_needs_no_read_gate() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     for line in model.model().lines().map(str::trim) {

@@ -1153,21 +1153,21 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
                     .to_string(),
             ),
             MembershipSelectAnalysis::JoinsAnotherTable { tables } => Some(format!(
-                "Membership subquery reads {} together, and a condition on the joined \
-                 table cannot be carried by a single OpenFGA relation; split the check or \
-                 pre-compute a membership table",
+                "Membership subquery reads {} together, and a single OpenFGA relation cannot \
+                 carry a condition on the joined table, so split the check or pre-compute a \
+                 membership table",
                 tables.join(" and ")
             )),
             MembershipSelectAnalysis::ScansEntityByOwnKey { join_table } => Some(format!(
                 "Subquery selects '{join_table}' rows by their own primary key, so they are \
-                 '{join_table}' entities rather than membership rows; declare the foreign key \
-                 from the policy's table to '{join_table}' so the link translates as parent \
+                 '{join_table}' entities rather than membership rows, and the foreign key \
+                 from the policy's table to '{join_table}' should make the link parent \
                  inheritance"
             )),
             MembershipSelectAnalysis::RescansGuardedTable => Some(format!(
                 "Subquery reads '{outer_table}', the table the policy guards, so PostgreSQL \
                  raises infinite recursion on every read and no reference in it names the \
-                 guarded row; drop the inner scan and correlate against '{outer_table}' \
+                 guarded row, so drop the inner scan and correlate against '{outer_table}' \
                  directly"
             )),
             MembershipSelectAnalysis::Unique { .. }
@@ -1190,8 +1190,8 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     }
     if single_projected_column(query_select(query)?).is_none() {
         return Some(
-            "Subquery selects an expression rather than a column, so nothing links it to \
-             the guarded row; project the correlating column instead"
+            "Subquery selects an expression rather than a column, so nothing links it to the \
+             guarded row, so project the correlating column instead"
                 .to_string(),
         );
     }

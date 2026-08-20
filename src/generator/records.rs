@@ -431,6 +431,15 @@ pub enum RecordDerivation {
         /// Conditions the row must satisfy, all of them.
         guards: Vec<Guard>,
     },
+    /// The records follow from the translation alone: no row and no table decides
+    /// them, so nothing evaluates and no row event can withdraw them. The load writes
+    /// them once, and a consumer reconciling what a changed row implies never sees
+    /// them, since [`RecordDescription::tables`] is empty.
+    Constant {
+        /// The fact itself. A constant needs no key to render, so this is the record
+        /// rather than a recipe for one.
+        record: Record,
+    },
     /// The records depend on more than the changed row, so a change to any table
     /// the shape reads has to be answered by querying.
     Joined {
@@ -463,7 +472,7 @@ impl RecordDescription {
     pub fn row_table(&self) -> Option<&str> {
         match &self.derivation {
             RecordDerivation::FromRow { table, .. } => Some(table),
-            RecordDerivation::Joined { .. } => None,
+            RecordDerivation::Constant { .. } | RecordDerivation::Joined { .. } => None,
         }
     }
 }
@@ -561,6 +570,13 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         } => (table, template, guards),
         RecordDerivation::Joined { reason, .. } => {
             return Err(RecordError::NotDerivableFromOneRow(reason.clone()))
+        }
+        // Answering with the fact would read as "this row implies it", which is what
+        // withdrawing it on a delete then acts on.
+        RecordDerivation::Constant { .. } => {
+            return Err(RecordError::NotDerivableFromOneRow(
+                "the fact follows from the translation, so no row decides it".to_string(),
+            ))
         }
     };
     let _ = table;

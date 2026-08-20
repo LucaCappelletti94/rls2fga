@@ -28,6 +28,7 @@ fn reading_the_inserted_row_back_needs_select_as_well_as_insert() {
     let db = db_of(SPLIT_INSERT_AND_SELECT);
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -57,6 +58,7 @@ CREATE POLICY docs_all ON docs FOR ALL USING (owner_id = current_user)
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -81,6 +83,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (owner_id = current_user);
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -109,6 +112,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -139,6 +143,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -159,6 +164,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
     assert_model_is_internally_consistent(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -176,6 +182,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (editor_id = current_user);
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let can_delete =
@@ -206,6 +213,7 @@ CREATE POLICY docs_bare ON docs;
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
@@ -232,6 +240,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT;
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let can_select = relation_definition(&model.model(), "docs", "can_select")
@@ -258,6 +267,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let can_update = relation_definition(&model.model(), "docs", "can_update")
@@ -283,6 +293,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
@@ -316,6 +327,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user) WITH C
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let locking = relation_definition(&model.model(), "docs", "can_select_for_update")
@@ -352,6 +364,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (TRUE);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert_eq!(
@@ -382,6 +395,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (owner_id = current_user);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(
@@ -411,6 +425,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE WITH CHECK (owner_id = current_user);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
@@ -442,6 +457,7 @@ CREATE POLICY docs_bare ON docs FOR SELECT;
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
@@ -482,6 +498,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE WITH CHECK (reviewer_id
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -522,6 +539,7 @@ CREATE POLICY docs_bare ON "docs" FOR SELECT;
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert_eq!(
@@ -616,6 +634,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         ));
         let outputs = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps();
         let dsl = outputs.model();
 

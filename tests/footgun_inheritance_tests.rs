@@ -39,7 +39,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     let renamed = type_names(&dsl)
         .into_iter()
@@ -55,6 +59,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -92,6 +97,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -121,6 +127,7 @@ CREATE POLICY tasks_all ON tasks FOR ALL USING (
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -170,6 +177,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -216,6 +224,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     // Level B keeps the parent's public-flag policy, which is the whole point.
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -255,6 +264,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -296,7 +306,11 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     let can_delete =
         relation_definition(&dsl, "tasks", "can_delete").expect("tasks should define can_delete");
@@ -313,6 +327,7 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
     // Each generated query has to write a subject the relation accepts.
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -328,6 +343,7 @@ CREATE POLICY tasks_parent_link ON tasks FOR DELETE USING (
     assert_model_is_internally_consistent(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -373,6 +389,7 @@ fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
 
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db_of(&schema("tasks_sel")))
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let inherited = inherited_relations(&dsl);
@@ -385,6 +402,7 @@ fn an_inherited_parent_rule_is_named_after_the_rule_itself() {
     // Renaming a child policy must not rename a relation on the parent.
     let renamed = translator(ConfidenceLevel::B)
         .translate(&db_of(&schema("tasks_select_v2")))
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     assert_eq!(
@@ -423,6 +441,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -447,6 +466,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     assert_model_is_internally_consistent(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -468,6 +488,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let can_select =
@@ -504,6 +525,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let can_delete =
@@ -536,6 +558,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     assert_eq!(
@@ -557,6 +580,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     assert_model_is_internally_consistent(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model(),
     );
@@ -580,6 +604,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let can_select = relation_definition(&model.model(), "docs", "can_select")
@@ -669,6 +694,7 @@ CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user
         ));
         let dsl = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
         relation_definition(&dsl, "tasks", "can_select")
@@ -782,6 +808,7 @@ fn an_in_subquery_naming_the_parent_by_its_key_inherits_from_the_parent() {
     ));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -818,6 +845,7 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
     let db = db_of(INHERITANCE_PARENT_SCHEMA);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let tuples = outputs.tuple_queries();
@@ -864,6 +892,7 @@ CREATE TABLE measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (1
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let tuples = outputs.tuple_queries();
@@ -905,6 +934,7 @@ CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let tuples = outputs.tuple_queries();
@@ -961,6 +991,7 @@ CREATE POLICY shares_insert ON paper_shares FOR INSERT WITH CHECK (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.model();
 

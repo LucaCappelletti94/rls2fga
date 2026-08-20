@@ -74,8 +74,8 @@ fn temporal_request_side(expr: &Expr) -> Option<TemporalRequestSide> {
     let interval = if is_well_known_temporal_function(left) {
         right
     } else if !subtract && is_well_known_temporal_function(right) {
-        // `interval + now()` reads the same as `now() + interval`; subtraction is
-        // one-sided, since a timestamp does not subtract from an interval.
+        // Addition commutes here, while subtraction is one-sided because a timestamp
+        // does not subtract from an interval.
         left
     } else {
         return None;
@@ -93,8 +93,8 @@ fn temporal_request_side(expr: &Expr) -> Option<TemporalRequestSide> {
 /// The fixed number of seconds a `PostgreSQL` interval spans, or `None` when it has no
 /// fixed length (months and years) or a spelling this does not carry.
 fn interval_seconds(interval: &sqlparser::ast::Interval) -> Option<i64> {
-    // Only the string spelling, `interval '30 days'`, is carried; the field-qualified
-    // form `interval '30' day` falls back.
+    // Only the string spelling, `interval '30 days'`, is carried, so the
+    // field-qualified form `interval '30' day` falls back.
     if interval.leading_field.is_some() {
         return None;
     }
@@ -451,11 +451,10 @@ fn is_literal_container(expr: &Expr) -> bool {
 }
 
 fn is_literal_value(expr: &Expr) -> bool {
-    match expr {
+    match unwrap_cast_or_nested(expr) {
         Expr::Value(_) => true,
-        Expr::Nested(inner)
-        | Expr::Cast { expr: inner, .. }
-        | Expr::UnaryOp {
+        // A sign or a negation is not a wrapper, so it is read here rather than peeled.
+        Expr::UnaryOp {
             op: UnaryOperator::Plus | UnaryOperator::Minus | UnaryOperator::Not,
             expr: inner,
         } => is_literal_value(inner),

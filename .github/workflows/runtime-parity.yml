@@ -21,7 +21,7 @@ jobs:
   runtime-parity:
     name: runtime-parity
     runs-on: ubuntu-latest
-    # 37 container tests one at a time, on top of a cold debug build of 41 targets. The
+    # 58 container tests one at a time, on top of a cold debug build of 42 targets. The
     # test run alone measures 15 minutes locally on warm images, and the compile-only
     # `quality` job here already budgets 35.
     timeout-minutes: 90

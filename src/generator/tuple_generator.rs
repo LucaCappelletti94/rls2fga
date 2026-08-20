@@ -13,7 +13,7 @@ use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan}
 use crate::generator::notes::SkippedTuples;
 use crate::generator::records::{Record, RecordContextValue, RecordDescription};
 use crate::generator::well_known::{
-    ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
+    deny_relation, WellKnownTypes, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID,
 };
 use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::names::{lookup_table, split_qualified_identifier_parts, table_has_column};
@@ -110,6 +110,15 @@ pub enum TupleRowError {
     MalformedSubject(String),
     /// The context is not a one-key object of a scalar, carrying the text read.
     MalformedContext(String),
+    /// The relation is the one the model denies with. Nothing populates it, so a row
+    /// naming it is a mistake, and reading it back would hand the caller a fact the
+    /// service itself refuses.
+    RelationGrantsNobody {
+        /// Type the object names.
+        type_name: String,
+        /// Relation the row names.
+        relation: String,
+    },
     /// The relation does not accept tuples under the condition the row names, or
     /// grants nothing without one. Taking the row at face value would grant what
     /// the model does not.
@@ -143,6 +152,13 @@ impl core::fmt::Display for TupleRowError {
             Self::MalformedContext(text) => write!(
                 f,
                 "the context {text} is not an object of one key holding a scalar"
+            ),
+            Self::RelationGrantsNobody {
+                type_name,
+                relation,
+            } => write!(
+                f,
+                "{type_name}'s {relation} grants nobody, so it takes no tuple"
             ),
             Self::ConditionMismatch {
                 type_name,
@@ -184,6 +200,15 @@ pub(crate) fn record_from_tuple_row(
     else {
         return Err(TupleRowError::UnknownType(object_type.to_string()));
     };
+    if row.relation == deny_relation().as_str() {
+        // Nothing populates the denial, and the model points it at a type no caller is, so
+        // a row naming it is a mistake rather than a fact. Refusing here closes the crate's
+        // own door as well as the service's.
+        return Err(TupleRowError::RelationGrantsNobody {
+            type_name: object_type.to_string(),
+            relation: row.relation.to_string(),
+        });
+    }
     let Some((relation, subjects)) = type_plan.direct_relations.get_key_value(row.relation) else {
         let type_name = object_type.to_string();
         let relation = row.relation.to_string();
@@ -282,7 +307,7 @@ pub(crate) fn generate_tuple_queries_from_plan<DB: DatabaseLike>(
 
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
-            let fed = source.feeds(&type_plan.type_name);
+            let fed = source.feeds(&type_plan.type_name, &plan.well_known);
             if !fed.is_empty() && !fed.iter().any(|target| grantable.contains(target)) {
                 continue;
             }
@@ -298,6 +323,7 @@ pub(crate) fn generate_tuple_queries_from_plan<DB: DatabaseLike>(
                 source,
                 type_plan.type_name.as_str(),
                 type_plan.reads_only_its_own_rows,
+                &plan.well_known,
                 NameContext::new(&bounds, db),
                 db,
             ) {
@@ -607,8 +633,8 @@ fn single_comment_line(text: &str) -> String {
 /// crate passes through here, so new [`TupleSource`] variants inherit it.
 fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
     query.comment = single_comment_line(&query.comment);
-    // A `Todo` source renders its body as a comment too; a real query never
-    // starts with `--`, so this leaves generated SQL untouched.
+    // A `Todo` source renders its body as a comment too. A real query never starts with
+    // `--`, so this leaves generated SQL untouched.
     if query.sql.trim_start().starts_with("--") {
         query.sql = single_comment_line(&query.sql);
     }
@@ -623,6 +649,7 @@ fn render_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
     only_own_rows: bool,
+    well_known: &WellKnownTypes,
     names: NameContext<'_, DB>,
     db: &DB,
 ) -> Option<TupleQuery> {
@@ -630,13 +657,19 @@ fn render_tuple_source<DB: DatabaseLike>(
         source,
         owner_type,
         only_own_rows,
+        well_known,
         names,
         db,
     )?);
     // Every query passes through here, so a new variant reaches the describer
     // rather than silently shipping without a description.
-    query.description =
-        crate::generator::describe::describe_tuple_source(source, owner_type, only_own_rows, db);
+    query.description = crate::generator::describe::describe_tuple_source(
+        source,
+        owner_type,
+        only_own_rows,
+        well_known,
+        db,
+    );
     Some(query)
 }
 
@@ -644,6 +677,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
     only_own_rows: bool,
+    well_known: &WellKnownTypes,
     names: NameContext<'_, DB>,
     db: &DB,
 ) -> Option<TupleQuery> {
@@ -662,7 +696,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             },
             owner_col,
             relation,
-            USER_TYPE,
+            well_known.user.as_str(),
             format!("-- User ownership ({owner_col} references users)"),
             None,
             names,
@@ -678,7 +712,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let pk_parts = quoted_key_parts(pk_cols);
             let array_col_sql = quote_sql_identifier(array_col.as_str());
             let object_sql = typed_name_sql(owner_type, pk_parts.iter().map(String::as_str));
-            let subject_sql = typed_name_sql(USER_TYPE, [ARRAY_ELEMENT_ALIAS]);
+            let subject_sql = typed_name_sql(&well_known.user, [ARRAY_ELEMENT_ALIAS]);
             let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
             let subject_guard =
                 subject_fits(&subject_sql, table, core::slice::from_ref(array_col), names)
@@ -710,7 +744,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let field_sql = render_jsonb_path(&quote_sql_identifier(column.as_str()), path)?;
             let object_sql = typed_name_sql(owner_type, pk_parts.iter().map(String::as_str));
             let field_operand = format!("({field_sql})");
-            let subject_sql = typed_name_sql(USER_TYPE, [field_operand.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [field_operand.as_str()]);
             let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
             let subject_guard =
                 subject_fits(&subject_sql, table, core::slice::from_ref(column), names)
@@ -791,8 +825,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             );
 
             let grantee_ref = format!("og.{grant_grantee_col_sql}");
-            let user_subject_sql = typed_name_sql(USER_TYPE, [grantee_ref.as_str()]);
-            let team_subject_sql = typed_name_sql(TEAM_TYPE, [grantee_ref.as_str()]);
+            let user_subject_sql = typed_name_sql(&well_known.user, [grantee_ref.as_str()]);
+            let team_subject_sql = typed_name_sql(&well_known.team, [grantee_ref.as_str()]);
             let owner_ref = format!("og.{grant_resource_col_sql}");
             let object_sql = typed_name_sql(granted_type, [owner_ref.as_str()]);
             let mut subject_joins: Vec<String> = Vec::new();
@@ -877,8 +911,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let membership_table_sql = quote_sql_identifier(membership_table);
             let team_col_sql = quote_sql_identifier(team_col.as_str());
             let user_col_sql = quote_sql_identifier(user_col.as_str());
-            let object_sql = typed_name_sql(TEAM_TYPE, [team_col_sql.as_str()]);
-            let subject_sql = typed_name_sql(USER_TYPE, [user_col_sql.as_str()]);
+            let object_sql = typed_name_sql(&well_known.team, [team_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let team_guards = join_row_is_nameable(
                 "",
                 &object_sql,
@@ -917,7 +951,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             // parenthesised: a disjunction would otherwise break out of the AND.
             let null_guards = format!("{fk_col_sql} IS NOT NULL AND {user_col_sql} IS NOT NULL");
             let object_sql = typed_name_sql(parent_type, [fk_col_sql.as_str()]);
-            let subject_sql = typed_name_sql(USER_TYPE, [user_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let null_guards = join_row_is_nameable(
                 &null_guards,
                 &object_sql,
@@ -1128,7 +1162,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let member_table_sql = quote_sql_identifier(member_table);
             let user_col_sql = quote_sql_identifier(user_col.as_str());
             let object_sql = typed_name_literal(holder_type, HOLDER_OBJECT_ID);
-            let subject_sql = typed_name_sql(USER_TYPE, [user_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let user_col_sql_guard = subject_fits(
                 &subject_sql,
                 member_table,
@@ -1462,26 +1496,26 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             })
         }
 
+        // No `FROM`: which roles a scope admits is a fact about the policy, so the query
+        // yields its one row whatever any table holds, and the load no longer scans a
+        // table per role to find out.
         TupleSource::PolicyScopeRoles {
-            table,
             scope_type,
             scope_object,
             relation,
             pg_role,
         } => {
-            let table_sql = owner_table_reference(table, only_own_rows);
             let object_sql = typed_name_literal(scope_type, scope_object);
-            let subject_sql = typed_name_literal(PG_ROLE_TYPE, pg_role);
+            let subject_sql = typed_name_literal(&well_known.pg_role, pg_role);
             Some(TupleQuery {
                 comment: format!(
-                    "-- Scope {scope_object} admits PostgreSQL role '{pg_role}', once for \
-                     every {table} row it judges"
+                    "-- Scope {scope_object} admits PostgreSQL role '{pg_role}', which the \
+                     policy decides rather than any row"
                 ),
                 sql: format!(
-                    "SELECT DISTINCT {object_sql} AS object, \
+                    "SELECT {object_sql} AS object, \
                      '{relation}' AS relation, \
-                     {subject_sql} AS subject\n\
-                     FROM {table_sql};"
+                     {subject_sql} AS subject;"
                 ),
                 description: None,
                 condition: None,
@@ -1620,7 +1654,7 @@ mod tests {
         BooleanFlag, ClassifiedPolicy, ConfidenceLevel, DirectOwnership,
     };
     use crate::generator::model_generator::GeneratorSettings;
-    use crate::parser::names::policy_scope_relation_name;
+    use crate::parser::names::role_scope_name;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
     use crate::translator::Translation;
 
@@ -1758,6 +1792,7 @@ CREATE POLICY docs_update ON docs FOR ALL
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
         assert!(queries.iter().any(|q| q
@@ -1789,9 +1824,11 @@ CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
-        let scope_relation = policy_scope_relation_name("docs_select");
+        let scope_relation =
+            role_scope_name("usage", &["app_user".to_string(), "auditors".to_string()]);
 
         assert!(queries
             .iter()
@@ -1848,6 +1885,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -1920,6 +1958,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -1984,6 +2023,7 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2065,6 +2105,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2115,6 +2156,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2166,6 +2208,7 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2201,6 +2244,7 @@ CREATE POLICY docs_select ON "Doc Items" FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2249,6 +2293,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 
@@ -2318,7 +2363,14 @@ CREATE POLICY docs_select ON docs FOR SELECT
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
         let query = {
             let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(&source, "docs", false, NameContext::new(&bounds, &db), &db)
+            render_tuple_source(
+                &source,
+                "docs",
+                false,
+                &WellKnownTypes::default(),
+                NameContext::new(&bounds, &db),
+                &db,
+            )
         }
         .expect("should produce a query");
         assert!(
@@ -2362,7 +2414,14 @@ CREATE POLICY docs_select ON docs FOR SELECT
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
         let query = {
             let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(&source, "docs", false, NameContext::new(&bounds, &db), &db)
+            render_tuple_source(
+                &source,
+                "docs",
+                false,
+                &WellKnownTypes::default(),
+                NameContext::new(&bounds, &db),
+                &db,
+            )
         }
         .expect("should produce a query");
         assert!(
@@ -2404,7 +2463,14 @@ CREATE POLICY docs_select ON docs FOR SELECT
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
         let query = {
             let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(&source, "docs", false, NameContext::new(&bounds, &db), &db)
+            render_tuple_source(
+                &source,
+                "docs",
+                false,
+                &WellKnownTypes::default(),
+                NameContext::new(&bounds, &db),
+                &db,
+            )
         }
         .expect("should produce a query");
         assert!(

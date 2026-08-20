@@ -1263,9 +1263,8 @@ fn strip_qualifier_from_expr_strips_join_alias_and_handles_quoted_identifiers() 
     // identifiers are preserved as-is.
     let mut quoted_expr = parse_expr(r#""dm"."status" = 'active'"#);
     strip_qualifier_from_expr(&mut quoted_expr, "doc_members", Some("dm"));
-    // The qualifier `"dm"` does not equal `dm` after parsing; the
-    // CompoundIdentifier parts contain the unquoted token, so it IS stripped.
-    // What matters is the function does not panic or produce garbled output.
+    // After parsing, qualifier `"dm"` and alias `dm` share the unquoted token, so it
+    // is stripped.
     let _ = quoted_expr.to_string(); // must not panic
 
     // Table-name qualifying: `doc_members.status` → `status`
@@ -2350,7 +2349,7 @@ fn flatten_and_predicates_recursive_and() {
 
 #[test]
 fn flatten_and_predicates_deeply_nested() {
-    // four-way AND chain; no parens to avoid sqlparser Nested wrappers
+    // Four-way AND chain, with no parens to avoid sqlparser Nested wrappers.
     let expr = parse_expr("a = 1 AND b = 2 AND c = 3 AND d = 4");
     let mut out = Vec::new();
     flatten_and_predicates(&expr, &mut out);
@@ -2791,7 +2790,7 @@ fn selection_references_current_user_returns_false_without_selection() {
 // user_col is already set (second user predicate in ON) → skipped but no error
 #[test]
 fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
-    // Both WHERE and ON have user predicates; the first one wins.
+    // Both WHERE and ON have user predicates. The first one wins.
     let select = parse_select(
         "SELECT dm.doc_id FROM doc_labels l
              JOIN doc_members dm ON dm.user_id = auth_current_user_id()

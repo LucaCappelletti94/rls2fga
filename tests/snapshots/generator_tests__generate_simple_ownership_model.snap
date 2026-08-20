@@ -7,9 +7,11 @@ model
 
 type user
 
+type nobody
+
 type resources
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner: [user]
     define can_delete: owner
     define can_insert: no_access

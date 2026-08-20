@@ -22,14 +22,14 @@ use crate::classifier::patterns::{
     CallerScalarEqualsConstant, ClassifiedExpr, ConfidenceLevel, ConstantInCallerSet, PatternClass,
     RowValueEqualsCallerScalar, RowValueInCallerSet,
 };
-use crate::parser::expr::function_arg_expr;
+use crate::parser::expr::{function_arg_expr, unwrap_cast_or_nested};
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::normalized_function_name;
 
 use super::{
     accessor_root_and_path, accessor_root_and_value_path, current_setting_literal_key,
-    extract_column_name, projected_select, string_literal, unwrap_cast_or_nested,
+    extract_column_name, projected_select, string_literal,
 };
 
 /// A value the request carries, compared against a row column or against a constant.

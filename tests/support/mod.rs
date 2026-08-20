@@ -146,8 +146,8 @@ pub(crate) fn classify_sql_with_session_attributes(
     (classified, db, registry)
 }
 
-/// Classify SQL with an empty function registry — convenience wrapper for
-/// the common case where no registry metadata is needed.
+/// Classify SQL with an empty function registry, for the common case where no registry
+/// metadata is needed.
 pub(crate) fn classify_sql_no_registry(
     sql: &str,
 ) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {

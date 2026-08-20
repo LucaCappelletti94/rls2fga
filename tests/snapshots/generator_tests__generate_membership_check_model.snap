@@ -7,9 +7,11 @@ model
 
 type user
 
+type nobody
+
 type projects
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define teams: [teams]
     define can_delete: no_access
     define can_insert: no_access

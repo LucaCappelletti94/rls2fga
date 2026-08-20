@@ -20,8 +20,8 @@ use crate::generator::well_known::{
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
     can_upsert_relation, deny_relation, member_relation, owner_team_relation, owner_user_relation,
-    public_relation, scope_roles_relation, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE,
-    REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TEAM_TYPE, TIMESTAMP_PARAMETER_TYPE, USER_TYPE,
+    public_relation, scope_roles_relation, WellKnownTypes, REQUEST_TIME_PARAMETER,
+    STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
 };
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::identifiers::{ColumnName, RelationName, TableId, TypeName};
@@ -29,9 +29,8 @@ use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
     gate_condition_name, is_owner_like_column_name, lookup_table,
     membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
-    parent_type_from_fk_column, policy_scope_relation_name, role_limited_relation_name,
-    same_identifier, stable_hex_suffix, table_has_column, yielded_relation_name,
-    MAX_RELATION_RENAME_ATTEMPTS,
+    parent_type_from_fk_column, role_limited_relation_name, role_scope_name, same_identifier,
+    stable_hex_suffix, table_has_column, yielded_relation_name, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
@@ -233,6 +232,7 @@ pub(crate) struct TypePlan {
     pub type_name: TypeName,
     pub direct_relations: BTreeMap<RelationName, Vec<DirectSubject>>,
     pub computed_relations: BTreeMap<RelationName, UsersetExpr>,
+    well_known: WellKnownTypes,
     /// Table-level tuple sources not tied to a specific relation (e.g. policy
     /// scope tuples).
     pub table_tuple_sources: Vec<TupleSource>,
@@ -262,16 +262,18 @@ pub(crate) struct TypePlan {
 /// Subjects the generator's own structural relations hold, or `None` when the
 /// name is free. These relations are referenced by name, so any other caller
 /// asking for one is renamed regardless of translation order.
-fn reserved_relation_subjects(relation: &RelationName) -> Option<Vec<DirectSubject>> {
-    if *relation == deny_relation()
-        || *relation == member_relation()
-        || *relation == owner_user_relation()
-    {
-        Some(vec![DirectSubject::Type(USER_TYPE.to_string())])
+fn reserved_relation_subjects(
+    relation: &RelationName,
+    well_known: &WellKnownTypes,
+) -> Option<Vec<DirectSubject>> {
+    if *relation == deny_relation() {
+        Some(vec![DirectSubject::Type(well_known.nobody.clone())])
+    } else if *relation == member_relation() || *relation == owner_user_relation() {
+        Some(vec![DirectSubject::Type(well_known.user.clone())])
     } else if *relation == public_relation() {
-        Some(vec![DirectSubject::Wildcard(USER_TYPE.to_string())])
+        Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
     } else if *relation == owner_team_relation() {
-        Some(vec![DirectSubject::Type(TEAM_TYPE.to_string())])
+        Some(vec![DirectSubject::Type(well_known.team.clone())])
     } else {
         None
     }
@@ -287,8 +289,13 @@ fn generator_defines(relation: &RelationName) -> bool {
 
 impl TypePlan {
     fn new(type_name: impl Into<String>) -> Self {
+        Self::new_with_well_known(type_name, &WellKnownTypes::default())
+    }
+
+    fn new_with_well_known(type_name: impl Into<String>, well_known: &WellKnownTypes) -> Self {
         Self {
             type_name: TypeName::from_resolved(type_name),
+            well_known: well_known.clone(),
             ..Self::default()
         }
     }
@@ -315,7 +322,7 @@ impl TypePlan {
         let base = parent_type_from_fk_column(name_source);
         let taken = |name: &str, plan: &Self| {
             let name = RelationName::from_resolved(name);
-            reserved_relation_subjects(&name).is_some()
+            reserved_relation_subjects(&name, &plan.well_known).is_some()
                 || generator_defines(&name)
                 || plan.direct_relations.contains_key(&name)
                 || plan.computed_relations.contains_key(&name)
@@ -355,7 +362,8 @@ impl TypePlan {
                     .direct_relations
                     .get(&relation)
                     .is_some_and(|held| *held != subjects)
-                || reserved_relation_subjects(&relation).is_some_and(|held| held != subjects)
+                || reserved_relation_subjects(&relation, &self.well_known)
+                    .is_some_and(|held| held != subjects)
                 || generator_defines(&relation);
             if !held {
                 break;
@@ -428,16 +436,17 @@ impl TypePlan {
 /// One struct rather than a growing parameter list, so the next setting costs a field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratorSettings {
-    /// Condition parameter the caller supplies for a guard against statement time. It
-    /// is the name every check context must use, so a deployment with its own
-    /// convention sets it here.
+    /// Condition parameter the caller supplies for a guard against statement time.
     pub request_time_parameter: String,
+    /// Type names the generator treats as its own vocabulary.
+    pub well_known: WellKnownTypes,
 }
 
 impl Default for GeneratorSettings {
     fn default() -> Self {
         Self {
             request_time_parameter: REQUEST_TIME_PARAMETER.to_string(),
+            well_known: WellKnownTypes::default(),
         }
     }
 }
@@ -449,7 +458,40 @@ pub(crate) struct SchemaPlan {
     pub confidence_summary: Vec<(String, ConfidenceLevel)>,
     /// Conditions any relation reference names, keyed by name.
     pub conditions: BTreeMap<String, ConditionSpec>,
+    pub well_known: WellKnownTypes,
 }
+
+/// Why a translation cannot be planned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PlanningError {
+    /// A table claimed a configured type name that belongs to the generator.
+    ReservedTypeName {
+        /// Table whose canonical name claims the configured type.
+        table: String,
+        /// Setting that chose that type name.
+        setting: &'static str,
+        /// The type name both sides tried to use.
+        type_name: String,
+    },
+}
+
+impl core::fmt::Display for PlanningError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ReservedTypeName {
+                table,
+                setting,
+                type_name,
+            } => write!(
+                f,
+                "table '{table}' takes configured well-known type '{type_name}' from setting '{setting}'"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for PlanningError {}
 
 /// Render the DSL text for a plan.
 pub(crate) fn render_dsl_from_plan(plan: &SchemaPlan) -> String {
@@ -462,7 +504,7 @@ pub(crate) fn build_filtered_schema_plan<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
     settings: &GeneratorSettings,
-) -> SchemaPlan {
+) -> Result<SchemaPlan, PlanningError> {
     let filtered = filter_policies_for_output(policies, min_confidence);
     build_schema_plan(&filtered, db, registry, settings)
 }
@@ -472,7 +514,7 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
-) -> SchemaPlan {
+) -> Result<SchemaPlan, PlanningError> {
     build_plan_typing(policies, db, registry, settings, TypeScope::WithPolicies)
 }
 
@@ -569,11 +611,12 @@ fn inheritance_children<DB: DatabaseLike>(db: &DB) -> BTreeMap<TableId, Vec<Stri
 fn with_table_plan<R>(
     all_types: &mut BTreeMap<String, TypePlan>,
     type_name: &str,
+    well_known: &WellKnownTypes,
     build: impl FnOnce(&mut TypePlan, &mut BTreeMap<String, TypePlan>) -> R,
 ) -> R {
     let mut plan = all_types
         .remove(type_name)
-        .unwrap_or_else(|| TypePlan::new(type_name));
+        .unwrap_or_else(|| TypePlan::new_with_well_known(type_name, well_known));
     let out = build(&mut plan, all_types);
     all_types.insert(type_name.to_string(), plan);
     out
@@ -585,7 +628,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
     scope: TypeScope<'_>,
-) -> SchemaPlan {
+) -> Result<SchemaPlan, PlanningError> {
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
@@ -603,7 +646,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
     let declared_permissive = declared_permissive_policies(db, &mut group_keys);
 
-    let table_types = TableTypes::assign(db, scope, &mut notes);
+    let table_types = TableTypes::assign(db, scope, &settings.well_known, &mut notes)?;
     let recursion = PolicyReadRecursion::detect(db, &table_types);
     // Resolved once for the whole plan, like the recursion graph above it: asking per
     // table went through `lookup_table`, which walks every table.
@@ -621,6 +664,10 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
         // the schema cannot resolve carries the policy nowhere, so say so.
+        //
+        // `parse_schema` refuses such a schema (`TableNotFoundForPolicy`), for an absent
+        // name and an ambiguous unqualified one alike, so this answers a consumer's own
+        // `DatabaseLike` rather than anything parsed here.
         let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
             if lookup_table(db, &source_table_name).is_none() {
                 let bearers = types_bearing_name(db, &source_table_name, &table_types);
@@ -645,6 +692,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         with_table_plan(
             &mut all_types,
             &canonical_table_name,
+            &settings.well_known,
             |table_plan, other_types| {
                 table_plan.names_rows_of(&source_table_name);
 
@@ -792,8 +840,10 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     }
 
     all_types
-        .entry(USER_TYPE.to_string())
-        .or_insert_with(|| TypePlan::new(USER_TYPE));
+        .entry(settings.well_known.user.clone())
+        .or_insert_with(|| {
+            TypePlan::new_with_well_known(&settings.well_known.user, &settings.well_known)
+        });
 
     simplify_redundant_select_gates(&mut all_types);
     inline_synthetic_rule_aliases(&mut all_types);
@@ -801,17 +851,32 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     define_upsert_relations(&mut all_types);
     define_locking_read_relations(&mut all_types);
     define_blanket_update_relations(&mut all_types);
+    prune_plain_subjects_fed_only_by_gated_sources(&mut all_types, &settings.well_known);
     prune_unreferenced_relations(&mut all_types);
 
-    let types = ordered_types(all_types);
+    // After pruning, so a model with nothing to deny carries no such type, and only then,
+    // since a denial that survives has to name a type the model declares.
+    if all_types
+        .values()
+        .any(|plan| plan.direct_relations.contains_key(&deny_relation()))
+    {
+        all_types
+            .entry(settings.well_known.nobody.clone())
+            .or_insert_with(|| {
+                TypePlan::new_with_well_known(&settings.well_known.nobody, &settings.well_known)
+            });
+    }
+
+    let types = ordered_types(all_types, &settings.well_known.user);
     let conditions = surviving_conditions(&types);
 
-    SchemaPlan {
+    Ok(SchemaPlan {
         types,
         notes,
         confidence_summary,
         conditions,
-    }
+        well_known: settings.well_known.clone(),
+    })
 }
 
 /// One table's build in progress.
@@ -966,7 +1031,8 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
         let scope_relation = if scoped_roles.is_empty() || barrier_cannot_bind {
             None
         } else {
-            let relation = policy_scope_relation_name(cp.name());
+            let relation =
+                role_scope_name(RolePrivilege::Usage.relation_name().as_str(), scoped_roles);
             // An unfillable scope mints nothing, and the rule it would have narrowed
             // denies for want of the same row identity, so there is no grant left to
             // narrow. Naming it anyway would ask the operator to load memberships
@@ -1395,11 +1461,11 @@ fn note_request_contracts(
     }
 }
 
-/// The plans in emission order, `user` first and the rest by name.
-fn ordered_types(mut all_types: BTreeMap<String, TypePlan>) -> Vec<TypePlan> {
+/// The plans in emission order, caller type first and the rest by name.
+fn ordered_types(mut all_types: BTreeMap<String, TypePlan>, user_type: &str) -> Vec<TypePlan> {
     let mut type_names: Vec<String> = all_types.keys().cloned().collect();
     type_names.sort();
-    if let Some(pos) = type_names.iter().position(|n| n == USER_TYPE) {
+    if let Some(pos) = type_names.iter().position(|n| n == user_type) {
         let user = type_names.remove(pos);
         type_names.insert(0, user);
     }
@@ -1429,6 +1495,65 @@ fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<String, ConditionSpec> {
         .filter(|(name, _)| named.contains(name.as_str()))
         .map(|(name, spec)| (name.clone(), spec.clone()))
         .collect()
+}
+
+fn source_carries_condition(source: &TupleSource) -> bool {
+    matches!(
+        source,
+        TupleSource::ConditionalAttributeGate { .. }
+            | TupleSource::SessionAttributeGate { .. }
+            | TupleSource::CallerSetShareGate { .. }
+            | TupleSource::ExistsMembership { gate: Some(_), .. }
+            | TupleSource::HolderMembers { gate: Some(_), .. }
+    )
+}
+
+fn prune_plain_subjects_fed_only_by_gated_sources(
+    all_types: &mut BTreeMap<String, TypePlan>,
+    well_known: &WellKnownTypes,
+) {
+    let mut all_gated: BTreeMap<(String, RelationName), bool> = BTreeMap::new();
+    for plan in all_types.values() {
+        for source in &plan.table_tuple_sources {
+            let carries_condition = source_carries_condition(source);
+            for target in source.feeds(&plan.type_name, well_known) {
+                all_gated
+                    .entry(target)
+                    .and_modify(|known| *known &= carries_condition)
+                    .or_insert(carries_condition);
+            }
+        }
+    }
+
+    for ((type_name, relation), gated) in all_gated {
+        if !gated {
+            continue;
+        }
+        let Some(plan) = all_types.get_mut(&type_name) else {
+            continue;
+        };
+        let Some(subjects) = plan.direct_relations.get_mut(&relation) else {
+            continue;
+        };
+        let has_conditional_type = subjects.iter().any(|subject| {
+            matches!(
+                subject,
+                DirectSubject::ConditionalType { type_name, .. }
+                    if type_name == &well_known.user
+            )
+        });
+        let has_conditional_wildcard = subjects.iter().any(|subject| {
+            matches!(
+                subject,
+                DirectSubject::ConditionalWildcard { type_name, .. }
+                    if type_name == &well_known.user
+            )
+        });
+        subjects.retain(|subject| {
+            !matches!(subject, DirectSubject::Type(type_name) if has_conditional_type && type_name == &well_known.user)
+                && !matches!(subject, DirectSubject::Wildcard(type_name) if has_conditional_wildcard && type_name == &well_known.user)
+        });
+    }
 }
 
 /// Report the principals row level security does not reach.
@@ -1687,12 +1812,24 @@ struct TypeOwner {
 struct TableTypes {
     by_identity: BTreeMap<TableId, String>,
     owners: BTreeMap<String, TypeOwner>,
+    reserved: BTreeMap<String, &'static str>,
 }
 
 impl TableTypes {
-    /// Whether a table already holds this type name, so a synthetic type must not.
+    fn new(well_known: &WellKnownTypes) -> Self {
+        Self {
+            reserved: well_known
+                .reserved()
+                .into_iter()
+                .map(|(setting, type_name)| (type_name.to_string(), setting))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether a table or reserved generator type already holds this type name.
     fn claims(&self, type_name: &str) -> bool {
-        self.owners.contains_key(type_name)
+        self.owners.contains_key(type_name) || self.reserved.contains_key(type_name)
     }
 
     /// The schema's own spelling of the table holding this type, for a note to name.
@@ -1713,9 +1850,10 @@ impl TableTypes {
     fn assign<DB: DatabaseLike>(
         db: &DB,
         scope: TypeScope<'_>,
+        well_known: &WellKnownTypes,
         notes: &mut Vec<TranslationNote>,
-    ) -> Self {
-        let mut types = Self::default();
+    ) -> Result<Self, PlanningError> {
+        let mut types = Self::new(well_known);
         let mut policied: BTreeSet<TableId> = BTreeSet::new();
         for policy in db.policies() {
             if let Some(table) = lookup_table(db, &policy.target_table_name().to_string()) {
@@ -1754,6 +1892,13 @@ impl TableTypes {
             }
 
             let base = canonical_fga_type_name(name);
+            if let Some(setting) = types.reserved.get(&base) {
+                return Err(PlanningError::ReservedTypeName {
+                    table: name.clone(),
+                    setting,
+                    type_name: base,
+                });
+            }
             let assigned = match types.owners.get(&base) {
                 Some(prior) => {
                     let disambiguated = format!("{base}_{}", stable_hex_suffix(name));
@@ -1776,8 +1921,7 @@ impl TableTypes {
             );
             types.by_identity.insert(identity, assigned);
         }
-
-        types
+        Ok(types)
     }
 
     /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
@@ -1825,7 +1969,7 @@ fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         deny_relation(),
-        vec![DirectSubject::Type(USER_TYPE.to_string())],
+        vec![DirectSubject::Type(table_plan.well_known.nobody.clone())],
     );
     UsersetExpr::Computed(deny_relation())
 }
@@ -1833,7 +1977,7 @@ fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
 fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         public_relation(),
-        vec![DirectSubject::Wildcard(USER_TYPE.to_string())],
+        vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())],
     );
     UsersetExpr::Computed(public_relation())
 }
@@ -2225,24 +2369,32 @@ fn bridge_is_buildable<DB: DatabaseLike>(
     false
 }
 
-fn ensure_member_type(all_types: &mut BTreeMap<String, TypePlan>, type_name: &str) {
+fn ensure_member_type(
+    all_types: &mut BTreeMap<String, TypePlan>,
+    type_name: &str,
+    well_known: &WellKnownTypes,
+) {
     let entry = all_types
         .entry(type_name.to_string())
-        .or_insert_with(|| TypePlan::new(type_name));
+        .or_insert_with(|| TypePlan::new_with_well_known(type_name, well_known));
     entry.ensure_direct(
         member_relation(),
-        vec![DirectSubject::Type(USER_TYPE.to_string())],
+        vec![DirectSubject::Type(well_known.user.clone())],
     );
 }
 
 /// Give `pg_role` a relation holding one kind of role membership, for an operator to load.
-fn ensure_pg_role_relation(all_types: &mut BTreeMap<String, TypePlan>, relation: &RelationName) {
+fn ensure_pg_role_relation(
+    all_types: &mut BTreeMap<String, TypePlan>,
+    relation: &RelationName,
+    well_known: &WellKnownTypes,
+) {
     all_types
-        .entry(PG_ROLE_TYPE.to_string())
-        .or_insert_with(|| TypePlan::new(PG_ROLE_TYPE))
+        .entry(well_known.pg_role.clone())
+        .or_insert_with(|| TypePlan::new_with_well_known(&well_known.pg_role, well_known))
         .ensure_direct(
             relation.clone(),
-            vec![DirectSubject::Type(USER_TYPE.to_string())],
+            vec![DirectSubject::Type(well_known.user.clone())],
         );
 }
 

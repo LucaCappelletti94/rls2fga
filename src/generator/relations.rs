@@ -22,7 +22,7 @@ use crate::generator::model_generator::{
     relation_grants_nothing, SchemaPlan, TypePlan, UsersetExpr,
 };
 use crate::generator::records::{RecordDerivation, RecordDescription, ValueSource};
-use crate::generator::well_known::USER_TYPE;
+use crate::generator::well_known::WellKnownTypes;
 use crate::parser::sql_parser::DatabaseLike;
 
 /// One relation's shapes and answer.
@@ -127,7 +127,13 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
                 type_name: type_plan.type_name.clone(),
                 relation: relation.clone(),
                 from_one_row: decision.is_some(),
-                shapes: shapes_filling(type_plan.type_name.as_str(), relation, &sources, db),
+                shapes: shapes_filling(
+                    type_plan.type_name.as_str(),
+                    relation,
+                    &sources,
+                    &plan.well_known,
+                    db,
+                ),
                 decision,
                 grants_nobody: relation_grants_nothing(type_plan, relation),
             });
@@ -141,7 +147,7 @@ fn index_sources(plan: &SchemaPlan) -> SourceIndex<'_> {
     let mut index: SourceIndex<'_> = BTreeMap::new();
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
-            for target in source.feeds(&type_plan.type_name) {
+            for target in source.feeds(&type_plan.type_name, &plan.well_known) {
                 index.entry(target).or_default().push((
                     source,
                     type_plan.type_name.as_str(),
@@ -165,6 +171,7 @@ fn shapes_filling<DB: DatabaseLike>(
     type_name: &str,
     relation: &RelationName,
     sources: &SourceIndex<'_>,
+    well_known: &WellKnownTypes,
     db: &DB,
 ) -> Vec<RecordDescription> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -177,7 +184,9 @@ fn shapes_filling<DB: DatabaseLike>(
         if !seen.insert(source.dedup_key()) {
             continue;
         }
-        if let Some(description) = describe_tuple_source(source, owner_type, *only_own_rows, db) {
+        if let Some(description) =
+            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)
+        {
             out.push(description);
         }
     }
@@ -211,7 +220,7 @@ fn relation_decision<DB: DatabaseLike>(
             Some(expr) => expr_decision(type_name, expr, plan, sources, db, visiting),
             // A relation with direct subjects is answered by the tuples loaded into
             // it, so the sources feeding it decide.
-            None => leaf_decision(type_name, relation, sources, db),
+            None => leaf_decision(type_name, relation, sources, &plan.well_known, db),
         },
     };
     visiting.remove(&(type_name.to_string(), relation.clone()));
@@ -267,6 +276,7 @@ fn leaf_decision<DB: DatabaseLike>(
     type_name: &str,
     relation: &RelationName,
     sources: &SourceIndex<'_>,
+    well_known: &WellKnownTypes,
     db: &DB,
 ) -> Option<RowDecision> {
     // Nothing the generator emits populates it, so its tuples come from somewhere
@@ -303,7 +313,8 @@ fn leaf_decision<DB: DatabaseLike>(
         else {
             return None;
         };
-        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
+        let description =
+            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
         return Some(RowDecision::RequestGated {
             relation: relation.clone(),
             shapes: vec![description],
@@ -336,7 +347,8 @@ fn leaf_decision<DB: DatabaseLike>(
         if !temporal_context.is_empty() {
             return None;
         }
-        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
+        let description =
+            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
         return Some(RowDecision::RequestGated {
             relation: relation.clone(),
             shapes: vec![description],
@@ -349,8 +361,9 @@ fn leaf_decision<DB: DatabaseLike>(
     let mut unique: BTreeSet<String> = BTreeSet::new();
     let mut shapes = Vec::new();
     for (source, owner_type, only_own_rows) in feeding {
-        let description = describe_tuple_source(source, owner_type, *only_own_rows, db)?;
-        if !row_names_a_user(&description.derivation, type_name, db) {
+        let description =
+            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
+        if !row_names_a_user(&description.derivation, type_name, &well_known.user, db) {
             return None;
         }
         if unique.insert(source.dedup_key()) {
@@ -366,6 +379,7 @@ fn leaf_decision<DB: DatabaseLike>(
 fn row_names_a_user<DB: DatabaseLike>(
     derivation: &RecordDerivation,
     type_name: &str,
+    user_type: &str,
     db: &DB,
 ) -> bool {
     let RecordDerivation::FromRow {
@@ -407,7 +421,7 @@ fn row_names_a_user<DB: DatabaseLike>(
     }
     // The subject has to be a user the consumer can compare against, named by
     // this row rather than reached through another type's membership.
-    if template.subject_type != USER_TYPE {
+    if template.subject_type != user_type {
         return false;
     }
     !matches!(template.subject_key.part(), ValueSource::Literal(_))

@@ -7,6 +7,7 @@ use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass, UnclassifiedE
 use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::records::RecordDerivation;
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
+use rls2fga::generator::well_known::{NOBODY_TYPE, USER_TYPE};
 use rls2fga::parser::identifiers::RelationName;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
@@ -305,10 +306,15 @@ pub(crate) fn membership_translation(clause: &str) -> (String, String) {
     ));
     let translator = translator(ConfidenceLevel::B);
     (
-        translator.translate(&db).outputs_accepting_gaps().model(),
+        translator
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps()
+            .model(),
         format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
         ),
@@ -351,7 +357,10 @@ pub(crate) fn shaped_membership_subquery_complaints(clause: &str, shaping: &str)
         }
     }
 
-    let outputs = translator.translate(&db).outputs_accepting_gaps();
+    let outputs = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
     let dsl = outputs.model();
     let can_select = relation_definition(&dsl, "docs", "can_select");
     if can_select.as_deref() != Some("no_access") {
@@ -388,10 +397,15 @@ pub(crate) fn translation(sql: &str) -> (String, String) {
     let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     (
-        translator.translate(&db).outputs_accepting_gaps().model(),
+        translator
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps()
+            .model(),
         format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
         ),
@@ -446,6 +460,15 @@ pub(crate) fn feeds(
         // relation from here and is reported as not feeding it.
         _ => false,
     }
+}
+
+/// Whether the generator declares this type for structure rather than for a table's rows.
+///
+/// No query populates one and no expression mints one, so every invariant counting types a
+/// translation invented has to skip them. `nobody` joined `user` when the denial stopped
+/// admitting a person, and three tests spelled the exemption separately until then.
+pub(crate) fn is_structural_type(type_name: &str) -> bool {
+    type_name == USER_TYPE || type_name == NOBODY_TYPE
 }
 
 pub(crate) const TEAMS_SCHEMA: &str = "

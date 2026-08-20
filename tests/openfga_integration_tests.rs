@@ -40,6 +40,7 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let model_id =

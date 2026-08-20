@@ -21,6 +21,7 @@ fn quoted_dot_in_a_table_name_is_not_read_as_a_schema_separator() {
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -51,6 +52,7 @@ fn a_quoted_parent_reference_still_inherits() {
     let read_of = |parent_ref: &str| {
         let dsl = translator(ConfidenceLevel::A)
             .translate(&db_of(&schema(parent_ref)))
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
         relation_definition(&dsl, "docs", "can_select")
@@ -83,6 +85,7 @@ CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -115,6 +118,7 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING ("Owner_Id" = current_user);
     let rendered = format_tuples(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -137,10 +141,15 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (Owner_Id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -172,6 +181,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -195,6 +205,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let policy_side_dsl = translator(ConfidenceLevel::B)
         .translate(&policy_side)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     assert_ne!(
@@ -219,7 +230,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     assert_eq!(
         relation_definition(&dsl, "tasks", "can_select").as_deref(),
@@ -230,6 +245,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries()
         )
@@ -254,6 +270,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         relation_definition(
             &translator
                 .translate(&policy_side)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .model(),
             "tasks",
@@ -278,6 +295,7 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
     let rendered = format_tuples(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -302,6 +320,7 @@ CREATE POLICY p ON docs FOR SELECT TO "current_user" USING (owner_id = current_u
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 

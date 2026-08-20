@@ -31,6 +31,7 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let expected = tuple_generator::format_tuples(&outputs.tuple_queries());
 
@@ -67,6 +68,7 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let out_dir = unique_temp_dir("rls2fga_formatter_report_threshold");

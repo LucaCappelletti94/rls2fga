@@ -572,8 +572,28 @@ fn assert_descriptions_match_their_sql(
                     query.comment
                 );
             }
+            // A constant is compared whole rather than per row: the query yields exactly
+            // the fact the description carries, whatever any table holds, so there is no
+            // row to evaluate against and nothing may claim there is.
+            RecordDerivation::Constant { record } => {
+                assert!(
+                    description.tables.is_empty(),
+                    "{label}: a constant reads no table, got {:?}: {}",
+                    description.tables,
+                    query.comment
+                );
+                let expected = records_from_sql(outputs, conn, query);
+                let carried: BTreeSet<Record> = [record.clone()].into_iter().collect();
+                assert_eq!(
+                    carried, expected,
+                    "{label}: the constant disagrees with its own SQL for {}\n{}",
+                    query.comment, query.sql
+                );
+                records += expected.len();
+                continue;
+            }
             // `RecordDerivation` is non_exhaustive, so a variant added later has
-            // to be judged here rather than passing as one of the two above.
+            // to be judged here rather than passing as one of the three above.
             other => panic!("{label}: unhandled derivation {other:?}"),
         }
 
@@ -730,6 +750,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -792,6 +813,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps();
         let queries = outputs.tuple_queries();
 
@@ -870,6 +892,7 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -968,6 +991,7 @@ async fn an_expiring_share_settles_and_matches_its_own_sql() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1028,6 +1052,7 @@ async fn a_settled_share_arm_matches_its_own_sql() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1087,6 +1112,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1178,6 +1204,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1277,6 +1304,7 @@ async fn holder_shapes_match_their_own_sql() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1344,6 +1372,7 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1403,6 +1432,7 @@ INSERT INTO docs (id, title) VALUES
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let mut pointers = 0usize;
@@ -1505,6 +1535,7 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let queries = outputs.tuple_queries();
 
@@ -1728,7 +1759,8 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
     let reported = planned.relations();
     let outputs = planned.outputs_accepting_gaps();
 
@@ -1863,6 +1895,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
@@ -1965,7 +1998,8 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
     let naming = translation.row_naming();
     assert_eq!(
         naming.len(),
@@ -2083,7 +2117,8 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
     let naming = translation.row_naming();
 
     let outputs = translation.outputs_accepting_gaps();
@@ -2178,7 +2213,8 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
     let reported = planned.action_relations();
     let outputs = planned.outputs_accepting_gaps();
 
@@ -2252,3 +2288,104 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
         "no row is admitted by one half alone, so requiring either half would pass"
     );
 }
+
+/// Deleting a row does not withdraw the roles its scope admits.
+///
+/// The roles a policy admits are decided by the policy, so the fact survives the table
+/// emptying. Described as following from a row instead, every row implied the same fact and
+/// a consumer withdrawing what a deleted row implied removed the one thing every surviving
+/// row still needs, which denies the whole table. That is invisible to a union oracle: the
+/// union over the rows equals the query's result either way, and only the withdrawal
+/// direction tells them apart.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_role_scope_keeps_its_roles_when_a_row_is_deleted() {
+    let (_container, mut conn) = start_postgres().await;
+
+    let schema = "
+CREATE TABLE docs (id UUID PRIMARY KEY, title TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_read ON docs FOR SELECT TO auditor USING (TRUE);
+";
+    conn.batch_execute("CREATE ROLE auditor;")
+        .expect("failed to create the role the clause names");
+    conn.batch_execute(schema)
+        .expect("failed to apply the role-scoped schema");
+    conn.batch_execute(
+        "
+INSERT INTO docs (id, title) VALUES
+    ('00000000-0000-0000-0000-0000000000d1', 'one'),
+    ('00000000-0000-0000-0000-0000000000d2', 'two');
+",
+    )
+    .expect("failed to seed the rows the scope judges");
+
+    let (classified, db, registry) = support::classify_sql(schema, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let role_fact = queries
+        .iter()
+        .find(|query| query.comment.contains("admits PostgreSQL role"))
+        .expect("the scope admits a role, so a query carries it");
+    let pointer = queries
+        .iter()
+        .find(|query| query.comment.contains("judged by the scope"))
+        .expect("every row points at the scope that judges it");
+
+    // The description says the fact is nobody's row, so no consumer can attribute it to
+    // one: it names no table to arrive on, and asking for a row's records refuses.
+    let description = role_fact
+        .description
+        .as_ref()
+        .expect("the role fact is described");
+    assert!(
+        description.tables.is_empty(),
+        "a constant reads no table, got {:?}",
+        description.tables
+    );
+    assert!(
+        matches!(&description.derivation, RecordDerivation::Constant { .. }),
+        "the roles a policy admits follow from the policy, got {:?}",
+        description.derivation
+    );
+    assert!(
+        records_from_row(description, &EmptyRow).is_err(),
+        "a row must not be able to claim the fact as its own"
+    );
+
+    assert_eq!(rows_returned(&mut conn, &role_fact.sql), 1);
+    assert_eq!(rows_returned(&mut conn, &pointer.sql), 2);
+
+    conn.batch_execute("DELETE FROM docs WHERE title = 'one';")
+        .expect("failed to delete one of the judged rows");
+    assert_eq!(
+        rows_returned(&mut conn, &role_fact.sql),
+        1,
+        "the surviving row still needs the roles its scope admits"
+    );
+    assert_eq!(rows_returned(&mut conn, &pointer.sql), 1);
+
+    conn.batch_execute("DELETE FROM docs;")
+        .expect("failed to empty the guarded table");
+    assert_eq!(
+        rows_returned(&mut conn, &role_fact.sql),
+        1,
+        "the policy still admits the role with no row to judge, and the next insert needs \
+         the fact already there"
+    );
+    assert_eq!(rows_returned(&mut conn, &pointer.sql), 0);
+}
+
+/// A row that answers nothing, for asking whether a description reads one at all.
+struct EmptyRow;
+
+impl rls2fga::generator::records::RowValues for EmptyRow {}
