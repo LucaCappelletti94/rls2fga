@@ -2,6 +2,10 @@
 source: tests/generator_tests.rs
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
+SET TIME ZONE 'UTC';
+SET DateStyle = 'ISO, MDY';
+SET bytea_output = 'hex';
+
 -- Request-time gate on starts_at, evaluated by condition when_campaigns_visible_now_d8ae5d2b
 SELECT 'campaigns:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'gate_visible_now_7dce72fa' AS relation, 'user:*' AS subject,
   'when_campaigns_visible_now_d8ae5d2b' AS condition, jsonb_build_object('starts_at', "starts_at") AS context

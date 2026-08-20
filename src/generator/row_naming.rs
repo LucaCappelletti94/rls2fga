@@ -16,9 +16,9 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeMap;
 
-use crate::generator::db_lookup::resolve_pk_columns;
+use crate::generator::db_lookup::{column_kind, resolve_pk_columns};
 use crate::generator::model_generator::{qualified_table_name, SchemaPlan, TypePlan};
-use crate::generator::records::{ObjectKey, ValueSource};
+use crate::generator::records::{ColumnRead, ObjectKey, ValueSource};
 use crate::parser::identifiers::ColumnName;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 
@@ -84,7 +84,7 @@ pub(crate) fn row_naming<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<Ro
             Some(RowNaming {
                 table: table.clone(),
                 type_name,
-                key: object_key(columns),
+                key: object_key(table, columns, db),
             })
         })
         .collect();
@@ -103,16 +103,25 @@ pub(crate) fn row_naming<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<Ro
             return None;
         }
         let (type_name, columns) = named_by(root, db)?;
+        let key = object_key(named.as_str(), columns, db);
         Some(RowNaming {
             table: named,
             type_name,
-            key: object_key(columns),
+            key,
         })
     }));
     entries.sort_by(|left, right| left.table.cmp(&right.table));
     entries
 }
 
-fn object_key(columns: Vec<ColumnName>) -> ObjectKey {
-    ObjectKey::new(columns.into_iter().map(ValueSource::Column).collect())
+fn object_key<DB: DatabaseLike>(table: &str, columns: Vec<ColumnName>, db: &DB) -> ObjectKey {
+    ObjectKey::new(
+        columns
+            .into_iter()
+            .map(|column| {
+                let kind = column_kind(table, column.as_str(), db);
+                ValueSource::Column(ColumnRead::new(column, kind))
+            })
+            .collect(),
+    )
 }

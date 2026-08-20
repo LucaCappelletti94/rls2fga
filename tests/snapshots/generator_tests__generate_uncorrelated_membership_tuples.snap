@@ -2,6 +2,10 @@
 source: tests/generator_tests.rs
 expression: "tuple_generator::format_tuples(&tuples)"
 ---
+SET TIME ZONE 'UTC';
+SET DateStyle = 'ISO, MDY';
+SET bytea_output = 'hex';
+
 -- Everyone listed in staff, held by staff_holder
 SELECT DISTINCT 'staff_holder:all' AS object, 'member' AS relation, 'user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "user_id"::text ELSE '~' || encode(convert_to("user_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "staff"

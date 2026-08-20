@@ -1,6 +1,5 @@
 #![cfg(not(target_os = "windows"))]
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
@@ -18,7 +17,7 @@ use testcontainers::{
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, RecordDerivation, RecordDescription, RowValues,
+    records_from_row, ColumnKind, RecordDerivation, RecordDescription, RowCell, RowList, RowValues,
 };
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
@@ -4956,12 +4955,25 @@ struct PartitionRow {
 }
 
 impl RowValues for PartitionRow {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        match column {
-            "id" => Some(Cow::Borrowed(self.id.as_str())),
-            "region" => Some(Cow::Borrowed(self.region.as_str())),
-            _ => None,
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        let value = match column {
+            "id" => &self.id,
+            "region" => &self.region,
+            _ => return RowCell::Absent,
+        };
+        if kind == ColumnKind::Text {
+            RowCell::Text(value.into())
+        } else {
+            RowCell::Undecodable
         }
+    }
+
+    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+        RowList::Absent
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
     }
 }
 

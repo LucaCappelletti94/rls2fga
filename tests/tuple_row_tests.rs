@@ -4,11 +4,11 @@
 //! inventing it wrong loads tuples that are silently wrong in whichever direction
 //! the guess fell. Everything here drives the public surface a second crate uses.
 
-use std::borrow::Cow;
-
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{records_from_row, Record, RecordDerivation, RowValues};
+use rls2fga::generator::records::{
+    records_from_row, ColumnKind, Record, RecordDerivation, RowCell, RowList, RowValues,
+};
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleRow, TupleRowError};
 use rls2fga::generator::well_known::deny_relation;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
@@ -32,11 +32,29 @@ const ACCESSOR_REGISTRY: &str =
 struct Row(Vec<(String, String)>);
 
 impl RowValues for Row {
-    fn text(&self, column: &str) -> Option<Cow<'_, str>> {
-        self.0
-            .iter()
-            .find(|(name, _)| name == column)
-            .map(|(_, value)| Cow::Borrowed(value.as_str()))
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        let Some((_, value)) = self.0.iter().find(|(name, _)| name == column) else {
+            return RowCell::Absent;
+        };
+        match kind {
+            ColumnKind::Text => RowCell::Text(value.as_str().into()),
+            ColumnKind::Integer => RowCell::Integer(value.as_str().into()),
+            ColumnKind::Decimal => RowCell::Decimal(value.as_str().into()),
+            ColumnKind::Date => RowCell::Date(value.as_str().into()),
+            ColumnKind::Time => RowCell::Time(value.as_str().into()),
+            ColumnKind::Timestamp => RowCell::Timestamp(value.as_str().into()),
+            ColumnKind::TimestampTz => RowCell::TimestampTz(value.as_str().into()),
+            ColumnKind::Uuid => RowCell::Uuid(value.as_str().into()),
+            _ => RowCell::Undecodable,
+        }
+    }
+
+    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+        RowList::Absent
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
     }
 }
 

@@ -21,7 +21,7 @@ client = ["std", "dep:openfga-client"]
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
 sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", branch = "main", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "arbitrary_precision"] }
 # Only the model write calls it, behind `client`.
 openfga-client = { version = "0.6.1", optional = true }
 

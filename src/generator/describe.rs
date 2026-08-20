@@ -9,13 +9,17 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeSet;
 
-use crate::classifier::patterns::{ResidualGuard, ResidualPredicates};
+use crate::classifier::patterns::{
+    AttributeLiteral, AttributeOperator, AttributePredicate, ResidualGuard, ResidualPredicates,
+};
+use crate::generator::db_lookup::{column_kind, list_element_kind};
 use crate::generator::identity::encode_part;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::RowParameter;
 use crate::generator::records::{
-    BoundQuery, Guard, ObjectKey, Record, RecordContext, RecordContextEntry, RecordDerivation,
-    RecordDescription, RecordTemplate, ReplayScope, SubjectKey, ValueSource,
+    BoundQuery, ColumnKind, ColumnRead, ContextRendering, Guard, ObjectKey, Record, RecordContext,
+    RecordContextEntry, RecordDerivation, RecordDescription, RecordTemplate, ReplayScope,
+    SubjectKey, ValueSource,
 };
 use crate::generator::tuple_generator::{
     quote_sql_identifier, render_tuple_source_inner, resolve_bridge_columns, TupleQuery,
@@ -168,10 +172,62 @@ fn rendered<DB: DatabaseLike>(
 /// A missing part makes [`ObjectKey::render`] yield no record, which is why no
 /// description carries a `NOT NULL` guard for a key column: the guard would
 /// duplicate that and read as load bearing while guarding nothing.
-fn key_parts(pk_cols: &[ColumnName]) -> Vec<ValueSource> {
+fn column_read<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> ColumnRead {
+    ColumnRead::new(column.clone(), column_kind(table, column.as_str(), db))
+}
+
+fn value_column<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> ValueSource {
+    ValueSource::Column(column_read(table, column, db))
+}
+
+fn list_column<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> ValueSource {
+    ValueSource::ListElements(ColumnRead::new(
+        column.clone(),
+        list_element_kind(table, column.as_str(), db),
+    ))
+}
+
+fn json_path<DB: DatabaseLike>(
+    table: &str,
+    column: &ColumnName,
+    path: &[String],
+    db: &DB,
+) -> ValueSource {
+    ValueSource::JsonPath {
+        column: column_read(table, column, db),
+        path: path.to_vec(),
+    }
+}
+
+fn composite_subject<DB: DatabaseLike>(
+    table: &str,
+    first: &ColumnName,
+    rest: &[ColumnName],
+    db: &DB,
+) -> SubjectKey {
+    SubjectKey::composite_sources(
+        value_column(table, first, db),
+        rest.iter()
+            .map(|column| value_column(table, column, db))
+            .collect(),
+    )
+}
+fn subject_column<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> SubjectKey {
+    SubjectKey::new(value_column(table, column, db))
+}
+
+fn not_null<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> Guard {
+    Guard::NotNull(column_read(table, column, db))
+}
+
+fn is_true<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> Guard {
+    Guard::IsTrue(column_read(table, column, db))
+}
+
+fn key_parts<DB: DatabaseLike>(table: &str, pk_cols: &[ColumnName], db: &DB) -> Vec<ValueSource> {
     pk_cols
         .iter()
-        .map(|c| ValueSource::Column(c.clone()))
+        .map(|column| value_column(table, column, db))
         .collect()
 }
 
@@ -192,11 +248,11 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             relation,
             well_known.user.as_str(),
-            ValueSource::Column(owner_col.clone()),
-            vec![Guard::NotNull(owner_col.clone())],
+            value_column(table, owner_col, db),
+            vec![not_null(table, owner_col, db)],
         )),
 
         // One record per element, and the evaluator drops a null element exactly
@@ -209,10 +265,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             relation,
             well_known.user.as_str(),
-            ValueSource::ListElements(array_col.clone()),
+            list_column(table, array_col, db),
             Vec::new(),
         )),
 
@@ -225,13 +281,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             relation,
             well_known.user.as_str(),
-            ValueSource::JsonPath {
-                column: column.clone(),
-                path: path.clone(),
-            },
+            json_path(table, column, path, db),
             Vec::new(),
         )),
 
@@ -246,11 +299,15 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             principal_table,
             identity_type,
-            ObjectKey::column(principal_pk_col.as_str()),
+            ObjectKey::new(key_parts(
+                principal_table,
+                core::slice::from_ref(principal_pk_col),
+                db,
+            )),
             relation,
             subject_type,
-            SubjectKey::column(principal_pk_col.clone()),
-            vec![Guard::NotNull(principal_pk_col.clone())],
+            subject_column(principal_table, principal_pk_col, db),
+            vec![not_null(principal_table, principal_pk_col, db)],
         )),
 
         TupleSource::ExplicitGrants {
@@ -308,13 +365,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             membership_table,
             well_known.team.as_str(),
-            ValueSource::Column(team_col.clone()),
+            value_column(membership_table, team_col, db),
             &member_relation(),
             well_known.user.as_str(),
-            ValueSource::Column(user_col.clone()),
+            value_column(membership_table, user_col, db),
             vec![
-                Guard::NotNull(team_col.clone()),
-                Guard::NotNull(user_col.clone()),
+                not_null(membership_table, team_col, db),
+                not_null(membership_table, user_col, db),
             ],
         )),
 
@@ -332,11 +389,11 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             gate,
         } => {
             let mut guards = vec![
-                Guard::NotNull(fk_col.clone()),
-                Guard::NotNull(user_col.clone()),
+                not_null(join_table, fk_col, db),
+                not_null(join_table, user_col, db),
             ];
             let Some(gate) = gate else {
-                let Some(residual) = residual_guards(extra_predicates) else {
+                let Some(residual) = residual_guards(join_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
@@ -365,10 +422,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(from_row(
                     join_table,
                     parent_type,
-                    ValueSource::Column(fk_col.clone()),
+                    value_column(join_table, fk_col, db),
                     &member_relation(),
                     well_known.user.as_str(),
-                    ValueSource::Column(user_col.clone()),
+                    value_column(join_table, user_col, db),
                     guards,
                 ));
             };
@@ -406,24 +463,25 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 extra_predicates
                     .row_guards()
                     .into_iter()
-                    .map(guard_from_residual),
+                    .filter_map(|guard| guard_from_residual(join_table, guard, db)),
             );
             let mut entries = Vec::with_capacity(gate.context.len());
             for column in &gate.context {
-                guards.push(Guard::NotNull(column.column.clone()));
+                guards.push(not_null(join_table, &column.column, db));
                 entries.push(RecordContextEntry {
                     key: column.parameter.clone(),
-                    value: ValueSource::Column(column.column.clone()),
+                    value: value_column(join_table, &column.column, db),
+                    rendering: ContextRendering::Json,
                 });
             }
             Some(described(
                 join_table,
                 RecordTemplate {
                     object_type: parent_type.clone(),
-                    object_key: ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
+                    object_key: ObjectKey::new(vec![value_column(join_table, fk_col, db)]),
                     relation: member_relation(),
                     subject_type: well_known.user.clone(),
-                    subject_key: SubjectKey::column(user_col.clone()),
+                    subject_key: subject_column(join_table, user_col, db),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),
                         entries,
@@ -442,15 +500,18 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             // The renderer emits a TODO comment rather than a query here, so
             // there are no records to describe.
             let (object_cols, parent_ref_col) = resolve_bridge_columns(table, fk_col, db)?;
-            let mut guards: Vec<Guard> = object_cols.iter().cloned().map(Guard::NotNull).collect();
-            guards.push(Guard::NotNull(parent_ref_col.clone()));
+            let mut guards: Vec<Guard> = object_cols
+                .iter()
+                .map(|column| not_null(table, column, db))
+                .collect();
+            guards.push(not_null(table, &parent_ref_col, db));
             Some(from_row(
                 table,
                 owner_type,
-                ObjectKey::new(key_parts(&object_cols)),
+                ObjectKey::new(key_parts(table, &object_cols, db)),
                 relation,
                 parent_type,
-                SubjectKey::column(parent_ref_col),
+                subject_column(table, &parent_ref_col, db),
                 guards,
             ))
         }
@@ -462,17 +523,17 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             &public_relation(),
             well_known.user.as_str(),
             SubjectKey::wildcard(),
-            vec![Guard::IsTrue(flag_col.clone())],
+            vec![is_true(table, flag_col, db)],
         )),
 
         TupleSource::ConstantTrue { table, pk_cols } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             &public_relation(),
             well_known.user.as_str(),
             SubjectKey::wildcard(),
@@ -488,7 +549,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             scope_relation,
             scope_type,
             ValueSource::Literal(scope_object.clone()),
@@ -523,15 +584,38 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             pk_cols,
             predicate,
-        } => Some(from_row(
-            table,
-            owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
-            &public_relation(),
-            well_known.user.as_str(),
-            SubjectKey::wildcard(),
-            vec![Guard::Compare(predicate.clone())],
-        )),
+        } => {
+            let Some(guard) = compare_guard(table, predicate, db) else {
+                let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
+                return Some(RecordDescription {
+                    tables: tables(&[table]),
+                    derivation: RecordDerivation::Joined {
+                        queries: bind(
+                            &query,
+                            table,
+                            pk_cols,
+                            &bound_eq(None, pk_cols),
+                            ReplayScope::Object {
+                                object_type: owner_type.to_string(),
+                                relations: vec![public_relation()],
+                            },
+                        )
+                        .into_iter()
+                        .collect(),
+                        reason: format!("the row comparison on {} needs SQL", predicate.column),
+                    },
+                });
+            };
+            Some(from_row(
+                table,
+                owner_type,
+                ObjectKey::new(key_parts(table, pk_cols, db)),
+                &public_relation(),
+                well_known.user.as_str(),
+                SubjectKey::wildcard(),
+                vec![guard],
+            ))
+        }
 
         // The record is a function of the row alone: the comparison happens
         // at check time, and what the row contributes to it travels in the
@@ -548,7 +632,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             RecordTemplate {
                 object_type: owner_type.to_string(),
-                object_key: ObjectKey::new(key_parts(pk_cols)),
+                object_key: ObjectKey::new(key_parts(table, pk_cols, db)),
                 relation: relation.clone(),
                 subject_type: well_known.user.clone(),
                 subject_key: SubjectKey::wildcard(),
@@ -556,11 +640,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     condition: condition.clone(),
                     entries: vec![RecordContextEntry {
                         key: row_parameter.clone(),
-                        value: ValueSource::Column(column.clone()),
+                        value: value_column(table, column, db),
+                        rendering: ContextRendering::Json,
                     }],
                 }),
             },
-            vec![Guard::NotNull(column.clone())],
+            vec![not_null(table, column, db)],
         )),
 
         // The row carries its side of the comparison, so the description carries the
@@ -580,8 +665,8 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 // Kept only because five sibling shapes state the same guard, and
                 // dropping one of six would read as an exception rather than a rule.
                 RowParameter::Column { column, .. } => (
-                    ValueSource::Column(column.clone()),
-                    vec![Guard::NotNull(column.clone())],
+                    value_column(table, column, db),
+                    vec![not_null(table, column, db)],
                 ),
                 RowParameter::Literal { value, .. } => {
                     (ValueSource::Literal(value.clone()), Vec::new())
@@ -591,7 +676,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 table,
                 RecordTemplate {
                     object_type: owner_type.to_string(),
-                    object_key: ObjectKey::new(key_parts(pk_cols)),
+                    object_key: ObjectKey::new(key_parts(table, pk_cols, db)),
                     relation: relation.clone(),
                     subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
@@ -600,6 +685,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         entries: vec![RecordContextEntry {
                             key: row_parameter.parameter().to_string(),
                             value,
+                            rendering: ContextRendering::SqlText,
                         }],
                     }),
                 },
@@ -626,11 +712,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => {
             let mut entries = vec![RecordContextEntry {
                 key: row_parameter.clone(),
-                value: ValueSource::Column(member_col.clone()),
+                value: value_column(join_table, member_col, db),
+                rendering: ContextRendering::SqlText,
             }];
-            let mut guards = vec![Guard::NotNull(member_col.clone())];
+            let mut guards = vec![not_null(join_table, member_col, db)];
             if temporal_context.is_empty() {
-                let Some(residual) = residual_guards(extra_predicates) else {
+                let Some(residual) = residual_guards(join_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
@@ -664,13 +751,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     extra_predicates
                         .row_guards()
                         .into_iter()
-                        .map(guard_from_residual),
+                        .filter_map(|guard| guard_from_residual(join_table, guard, db)),
                 );
                 for gate in temporal_context {
-                    guards.push(Guard::NotNull(gate.column.clone()));
+                    guards.push(not_null(join_table, &gate.column, db));
                     entries.push(RecordContextEntry {
                         key: gate.parameter.clone(),
-                        value: ValueSource::Column(gate.column.clone()),
+                        value: value_column(join_table, &gate.column, db),
+                        rendering: ContextRendering::Json,
                     });
                 }
             }
@@ -678,7 +766,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 join_table,
                 RecordTemplate {
                     object_type: share_type.clone(),
-                    object_key: ObjectKey::new(key_parts(pk_cols)),
+                    object_key: ObjectKey::new(key_parts(join_table, pk_cols, db)),
                     relation: relation.clone(),
                     subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
@@ -704,15 +792,19 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => {
             // An empty key names no share, so the source produces no records to describe.
             let (first, rest) = pk_cols.split_first()?;
-            let mut guards = vec![Guard::NotNull(fk_col.clone())];
-            guards.extend(pk_cols.iter().cloned().map(Guard::NotNull));
+            let mut guards = vec![not_null(join_table, fk_col, db)];
+            guards.extend(
+                pk_cols
+                    .iter()
+                    .map(|column| not_null(join_table, column, db)),
+            );
             Some(from_row(
                 join_table,
                 guarded_type,
-                ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
+                ObjectKey::new(vec![value_column(join_table, fk_col, db)]),
                 relation,
                 share_type,
-                SubjectKey::composite(first, rest),
+                composite_subject(join_table, first, rest, db),
                 guards,
             ))
         }
@@ -726,7 +818,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(pk_cols)),
+            ObjectKey::new(key_parts(table, pk_cols, db)),
             relation,
             holder_type,
             ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
@@ -745,9 +837,9 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             extra_predicates,
             gate,
         } => {
-            let mut guards = vec![Guard::NotNull(user_col.clone())];
+            let mut guards = vec![not_null(member_table, user_col, db)];
             let Some(gate) = gate else {
-                let Some(residual) = residual_guards(extra_predicates) else {
+                let Some(residual) = residual_guards(member_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
@@ -780,7 +872,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
                     &member_relation(),
                     well_known.user.as_str(),
-                    ValueSource::Column(user_col.clone()),
+                    value_column(member_table, user_col, db),
                     guards,
                 ));
             };
@@ -818,14 +910,15 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 extra_predicates
                     .row_guards()
                     .into_iter()
-                    .map(guard_from_residual),
+                    .filter_map(|guard| guard_from_residual(member_table, guard, db)),
             );
             let mut entries = Vec::with_capacity(gate.context.len());
             for column in &gate.context {
-                guards.push(Guard::NotNull(column.column.clone()));
+                guards.push(not_null(member_table, &column.column, db));
                 entries.push(RecordContextEntry {
                     key: column.parameter.clone(),
-                    value: ValueSource::Column(column.column.clone()),
+                    value: value_column(member_table, &column.column, db),
+                    rendering: ContextRendering::Json,
                 });
             }
             Some(described(
@@ -837,7 +930,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     )]),
                     relation: member_relation(),
                     subject_type: well_known.user.clone(),
-                    subject_key: SubjectKey::column(user_col.clone()),
+                    subject_key: subject_column(member_table, user_col, db),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),
                         entries,
@@ -852,17 +945,55 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 }
 
 /// The residual as guards, or [`None`] when any conjunct needs SQL.
-fn residual_guards(residuals: &ResidualPredicates) -> Option<Vec<Guard>> {
-    residuals
-        .guards()
-        .map(|guards| guards.into_iter().map(guard_from_residual).collect())
+fn residual_guards<DB: DatabaseLike>(
+    table: &str,
+    residuals: &ResidualPredicates,
+    db: &DB,
+) -> Option<Vec<Guard>> {
+    residuals.guards().and_then(|guards| {
+        guards
+            .into_iter()
+            .map(|guard| guard_from_residual(table, guard, db))
+            .collect()
+    })
 }
 
 /// One residual guard as the record guard that decides it.
-fn guard_from_residual(guard: ResidualGuard) -> Guard {
+fn guard_from_residual<DB: DatabaseLike>(
+    table: &str,
+    guard: ResidualGuard,
+    db: &DB,
+) -> Option<Guard> {
     match guard {
-        ResidualGuard::IsTrue(column) => Guard::IsTrue(column),
-        ResidualGuard::NotNull(column) => Guard::NotNull(column),
-        ResidualGuard::Compare(predicate) => Guard::Compare(predicate),
+        ResidualGuard::IsTrue(column) => Some(is_true(table, &column, db)),
+        ResidualGuard::NotNull(column) => Some(not_null(table, &column, db)),
+        ResidualGuard::Compare(predicate) => compare_guard(table, &predicate, db),
     }
+}
+
+fn compare_guard<DB: DatabaseLike>(
+    table: &str,
+    predicate: &AttributePredicate,
+    db: &DB,
+) -> Option<Guard> {
+    let column = column_read(table, &predicate.column, db);
+    let row_decides = matches!(
+        (column.kind(), &predicate.value),
+        (ColumnKind::Bool, AttributeLiteral::Boolean(_))
+            | (
+                ColumnKind::Integer | ColumnKind::Decimal,
+                AttributeLiteral::Number(_)
+            )
+    ) || matches!(
+        (column.kind(), &predicate.value, predicate.operator),
+        (
+            ColumnKind::Text,
+            AttributeLiteral::Text(_),
+            AttributeOperator::Eq | AttributeOperator::NotEq
+        )
+    );
+    row_decides.then_some(Guard::Compare {
+        column,
+        predicate: predicate.clone(),
+    })
 }

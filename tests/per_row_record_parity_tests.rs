@@ -28,8 +28,8 @@ use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{
-    records_from_row, BoundQuery, Record, RecordDerivation, RecordDescription, ReplayScope,
-    ValueSource,
+    records_from_row, BoundQuery, ColumnKind, Record, RecordDerivation, RecordDescription,
+    ReplayScope, RowCell, RowList, RowValues, ValueSource,
 };
 use rls2fga::generator::relations::RowDecision;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
@@ -1514,6 +1514,27 @@ INSERT INTO paper_shares (paper_id, viewer) VALUES
   ('', 'erin');
 ";
 
+const TIMESTAMPTZ_IDENTITY_SCHEMA: &str = "
+CREATE TABLE readings (
+    observed_at TIMESTAMPTZ PRIMARY KEY,
+    owner_id TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_read ON readings FOR SELECT
+    USING (owner_id = auth_current_user_id());
+";
+
+const TIMESTAMPTZ_IDENTITY_SEED: &str = "
+INSERT INTO readings (observed_at, owner_id) VALUES
+  ('2026-01-01 00:00:00.1234+00', 'alice'),
+  ('2026-02-03 04:05:06.789+00', 'bob');
+";
+
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
 async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
@@ -1552,6 +1573,39 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
         "every seeded row must be named, including the ones the target refuses \
          verbatim, saw {records}"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_timestamptz_identity_matches_between_the_sql_and_the_evaluator() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(TIMESTAMPTZ_IDENTITY_SCHEMA)
+        .expect("failed to apply the timestamp identity schema");
+    conn.batch_execute(TIMESTAMPTZ_IDENTITY_SEED)
+        .expect("failed to seed the timestamp identity schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        TIMESTAMPTZ_IDENTITY_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "timestamp identity");
+
+    assert_eq!(pure, 1, "the ownership shape follows from one row");
+    assert_eq!(joined, 0, "nothing here reads a second table");
+    assert_eq!(records, 2, "both seeded rows must be named");
 }
 
 /// A schema whose reads compose all three ways a recipe can: one relation's records
@@ -2388,4 +2442,16 @@ INSERT INTO docs (id, title) VALUES
 /// A row that answers nothing, for asking whether a description reads one at all.
 struct EmptyRow;
 
-impl rls2fga::generator::records::RowValues for EmptyRow {}
+impl RowValues for EmptyRow {
+    fn cell(&self, _column: &str, _kind: ColumnKind) -> RowCell<'_> {
+        RowCell::Absent
+    }
+
+    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+        RowList::Absent
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
+    }
+}

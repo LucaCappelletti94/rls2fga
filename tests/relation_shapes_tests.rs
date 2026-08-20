@@ -644,7 +644,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
                     .parts()
                     .iter()
                     .filter_map(|part| match part {
-                        ValueSource::Column(column) => Some(column.clone()),
+                        ValueSource::Column(column) => Some(column.column().clone()),
                         _ => None,
                     })
                     .collect();
@@ -670,7 +670,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
                     .parts()
                     .iter()
                     .filter_map(|part| match part {
-                        ValueSource::Column(column) => Some(column.clone()),
+                        ValueSource::Column(column) => Some(column.column().clone()),
                         _ => None,
                     })
                     .collect();
