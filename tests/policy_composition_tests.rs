@@ -20,6 +20,7 @@ fn multi_policy_table_combines_patterns_for_select() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     // `author_id` yields an `author` relation, and the status check compares a column
@@ -67,6 +68,7 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -120,6 +122,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -181,6 +184,7 @@ CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -222,6 +226,7 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
@@ -255,6 +260,7 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -284,6 +290,7 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .model();
     let json = Translation::plan(
@@ -293,6 +300,7 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
 
@@ -346,6 +354,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let report_md = outputs.report();
 

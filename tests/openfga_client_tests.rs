@@ -51,6 +51,7 @@ async fn a_written_model_is_the_model_the_server_answers_from() {
         .expect("the registry parses")
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .json_model();
 
@@ -101,5 +102,61 @@ async fn a_written_model_is_the_model_the_server_answers_from() {
     assert!(
         !support::openfga::check_allowed(&client, "user:bob", "can_select", "docs:d1").await,
         "a stranger does not"
+    );
+}
+
+/// The service itself refuses to grant the denial, whatever an operator writes.
+///
+/// Probed before the model changed: with `no_access: [user]` the write
+/// `docs:d1#no_access@user:alice` is **accepted** and `can_insert` then answers allowed, so
+/// the denial was a convention. Pointed at a type nobody is, the write is refused at the
+/// point of the mistake and the check still answers no.
+#[tokio::test]
+#[ignore = "requires Docker and an openfga/openfga container"]
+async fn the_denial_cannot_be_lifted_by_writing_a_fact() {
+    let container = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
+
+    let db = rls2fga::parser::sql_parser::parse_schema(OWNERSHIP).expect("the schema parses");
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_registry_json(ACCESSOR_REGISTRY)
+        .expect("the registry parses")
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    let mut service = support::openfga::connect(grpc_port).await;
+    let store = support::openfga::create_store(&mut service, "denial-cannot-be-lifted").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service, &store, &outputs.json_model())
+            .await;
+    let client = service.into_client(&store, &model_id);
+
+    let forged = client
+        .write(
+            vec![support::openfga::make_tuple(
+                "docs:d1",
+                rls2fga::generator::well_known::deny_relation().as_str(),
+                "user:alice",
+            )],
+            None,
+        )
+        .await;
+    assert!(
+        forged.is_err(),
+        "the service must refuse a fact naming a person on the denial"
+    );
+    assert!(
+        !support::openfga::check_allowed(&client, "user:alice", "can_insert", "docs:d1").await,
+        "INSERT has no policy, so nobody may insert"
     );
 }

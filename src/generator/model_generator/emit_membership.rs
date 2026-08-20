@@ -82,14 +82,12 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // policies reading the same table may share, and two reading different
     // ones must not pool their members.
     let holder_type = holder_type_name(member_table, table_types);
-    ensure_member_type(all_types, &holder_type);
-    // A clock composed into the grant widens the holder's `member` to admit the
-    // conditioned user beside the plain one.
+    ensure_member_type(all_types, &holder_type, &table_plan.well_known);
     if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
         holder_plan.add_direct_subject(
             &member_relation(),
             DirectSubject::ConditionalType {
-                type_name: USER_TYPE.to_string(),
+                type_name: table_plan.well_known.user.clone(),
                 condition: gate.condition.clone(),
             },
         );
@@ -197,7 +195,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     let conditional_member = gate
         .as_ref()
         .map(|(condition, _)| DirectSubject::ConditionalType {
-            type_name: USER_TYPE.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         });
 
@@ -207,20 +205,18 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         parent_type.clone(),
         vec![DirectSubject::Type(parent_type.clone())],
     );
-    // The plan for `source_table` is held here, not in `all_types`, so a
-    // self-referential membership has to register `member` on it directly or the re-insert
-    // at the end of the loop drops it. A clock composed into the grant widens `member` to
-    // admit the conditioned user beside the plain one.
+    // This plan is outside `all_types` until the table build finishes, so a
+    // self-referential membership registers `member` here before the post-pass trims it.
     if parent_type == table_plan.type_name.as_str() {
         table_plan.ensure_direct(
             member_relation(),
-            vec![DirectSubject::Type(USER_TYPE.to_string())],
+            vec![DirectSubject::Type(table_plan.well_known.user.clone())],
         );
         if let Some(subject) = &conditional_member {
             table_plan.add_direct_subject(&member_relation(), subject.clone());
         }
     } else {
-        ensure_member_type(all_types, &parent_type);
+        ensure_member_type(all_types, &parent_type, &table_plan.well_known);
         if let (Some(subject), Some(parent_plan)) =
             (&conditional_member, all_types.get_mut(&parent_type))
         {
@@ -327,14 +323,6 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     let db = ctx.db;
     let source_table = ctx.source_table;
     let table_types = ctx.table_types;
-    if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &inner_pattern.pattern {
-        notes.push(TranslationNote::ParentRuleUnknown {
-            policy: policy_name.to_string(),
-            parent_table: parent_table.clone(),
-            reason: reason.clone(),
-        });
-        return deny_expr(table_plan);
-    }
 
     let parent_type = table_types.resolve(db, parent_table);
 
@@ -371,8 +359,11 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     } else {
         let parent_plan = all_types
             .entry(parent_type.clone())
-            .or_insert_with(|| TypePlan::new(&parent_type));
-        let mut parent_plan_owned = core::mem::replace(parent_plan, TypePlan::new(&parent_type));
+            .or_insert_with(|| TypePlan::new_with_well_known(&parent_type, &table_plan.well_known));
+        let mut parent_plan_owned = core::mem::replace(
+            parent_plan,
+            TypePlan::new_with_well_known(&parent_type, &table_plan.well_known),
+        );
         let expr = translate_pattern(
             &inner_pattern.pattern,
             &ctx.for_table(parent_table),
@@ -421,7 +412,9 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
             } else {
                 all_types
                     .entry(parent_type.clone())
-                    .or_insert_with(|| TypePlan::new(&parent_type))
+                    .or_insert_with(|| {
+                        TypePlan::new_with_well_known(&parent_type, &table_plan.well_known)
+                    })
                     .ensure_computed(name, expr)
             }
         }

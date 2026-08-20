@@ -35,6 +35,7 @@ fn outputs_for(schema: &str, using: &str) -> (String, String, String) {
         .with_current_user_setting_keys(["app.user_id", "app.subjects"])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     (
         outputs.model(),
@@ -157,6 +158,7 @@ fn a_column_borrowed_from_a_joined_relation_is_refused() {
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let tuples = format_tuples(&outputs.tuple_queries());
 
@@ -181,6 +183,7 @@ fn no_generated_query_reads_a_column_its_table_does_not_declare() {
             ConfidenceLevel::B,
             &rls2fga::generator::model_generator::GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
         for query in outputs.tuple_queries() {

@@ -3,6 +3,7 @@ use super::dsl::*;
 use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaffold};
 use super::role_threshold::*;
 use super::*;
+use crate::generator::well_known::{WellKnownTypes, TEAM_TYPE, USER_TYPE};
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
 
 fn role_registry(role_levels: &str, include_team: bool) -> FunctionRegistry {
@@ -208,11 +209,11 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
         ),
         "P2 with a non-RoleThreshold function should walk a scope relation, got: {p2_expr:?}"
     );
-    // P1 emits a TODO about missing semantic metadata; P2 emits a TODO
-    // about the role gate (and possibly missing object identifier).
+    // P1 emits a TODO about missing semantic metadata. P2 emits a TODO about
+    // the role gate, and possibly a missing object identifier.
     assert!(notes[0].message().contains("missing semantic metadata"));
     assert!(
-        notes.iter().any(|t| t.message().contains("Role gate")),
+        notes.iter().any(|t| t.message().contains("gates on")),
         "expected role-gate TODO: {notes:?}"
     );
 }
@@ -458,12 +459,13 @@ fn build_schema_plan_adds_notes_for_non_public_to_and_empty_translation() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     assert!(plan
         .notes
         .iter()
-        .any(|t| t.message().contains("Policy role scope TO")));
+        .any(|t| t.message().contains("is scoped TO")));
     assert!(plan.notes.iter().any(|t| t
         .message()
         .contains("Expression could not be safely translated")));
@@ -479,7 +481,7 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
         "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (owner_id = current_user);",
     );
     let policy = db.policies().next().expect("policy should exist");
-    let scope_relation = policy_scope_relation_name("docs_select");
+    let scope_relation = role_scope_name("usage", &["app_user".to_string()]);
     let classified = classified_from_policy(
         policy,
         &db,
@@ -489,7 +491,8 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     let docs = plan
         .types
@@ -534,7 +537,8 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
         })),
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     let docs = plan
         .types
@@ -570,9 +574,15 @@ fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
 
     // Select only "viewer" by name.
     let selected = BTreeSet::from(["viewer".to_string()]);
-    let relation =
-        ensure_exact_roles_relation(&mut all_types, "grants_owner", &sorted, &selected, false)
-            .expect("should produce a relation");
+    let relation = ensure_exact_roles_relation(
+        &mut all_types,
+        "grants_owner",
+        &sorted,
+        &selected,
+        false,
+        &WellKnownTypes::default(),
+    )
+    .expect("should produce a relation");
     let expr = all_types["grants_owner"]
         .computed_relations
         .get(&relation)
@@ -623,9 +633,15 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
     assert!(all_types.contains_key("team"));
 
     let selected = BTreeSet::from(["admin".to_string()]);
-    let relation =
-        ensure_exact_roles_relation(&mut all_types, "grants_owner", &sorted, &selected, true)
-            .expect("roles should produce a relation");
+    let relation = ensure_exact_roles_relation(
+        &mut all_types,
+        "grants_owner",
+        &sorted,
+        &selected,
+        true,
+        &WellKnownTypes::default(),
+    )
+    .expect("roles should produce a relation");
     let expr = all_types["grants_owner"]
         .computed_relations
         .get(&relation)
@@ -783,7 +799,8 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
     }
 
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&policies, &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&policies, &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
     assert!(
         plan.types
             .iter()
@@ -805,7 +822,8 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     let classified = classified_from_policy(policy, &db, None, None);
     let registry = FunctionRegistry::new();
 
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
     let docs = plan
         .types
         .iter()
@@ -855,7 +873,8 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     assert!(
         plan.types.iter().any(|t| t.type_name.as_str() == "docs"),
@@ -885,7 +904,8 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
         None,
     );
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     let docs = plan
         .types
@@ -1046,7 +1066,8 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
         &db,
         &registry,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
     let docs = plan
         .types
         .iter()
@@ -1077,7 +1098,8 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
     classified.with_check_classification = None; // never present
     classified.with_check_filtered_at = None;
-    let plan2 = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan2 = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
     let docs2 = plan2
         .types
         .iter()
@@ -1145,6 +1167,9 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY);
     assert!(result.is_none());
 }
 
+/// The classifier cannot build this shape: `recognize_p5` admits eight inner patterns and
+/// `Unknown` is not among them, so a `ParentInheritance` never carries one. Kept as a guard
+/// that the general refusal path covers it anyway, naming the reason and denying.
 #[test]
 fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
     let registry = FunctionRegistry::new();
@@ -1173,13 +1198,26 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
         &registry,
         &mut notes,
     );
+    // Reached through the parent's bridge rather than denied outright, and the relation it
+    // lands on is the denial, so nobody passes either way.
     assert_eq!(
         expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::TupleToUserset {
+            tupleset: RelationName::from_resolved("projects"),
+            computed: deny_relation(),
+        }
     );
-    assert!(notes
-        .iter()
-        .any(|t| t.message().contains("unknown inner rule")));
+    let messages: Vec<String> = notes.iter().map(TranslationNote::message).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("unrecognized function")),
+        "the reason must survive: {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("could not translate the parent-side")),
+        "the parent-side refusal must be reported: {messages:?}"
+    );
 }
 
 /// A public flag grants through a wildcard tuple keyed on the row, so a table nothing
@@ -1307,7 +1345,7 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
         });
     assert!(
         has_team_note,
-        "should emit TODO for missing team principal table; sources: {:?}",
+        "should emit TODO for missing team principal table, sources: {:?}",
         table_plan.table_tuple_sources
     );
 }
@@ -1385,7 +1423,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
         });
     assert!(
         has_pk_note,
-        "should emit TODO for missing PK column; sources: {:?}",
+        "should emit TODO for missing PK column, sources: {:?}",
         table_plan.table_tuple_sources
     );
 }
@@ -1609,7 +1647,8 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
         &db,
         &registry,
         &GeneratorSettings::default(),
-    );
+    )
+    .expect("translation should plan");
 
     // One of the two types should be disambiguated
     let type_names: Vec<&str> = plan.types.iter().map(|t| t.type_name.as_str()).collect();
@@ -1621,7 +1660,7 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
     // are items (same owner, line 218). The important thing is no panic.
     assert!(
         type_names.iter().any(|name| name.starts_with("items")),
-        "should have at least one items type; got: {type_names:?}"
+        "should have at least one items type, got: {type_names:?}"
     );
     // If collision was detected, a TODO should have been emitted
     if has_disambiguated {
@@ -1629,7 +1668,7 @@ CREATE POLICY items_sel2 ON public.items FOR SELECT USING (owner_id = current_us
             plan.notes
                 .iter()
                 .any(|t| t.message().contains("Type name collision")),
-            "collision should produce a TODO; notes: {:?}",
+            "collision should produce a TODO, notes: {:?}",
             plan.notes
         );
     }
@@ -1659,7 +1698,8 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
         confidence: ConfidenceLevel::A,
     });
     let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default());
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
 
     let things = plan
         .types
@@ -1749,6 +1789,6 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
     });
     assert!(
         has_inner_note,
-        "P5 with inner no_access should produce a TODO; notes: {notes:?}"
+        "P5 with inner no_access should produce a TODO, notes: {notes:?}"
     );
 }

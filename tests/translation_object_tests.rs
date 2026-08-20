@@ -44,6 +44,7 @@ fn an_unhandled_expression_refuses_the_outputs() {
     let db = db_of(REFUSED);
     let error = translator(ConfidenceLevel::D)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect_err("an unclassified expression must refuse");
 
@@ -63,6 +64,7 @@ fn accepting_the_gaps_yields_the_same_outputs() {
     let db = db_of(REFUSED);
     let accepted = translator(ConfidenceLevel::D)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(
@@ -75,6 +77,7 @@ fn accepting_the_gaps_yields_the_same_outputs() {
     // every note, so nothing is lost by taking the other door.
     let refused = translator(ConfidenceLevel::D)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect_err("still refused");
     assert!(
@@ -98,6 +101,7 @@ fn a_translation_with_nothing_unhandled_answers() {
     let db = db_of(CLEAN);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect("nothing went unhandled");
 
@@ -113,6 +117,7 @@ fn a_clause_the_callers_threshold_dropped_does_not_refuse() {
     let db = db_of(REFUSED);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect("the caller's own threshold is not a gap in the translation");
 
@@ -144,6 +149,7 @@ fn a_restrictive_clause_the_callers_threshold_dropped_does_not_refuse() {
     let db = db_of(RESTRICTIVE_BELOW_THRESHOLD);
     let outputs = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect("the caller's own threshold is not a gap in the translation");
 
@@ -191,6 +197,7 @@ fn every_output_renders_from_one_plan() {
     let db = db_of(CLEAN);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs()
         .expect("nothing went unhandled");
 

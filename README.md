@@ -42,7 +42,8 @@ let db = parse_schema(sql).expect("parse error");
 let translation = TranslatorBuilder::new()
     .with_min_confidence(ConfidenceLevel::B)
     .build()
-    .translate(&db);
+    .translate(&db)
+    .expect("schema should plan");
 let outputs = translation.outputs().expect("every clause translated");
 
 println!("{}", outputs.model());

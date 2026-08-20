@@ -119,6 +119,7 @@ fn compound_or_owner_or_public() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
         model.model().contains("owner or public_viewer"),
@@ -134,6 +135,7 @@ fn compound_or_owner_or_public() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     assert!(!tuples.is_empty(), "Should generate tuple queries");
@@ -238,6 +240,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -361,6 +364,7 @@ fn multi_policy_table_classification() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
         !model.model().is_empty(),
@@ -407,6 +411,7 @@ fn role_in_list_classification() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
         !model.model().is_empty(),
@@ -444,6 +449,7 @@ fn pipeline_summary_all_common_patterns() {
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps();
         let tuples = Translation::plan(
             classified.clone(),
@@ -452,6 +458,7 @@ fn pipeline_summary_all_common_patterns() {
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
 

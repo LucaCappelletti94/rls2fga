@@ -20,6 +20,7 @@ fn json_model_respects_min_confidence_threshold() {
         ConfidenceLevel::A,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
 
@@ -54,6 +55,7 @@ fn model_generation_respects_min_confidence_threshold() {
         ConfidenceLevel::A,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -92,6 +94,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
             ConfidenceLevel::A,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -109,6 +112,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -135,6 +139,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -199,6 +204,7 @@ fn can_select_of(sql: &str, min: ConfidenceLevel) -> String {
         min,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     outputs
         .model()
@@ -299,6 +305,7 @@ fn summary_of(sql: &str, min: ConfidenceLevel) -> Vec<ConfidenceLevel> {
         min,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .confidence_summary()
     .iter()

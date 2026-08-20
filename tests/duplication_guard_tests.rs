@@ -313,8 +313,9 @@ fn function_arg_extraction_has_single_source_of_truth() {
 /// grow a second wording for the same gap.
 #[test]
 fn translation_note_prose_lives_only_in_the_notes_module() {
-    let centralized =
-        count_all("table needs a single-column primary key or a NOT NULL UNIQUE `id` column");
+    let centralized = count_all(
+        "stable object IDs need a single-column primary key or a NOT NULL UNIQUE `id` column",
+    );
     assert_eq!(
         centralized, 1,
         "expected the missing-object-id advice once, found {centralized}"
@@ -762,6 +763,8 @@ fn quoting_an_identifier_for_sql_has_a_single_source_of_truth() {
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.
+///
+/// These are the names. The rule they stand for is asserted next door, over bodies.
 #[test]
 fn parenthesis_peeling_has_a_single_source_of_truth() {
     for needle in [
@@ -776,19 +779,9 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
         );
     }
 
-    // The names above are not the property. A peeler re-spelled under a new name passes
-    // every one of them, which is exactly how `unwrap_accessor_expr` sat beside
-    // `unwrap_cast_or_nested` doing the same job. A loop that rebinds through a cast is
-    // the shape, and `unparenthesize` is excluded by carrying no `Expr::Cast` arm.
-    let cast_peelers = fns_whose_body(|body| {
-        body.contains("Expr::Cast") && body.contains("expr = inner.as_ref()")
-    });
-    assert_eq!(
-        cast_peelers.len(),
-        1,
-        "one loop peels a cast, found {}: {cast_peelers:?}",
-        cast_peelers.len()
-    );
+    // The shape, rather than these names, is asserted by
+    // `every_cast_peel_routes_through_the_shared_peeler`, which sees a peel re-spelled as
+    // recursion as well as one re-spelled as a loop.
 
     // An extra membership predicate joins a conjunction of NULL guards, so every place
     // that splices one has to parenthesise it: a disjunction would otherwise break out
@@ -803,6 +796,41 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
     assert_eq!(
         bare, 0,
         "every splice of an extra predicate must parenthesise it, found {bare} that do not"
+    );
+}
+
+/// Every peel of a cast goes through the one peeler, however it is spelled.
+///
+/// `parenthesis_peeling_has_a_single_source_of_truth` reads the loop's own rebinding, so
+/// it catches a second peeler written as a loop and nothing else. The same rule written
+/// as recursion passes it, and the crate already holds several, so a widened peel reaches
+/// one door and not the next: a clause `pg_dump` parenthesises would be recognized on one
+/// and refused on the other, which is the failure that cost every membership and parent
+/// policy its translation once already.
+#[test]
+fn every_cast_peel_routes_through_the_shared_peeler() {
+    let own_peels = fns_whose_body(|body| {
+        // The signature line is part of the body, so the shared peeler would otherwise
+        // read as calling itself.
+        let after_signature = body.split_once('\n').map_or("", |(_, rest)| rest);
+        body.contains("Expr::Cast") && !after_signature.contains("unwrap_cast_or_nested(")
+    });
+    let others: Vec<&String> = own_peels
+        .iter()
+        .filter(|found| !found.ends_with(": unwrap_cast_or_nested"))
+        .collect();
+
+    assert!(
+        own_peels
+            .iter()
+            .any(|found| found.ends_with(": unwrap_cast_or_nested")),
+        "the shared peeler must be found, or this guard reads nothing"
+    );
+    assert_eq!(
+        others.len(),
+        0,
+        "a cast is peeled in {} places outside the shared peeler: {others:#?}",
+        others.len()
     );
 }
 

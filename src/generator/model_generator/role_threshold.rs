@@ -62,7 +62,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
             owner_type: scope.type_name.to_string(),
             principal_table: upi.table,
             principal_pk_col: upi.pk_col,
-            subject_type: USER_TYPE.to_string(),
+            subject_type: table_plan.well_known.user.clone(),
             relation: owner_user_relation(),
         });
     } else {
@@ -78,7 +78,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
                 owner_type: scope.type_name.to_string(),
                 principal_table: tpi.table,
                 principal_pk_col: tpi.pk_col,
-                subject_type: TEAM_TYPE.to_string(),
+                subject_type: table_plan.well_known.team.clone(),
                 relation: owner_team_relation(),
             });
         } else {
@@ -103,8 +103,10 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         };
         table_plan.add_source(membership_source.clone());
         all_types
-            .entry(TEAM_TYPE.to_string())
-            .or_insert_with(|| TypePlan::new(TEAM_TYPE))
+            .entry(table_plan.well_known.team.clone())
+            .or_insert_with(|| {
+                TypePlan::new_with_well_known(&table_plan.well_known.team, &table_plan.well_known)
+            })
             .add_source(membership_source);
     }
 

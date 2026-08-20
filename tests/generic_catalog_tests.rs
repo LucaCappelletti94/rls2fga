@@ -109,7 +109,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     let (facade_classified, _) = translator.classify_with_effective_registry(db);
     assert_eq!(facade_classified.len(), classified.len());
 
-    let translation = translator.translate(db);
+    let translation = translator.translate(db).expect("translation should plan");
     let notes = translation.notes().len();
     let unhandled = translation.unhandled().count();
     let relations = translation.relations();
@@ -138,7 +138,8 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
         &effective,
         ConfidenceLevel::B,
         &generator,
-    );
+    )
+    .expect("translation should plan");
     assert_eq!(replanned.relations().len(), relations.len());
     assert!(!replanned.outputs_accepting_gaps().model().is_empty());
 

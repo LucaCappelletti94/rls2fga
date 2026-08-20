@@ -10,10 +10,11 @@ use crate::no_std_prelude::*;
 use alloc::collections::BTreeSet;
 
 use crate::classifier::patterns::{ResidualGuard, ResidualPredicates};
+use crate::generator::identity::encode_part;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::RowParameter;
 use crate::generator::records::{
-    BoundQuery, Guard, ObjectKey, RecordContext, RecordContextEntry, RecordDerivation,
+    BoundQuery, Guard, ObjectKey, Record, RecordContext, RecordContextEntry, RecordDerivation,
     RecordDescription, RecordTemplate, ReplayScope, SubjectKey, ValueSource,
 };
 use crate::generator::tuple_generator::{
@@ -21,7 +22,7 @@ use crate::generator::tuple_generator::{
 };
 use crate::generator::tuple_generator::{NameContext, UnboundedColumns};
 use crate::generator::well_known::{
-    member_relation, public_relation, HOLDER_OBJECT_ID, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
+    member_relation, public_relation, WellKnownTypes, HOLDER_OBJECT_ID,
 };
 use crate::parser::identifiers::{ColumnName, RelationName};
 use crate::parser::sql_parser::DatabaseLike;
@@ -95,7 +96,7 @@ fn bind(
         return None;
     }
     // The bound predicate filters rows, so it belongs in the WHERE. An aggregated query
-    // ends in GROUP BY, so the predicate goes just before it; a plain query ends in its
+    // ends in GROUP BY, so the predicate goes just before it. A plain query ends in its
     // WHERE, so it goes at the end.
     let sql = match body.split_once("\nGROUP BY ") {
         Some((filter, grouping)) => format!("{filter}\nAND {predicate}\nGROUP BY {grouping};"),
@@ -144,6 +145,7 @@ fn rendered<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
     only_own_rows: bool,
+    well_known: &WellKnownTypes,
     db: &DB,
 ) -> Option<TupleQuery> {
     // Rendered per source rather than per schema, so the bounds are resolved locally.
@@ -154,6 +156,7 @@ fn rendered<DB: DatabaseLike>(
         source,
         owner_type,
         only_own_rows,
+        well_known,
         NameContext::new(&bounds, db),
         db,
     )?;
@@ -177,6 +180,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
     owner_type: &str,
     only_own_rows: bool,
+    well_known: &WellKnownTypes,
     db: &DB,
 ) -> Option<RecordDescription> {
     match source {
@@ -190,7 +194,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             relation,
-            USER_TYPE,
+            well_known.user.as_str(),
             ValueSource::Column(owner_col.clone()),
             vec![Guard::NotNull(owner_col.clone())],
         )),
@@ -207,7 +211,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             relation,
-            USER_TYPE,
+            well_known.user.as_str(),
             ValueSource::ListElements(array_col.clone()),
             Vec::new(),
         )),
@@ -223,7 +227,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             relation,
-            USER_TYPE,
+            well_known.user.as_str(),
             ValueSource::JsonPath {
                 column: column.clone(),
                 path: path.clone(),
@@ -261,7 +265,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if role_cases.is_empty() {
                 return None;
             }
-            let query = rendered(source, owner_type, only_own_rows, db)?;
+            let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
             let mut read = vec![grant_table.as_str()];
             if let Some(principal) = user_principal {
                 read.push(principal.table.as_str());
@@ -303,10 +307,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_col,
         } => Some(from_row(
             membership_table,
-            TEAM_TYPE,
+            well_known.team.as_str(),
             ValueSource::Column(team_col.clone()),
             &member_relation(),
-            USER_TYPE,
+            well_known.user.as_str(),
             ValueSource::Column(user_col.clone()),
             vec![
                 Guard::NotNull(team_col.clone()),
@@ -334,7 +338,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             let Some(gate) = gate else {
                 let Some(residual) = residual_guards(extra_predicates) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
-                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
                         tables: tables(&[join_table]),
                         derivation: RecordDerivation::Joined {
@@ -363,15 +367,15 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     parent_type,
                     ValueSource::Column(fk_col.clone()),
                     &member_relation(),
-                    USER_TYPE,
+                    well_known.user.as_str(),
                     ValueSource::Column(user_col.clone()),
                     guards,
                 ));
             };
             if gate.aggregate {
                 // Several rows can key the same (object, user), so the latest deadline is
-                // read by querying the changed parent's slice; the row alone cannot say it.
-                let query = rendered(source, owner_type, only_own_rows, db)?;
+                // read by querying the changed parent's slice. The row alone cannot say it.
+                let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[join_table]),
                     derivation: RecordDerivation::Joined {
@@ -418,7 +422,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     object_type: parent_type.clone(),
                     object_key: ObjectKey::new(vec![ValueSource::Column(fk_col.clone())]),
                     relation: member_relation(),
-                    subject_type: USER_TYPE.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::column(user_col.clone()),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),
@@ -460,7 +464,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             &public_relation(),
-            USER_TYPE,
+            well_known.user.as_str(),
             SubjectKey::wildcard(),
             vec![Guard::IsTrue(flag_col.clone())],
         )),
@@ -470,7 +474,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             &public_relation(),
-            USER_TYPE,
+            well_known.user.as_str(),
             SubjectKey::wildcard(),
             Vec::new(),
         )),
@@ -491,23 +495,27 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Vec::new(),
         )),
 
-        // The roles a scope admits follow from the policy, not from any row, so every row of
-        // the table it guards yields the same record and the load writes it once.
+        // The roles a scope admits follow from the policy, so the fact is the whole
+        // description: no row is read, no table is named, and a consumer replaying a
+        // changed row never reaches it.
         TupleSource::PolicyScopeRoles {
-            table,
             scope_type,
             scope_object,
             relation,
             pg_role,
-        } => Some(from_row(
-            table,
-            scope_type,
-            ObjectKey::new(vec![ValueSource::Literal(scope_object.clone())]),
-            relation,
-            PG_ROLE_TYPE,
-            ValueSource::Literal(pg_role.clone()),
-            Vec::new(),
-        )),
+        } => Some(RecordDescription {
+            tables: Vec::new(),
+            derivation: RecordDerivation::Constant {
+                // Spelled exactly as the query spells it, since the differential test
+                // compares the two.
+                record: Record {
+                    object: format!("{scope_type}:{}", encode_part(scope_object)),
+                    relation: relation.clone(),
+                    subject: format!("{}:{}", well_known.pg_role, encode_part(pg_role)),
+                    context: None,
+                },
+            },
+        }),
 
         // The guard reaches the description as structure, so the evaluator applies
         // the same comparison the query puts in its WHERE.
@@ -520,7 +528,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(pk_cols)),
             &public_relation(),
-            USER_TYPE,
+            well_known.user.as_str(),
             SubjectKey::wildcard(),
             vec![Guard::Compare(predicate.clone())],
         )),
@@ -542,7 +550,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 object_type: owner_type.to_string(),
                 object_key: ObjectKey::new(key_parts(pk_cols)),
                 relation: relation.clone(),
-                subject_type: USER_TYPE.to_string(),
+                subject_type: well_known.user.clone(),
                 subject_key: SubjectKey::wildcard(),
                 context: Some(RecordContext {
                     condition: condition.clone(),
@@ -585,7 +593,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     object_type: owner_type.to_string(),
                     object_key: ObjectKey::new(key_parts(pk_cols)),
                     relation: relation.clone(),
-                    subject_type: USER_TYPE.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
@@ -624,7 +632,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             if temporal_context.is_empty() {
                 let Some(residual) = residual_guards(extra_predicates) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
-                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
                         tables: tables(&[join_table]),
                         derivation: RecordDerivation::Joined {
@@ -672,7 +680,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     object_type: share_type.clone(),
                     object_key: ObjectKey::new(key_parts(pk_cols)),
                     relation: relation.clone(),
-                    subject_type: USER_TYPE.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
@@ -741,7 +749,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             let Some(gate) = gate else {
                 let Some(residual) = residual_guards(extra_predicates) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
-                    let query = rendered(source, owner_type, only_own_rows, db)?;
+                    let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                     return Some(RecordDescription {
                         tables: tables(&[member_table]),
                         derivation: RecordDerivation::Joined {
@@ -751,7 +759,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                                 core::slice::from_ref(user_col),
                                 &bound_eq(None, core::slice::from_ref(user_col)),
                                 ReplayScope::Subject {
-                                    subject_type: USER_TYPE.to_string(),
+                                    subject_type: well_known.user.clone(),
                                     relation: member_relation(),
                                     object_type: holder_type.clone(),
                                 },
@@ -771,7 +779,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     holder_type,
                     ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
                     &member_relation(),
-                    USER_TYPE,
+                    well_known.user.as_str(),
                     ValueSource::Column(user_col.clone()),
                     guards,
                 ));
@@ -780,7 +788,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 // Several member rows can name one user with different deadlines, and the
                 // holder collapses them, so the latest deadline is read by querying that
                 // user's slice rather than settled from one row.
-                let query = rendered(source, owner_type, only_own_rows, db)?;
+                let query = rendered(source, owner_type, only_own_rows, well_known, db)?;
                 return Some(RecordDescription {
                     tables: tables(&[member_table]),
                     derivation: RecordDerivation::Joined {
@@ -790,7 +798,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             core::slice::from_ref(user_col),
                             &bound_eq(None, core::slice::from_ref(user_col)),
                             ReplayScope::Subject {
-                                subject_type: USER_TYPE.to_string(),
+                                subject_type: well_known.user.clone(),
                                 relation: member_relation(),
                                 object_type: holder_type.clone(),
                             },
@@ -828,7 +836,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         HOLDER_OBJECT_ID.to_string(),
                     )]),
                     relation: member_relation(),
-                    subject_type: USER_TYPE.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::column(user_col.clone()),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),

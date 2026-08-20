@@ -7,6 +7,8 @@ model
 
 type user
 
+type nobody
+
 type owner_grants_owner
   relations
     define grant_admin: [user]
@@ -20,7 +22,7 @@ type owner_grants_owner
 type records
   relations
     define delegate_id: [owner_grants_owner]
-    define no_access: [user]
+    define no_access: [nobody]
     define owner_id: [owner_grants_owner]
     define can_delete: no_access
     define can_insert: no_access

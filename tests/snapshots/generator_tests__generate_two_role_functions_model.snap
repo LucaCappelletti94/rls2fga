@@ -9,7 +9,7 @@ type user
 
 type ledgers
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner_id: [owner_grants_owner_23f04e74]
     define can_delete: no_access
     define can_insert: no_access
@@ -17,6 +17,8 @@ type ledgers
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
+
+type nobody
 
 type owner_grants_owner_23f04e74
   relations
@@ -38,7 +40,7 @@ type owner_grants_owner_6e98b9a0
 
 type projects
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner_id: [owner_grants_owner_6e98b9a0]
     define can_delete: no_access
     define can_insert: no_access

@@ -4,6 +4,7 @@ use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
+use rls2fga::parser::names::role_scope_name;
 use rls2fga::parser::sql_parser;
 use rls2fga::translator::Translation;
 
@@ -45,6 +46,7 @@ fn generate_emi_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!(model.model().trim());
 }
@@ -59,6 +61,7 @@ fn generate_emi_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
@@ -74,6 +77,7 @@ fn generate_emi_json_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     insta::assert_json_snapshot!(model);
@@ -99,6 +103,7 @@ fn generate_simple_ownership_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!(model.model().trim());
 }
@@ -116,6 +121,7 @@ fn generate_public_flag_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!(model.model().trim());
 }
@@ -134,6 +140,7 @@ fn generate_role_in_list_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_role_in_list_model", model.model().trim());
 
@@ -144,6 +151,7 @@ fn generate_role_in_list_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -168,6 +176,7 @@ fn generate_membership_check_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_membership_check_model", model.model().trim());
 
@@ -178,6 +187,7 @@ fn generate_membership_check_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -201,6 +211,7 @@ fn generate_parent_inheritance_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_parent_inheritance_model", model.model().trim());
 
@@ -211,6 +222,7 @@ fn generate_parent_inheritance_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -234,6 +246,7 @@ fn generate_public_flag_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
@@ -253,6 +266,7 @@ fn generate_abac_status_model_and_tuples() {
         ConfidenceLevel::C,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_abac_status_model", model.model().trim());
 
@@ -263,6 +277,7 @@ fn generate_abac_status_model_and_tuples() {
         ConfidenceLevel::C,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -287,6 +302,7 @@ fn generate_compound_or_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_compound_or_model", model.model().trim());
 
@@ -297,6 +313,7 @@ fn generate_compound_or_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -333,9 +350,10 @@ CREATE POLICY auth_users_select ON auth.users FOR SELECT USING (owner_id = curre
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
-    // Both tables must have a type in the DSL — they should NOT be merged.
+    // Both tables must have a type in the DSL. They should NOT be merged.
     let type_count = model.model().matches("type users").count()
         + model
             .model()
@@ -370,6 +388,7 @@ fn generate_constant_bool_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_constant_bool_model", model.model().trim());
 
@@ -380,6 +399,7 @@ fn generate_constant_bool_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -410,10 +430,17 @@ CREATE POLICY docs_select ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert_eq!(
         relation_body(&model.model(), "docs", "can_select").as_deref(),
-        Some("member from scope_docs_select_14425117"),
+        Some(
+            format!(
+                "member from {}",
+                role_scope_name("member", &["editor".to_string()])
+            )
+            .as_str()
+        ),
         "pg_has_role admits every member of the role, so the grant walks the scope:\n{}",
         model.model()
     );
@@ -431,6 +458,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -460,10 +488,17 @@ CREATE POLICY docs_select ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert_eq!(
         relation_body(&model.model(), "docs", "can_select").as_deref(),
-        Some("member from scope_docs_select_14425117"),
+        Some(
+            format!(
+                "member from {}",
+                role_scope_name("member", &["authenticated".to_string()])
+            )
+            .as_str()
+        ),
         "the role accessor admits every member of the role:\n{}",
         model.model()
     );
@@ -476,6 +511,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -521,10 +557,14 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
-        let expected = format!("{relation} from scope_docs_select_14425117");
+        let expected = format!(
+            "{relation} from {}",
+            role_scope_name(relation, &["editor".to_string()])
+        );
         if relation_body(&dsl, "docs", "can_select").as_deref() != Some(expected.as_str()) {
             complaints.push(format!(
                 "'{privilege}' should walk `{expected}`, got `{:?}`",
@@ -560,17 +600,30 @@ CREATE POLICY docs_admin ON docs FOR DELETE
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .model();
 
     assert_eq!(
         relation_body(&dsl, "docs", "can_select").as_deref(),
-        Some("usage from scope_docs_read_06abf03b"),
+        Some(
+            format!(
+                "usage from {}",
+                role_scope_name("usage", &["editor".to_string()])
+            )
+            .as_str()
+        ),
         "the read policy asked about inheriting members:\n{dsl}"
     );
     assert_eq!(
         relation_body(&dsl, "docs", "can_delete").as_deref(),
-        Some("admin_option from scope_docs_admin_e9b28a46 and can_select"),
+        Some(
+            format!(
+                "admin_option from {} and can_select",
+                role_scope_name("admin_option", &["editor".to_string()])
+            )
+            .as_str()
+        ),
         "the delete policy asked about the role's administrators:\n{dsl}"
     );
     for relation in ["usage", "admin_option"] {
@@ -609,6 +662,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
         assert_eq!(
@@ -634,6 +688,7 @@ fn generate_attribute_guard_model_and_tuples() {
         ConfidenceLevel::C,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_attribute_guard_model", model.model().trim());
 
@@ -644,6 +699,7 @@ fn generate_attribute_guard_model_and_tuples() {
         ConfidenceLevel::C,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -669,6 +725,7 @@ fn generate_shared_policy_name_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     insta::assert_snapshot!("generate_shared_policy_name_model", model.model().trim());
 
@@ -679,6 +736,7 @@ fn generate_shared_policy_name_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     insta::assert_snapshot!(
@@ -706,6 +764,7 @@ fn generate_shared_owner_grants_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let dsl = model.model();
     assert_eq!(
@@ -730,6 +789,7 @@ fn generate_shared_owner_grants_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let script = tuple_generator::format_tuples(&tuples);
@@ -770,6 +830,7 @@ fn generate_two_owner_columns_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let dsl = model.model();
     assert!(
@@ -790,6 +851,7 @@ fn generate_two_owner_columns_model_and_tuples() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let script = tuple_generator::format_tuples(&tuples);
@@ -827,6 +889,7 @@ fn generate_two_role_functions_keeps_their_ladders_apart() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let dsl = model.model();
     let owners: Vec<&str> = dsl
@@ -869,4 +932,133 @@ fn generate_two_role_functions_keeps_their_ladders_apart() {
         );
     }
     insta::assert_snapshot!("generate_two_role_functions_model", dsl.trim());
+}
+
+/// The grant SQL two ladders over one grant table produce.
+///
+/// The model half is pinned above. Which facts get written is the other half of "the
+/// grants are stored once and serve both tables", and only the SQL says it.
+#[test]
+fn generate_two_role_functions_tuples() {
+    let (db, registry) = support::load_fixture_db_and_registry("two_role_functions");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+
+    let tuples = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    insta::assert_snapshot!(
+        "generate_two_role_functions_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}
+
+/// The caller-set share family, which no snapshot pins today.
+///
+/// This is the only fixture emitting a share type, and it also carries a condition, so
+/// it is where a change to either shape becomes visible as text rather than only inside
+/// a container run.
+#[test]
+fn generate_connetto_capability_model_and_tuples() {
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    insta::assert_snapshot!("generate_connetto_capability_model", model.model().trim());
+
+    let tuples = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    insta::assert_snapshot!(
+        "generate_connetto_capability_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}
+
+/// The holder family, which no fixture emitted and no snapshot pinned.
+///
+/// An uncorrelated membership admits every row at once, so the generator stands one holder
+/// object for the whole member list and the facts grow as rows plus members. Two member
+/// tables here, and the second carries a clock, so the model shows a holder with a
+/// condition beside one without.
+#[test]
+fn generate_uncorrelated_membership_model_and_tuples() {
+    let (classified, db, registry) =
+        support::try_load_fixture_classified("uncorrelated_membership");
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    insta::assert_snapshot!(
+        "generate_uncorrelated_membership_model",
+        model.model().trim()
+    );
+
+    let tuples = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    insta::assert_snapshot!(
+        "generate_uncorrelated_membership_tuples",
+        tuple_generator::format_tuples(&tuples)
+    );
+}
+
+/// The plainest shape the crate emits, pinned as SQL as well as as a model.
+///
+/// Ownership is what every other shape is read against, and the identity encoding, the
+/// null guards and the subject budget all show up here first.
+#[test]
+fn generate_simple_ownership_tuples() {
+    let db = support::parse_fixture_db("simple_ownership");
+    let mut registry = FunctionRegistry::new();
+    registry.register_if_absent(
+        "auth_current_user_id",
+        &FunctionSemantic::CurrentUserAccessor {
+            returns: "uuid".to_string(),
+        },
+    );
+    let tuples = Translation::plan(
+        policy_classifier::classify_policies(&db, &registry),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    insta::assert_snapshot!(tuple_generator::format_tuples(&tuples));
 }

@@ -12,7 +12,7 @@ use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::records::{records_from_row, RowValues};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
-use rls2fga::translator::{Translation, TranslatorBuilder};
+use rls2fga::translator::{PlanningError, Translation, TranslatorBuilder};
 
 /// Answers out of the refused text alone, so one input always draws one answer and a
 /// crash replays. Spreads across all three states, since each reaches the pipeline
@@ -106,6 +106,15 @@ fn exercise(translation: Translation<'_>, sql: &str) {
     black_box(outputs.report());
 }
 
+fn exercise_planned(result: Result<Translation<'_>, PlanningError>, sql: &str) {
+    match result {
+        Ok(translation) => exercise(translation, sql),
+        Err(error) => {
+            black_box(error.to_string());
+        }
+    }
+}
+
 /// Without a registry no function is ever an accessor, so the whole role-threshold
 /// pattern and the relations it scaffolds are unreachable at any runtime. Naming the
 /// same functions the fixtures use puts those paths behind a token the dictionary
@@ -153,7 +162,7 @@ fn translate(sql: &str) {
         ConfidenceLevel::C,
         ConfidenceLevel::D,
     ] {
-        exercise(translator_at(level).translate(&db), sql);
+        exercise_planned(translator_at(level).translate(&db), sql);
     }
 
     // An oracle's answers reach the generators only through `Translation::plan`, and at
@@ -161,7 +170,7 @@ fn translate(sql: &str) {
     let translator = translator_at(ConfidenceLevel::B);
     let mut policies = translator.classify(&db);
     black_box(consult_oracle(&mut policies, &TextOracle).len());
-    exercise(
+    exercise_planned(
         Translation::plan(
             policies,
             &db,

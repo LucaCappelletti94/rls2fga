@@ -9,7 +9,7 @@ type user
 
 type docs
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define public_viewer: [user:*]
     define can_delete: no_access
     define can_insert: no_access
@@ -17,3 +17,5 @@ type docs
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update
+
+type nobody

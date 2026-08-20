@@ -36,6 +36,7 @@ fn any_outputs(db: &ParserDB) -> Outputs<'_> {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
 }
 
@@ -105,6 +106,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let grant_count = model
@@ -115,7 +117,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
     assert_eq!(
         grant_count,
         3,
-        "Three colliding role names should produce 3 distinct grant relations; DSL:\n{}",
+        "Three colliding role names should produce 3 distinct grant relations. DSL:\n{}",
         model.model()
     );
 }
@@ -162,6 +164,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -189,6 +192,7 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -197,7 +201,7 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
         formatted.to_lowercase().contains("todo")
             || formatted.to_lowercase().contains("object identifier")
             || formatted.to_lowercase().contains("skipped"),
-        "Missing PK should produce a TODO comment in tuples; got:\n{formatted}"
+        "Missing PK should produce a TODO comment in tuples, got:\n{formatted}"
     );
 }
 
@@ -223,6 +227,7 @@ CREATE POLICY p ON tasks FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -268,6 +273,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
@@ -319,6 +325,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
@@ -352,6 +359,7 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let dir = unique_temp_dir("rls2fga_short_names");
@@ -376,6 +384,7 @@ fn multi_policy_table_generates_combined_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
         !model.model().is_empty(),
@@ -388,6 +397,7 @@ fn multi_policy_table_generates_combined_model() {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -422,6 +432,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     let has_no_access_or_note = model.model().contains("no_access")
@@ -455,6 +466,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -484,6 +496,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let tuples = Translation::plan(
         classified.clone(),
@@ -492,6 +505,7 @@ CREATE POLICY p ON docs FOR SELECT
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let _ = model;
@@ -536,6 +550,7 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .tuple_queries();
     let formatted = tuple_generator::format_tuples(&tuples);
@@ -544,6 +559,6 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         formatted.to_lowercase().contains("todo")
             || formatted.to_lowercase().contains("skipped")
             || formatted.to_lowercase().contains("object identifier"),
-        "Missing PK should produce TODO for explicit grants; got:\n{formatted}"
+        "Missing PK should produce TODO for explicit grants, got:\n{formatted}"
     );
 }

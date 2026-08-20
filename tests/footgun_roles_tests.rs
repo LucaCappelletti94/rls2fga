@@ -28,6 +28,7 @@ CREATE POLICY docs_tenant ON docs AS RESTRICTIVE FOR SELECT
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let can_select = relation_definition(&model.model(), "docs", "can_select")
@@ -71,6 +72,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
@@ -98,7 +100,10 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
 fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
     let db = db_of(ROLE_SCOPED_BARRIER);
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.translate(&db).outputs_accepting_gaps();
+    let model = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
     let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
             "the contractor scope must reach the model:\n{}",
@@ -108,6 +113,7 @@ fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
 
     let tuples = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
     assert!(
@@ -124,6 +130,7 @@ fn a_role_scoped_barrier_emits_a_consistent_json_model() {
     let db = db_of(ROLE_SCOPED_BARRIER);
     let json = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .json_model();
 
@@ -152,6 +159,7 @@ CREATE POLICY docs_approve ON docs AS RESTRICTIVE FOR SELECT TO auditor
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let limits: Vec<String> = model
@@ -207,6 +215,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR ALL TO contractor
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let can_update_using = relation_definition(&model.model(), "docs", "can_update_using")
@@ -238,6 +247,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
     );
     let json = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .json_model();
 
@@ -258,6 +268,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert!(
         !model.model().contains("but not"),
@@ -289,7 +300,10 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.translate(&db).outputs_accepting_gaps();
+    let model = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
     let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
             "docs must scope the membership grant by role:\n{}",
@@ -298,6 +312,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     });
     let tuples = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
     for role in ["auditor", "support"] {
@@ -324,6 +339,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR ALL TO auditor;
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert_eq!(
@@ -366,6 +382,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR UPDATE USING (reviewer_id = cu
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -399,6 +416,7 @@ fn a_role_that_bypasses_row_level_security_is_reported() {
     let db = db_of(schema);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let exempt: Vec<String> = outputs
@@ -440,6 +458,7 @@ fn a_table_that_does_not_force_row_level_security_is_reported() {
         let db = db_of(sql);
         translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .notes()
             .iter()
@@ -483,6 +502,7 @@ fn the_exempt_table_owner_is_named_when_the_schema_says_who_it_is() {
         let db = db_of(sql);
         translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .notes()
             .iter()
@@ -525,6 +545,7 @@ CREATE POLICY docs_bar ON docs AS RESTRICTIVE FOR SELECT TO contractor
     ));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let notes = outputs
         .notes()
@@ -608,6 +629,7 @@ CREATE POLICY p ON docs FOR SELECT TO editors USING (owner_id = current_user);
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -657,6 +679,7 @@ CREATE POLICY r ON docs AS RESTRICTIVE FOR SELECT TO editors USING (owner_id = c
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -700,6 +723,7 @@ CREATE POLICY p ON docs FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -733,6 +757,7 @@ CREATE POLICY p ON docs FOR SELECT TO {spelling} USING (owner_id = current_user)
         ));
         let outputs = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps();
         let dsl = outputs.model();
 
@@ -798,6 +823,7 @@ CREATE POLICY r ON docs AS RESTRICTIVE FOR SELECT TO {to_clause} USING (owner_id
         ));
         let outputs = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps();
         let dsl = outputs.model();
 
@@ -852,6 +878,7 @@ CREATE POLICY docs_scoped ON docs FOR SELECT TO auditor USING (opaque_gate(id));
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -880,4 +907,175 @@ CREATE POLICY docs_scoped ON docs FOR SELECT TO auditor USING (opaque_gate(id));
         "but the loss itself is still reported: {:?}",
         outputs.notes()
     );
+}
+
+/// A `PostgreSQL` policy name is unique per table, so a scope **object** keyed on the
+/// name alone pools two tables' roles.
+///
+/// The scope relation may stay keyed on the policy, since relations are scoped to a
+/// type. The object id may not: it lives in the shared `pg_role_scope` type, so two
+/// tables whose policies happen to share a name land on one object and each one's roles
+/// are written onto it. Every row of both tables then admits the union, which grants
+/// each table the other's roles. `gate_condition_name` already keys on the type and the
+/// policy together for exactly this reason.
+#[test]
+fn two_tables_with_a_same_named_policy_do_not_pool_their_role_scopes() {
+    let db = db_of(
+        r"
+CREATE ROLE auditor;
+CREATE ROLE support;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE memos(id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO auditor USING (TRUE);
+CREATE POLICY p ON memos FOR SELECT TO support USING (TRUE);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let tuples = outputs.tuple_queries();
+
+    let scope_of = |type_name: &str| -> String {
+        let found = relation_definitions(&dsl, type_name)
+            .into_iter()
+            .find(|(_, body)| body == "[pg_role_scope]");
+        match found {
+            Some((name, _)) => name,
+            None => panic!("{type_name} should point at a role scope:\n{dsl}"),
+        }
+    };
+    let docs_scope = scope_of("docs");
+    let memos_scope = scope_of("memos");
+
+    // The companion halves, so pooling cannot be hidden by admitting nothing at all.
+    assert!(
+        scope_admits_role(&tuples, "docs:", &docs_scope, "auditor"),
+        "docs is scoped TO auditor:\n{dsl}"
+    );
+    assert!(
+        scope_admits_role(&tuples, "memos:", &memos_scope, "support"),
+        "memos is scoped TO support:\n{dsl}"
+    );
+
+    assert!(
+        !scope_admits_role(&tuples, "docs:", &docs_scope, "support"),
+        "docs is scoped TO auditor alone, so support must not reach its rows"
+    );
+    assert!(
+        !scope_admits_role(&tuples, "memos:", &memos_scope, "auditor"),
+        "memos is scoped TO support alone, so auditor must not reach its rows"
+    );
+}
+
+/// Every scope relation a type declares, in declaration order.
+fn scope_relations(dsl: &str, type_name: &str) -> Vec<String> {
+    relation_definitions(dsl, type_name)
+        .into_iter()
+        .filter(|(_, body)| body == "[pg_role_scope]")
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// A `TO` list and a role gate in one policy are two scopes, read through two different
+/// privileges, so they cannot share one object.
+///
+/// **One role under both privileges**, so the privilege is the only thing telling the two
+/// scopes apart and a key built from the roles alone cannot pass this. `TO editor` is
+/// checked as usage of `editor` and `pg_has_role('editor', 'member')` as membership of it,
+/// and `PostgreSQL` demands both. Pooled onto one object the rule asks for usage of the
+/// pooled set and membership of the pooled set, which is the same question twice.
+/// Separating them needs two relations: one relation pointing at two objects still unions
+/// them.
+#[test]
+fn a_to_list_and_a_role_gate_in_one_policy_do_not_share_a_scope() {
+    let db = db_of(
+        r"
+CREATE ROLE editor;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO editor USING (pg_has_role('editor', 'member'));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let tuples = outputs.tuple_queries();
+    let scopes = scope_relations(&dsl, "docs");
+
+    assert_eq!(
+        scopes.len(),
+        2,
+        "the TO list and the role gate are two scopes, so docs points at two:\n{dsl}"
+    );
+    let can_select =
+        relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
+    let [first, second] = scopes.as_slice() else {
+        unreachable!("checked above")
+    };
+    assert_ne!(
+        first, second,
+        "two scopes cannot be one name, or the walks below ask the same question twice"
+    );
+    for scope in &scopes {
+        assert!(
+            can_select.contains(scope.as_str()),
+            "both scopes have to be read, and {scope} is not in 'define can_select: {can_select}'"
+        );
+        // The companion half: each scope really does carry the role, so declaring two
+        // relations and filling neither would not pass.
+        assert!(
+            scope_admits_role(&tuples, "docs:", scope, "editor"),
+            "{scope} stands for a test on editor, so its object carries editor"
+        );
+    }
+}
+
+/// Two role gates joined by `AND` are two scopes, and pooling them turns the `AND` into
+/// an `OR`.
+///
+/// `pg_has_role('alpha', 'member') AND pg_has_role('beta', 'member')` demands both. On one
+/// pooled object the rule reads `member from x and member from x`, which is `member from x`,
+/// so membership of either role passes.
+#[test]
+fn two_role_gates_joined_by_and_do_not_share_a_scope() {
+    let db = db_of(
+        r"
+CREATE ROLE alpha;
+CREATE ROLE beta;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+  USING (pg_has_role('alpha', 'member') AND pg_has_role('beta', 'member'));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let tuples = outputs.tuple_queries();
+    let scopes = scope_relations(&dsl, "docs");
+
+    assert_eq!(
+        scopes.len(),
+        2,
+        "each gate is its own scope, so the conjunction stays a conjunction:\n{dsl}"
+    );
+    for scope in &scopes {
+        let roles: Vec<&str> = ["alpha", "beta"]
+            .into_iter()
+            .filter(|role| scope_admits_role(&tuples, "docs:", scope, role))
+            .collect();
+        assert_eq!(
+            roles.len(),
+            1,
+            "{scope} stands for one gate, so it admits one role, admitted {roles:?}"
+        );
+    }
 }

@@ -37,9 +37,9 @@ async fn openfga_semantic_checks_all_patterns() {
 
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
 
-    // ── Define scenarios ────────────────────────────────────────────────────
+    // Define scenarios.
     let scenarios = vec![
-        // P1 — EMI role threshold
+        // P1: EMI role threshold
         Scenario {
             name: "P1_emi_role_threshold",
             fixture: "earth_metabolome",
@@ -82,7 +82,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:eve", "can_select", "ownables:doc1", false),
             ],
         },
-        // P2 — Role IN-list
+        // P2: Role IN-list
         Scenario {
             name: "P2_role_in_list",
             fixture: "role_in_list",
@@ -108,7 +108,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 // `generate_role_in_list_model` snapshot instead.
             ],
         },
-        // P3 — Direct ownership
+        // P3: Direct ownership
         Scenario {
             name: "P3_simple_ownership",
             fixture: "simple_ownership",
@@ -127,7 +127,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:nobody", "can_select", "resources:r1", false),
             ],
         },
-        // P4 — EXISTS membership (tuple-to-userset)
+        // P4: EXISTS membership (tuple-to-userset)
         Scenario {
             name: "P4_membership_check",
             fixture: "membership_check",
@@ -148,7 +148,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:nobody", "can_select", "projects:p1", false),
             ],
         },
-        // P5 — Parent inheritance (nested tuple-to-userset)
+        // P5: Parent inheritance (nested tuple-to-userset)
         Scenario {
             name: "P5_parent_inheritance",
             fixture: "parent_inheritance",
@@ -170,7 +170,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:nobody", "can_select", "tasks:task1", false),
             ],
         },
-        // P6 — Boolean flag (wildcard)
+        // P6: Boolean flag (wildcard)
         Scenario {
             name: "P6_public_flag",
             fixture: "public_flag",
@@ -183,7 +183,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:alice", "can_select", "articles:a2", false),
             ],
         },
-        // P7 — ABAC AND (relationship + attribute guard)
+        // P7: ABAC AND (relationship plus attribute guard)
         Scenario {
             name: "P7_abac_status",
             fixture: "abac_status",
@@ -238,7 +238,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ),
             ],
         },
-        // P8 — Compound OR (P3 owner + P6 public)
+        // P8: Compound OR (P3 owner plus P6 public)
         Scenario {
             name: "P8_compound_or",
             fixture: "compound_or",
@@ -258,7 +258,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:nobody", "can_select", "documents:doc2", false),
             ],
         },
-        // P10 — Constant bool intersection (permissive TRUE & restrictive FALSE)
+        // P10: Constant bool intersection (permissive TRUE and restrictive FALSE)
         Scenario {
             name: "P10_constant_bool",
             fixture: "constant_bool",
@@ -269,9 +269,14 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("user:alice", "can_select", "docs:d1", false),
             ],
         },
-        // P2 — pg_has_role gate. The role membership is written by hand, since it lives
+        // P2: pg_has_role gate. The role membership is written by hand, since it lives
         // outside the policy tables and no generated query can produce it. The scope tuple
         // is what the generated SQL emits, one per row.
+        //
+        // The scope is named after what it is, membership of editor, so a change to that
+        // rule renames the relation and the server refuses these writes rather than
+        // answering with a stale object. `role_scope_name("member", ["editor"])` is the
+        // rule, and `generator_tests` derives it rather than spelling it.
         Scenario {
             name: "P2_pg_role_gate",
             fixture: "pg_role_gate",
@@ -279,11 +284,11 @@ async fn openfga_semantic_checks_all_patterns() {
             tuples: vec![
                 (
                     "docs:d1",
-                    "scope_docs_select_14425117",
-                    "pg_role_scope:scope_docs_select_14425117",
+                    "scope_member_editor_89c73e0a",
+                    "pg_role_scope:scope_member_editor_89c73e0a",
                 ),
                 (
-                    "pg_role_scope:scope_docs_select_14425117",
+                    "pg_role_scope:scope_member_editor_89c73e0a",
                     "roles",
                     "pg_role:editor",
                 ),
@@ -336,6 +341,7 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
         scenario.min_confidence,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .json_model();
     let model_id =

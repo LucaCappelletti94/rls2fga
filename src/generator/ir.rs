@@ -8,7 +8,7 @@ use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::relations::RequestComparison;
-use crate::generator::well_known::{member_relation, public_relation, TEAM_TYPE};
+use crate::generator::well_known::{member_relation, public_relation, WellKnownTypes};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::parser::identifiers::{ColumnName, RelationName, TypeName};
@@ -33,7 +33,7 @@ pub(crate) struct GateContextColumn {
 
 /// The condition a temporal membership tuple names, with every column its context
 /// carries. Present on a membership source only when a clock comparison rides its member
-/// tuple; absent for a plain member tuple.
+/// tuple. Absent for a plain member tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MembershipGate {
     /// The condition the member tuple names, declared on the parent or holder type.
@@ -273,10 +273,11 @@ pub(crate) enum TupleSource {
 
     /// One role a policy's scope admits: `(scope_type:scope_object, roles, pg_role:pg_role)`.
     ///
-    /// Read `DISTINCT` off the guarded table, which is the table whose policy asked for the
-    /// scope, so the load writes it once however many rows that table holds.
+    /// Names no table. Which roles a scope admits is decided by the policy, so the query is
+    /// a constant `SELECT` yielding exactly one row whatever any table holds. Reading it off
+    /// the guarded table instead tied the fact to that table having rows, and made every row
+    /// of it look like a reason the fact exists.
     PolicyScopeRoles {
-        table: String,
         scope_type: String,
         scope_object: String,
         relation: RelationName,
@@ -341,7 +342,11 @@ impl TupleSource {
 
     /// The `(type, relation)` pairs this source populates. Empty means it carries no
     /// tuples, so it is never dropped as unreachable.
-    pub(crate) fn feeds(&self, owner_type: &TypeName) -> Vec<(String, RelationName)> {
+    pub(crate) fn feeds(
+        &self,
+        owner_type: &TypeName,
+        well_known: &WellKnownTypes,
+    ) -> Vec<(String, RelationName)> {
         let own = |relation: &RelationName| vec![(owner_type.to_string(), relation.clone())];
         match self {
             Self::DirectOwnership { relation, .. }
@@ -365,9 +370,7 @@ impl TupleSource {
                 .iter()
                 .map(|(_, relation, _)| (owner_type.clone(), relation.clone()))
                 .collect(),
-            Self::TeamMembership { .. } => {
-                vec![(TEAM_TYPE.to_string(), member_relation())]
-            }
+            Self::TeamMembership { .. } => vec![(well_known.team.clone(), member_relation())],
             Self::ExistsMembership { parent_type, .. } => {
                 vec![(parent_type.clone(), member_relation())]
             }
@@ -394,8 +397,7 @@ impl TupleSource {
 
     /// A stable string key used to deduplicate identical tuple queries.
     ///
-    /// Two sources with the same key produce the same SQL; only the first is
-    /// emitted.
+    /// Two sources with the same key produce the same SQL. Only the first is emitted.
     pub(crate) fn dedup_key(&self) -> String {
         match self {
             Self::DirectOwnership {
@@ -579,13 +581,12 @@ impl TupleSource {
                 format!("scope:{table}:{pk_cols:?}:{scope_relation}:{scope_type}:{scope_object}")
             }
             Self::PolicyScopeRoles {
-                table,
                 scope_type,
                 scope_object,
                 relation,
                 pg_role,
             } => {
-                format!("scoperoles:{table}:{scope_type}:{scope_object}:{relation}:{pg_role}")
+                format!("scoperoles:{scope_type}:{scope_object}:{relation}:{pg_role}")
             }
             Self::HolderBridge {
                 table,

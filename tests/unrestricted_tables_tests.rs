@@ -101,6 +101,7 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
         .with_min_confidence(ConfidenceLevel::B)
         .build()
         .translate(db)
+        .expect("translation should plan")
 }
 
 /// Every table the report names, in the order it names them.

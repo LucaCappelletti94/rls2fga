@@ -7,6 +7,8 @@ model
 
 type user
 
+type nobody
+
 type owner_grants_owner
   relations
     define grant_admin: [user, team]
@@ -20,7 +22,7 @@ type owner_grants_owner
 
 type samples
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner_id: [owner_grants_owner]
     define can_delete: no_access
     define can_insert: no_access
@@ -31,7 +33,7 @@ type samples
 
 type spectra
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner_id: [owner_grants_owner]
     define can_delete: no_access
     define can_insert: no_access

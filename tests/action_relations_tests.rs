@@ -193,6 +193,7 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
         ])
         .build()
         .translate(db)
+        .expect("translation should plan")
 }
 
 fn report(sql: &str) -> Vec<ActionRelations> {

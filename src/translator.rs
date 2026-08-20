@@ -19,11 +19,14 @@ use crate::generator::tuple_generator::{
     generate_tuple_queries_from_plan, record_from_tuple_row, TupleQuery, TupleRow, TupleRowError,
 };
 use crate::generator::unrestricted::{unrestricted_tables, UnrestrictedTable};
+use crate::generator::well_known::WellKnownTypes;
 #[cfg(feature = "std")]
 use crate::output::formatter::write_output;
 use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
 use crate::parser::sql_parser::{DatabaseLike, ParserDB};
+
+pub use crate::generator::model_generator::PlanningError;
 
 /// Builder for a [`Translator`].
 #[derive(Debug, Clone)]
@@ -46,6 +49,13 @@ impl TranslatorBuilder {
     #[must_use]
     pub fn with_request_time_parameter(mut self, name: impl Into<String>) -> Self {
         self.generator.request_time_parameter = name.into();
+        self
+    }
+
+    /// Replace the type names the generator reserves for its own vocabulary.
+    #[must_use]
+    pub fn with_well_known_types(mut self, names: WellKnownTypes) -> Self {
+        self.generator.well_known = names;
         self
     }
 
@@ -154,7 +164,10 @@ impl Translator {
     /// The plan is built once here and each output is rendered from it on demand, so a
     /// caller wanting the model, the JSON and the tuples classifies once rather than
     /// three times.
-    pub fn translate<'a, DB: DatabaseLike>(&self, db: &'a DB) -> Translation<'a, DB> {
+    pub fn translate<'a, DB: DatabaseLike>(
+        &self,
+        db: &'a DB,
+    ) -> Result<Translation<'a, DB>, PlanningError> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
         Translation::plan(
             classified,
@@ -197,21 +210,20 @@ pub struct Translation<'a, DB: DatabaseLike = ParserDB> {
 impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// Plan a translation from policies already classified, which is how an oracle's
     /// answers reach the generators.
-    #[must_use]
     pub fn plan(
         policies: Vec<ClassifiedPolicy>,
         db: &'a DB,
         registry: &FunctionRegistry,
         min_confidence: ConfidenceLevel,
         settings: &GeneratorSettings,
-    ) -> Self {
-        let plan = build_filtered_schema_plan(&policies, db, registry, min_confidence, settings);
-        Self {
+    ) -> Result<Self, PlanningError> {
+        let plan = build_filtered_schema_plan(&policies, db, registry, min_confidence, settings)?;
+        Ok(Self {
             db,
             plan,
             policies,
             min_confidence,
-        }
+        })
     }
 
     /// Everything the translation has to say about itself.

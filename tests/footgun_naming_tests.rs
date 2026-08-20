@@ -5,11 +5,14 @@
 
 use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
+use rls2fga::generator::well_known::WellKnownTypes;
+use rls2fga::translator::{Translator, TranslatorBuilder};
 
 mod support;
 
 use support::footgun::{
-    db_of, relation_definition, relation_definitions, translator, tuples_reading_from, type_names,
+    db_of, is_structural_type, relation_definition, relation_definitions, translator,
+    tuples_reading_from, type_names,
 };
 
 const COLLIDING_SCHEMAS: &str = r"
@@ -29,7 +32,11 @@ CREATE POLICY public_docs_sel ON public.docs FOR SELECT USING (owner_id = curren
 fn disambiguated_type_receives_tuples_under_its_own_type_name() {
     let db = db_of(COLLIDING_SCHEMAS);
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     let renamed = type_names(&dsl)
         .into_iter()
@@ -38,6 +45,7 @@ fn disambiguated_type_receives_tuples_under_its_own_type_name() {
 
     let tuples = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
     assert_eq!(
@@ -66,15 +74,20 @@ fn disambiguated_type_receives_tuples_under_its_own_type_name() {
 fn disambiguated_type_is_not_left_without_tuples() {
     let db = db_of(COLLIDING_SCHEMAS);
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
     let tuples = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
     let rendered = format_tuples(&tuples);
 
     for type_name in type_names(&dsl) {
-        if type_name == "user" {
+        if is_structural_type(&type_name) {
             continue;
         }
         assert!(
@@ -110,6 +123,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         ));
         let dsl = translator(ConfidenceLevel::A)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
 
@@ -149,6 +163,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING ({reserved}_id = current_user)
         ));
         let dsl = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
 
@@ -188,6 +203,7 @@ fn policies_compose_however_each_one_spells_the_table() {
     let read_of = |restrictive_on: &str| {
         let dsl = translator(ConfidenceLevel::A)
             .translate(&db_of(&schema(restrictive_on)))
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
         relation_definition(&dsl, "docs", "can_select")
@@ -220,7 +236,11 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -231,6 +251,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
         !tuples_reading_from(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
             r#""docs""#
@@ -258,6 +279,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = model.model();
 
@@ -312,6 +334,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (tenant = current_setting('app.t
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(
@@ -349,7 +372,11 @@ CREATE POLICY zzz_sel ON zzz.docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -380,6 +407,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT TO "billing admin" USING (owner_id = c
     );
     let model = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(
@@ -407,7 +435,11 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     let select =
         relation_definition(&dsl, "docs", "can_select").expect("docs should define can_select");
@@ -421,6 +453,7 @@ CREATE POLICY docs_upd ON docs FOR UPDATE USING (editor_id = current_user);
     // Every ownership query must populate the relation its own column feeds.
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -466,12 +499,14 @@ CREATE POLICY zzz_sel ON zzz.docs FOR SELECT USING (owner_id = current_user);
     let at_b = type_names(
         &translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model(),
     );
     let at_d = type_names(
         &translator(ConfidenceLevel::D)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model(),
     );
@@ -507,6 +542,7 @@ fn generated_names_respect_openfga_length_limits() {
     ));
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -554,6 +590,7 @@ fn two_schemas_holding_one_table_name_get_two_types() {
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -579,6 +616,7 @@ fn two_schemas_holding_one_table_name_get_two_types() {
     assert!(
         translator(ConfidenceLevel::A)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .notes()
             .iter()
@@ -587,6 +625,7 @@ fn two_schemas_holding_one_table_name_get_two_types() {
         "the collision must be named, got {:#?}",
         translator(ConfidenceLevel::A)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .notes()
     );
@@ -603,6 +642,7 @@ fn the_furniture_of_a_real_schema_does_not_disturb_the_policies() {
     );
     let outputs = translator(ConfidenceLevel::C)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -631,4 +671,145 @@ fn the_furniture_of_a_real_schema_does_not_disturb_the_policies() {
         type_names(&dsl).iter().any(|name| name == "doc_links"),
         "the composite-key table is still translated:\n{dsl}"
     );
+}
+
+fn reserved_type_collision_schema(table: &str) -> String {
+    format!(
+        "
+CREATE TABLE {table}(id UUID PRIMARY KEY);
+ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;
+CREATE POLICY {table}_sel ON {table} FOR SELECT USING (TRUE);
+"
+    )
+}
+
+fn custom_well_known_types(setting: &str, replacement: &str) -> WellKnownTypes {
+    let mut names = WellKnownTypes::default();
+    match setting {
+        "user" => names.user = replacement.to_string(),
+        "team" => names.team = replacement.to_string(),
+        "pg_role" => names.pg_role = replacement.to_string(),
+        "pg_role_scope" => names.pg_role_scope = replacement.to_string(),
+        "nobody" => names.nobody = replacement.to_string(),
+        other => panic!("unknown well-known type setting {other}"),
+    }
+    names
+}
+
+fn translator_with_types(names: WellKnownTypes) -> Translator {
+    TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_well_known_types(names)
+        .build()
+}
+
+#[test]
+fn tables_cannot_take_configured_well_known_type_names() {
+    for setting in ["user", "team", "pg_role", "pg_role_scope", "nobody"] {
+        let db = db_of(&reserved_type_collision_schema(setting));
+        let error = translator(ConfidenceLevel::A)
+            .translate(&db)
+            .expect_err("a table must not take a reserved type name");
+        let message = error.to_string();
+        assert!(
+            message.contains(setting) && message.contains("well-known type"),
+            "the refusal should name the table and setting, got {message}"
+        );
+    }
+}
+
+#[test]
+fn renaming_the_well_known_type_releases_the_table_name() {
+    for setting in ["user", "team", "pg_role", "pg_role_scope", "nobody"] {
+        let db = db_of(&reserved_type_collision_schema(setting));
+        let type_name = format!("configured_{setting}");
+        let outputs = translator_with_types(custom_well_known_types(setting, &type_name))
+            .translate(&db)
+            .expect("renaming the reserved type should let the table translate")
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
+        assert!(
+            type_names(&dsl).contains(&setting.to_string()),
+            "the table should keep its own type after the configured name moves:\n{dsl}"
+        );
+    }
+}
+
+#[test]
+fn a_schema_without_well_known_type_collisions_still_translates() {
+    let db = db_of(&reserved_type_collision_schema("docs"));
+    let outputs = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .expect("unreserved table name should translate")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert!(
+        type_names(&dsl).contains(&"docs".to_string()),
+        "the ordinary table type should still exist:\n{dsl}"
+    );
+}
+
+#[test]
+fn well_known_names_have_a_single_source_of_truth() {
+    let names = WellKnownTypes {
+        user: "principal".to_string(),
+        team: "principal_group".to_string(),
+        pg_role: "database_role".to_string(),
+        pg_role_scope: "database_role_scope".to_string(),
+        nobody: "empty_principal".to_string(),
+    };
+    let mut rendered = String::new();
+    for fixture in ["abac_status", "pg_role_gate", "role_threshold_compound_key"] {
+        let sql = std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql"))
+            .expect("fixture SQL should be readable");
+        let registry =
+            std::fs::read_to_string(format!("tests/fixtures/{fixture}/function_registry.json"))
+                .ok();
+        let mut builder = TranslatorBuilder::new()
+            .with_min_confidence(ConfidenceLevel::B)
+            .with_well_known_types(names.clone());
+        if let Some(registry) = registry {
+            builder = builder
+                .with_registry_json(&registry)
+                .expect("fixture registry should parse");
+        }
+        let db = db_of(&sql);
+        let translation = builder
+            .build()
+            .translate(&db)
+            .expect("fixture should translate");
+        if fixture == "role_threshold_compound_key" {
+            let relations = translation.relations();
+            assert!(
+                relations
+                    .iter()
+                    .any(|entry| entry.type_name.as_str() == names.team
+                        && entry.relation.as_str() == "member"
+                        && !entry.shapes.is_empty()),
+                "the configured team type should carry the team membership source"
+            );
+        }
+        let outputs = translation.outputs_accepting_gaps();
+        rendered.push_str(&outputs.model());
+        rendered.push_str(&format_tuples(&outputs.tuple_queries()));
+    }
+    for expected in [
+        names.user,
+        names.team,
+        names.pg_role,
+        names.pg_role_scope,
+        names.nobody,
+    ] {
+        assert!(
+            rendered.contains(&expected),
+            "custom type name {expected} should reach every output:\n{rendered}"
+        );
+    }
+    for default in ["user", "team", "pg_role", "pg_role_scope", "nobody"] {
+        assert!(
+            !rendered.contains(&format!("type {default}\n"))
+                && !rendered.contains(&format!("'{default}:")),
+            "default type name {default} leaked into custom output:\n{rendered}"
+        );
+    }
 }

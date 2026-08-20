@@ -173,8 +173,8 @@ fn classify_expr_depth<DB: DatabaseLike>(
         return unknown_d(
             expr,
             format!(
-                "Expression exceeds maximum nesting depth ({MAX_CLASSIFY_DEPTH}); \
-                 manual review required"
+                "Expression exceeds maximum nesting depth ({MAX_CLASSIFY_DEPTH}) and requires \
+                 manual review"
             ),
         );
     }
@@ -372,8 +372,8 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return unknown_d(
             expr,
             format!(
-                "NOT applied to {desc}; negation cannot be expressed as a static \
-                 OpenFGA tuple, consider rewriting as an allowlist policy"
+                "NOT applied to {desc}, but negation cannot be expressed as a static OpenFGA \
+                 tuple, so consider rewriting as an allowlist policy"
             ),
         );
     }
@@ -383,22 +383,22 @@ fn classify_expr_inner<DB: DatabaseLike>(
     if let Expr::InList { negated: true, .. } = expr {
         return unknown_d(
             expr,
-            "NOT IN (...) cannot be represented as static OpenFGA tuples; \
-             negation requires runtime filtering",
+            "NOT IN (...) cannot be represented as static OpenFGA tuples because negation \
+             requires runtime filtering",
         );
     }
     if let Expr::Exists { negated: true, .. } = expr {
         return unknown_d(
             expr,
-            "NOT EXISTS cannot be represented as static OpenFGA membership tuples; \
+            "NOT EXISTS cannot be represented as static OpenFGA membership tuples because \
              negation requires runtime filtering",
         );
     }
     if let Expr::InSubquery { negated: true, .. } = expr {
         return unknown_d(
             expr,
-            "NOT IN (subquery) cannot be represented as static OpenFGA membership \
-             tuples; negation requires runtime filtering",
+            "NOT IN (subquery) cannot be represented as static OpenFGA membership tuples \
+             because negation requires runtime filtering",
         );
     }
     // `col <> ALL (subquery)` is the quantified spelling of `NOT IN (subquery)`.
@@ -414,8 +414,8 @@ fn classify_expr_inner<DB: DatabaseLike>(
     ) {
         return unknown_d(
             expr,
-            "Negated quantified comparison cannot be represented as static OpenFGA \
-             membership tuples; negation requires runtime filtering",
+            "Negated quantified comparison cannot be represented as static OpenFGA membership \
+             tuples because negation requires runtime filtering",
         );
     }
 
@@ -479,7 +479,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
             expr,
             format!(
                 "Negated boolean-flag check on column '{col}' cannot be expressed as static \
-                 OpenFGA tuples; negation requires runtime filtering"
+                 OpenFGA tuples because negation requires runtime filtering"
             ),
         );
     }
@@ -1563,7 +1563,7 @@ CREATE POLICY docs_open ON docs;
 
         // Build an AND chain more than 64 levels deep:
         // `TRUE AND TRUE AND TRUE AND ...` with 66 levels forces depth > 64.
-        // The AND handler recurses into each sub-expression; with 66 ANDs the
+        // The AND handler recurses into each sub-expression. With 66 ANDs the
         // depth counter will exceed MAX_CLASSIFY_DEPTH.
         let inner_sql = "owner_id = current_user";
         // Build a chain of 70 ANDs: `TRUE AND TRUE AND ... AND (owner_id = current_user)`
@@ -1572,8 +1572,8 @@ CREATE POLICY docs_open ON docs;
         let expr = parse_expr(&and_chain);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         // With 70 levels of AND nesting the leaf expressions are beyond depth 64.
-        // The resulting P8Composite or Unknown D is acceptable; what matters is
-        // the classifier does not panic or overflow the stack.
+        // The exact class is flexible because the invariant is no panic or stack
+        // overflow.
         assert!(
             !matches!(
                 &classified.pattern,

@@ -553,6 +553,7 @@ ALTER TABLE a.notes ENABLE ROW LEVEL SECURITY;
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .row_naming();
     let entry = named
         .iter()

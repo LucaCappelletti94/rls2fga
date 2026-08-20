@@ -7,9 +7,11 @@ model
 
 type user
 
+type nobody
+
 type projects
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define owner: [user]
     define can_delete: no_access
     define can_insert: no_access
@@ -20,7 +22,7 @@ type projects
 
 type tasks
   relations
-    define no_access: [user]
+    define no_access: [nobody]
     define projects: [projects]
     define can_delete: no_access
     define can_insert: no_access

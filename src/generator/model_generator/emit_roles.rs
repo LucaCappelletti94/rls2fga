@@ -47,17 +47,20 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         missing_object_what,
     } = spec;
     if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
-        ensure_pg_role_relation(all_types, walked);
+        let well_known = table_plan.well_known.clone();
+        ensure_pg_role_relation(all_types, walked, &well_known);
         // The roles a scope admits are a fact about the policy, so they hang on one scope
         // object and the row carries only a pointer at it. Storing them per row instead
         // multiplies the whole table by the number of roles the clause names.
         let scope_object = scope_relation.as_str().to_string();
         let scope_plan = all_types
-            .entry(PG_ROLE_SCOPE_TYPE.to_string())
-            .or_insert_with(|| TypePlan::new(PG_ROLE_SCOPE_TYPE));
+            .entry(well_known.pg_role_scope.clone())
+            .or_insert_with(|| {
+                TypePlan::new_with_well_known(&well_known.pg_role_scope, &well_known)
+            });
         let roles = scope_plan.ensure_direct(
             scope_roles_relation(),
-            vec![DirectSubject::Type(PG_ROLE_TYPE.to_string())],
+            vec![DirectSubject::Type(well_known.pg_role.clone())],
         );
         scope_plan.ensure_computed(
             walked.as_str().to_string(),
@@ -68,14 +71,14 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         );
         table_plan.ensure_direct(
             scope_relation.clone(),
-            vec![DirectSubject::Type(PG_ROLE_SCOPE_TYPE.to_string())],
+            vec![DirectSubject::Type(well_known.pg_role_scope.clone())],
         );
         notes.push(scope_note);
         table_plan.add_source(TupleSource::PolicyScope {
             table: source_table.to_string(),
             pk_cols,
             scope_relation: scope_relation.clone(),
-            scope_type: PG_ROLE_SCOPE_TYPE.to_string(),
+            scope_type: well_known.pg_role_scope.clone(),
             scope_object: scope_object.clone(),
         });
         for role in role_names {
@@ -90,8 +93,7 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
                 });
             }
             table_plan.add_source(TupleSource::PolicyScopeRoles {
-                table: source_table.to_string(),
-                scope_type: PG_ROLE_SCOPE_TYPE.to_string(),
+                scope_type: well_known.pg_role_scope.clone(),
                 scope_object: scope_object.clone(),
                 relation: roles.clone(),
                 pg_role,
@@ -123,8 +125,8 @@ pub(crate) fn handle_p2_role_gate<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
 
-    let scope_relation = policy_scope_relation_name(policy_name);
     let held_by = privilege.relation_name();
+    let scope_relation = role_scope_name(held_by.as_str(), role_names);
     let scope_can_be_filled = register_pg_role_scope(
         table_plan,
         all_types,
@@ -263,6 +265,7 @@ pub(crate) fn emit_role_name_in_list<DB: DatabaseLike>(
         &prepared.sorted_roles,
         &selected_names,
         prepared.has_team_support,
+        &table_plan.well_known,
     ) {
         UsersetExpr::TupleToUserset {
             tupleset: owner.pointer,
@@ -416,31 +419,32 @@ pub(crate) fn ensure_role_threshold_scaffold(
         clamp_relation_name(canonical_fga_type_name(owner_column.as_str())),
         vec![DirectSubject::Type(owner_type.to_string())],
     );
+    let well_known = table_plan.well_known.clone();
     if has_team_support {
-        ensure_member_type(all_types, TEAM_TYPE);
+        ensure_member_type(all_types, &well_known.team, &well_known);
     }
     let owner_plan = all_types
         .entry(owner_type.to_string())
-        .or_insert_with(|| TypePlan::new(owner_type));
+        .or_insert_with(|| TypePlan::new_with_well_known(owner_type, &well_known));
 
     owner_plan.ensure_direct(
         owner_user_relation(),
-        vec![DirectSubject::Type(USER_TYPE.to_string())],
+        vec![DirectSubject::Type(well_known.user.clone())],
     );
     if has_team_support {
         owner_plan.ensure_direct(
             owner_team_relation(),
-            vec![DirectSubject::Type(TEAM_TYPE.to_string())],
+            vec![DirectSubject::Type(well_known.team.clone())],
         );
     }
 
     let grant_subjects = if has_team_support {
         vec![
-            DirectSubject::Type(USER_TYPE.to_string()),
-            DirectSubject::Type(TEAM_TYPE.to_string()),
+            DirectSubject::Type(well_known.user.clone()),
+            DirectSubject::Type(well_known.team.clone()),
         ]
     } else {
-        vec![DirectSubject::Type(USER_TYPE.to_string())]
+        vec![DirectSubject::Type(well_known.user.clone())]
     };
 
     for role in &sorted_roles {
@@ -504,6 +508,7 @@ pub(crate) fn ensure_exact_roles_relation(
     sorted_roles: &[RoleRelationName],
     selected_names: &BTreeSet<String>,
     has_team_support: bool,
+    well_known: &WellKnownTypes,
 ) -> Option<RelationName> {
     let mut children = Vec::new();
     let mut listed = Vec::new();
@@ -542,6 +547,6 @@ pub(crate) fn ensure_exact_roles_relation(
     let expr = combine_union(children)?;
     let owner_plan = all_types
         .entry(owner_type.to_string())
-        .or_insert_with(|| TypePlan::new(owner_type));
+        .or_insert_with(|| TypePlan::new_with_well_known(owner_type, well_known));
     Some(owner_plan.ensure_computed(format!("roles_{}", listed.join("_")), expr))
 }

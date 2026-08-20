@@ -61,6 +61,7 @@ fn dsl_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .model()
 }
@@ -74,6 +75,7 @@ fn tuples_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     )
@@ -284,6 +286,7 @@ fn claims_the_model_is_narrower_than_rls(db: &ParserDB, classified: &[Classified
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps()
     .notes()
     .iter()

@@ -37,6 +37,7 @@ fn translate(customer_fk: &str, using: &str) -> (String, String) {
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     (outputs.model(), format_tuples(&outputs.tuple_queries()))
 }

@@ -50,6 +50,7 @@ fn descriptions(schema: &str) -> Vec<RecordDescription> {
         .build();
     translator
         .translate(&db)
+        .expect("benchmark schema should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
         .into_iter()

@@ -7,6 +7,7 @@ use sqlparser::ast::{
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
+pub(crate) use crate::parser::expr::unwrap_cast_or_nested;
 use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
 use crate::parser::expr::{function_arg_expr, function_call, positional_function_arg};
 use crate::parser::function_analyzer::current_setting_literal_key;
@@ -680,12 +681,12 @@ fn extract_boolean_column_equality(expr: &Expr) -> Option<(ColumnName, bool)> {
 }
 
 pub(crate) fn constant_bool_value(expr: &Expr) -> Option<bool> {
-    match expr {
+    match unwrap_cast_or_nested(expr) {
         Expr::Value(v) => match &v.value {
             Value::Boolean(b) => Some(*b),
             _ => None,
         },
-        Expr::Nested(inner) | Expr::Cast { expr: inner, .. } => constant_bool_value(inner),
+        // A negation is not a wrapper: it changes the answer, so it is read here.
         Expr::UnaryOp {
             op: UnaryOperator::Not,
             expr: inner,
@@ -720,13 +721,11 @@ pub(crate) fn is_constantly_false(expr: &Expr) -> bool {
 }
 
 /// Normalized name of the function `expr` calls, through casts and parentheses.
+///
+/// The call is found by [`function_call`], which is the one reader of that shape, so this
+/// is only the naming on top of it.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Function(func) => Some(normalized_function_name(func)),
-        Expr::Cast { expr, .. } => extract_function_name(expr),
-        Expr::Nested(inner) => extract_function_name(inner),
-        _ => None,
-    }
+    function_call(expr).map(normalized_function_name)
 }
 
 /// Normalized names of every function `expr` calls that does not identify the caller,
@@ -839,14 +838,13 @@ fn function_has_current_user_arg(expr: &Expr, registry: &FunctionRegistry) -> bo
 }
 
 fn extract_integer_value(expr: &Expr) -> Option<i32> {
-    match expr {
+    match unwrap_cast_or_nested(expr) {
         Expr::Value(v) => match &v.value {
             Value::Number(n, _) => n.parse().ok(),
             _ => None,
         },
-        Expr::Nested(inner)
-        | Expr::Cast { expr: inner, .. }
-        | Expr::UnaryOp {
+        // A sign is not a wrapper: it decides the value, so both are read here.
+        Expr::UnaryOp {
             op: UnaryOperator::Plus,
             expr: inner,
         } => extract_integer_value(inner),
@@ -914,10 +912,7 @@ pub(crate) enum PathEnd {
 }
 
 fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Vec<String>)> {
-    match expr {
-        Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => {
-            accessor_root_and_path_ending(inner, end)
-        }
+    match unwrap_cast_or_nested(expr) {
         // `(SELECT auth.uid())`, and only that: a subquery reading a table or carrying a
         // clause that can empty its result is a conjunct in disguise, and the pattern
         // keeps only a column name, so whatever it gates would vanish from the model.
@@ -999,16 +994,6 @@ pub(crate) fn unparenthesize(mut expr: &Expr) -> &Expr {
     }
     expr
 }
-
-pub(crate) fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
-    loop {
-        match expr {
-            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => expr = inner.as_ref(),
-            _ => return expr,
-        }
-    }
-}
-
 fn is_current_user_keyword(name: &str) -> bool {
     is_current_user_keyword_name(name)
 }

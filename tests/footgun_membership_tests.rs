@@ -74,7 +74,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     assert!(
         !type_names(&dsl).iter().any(|name| name == "id"),
@@ -92,10 +96,11 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
         "and tasks reaches that rule through projects, got '{tasks_select}':\n{dsl}"
     );
 
-    // projects rows link to orgs by org_id only; keying that link on projects.id
+    // projects rows link to orgs by org_id only. Keying that link on projects.id
     // would grant a project the permissions of the org with the same identifier.
     for query in translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
     {
@@ -128,7 +133,10 @@ CREATE POLICY projects_sel ON projects FOR SELECT USING (
     );
     // Keep D-level classifications so the diagnostic itself is observable.
     let translator = translator(ConfidenceLevel::D);
-    let model = translator.translate(&db).outputs_accepting_gaps();
+    let model = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
 
     assert!(
         !type_names(&model.model()).iter().any(|name| name == "id"),
@@ -164,7 +172,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::A);
-    let model = translator.translate(&db).outputs_accepting_gaps();
+    let model = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
 
     let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
@@ -178,6 +189,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
         format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries()
         )
@@ -203,6 +215,7 @@ CREATE POLICY orders_sel ON orders FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::D)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert_eq!(
@@ -238,6 +251,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
 
@@ -278,6 +292,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "docs", "can_select").as_deref(),
@@ -311,6 +326,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let can_select = relation_definition(&model.model(), "docs", "can_select")
         .expect("docs should define can_select");
@@ -342,6 +358,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert!(
         !model.notes().iter().any(|note| {
@@ -368,7 +385,10 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 ",
     );
     let translator = translator(ConfidenceLevel::B);
-    let model = translator.translate(&db).outputs_accepting_gaps();
+    let model = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
     let scope = pg_role_relation(&model.model(), "docs").unwrap_or_else(|| {
         panic!(
             "docs must scope the membership grant by role:\n{}",
@@ -385,6 +405,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 
     let tuples = translator
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries();
     assert!(
@@ -412,6 +433,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         pg_role_relation(&model.model(), "docs"),
@@ -565,6 +587,58 @@ fn an_uncorrelated_membership_check_translates_through_a_holder() {
     );
 }
 
+/// A clock on the only holder source must remove the plain member subject.
+#[test]
+fn a_clocked_holder_does_not_admit_an_unconditioned_member_tuple() {
+    let schema = "CREATE TABLE reviewers(user_id TEXT, vetted_at TIMESTAMPTZ);\n\
+                  CREATE TABLE memos(id UUID PRIMARY KEY);\n\
+                  ALTER TABLE memos ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY memos_reviewers ON memos FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM reviewers WHERE reviewers.user_id = current_user \
+                    AND reviewers.vetted_at > now()));\n";
+    let (dsl, tuples) = translation(schema);
+
+    let member = relation_definition(&dsl, "reviewers_holder", "member")
+        .unwrap_or_else(|| panic!("reviewers_holder must define member:\n{dsl}"));
+    assert!(
+        member.starts_with("[user with when_") && member.ends_with(']'),
+        "the holder should admit only the conditioned user:\n{dsl}"
+    );
+    assert!(
+        !member.contains("[user,") && !member.contains(", user]"),
+        "an unconditioned tuple would bypass the clock:\n{dsl}"
+    );
+    assert!(
+        tuples.contains(" AS condition, jsonb_build_object('vetted_at', MAX(\"vetted_at\"))"),
+        "the tuple loader still carries the clock context:\n{tuples}"
+    );
+}
+
+/// A shared member relation keeps the plain subject when a plain source feeds it too.
+#[test]
+fn a_mixed_clocked_and_plain_member_relation_keeps_both_subjects() {
+    let schema = "CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+                  CREATE TABLE plain_members(doc_id UUID REFERENCES docs(id), user_id TEXT);\n\
+                  CREATE TABLE expiring_members(\n\
+                    doc_id UUID REFERENCES docs(id), user_id TEXT, vetted_at TIMESTAMPTZ);\n\
+                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY docs_plain ON docs FOR SELECT USING (\n\
+                    EXISTS (SELECT 1 FROM plain_members p \
+                    WHERE p.doc_id = docs.id AND p.user_id = current_user));\n\
+                  CREATE POLICY docs_clocked ON docs FOR DELETE USING (\n\
+                    EXISTS (SELECT 1 FROM expiring_members e \
+                    WHERE e.doc_id = docs.id AND e.user_id = current_user \
+                    AND e.vetted_at > now()));\n";
+    let (dsl, _) = translation(schema);
+
+    let member = relation_definition(&dsl, "docs", "member")
+        .unwrap_or_else(|| panic!("docs must define member:\n{dsl}"));
+    assert!(
+        member.contains("[user, user with when_"),
+        "the plain source still needs unconditioned member tuples:\n{dsl}"
+    );
+}
+
 /// Two policies reading different member tables must not pool their members, and two
 /// reading the same one may share. That is why the holder is per member source rather
 /// than per table or per policy.
@@ -697,6 +771,7 @@ CREATE POLICY docs_members ON docs FOR SELECT
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -726,6 +801,7 @@ CREATE POLICY pd ON docs FOR SELECT USING (
     ));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     let select = relation_definition(&dsl, "docs", "can_select")
@@ -877,6 +953,7 @@ CREATE POLICY p ON docs FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let tuples = outputs.tuple_queries();
@@ -949,6 +1026,7 @@ CREATE POLICY papers_shared ON papers FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.model();
 
@@ -1009,6 +1087,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let model = outputs.model();
 
@@ -1061,6 +1140,7 @@ CREATE POLICY p ON line_items FOR SELECT USING ({using});
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .relations()
 }
 
@@ -1112,6 +1192,7 @@ CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
         )])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert!(

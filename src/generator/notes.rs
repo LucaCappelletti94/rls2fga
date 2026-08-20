@@ -288,15 +288,6 @@ pub enum TranslationNote {
         /// The extra predicate, as written.
         predicate: String,
     },
-    /// The parent-side rule of an inheritance is an expression nobody classified.
-    ParentRuleUnknown {
-        /// Policy inheriting from the parent.
-        policy: String,
-        /// Parent table.
-        parent_table: String,
-        /// Why the inner rule was refused.
-        reason: String,
-    },
     /// The parent-side rule could not be translated.
     ParentRuleUntranslated {
         /// Policy inheriting from the parent.
@@ -358,7 +349,6 @@ impl TranslationNote {
             | Self::UnresolvedPolicyTable { .. }
             | Self::RestrictiveAttributeRefused { .. }
             | Self::RestrictiveBarrierBindsEveryone { .. }
-            | Self::ParentRuleUnknown { .. }
             | Self::ParentRuleUntranslated { .. }
             | Self::StandaloneAttributePolicy { .. }
             | Self::ExpressionRefused { .. }
@@ -423,7 +413,6 @@ impl TranslationNote {
             | Self::MembershipTableGrantsNoReads { policy, .. }
             | Self::MembershipTableGuarded { policy, .. }
             | Self::MembershipExtraPredicate { policy, .. }
-            | Self::ParentRuleUnknown { policy, .. }
             | Self::ParentRuleUntranslated { policy, .. }
             | Self::AttributeNeedsRuntimeEnforcement { policy, .. }
             | Self::StandaloneAttributePolicy { policy, .. }
@@ -444,9 +433,8 @@ impl fmt::Display for TranslationNote {
         match self {
             Self::OwnerBoundFunction { function } => write!(
                 f,
-                "Function '{function}' runs as its owner, so current_user inside it is the \
-                 owner's name for every caller and identifies nobody; policies calling it are \
-                 dropped"
+                "Function '{function}' runs as its owner, so current_user names the owner for \
+                 every caller and policies calling it are dropped"
             ),
             Self::CallerSuppliesConditionParameter {
                 parameter,
@@ -505,8 +493,8 @@ impl fmt::Display for TranslationNote {
             ),
             Self::NoPermissivePolicy { table, commands } => write!(
                 f,
-                "No permissive policy on '{table}' covers {}; RLS denies {those} outright and \
-                 the model mirrors that with no_access",
+                "No permissive policy on '{table}' covers {}, so RLS denies {those} outright \
+                 and the model mirrors that with no_access",
                 commands.join(", "),
                 those = if commands.len() == 1 { "it" } else { "them" }
             ),
@@ -561,23 +549,26 @@ impl fmt::Display for TranslationNote {
                 commands.join(", ")
             ),
             Self::PolicyRoleScope {
-                roles, relation, ..
+                policy,
+                roles,
+                relation,
             } => write!(
                 f,
-                "Policy role scope TO ({}) mapped to relation '{relation}', which reads pg_role \
-                 '{}', so load that relation with each role's inheriting members",
+                "Policy '{policy}' is scoped TO ({}) through relation '{relation}', which reads \
+                 pg_role '{}', so load that pg_role relation with each role's inheriting members",
                 roles.join(", "),
                 RolePrivilege::Usage.relation_name()
             ),
             Self::RoleGateScope {
+                policy,
                 roles,
                 relation,
                 held_by,
-                ..
             } => write!(
                 f,
-                "Role gate ({}) mapped to relation '{relation}', which reads pg_role '{held_by}', \
-                 so load that relation with the roles' holders of that kind",
+                "Policy '{policy}' gates on ({}) through relation '{relation}', which reads \
+                 pg_role '{held_by}', so load that pg_role relation with the roles' holders of \
+                 that kind",
                 roles.join(", ")
             ),
             Self::MembershipReadScope {
@@ -595,8 +586,8 @@ impl fmt::Display for TranslationNote {
             ),
             Self::RoleNameRewritten { role, pg_role, .. } => write!(
                 f,
-                "PostgreSQL role '{role}' is not a valid OpenFGA identifier and was rewritten to \
-                 'pg_role:{pg_role}'; confirm no other role maps to the same identifier"
+                "PostgreSQL role '{role}' is not a valid OpenFGA identifier and was rewritten \
+                 to 'pg_role:{pg_role}', so confirm no other role maps to the same identifier"
             ),
             Self::TypeNameCollision {
                 spelling,
@@ -659,15 +650,6 @@ impl fmt::Display for TranslationNote {
                 "Membership policy carries extra predicate '{predicate}' that must be preserved \
                  in tuple SQL"
             ),
-            Self::ParentRuleUnknown {
-                parent_table,
-                reason,
-                ..
-            } => write!(
-                f,
-                "Parent inheritance from '{parent_table}' has unknown inner rule ({reason}); \
-                 mapped to no_access"
-            ),
             Self::ParentRuleUntranslated { parent_table, .. } => write!(
                 f,
                 "Parent inheritance from '{parent_table}' could not translate the parent-side \
@@ -683,7 +665,7 @@ impl fmt::Display for TranslationNote {
             ),
             Self::ExpressionRefused { reason, .. } => write!(
                 f,
-                "Expression could not be safely translated ({reason}); mapped to no_access"
+                "Expression could not be safely translated ({reason}), so it maps to no_access"
             ),
             Self::FunctionMissingMetadata {
                 function_kind,
@@ -773,7 +755,7 @@ pub(crate) enum SkippedTuples {
 
 /// Advice printed where the tuple query would have been.
 pub(crate) const MISSING_OBJECT_IDENTIFIER_SQL: &str =
-    "-- Tuple query not emitted; table needs a single-column primary key or a NOT NULL UNIQUE `id` column for stable object IDs.";
+    "-- Tuple query not emitted because stable object IDs need a single-column primary key or a NOT NULL UNIQUE `id` column.";
 
 impl SkippedTuples {
     /// The comment line naming what was skipped.
@@ -831,26 +813,26 @@ impl SkippedTuples {
                 "-- No tuple can express the attribute filter '{attribute}', so application logic must enforce it."
             ),
             Self::StandaloneAttribute { column, .. } => format!(
-                "-- Tuple query not emitted; attribute condition on '{column}' is not decided by the row, so no static tuple mapping."
+                "-- Tuple query not emitted because attribute condition on '{column}' is not decided by the row, so no static tuple mapping exists."
             ),
             Self::UnclassifiedExpression { reason, .. } => format!(
-                "-- Tuple query not emitted; classifier could not translate expression: {reason}."
+                "-- Tuple query not emitted because classifier could not translate expression: {reason}."
             ),
             Self::NoObjectIdentifier { .. } => MISSING_OBJECT_IDENTIFIER_SQL.to_string(),
             Self::NoBridge { .. } | Self::BridgeColumnMissing { .. } => {
-                "-- Bridge tuple not emitted; review schema/FK mapping.".to_string()
+                "-- Bridge tuple not emitted because schema/FK mapping needs review.".to_string()
             }
             Self::NoPrincipalTypeForGrants { grant_table } => {
                 format!("-- Unresolved: SELECT ... FROM {grant_table} og ...;")
             }
             Self::NoUserPrincipalTable { .. } => {
-                "-- User ownership tuples not emitted; add role_threshold.user_table metadata or users table.".to_string()
+                "-- User ownership tuples not emitted because no role_threshold.user_table metadata or users table is present.".to_string()
             }
             Self::NoTeamPrincipalTable { .. } => {
-                "-- Team ownership tuples not emitted; add role_threshold.team_table metadata or teams table.".to_string()
+                "-- Team ownership tuples not emitted because no role_threshold.team_table metadata or teams table is present.".to_string()
             }
             Self::NoOwnerColumn { .. } => {
-                "-- Ownership tuples not emitted; review owner mapping.".to_string()
+                "-- Ownership tuples not emitted because owner mapping needs review.".to_string()
             }
         }
     }

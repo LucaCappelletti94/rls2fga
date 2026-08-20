@@ -42,6 +42,7 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     let tuples = tuple_generator::format_tuples(
         &Translation::plan(
@@ -51,6 +52,7 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -110,6 +112,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -175,6 +178,7 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -245,6 +249,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
         model.model().contains("type tasks"),
@@ -268,6 +273,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -306,6 +312,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -349,6 +356,7 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
             ConfidenceLevel::D,
             &GeneratorSettings::default(),
         )
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .tuple_queries(),
     );
@@ -419,6 +427,7 @@ fn p2_role_in_list_generates_action_permissions() {
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -466,6 +475,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(
@@ -513,6 +523,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
         ConfidenceLevel::D,
         &GeneratorSettings::default(),
     )
+    .expect("translation should plan")
     .outputs_accepting_gaps();
 
     assert!(

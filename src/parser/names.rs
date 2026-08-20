@@ -218,10 +218,29 @@ pub(crate) fn yielded_relation_name(base: &str, key: &str, attempt: usize) -> Re
     RelationName::from_resolved(clamp_relation_name(candidate))
 }
 
-/// Derive a stable relation name used to scope a policy by `PostgreSQL` roles.
+/// Derive the name of the scope a privilege and a set of `PostgreSQL` roles stand for.
+///
+/// A scope **is** those roles under that privilege, so naming it after them is what keeps
+/// two scopes apart. Keyed on the policy instead, three shapes pooled their roles onto one
+/// object: two tables whose policies share a name, one policy whose `TO` list is read as
+/// usage beside a gate read as membership, and two gates of one privilege joined by `AND`,
+/// where the pooled object turned the conjunction into a disjunction.
+///
+/// Roles are canonicalized, sorted and deduplicated, since the order a policy lists them
+/// in says nothing and one role has one identity however it is spelled. The base joins on
+/// an underscore to read as a name and the hash on a dot, which a canonical name never
+/// carries, so `(usage, [a_b])` and `(usage_a, [b])` cannot collide.
 #[must_use]
-pub fn policy_scope_relation_name(policy_name: &str) -> RelationName {
-    scope_relation_name("scope", policy_name)
+pub fn role_scope_name(privilege: &str, roles: &[String]) -> RelationName {
+    let mut canonical: Vec<String> = roles
+        .iter()
+        .map(|role| canonical_fga_type_name(role))
+        .collect();
+    canonical.sort_unstable();
+    canonical.dedup();
+    let base = canonical_fga_type_name(&format!("{privilege}_{}", canonical.join("_")));
+    let suffix = stable_hex_suffix(&format!("{privilege}.{}", canonical.join(".")));
+    RelationName::from_resolved(clamp_relation_name(format!("scope_{base}_{suffix}")))
 }
 
 /// Derive a stable relation name used to scope reads of a membership table by
@@ -627,14 +646,52 @@ mod tests {
     }
 
     #[test]
-    fn policy_scope_relation_name_is_stable_and_namespaced() {
-        let first = policy_scope_relation_name("EditorsOnly");
-        let second = policy_scope_relation_name("EditorsOnly");
-        let third = policy_scope_relation_name("editors_only");
+    fn role_scope_name_is_the_privilege_and_the_role_set() {
+        let roles = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        };
 
-        assert_eq!(first, second);
+        let first = role_scope_name("usage", &roles(&["auditor", "support"]));
+        assert_eq!(
+            first,
+            role_scope_name("usage", &roles(&["auditor", "support"]))
+        );
         assert!(first.as_str().starts_with("scope_"));
-        assert_ne!(first, third);
+
+        // The order a policy lists its roles in says nothing, and one role has one
+        // identity however it is spelled.
+        assert_eq!(
+            first,
+            role_scope_name("usage", &roles(&["support", "auditor"]))
+        );
+        assert_eq!(
+            first,
+            role_scope_name("usage", &roles(&["Support", "auditor"]))
+        );
+        assert_eq!(
+            first,
+            role_scope_name("usage", &roles(&["auditor", "support", "auditor"]))
+        );
+
+        // The three shapes that used to pool onto one object.
+        assert_ne!(
+            first,
+            role_scope_name("member", &roles(&["auditor", "support"]))
+        );
+        assert_ne!(first, role_scope_name("usage", &roles(&["auditor"])));
+        assert_ne!(
+            role_scope_name("usage", &roles(&["alpha"])),
+            role_scope_name("usage", &roles(&["beta"]))
+        );
+
+        // The base joins on an underscore, so the hash has to keep this pair apart.
+        assert_ne!(
+            role_scope_name("usage", &roles(&["a_b"])),
+            role_scope_name("usage_a", &roles(&["b"]))
+        );
+        assert!(
+            role_scope_name("usage", &["r".repeat(80)]).as_str().len() <= MAX_RELATION_NAME_LEN
+        );
     }
 
     #[test]

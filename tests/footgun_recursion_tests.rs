@@ -28,6 +28,7 @@ CREATE POLICY docs_tree ON docs FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "docs", "can_select").as_deref(),
@@ -58,6 +59,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::A)
         .translate(&joined)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     assert_eq!(
@@ -82,6 +84,7 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let can_delete =
@@ -111,6 +114,7 @@ CREATE POLICY t1_tree ON t1 FOR SELECT USING (
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "t1", "can_select").as_deref(),
@@ -155,6 +159,7 @@ fn a_read_cycle_across_two_tables_denies_both() {
     let db = cycle_pair_schema("SELECT");
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     for table in ["a", "b"] {
@@ -209,6 +214,7 @@ fn a_read_cycle_reaches_the_commands_that_read_no_row() {
     let db = cycle_pair_schema("ALL");
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     let mut granted = Vec::new();
@@ -255,6 +261,7 @@ CREATE POLICY pc ON c FOR SELECT USING (owner_id = current_user
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     for table in ["a", "b", "c"] {
@@ -289,6 +296,7 @@ CREATE POLICY px ON x FOR SELECT USING (owner_id = current_user
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -326,6 +334,7 @@ CREATE POLICY pb ON b FOR SELECT USING (
     );
     let dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     for table in ["a", "b"] {
@@ -357,6 +366,7 @@ CREATE POLICY pdi_loop ON docs FOR INSERT WITH CHECK (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -411,6 +421,7 @@ CREATE POLICY pdu ON docs FOR UPDATE USING (owner_id = current_user) WITH CHECK 
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -472,6 +483,7 @@ CREATE POLICY docs_tree ON app.docs FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert!(
         outputs
@@ -497,6 +509,7 @@ CREATE POLICY docs_tree ON docs FOR SELECT TO auditor USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -543,6 +556,7 @@ CREATE POLICY pd ON d FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     for table in ["d", "e", "f", "g"] {
@@ -584,6 +598,7 @@ CREATE POLICY pb ON b FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     for (table, relation) in [
@@ -625,6 +640,7 @@ CREATE POLICY pb ON b FOR SELECT USING (
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_ne!(
@@ -663,6 +679,7 @@ CREATE POLICY pb_own ON b FOR SELECT USING (owner_id = current_user);
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(
@@ -716,6 +733,7 @@ CREATE POLICY pd ON docs FOR SELECT USING (EXISTS (SELECT 1 FROM m WHERE m.user_
 fn assert_looping_membership_is_silent(db: &ParserDB, spelling: &str) {
     let outputs = translator(ConfidenceLevel::B)
         .translate(db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert_eq!(

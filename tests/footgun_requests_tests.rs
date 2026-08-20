@@ -67,6 +67,7 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
         let db = db_of(&schema(restriction));
         let model = translator(ConfidenceLevel::C)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps();
         relation_definition(&model.model(), "docs", "can_select")
             .unwrap_or_else(|| panic!("docs should define can_select for '{restriction}'"))
@@ -102,6 +103,7 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
     let db = db_of(&schema("deleted_at IS NULL AND tenant_id = current_user"));
     let model = translator(ConfidenceLevel::C)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let notes: Vec<String> = model
         .notes()
@@ -135,6 +137,7 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "docs", "can_select").as_deref(),
@@ -162,6 +165,7 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
         .with_min_confidence(ConfidenceLevel::B)
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     assert_eq!(
@@ -194,6 +198,7 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert!(
         model
@@ -218,6 +223,7 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "docs", "can_select").as_deref(),
@@ -242,6 +248,7 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
     );
     let model = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     assert_eq!(
         relation_definition(&model.model(), "docs", "can_select").as_deref(),
@@ -271,10 +278,15 @@ fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
              CREATE POLICY docs_editors ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+        let dsl = translator
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps()
+            .model();
         let rendered = format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
         );
@@ -333,6 +345,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         let rendered = format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
         );
@@ -356,6 +369,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -384,10 +398,15 @@ fn caller_named_in_a_jsonb_field_is_ownership_not_a_refusal() {
              CREATE POLICY docs_json ON docs FOR SELECT USING ({clause});"
         ));
         let translator = translator(ConfidenceLevel::B);
-        let dsl = translator.translate(&db).outputs_accepting_gaps().model();
+        let dsl = translator
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps()
+            .model();
         let rendered = format_tuples(
             &translator
                 .translate(&db)
+                .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries(),
         );
@@ -423,6 +442,7 @@ CREATE POLICY docs_json ON docs FOR SELECT
     let rendered = format_tuples(
         &translator
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
@@ -452,6 +472,7 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
     let expected = relation_definition(
         &translator(ConfidenceLevel::C)
             .translate(&plain_db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model(),
         "docs",
@@ -477,6 +498,7 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
         ));
         let dsl = translator(ConfidenceLevel::C)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model();
         let can_select = relation_definition(&dsl, "docs", "can_select")
@@ -502,6 +524,7 @@ CREATE POLICY docs_hybrid ON docs FOR SELECT
     );
     let model = translator(ConfidenceLevel::C)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let messages: Vec<String> = model.notes().iter().map(TranslationNote::message).collect();
 
@@ -714,6 +737,7 @@ fn the_request_time_parameter_name_is_configurable() {
 
     let default_dsl = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
     assert!(
@@ -725,7 +749,11 @@ fn the_request_time_parameter_name_is_configurable() {
         .with_min_confidence(ConfidenceLevel::B)
         .with_request_time_parameter("as_of")
         .build();
-    let dsl = configured.translate(&db).outputs_accepting_gaps().model();
+    let dsl = configured
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
 
     assert!(
         dsl.contains("as_of: timestamp"),
@@ -910,6 +938,7 @@ fn two_tables_reusing_one_policy_name_get_their_own_condition() {
     );
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
 
@@ -1003,7 +1032,12 @@ CREATE POLICY rows_p ON rows_ USING (tenant_id = current_setting('app.tenant_id'
         .build();
 
     let owner_db = db_of(owner_sql);
-    let granted = row_subject_columns(&translator.translate(&owner_db).relations());
+    let granted = row_subject_columns(
+        &translator
+            .translate(&owner_db)
+            .expect("translation should plan")
+            .relations(),
+    );
     assert!(
         !granted.is_empty(),
         "the named key is the caller, so the owner column decides the row"
@@ -1016,7 +1050,10 @@ CREATE POLICY rows_p ON rows_ USING (tenant_id = current_setting('app.tenant_id'
     }
 
     let tenant_db = db_of(tenant_sql);
-    let tenant_relations = translator.translate(&tenant_db).relations();
+    let tenant_relations = translator
+        .translate(&tenant_db)
+        .expect("translation should plan")
+        .relations();
     assert!(
         row_subject_columns(&tenant_relations).is_empty(),
         "no key names the caller here, so nothing may become a user subject: {tenant_relations:#?}"
@@ -1081,6 +1118,7 @@ CREATE POLICY p ON docs FOR SELECT
         let db = db_of(sql);
         let outputs = translator(ConfidenceLevel::B)
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps();
         let dsl = outputs.model();
         assert!(
@@ -1130,7 +1168,10 @@ CREATE POLICY p ON docs FOR SELECT
 
     for (label, sql) in [("a read of a table", guarded), ("a row limit", emptied)] {
         let db = db_of(sql);
-        let relations = translator(ConfidenceLevel::B).translate(&db).relations();
+        let relations = translator(ConfidenceLevel::B)
+            .translate(&db)
+            .expect("translation should plan")
+            .relations();
         assert!(
             row_subject_columns(&relations).is_empty(),
             "{label} can empty the subquery, so the column it compares is not the caller"
@@ -1138,7 +1179,10 @@ CREATE POLICY p ON docs FOR SELECT
     }
 
     let db = db_of(bare);
-    let relations = translator(ConfidenceLevel::B).translate(&db).relations();
+    let relations = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .relations();
     assert_eq!(
         row_subject_columns(&relations)
             .iter()
@@ -1168,6 +1212,7 @@ fn one_caller_carried_set_written_two_ways_emits_one_model() {
             .with_session_attributes(vec![attribute])
             .build()
             .translate(&db)
+            .expect("translation should plan")
             .outputs_accepting_gaps()
             .model()
             .clone()
@@ -1292,6 +1337,7 @@ fn a_list_source_states_no_separator_in_its_caller_contract() {
         )])
         .build()
         .translate(&db)
+        .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let contract = outputs

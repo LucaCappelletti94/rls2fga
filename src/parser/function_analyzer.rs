@@ -7,8 +7,9 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use crate::classifier::recognizers::{projected_select, unwrap_cast_or_nested};
+use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
+use crate::parser::expr::unwrap_cast_or_nested;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,

@@ -79,7 +79,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: USER_TYPE.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         }],
     );
@@ -212,7 +212,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: USER_TYPE.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         }],
     );
@@ -301,7 +301,7 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
     let decision = residual.decidable()?;
     let mut gates = Vec::with_capacity(decision.requests.len());
     for request in &decision.requests {
-        // A zoned column has a timestamp parameter; anything else cannot be a faithful
+        // A zoned column has a timestamp parameter. Anything else cannot be a faithful
         // condition, so the whole residual stays in SQL.
         condition_parameter_type(table, request.column.as_str(), db)?;
         let parameter = unique_condition_parameter(request.column.as_str(), used);
@@ -565,18 +565,18 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         },
     };
 
-    // The gate rides the share type, keyed on the share row; the guarded type links to it
+    // The gate rides the share type, keyed on the share row. The guarded type links to it
     // and reaches the gate by tuple-to-userset, so two viewers union rather than collide.
     let share_type = share_type_name(join_table, ctx.table_types);
     let (gate_relation, condition) = {
-        let share_plan = all_types
-            .entry(share_type.clone())
-            .or_insert_with(|| TypePlan::new(&share_type));
+        let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(&share_type, &ctx.settings.well_known)
+        });
         let condition = declare_condition(share_plan, policy_name, spec);
         let gate_relation = share_plan.ensure_direct(
             conditional_gate_relation_name(policy_name),
             vec![DirectSubject::ConditionalWildcard {
-                type_name: USER_TYPE.to_string(),
+                type_name: ctx.settings.well_known.user.clone(),
                 condition: condition.clone(),
             }],
         );

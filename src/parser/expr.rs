@@ -5,19 +5,37 @@ use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgum
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::stored_ident_name;
 
+/// Peel the wrappers that carry no meaning for what an expression *is*: a cast and a
+/// parenthesis.
+///
+/// The one place that decides it. Every reader that then asks "is this a column, a call, a
+/// literal" starts here, so a wrapper learned once is seen through by all of them. Spelled
+/// as a loop deliberately: a second peel written as recursion inside another reader is the
+/// duplication `every_cast_peel_routes_through_the_shared_peeler` forbids, and the door
+/// this crate was burned through twice.
+///
+/// A cast changes the value, so a reader that keeps the value rather than its shape must
+/// not peel: see `projected_select` and the tuple SQL, which keep the cast.
+pub(crate) fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
+    loop {
+        match expr {
+            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => expr = inner.as_ref(),
+            _ => return expr,
+        }
+    }
+}
+
 /// Extract a simple column name from an expression.
 ///
 /// Supports plain identifiers (`owner_id`) and qualified identifiers
 /// (`public.docs.owner_id`), returning only the terminal column component under
 /// the name `PostgreSQL` stores it.
 pub fn extract_column_name(expr: &Expr) -> Option<ColumnName> {
-    match expr {
+    match unwrap_cast_or_nested(expr) {
         Expr::Identifier(ident) => Some(ColumnName::from_stored(stored_ident_name(ident))),
         Expr::CompoundIdentifier(parts) => {
             Some(ColumnName::from_stored(stored_ident_name(parts.last()?)))
         }
-        Expr::Nested(inner) => extract_column_name(inner),
-        Expr::Cast { expr, .. } => extract_column_name(expr),
         _ => None,
     }
 }
@@ -61,9 +79,8 @@ pub fn function_arg_expr(arg: &FunctionArg) -> Option<&Expr> {
 
 /// The function call `expr` makes, through casts and parentheses.
 pub fn function_call(expr: &Expr) -> Option<&Function> {
-    match expr {
+    match unwrap_cast_or_nested(expr) {
         Expr::Function(function) => Some(function),
-        Expr::Cast { expr, .. } | Expr::Nested(expr) => function_call(expr),
         _ => None,
     }
 }
