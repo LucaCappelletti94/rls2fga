@@ -2368,25 +2368,29 @@ fn skip_source_without_row_identity<DB: DatabaseLike>(
 fn bridge_is_buildable<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &str,
-    fk_col: &ColumnName,
+    fk_cols: &[ColumnName],
     parent_type: &str,
     db: &DB,
 ) -> bool {
-    if resolve_bridge_columns(source_table, fk_col, db).is_some() {
+    if resolve_bridge_columns(source_table, fk_cols, db).is_some() {
         return true;
     }
-    let reason = if resolve_pk_columns(source_table, db).is_none() {
-        SkippedTuples::NoBridge {
+    let missing = fk_cols
+        .iter()
+        .find(|col| !table_has_column(db, source_table, col.as_str()));
+    let reason = match missing {
+        Some(fk_col) if resolve_pk_columns(source_table, db).is_some() => {
+            SkippedTuples::BridgeColumnMissing {
+                table: source_table.to_string(),
+                parent_type: parent_type.to_string(),
+                fk_col: fk_col.clone(),
+            }
+        }
+        _ => SkippedTuples::NoBridge {
             table: source_table.to_string(),
             parent_type: parent_type.to_string(),
             reason: missing_object_identifier_reason(source_table, db),
-        }
-    } else {
-        SkippedTuples::BridgeColumnMissing {
-            table: source_table.to_string(),
-            parent_type: parent_type.to_string(),
-            fk_col: fk_col.clone(),
-        }
+        },
     };
     table_plan.add_source(TupleSource::Skipped { reason });
     false

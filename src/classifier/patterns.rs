@@ -392,15 +392,23 @@ pub struct DirectOwnership {
     pub column: ColumnName,
 }
 
+/// One equality pairing a join-table column with a guarded-table column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MembershipJoinPair {
+    /// Column of the join table identifying the parent entity.
+    pub join_column: ColumnName,
+    /// Column of the guarded table the policy compares against `join_column`.
+    pub outer_column: ColumnName,
+}
+
 /// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExistsMembership {
     /// Table scanned in the subquery.
     pub join_table: String,
-    /// Column of `join_table` identifying the parent entity.
-    pub fk_column: ColumnName,
-    /// Column of the guarded table the policy compares against `fk_column`.
-    pub outer_column: ColumnName,
+    /// The equalities linking the scanned table to the guarded table, ordered by
+    /// the key that names the parent object.
+    pub pairs: Vec<MembershipJoinPair>,
     /// Column of `join_table` identifying the user.
     pub user_column: ColumnName,
     /// Residual filter such as `role = 'admin'`, structured where a row

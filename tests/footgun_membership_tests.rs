@@ -44,8 +44,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT
     assert!(
         matches!(
             &using.pattern,
-            PatternClass::P4ExistsMembership(ExistsMembership { join_table, fk_column, user_column, .. })
-                if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+            PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, user_column, .. })
+                if join_table == "doc_members"
+                    && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+                    && user_column == "user_id"
         ),
         "= ANY (subquery) should match IN (subquery) membership, got: {:?}",
         using.pattern

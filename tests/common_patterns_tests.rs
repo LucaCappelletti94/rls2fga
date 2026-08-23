@@ -223,10 +223,12 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
             &classification.pattern,
             PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
-                fk_column,
+                pairs,
                 user_column,
                 ..
-            }) if join_table == "doc_members" && fk_column == "doc_id" && user_column == "user_id"
+            }) if join_table == "doc_members"
+                && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+                && user_column == "user_id"
         ),
         "wrapped membership policy should classify as P4, got: {:?}",
         classification.pattern

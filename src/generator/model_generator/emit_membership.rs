@@ -5,6 +5,8 @@
 
 use super::*;
 
+use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
+
 /// A membership naming no column of the guarded table, which admits every row at once through a holder.
 pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     uncorrelated_membership: &UncorrelatedMembership,
@@ -136,8 +138,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
 ) -> UsersetExpr {
     let ExistsMembership {
         join_table,
-        fk_column,
-        outer_column,
+        pairs,
         user_column,
         extra_predicates,
     } = exists_membership;
@@ -165,19 +166,47 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         JoinTableReadability::Open => Vec::new(),
     };
 
-    // Prefer the table that fk_column actually references (e.g. "teams"
-    // for team_members.team_id → teams.id).  Fall back to the FK-column
-    // name heuristic when no FK constraint metadata is available
-    // (e.g. "doc_id" → "doc" for an undeclared reference).
-    let parent_type = referenced_table_for_fk_col(db, join_table, fk_column).map_or_else(
-        || parent_type_from_fk_column(fk_column.as_str()),
-        |referenced| table_types.resolve(db, referenced),
-    );
+    // The classifier's own resolver, so an oracle-supplied pairing obeys the same
+    // rules and an unkeyed one falls closed with its reason rather than keying a
+    // grant on a subset of its columns.
+    let (pairs, pairing) =
+        match resolve_membership_pairing(pairs.clone(), join_table, source_table, db) {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason,
+                });
+                return deny_expr(table_plan);
+            }
+        };
+    let parent_type = match (&pairing, pairs.as_slice()) {
+        // Prefer the table the column actually references (e.g. "teams" for
+        // team_members.team_id → teams.id). Fall back to the FK-column name
+        // heuristic when no FK constraint metadata is available (e.g. "doc_id" →
+        // "doc" for an undeclared reference). Single-column only: no name says
+        // what two columns point at.
+        (MembershipPairing::Single, [pair]) => {
+            referenced_table_for_fk_col(db, join_table, &pair.join_column).map_or_else(
+                || parent_type_from_fk_column(pair.join_column.as_str()),
+                |referenced| table_types.resolve(db, referenced),
+            )
+        }
+        // The resolver never yields `Single` with any other width, so this arm
+        // exists only to fall closed rather than panic.
+        (MembershipPairing::Single, _) => return deny_expr(table_plan),
+        (MembershipPairing::ForeignKey { parent_table }, _) => {
+            table_types.resolve(db, parent_table)
+        }
+        // The outer columns are the guarded key, so the parent is the row itself.
+        (MembershipPairing::SelfKeyed, _) => table_plan.type_name.to_string(),
+    };
+    let outer_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.outer_column.clone()).collect();
 
     // Before anything is minted: the grant hangs off a bridge from this row to
     // its parent object, so with no bridge there is nothing to hang it on and a
     // parent type minted here would outlive the expression justifying it.
-    if !bridge_is_buildable(table_plan, source_table, outer_column, &parent_type, db) {
+    if !bridge_is_buildable(table_plan, source_table, &outer_cols, &parent_type, db) {
         return deny_expr(table_plan);
     }
 
@@ -222,10 +251,23 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         {
             parent_plan.add_direct_subject(&member_relation(), subject.clone());
         }
-        // Only a declared reference names a table. The fallback derives the type
-        // from the column's name, and no row of any table is named by it.
-        if let Some(referenced) = referenced_table_for_fk_col(db, join_table, fk_column) {
-            bind_row_source(all_types, &parent_type, referenced, db);
+        // Only a declared reference names a table: the single-column fallback
+        // derives the type from the column's name, and no row of any table is
+        // named by it. The self route binds nothing, since the guarded type's
+        // own rows already name its objects.
+        match &pairing {
+            MembershipPairing::Single => {
+                if let Some(referenced) = pairs
+                    .first()
+                    .and_then(|pair| referenced_table_for_fk_col(db, join_table, &pair.join_column))
+                {
+                    bind_row_source(all_types, &parent_type, referenced, db);
+                }
+            }
+            MembershipPairing::ForeignKey { parent_table } => {
+                bind_row_source(all_types, &parent_type, parent_table, db);
+            }
+            MembershipPairing::SelfKeyed => {}
         }
     }
 
@@ -246,14 +288,19 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     // then also to the parent type's plan for semantic correctness (deduplicated).
     let membership_source = TupleSource::ExistsMembership {
         join_table: join_table.clone(),
-        fk_col: fk_column.clone(),
+        fk_cols: pairs.iter().map(|pair| pair.join_column.clone()).collect(),
         user_col: user_column.clone(),
         parent_type: parent_type.clone(),
         extra_predicates: extra_predicates.clone(),
-        gate: gate.map(|(condition, context)| MembershipGate {
-            condition,
-            context,
-            aggregate: !row_uniquely_keys(join_table, &[fk_column, user_column], db),
+        gate: gate.map(|(condition, context)| {
+            let mut key_cols: Vec<&ColumnName> =
+                pairs.iter().map(|pair| &pair.join_column).collect();
+            key_cols.push(user_column);
+            MembershipGate {
+                condition,
+                context,
+                aggregate: !row_uniquely_keys(join_table, &key_cols, db),
+            }
         }),
     };
     table_plan.add_source(membership_source.clone());
@@ -261,12 +308,12 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         parent_plan.add_source(membership_source);
     }
 
-    // Bridge rows link each source-table row to its parent, through the column
-    // the policy compares. The pk column is resolved again at render time by
+    // Bridge rows link each source-table row to its parent, through the columns
+    // the policy compares. The pk columns are resolved again at render time by
     // `resolve_bridge_columns`.
     table_plan.add_source(TupleSource::ParentBridge {
         table: source_table.to_string(),
-        fk_col: outer_column.clone(),
+        fk_cols: outer_cols,
         parent_type: parent_type.clone(),
         relation: parent_relation.clone(),
     });
@@ -427,12 +474,18 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
         });
     }
 
-    if !bridge_is_buildable(table_plan, source_table, fk_column, &parent_type, db) {
+    if !bridge_is_buildable(
+        table_plan,
+        source_table,
+        core::slice::from_ref(fk_column),
+        &parent_type,
+        db,
+    ) {
         return deny_expr(table_plan);
     }
     table_plan.add_source(TupleSource::ParentBridge {
         table: source_table.to_string(),
-        fk_col: fk_column.clone(),
+        fk_cols: vec![fk_column.clone()],
         parent_type: parent_type.clone(),
         relation: parent_relation.clone(),
     });

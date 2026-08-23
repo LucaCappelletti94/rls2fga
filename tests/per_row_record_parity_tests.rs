@@ -1395,6 +1395,122 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
     );
 }
 
+/// Both composite-key membership routes: a share keyed by the guarded table's whole
+/// key (self route) and a membership carrying a declared composite foreign key onto a
+/// parent's whole key (FK route). One `paper_id` and one `project_id` repeat across
+/// tenants, so an object keyed on either column alone merges two rows.
+const COMPOSITE_KEY_MEMBERSHIP_SCHEMA: &str = "
+CREATE TABLE tenant_papers (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE tenant_shares (
+    tenant_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    viewer TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, paper_id, viewer)
+);
+CREATE TABLE projects (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE grouped_docs (
+    doc_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE TABLE project_members (
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, project_id, user_id),
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE tenant_papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_visible ON tenant_papers FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM tenant_shares s
+        WHERE s.tenant_id = tenant_papers.tenant_id
+          AND s.paper_id = tenant_papers.id
+          AND s.viewer = auth_current_user_id()));
+ALTER TABLE grouped_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_visible ON grouped_docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM project_members m
+        WHERE m.tenant_id = grouped_docs.tenant_id
+          AND m.project_id = grouped_docs.project_id
+          AND m.user_id = auth_current_user_id()));
+";
+
+/// One shared id per key family across tenants, plus an unshared row on each side.
+const COMPOSITE_KEY_MEMBERSHIP_SEED: &str = "
+INSERT INTO tenant_papers (tenant_id, id) VALUES
+    ('t1', 'p-shared'), ('t2', 'p-shared'), ('t1', 'p-solo');
+INSERT INTO tenant_shares (tenant_id, paper_id, viewer) VALUES
+    ('t1', 'p-shared', 'alice'), ('t2', 'p-shared', 'bob');
+INSERT INTO projects (tenant_id, id) VALUES
+    ('t1', 'proj'), ('t2', 'proj'), ('t1', 'proj-empty');
+INSERT INTO grouped_docs (doc_id, tenant_id, project_id) VALUES
+    ('doc-t1', 't1', 'proj'), ('doc-t2', 't2', 'proj'), ('doc-empty', 't1', 'proj-empty');
+INSERT INTO project_members (tenant_id, project_id, user_id) VALUES
+    ('t1', 'proj', 'alice'), ('t2', 'proj', 'bob');
+";
+
+/// Every record a composite-key membership row yields must match the tuple its own
+/// SQL writes, multi-part object and all, on both routes.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_composite_key_membership_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(COMPOSITE_KEY_MEMBERSHIP_SCHEMA)
+        .expect("failed to apply the composite-key membership schema");
+    conn.batch_execute(COMPOSITE_KEY_MEMBERSHIP_SEED)
+        .expect("failed to seed the composite-key membership schema");
+
+    let (classified, db, registry) = support::classify_sql(
+        COMPOSITE_KEY_MEMBERSHIP_SCHEMA,
+        Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
+    );
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let (pure, joined, records) = assert_descriptions_match_their_sql(
+        &outputs,
+        &mut conn,
+        &queries,
+        "composite-key membership",
+    );
+
+    assert_eq!(
+        joined, 0,
+        "both routes resolve from single rows, saw {joined} joined"
+    );
+    assert!(
+        pure >= 4,
+        "two memberships and two bridges resolve from rows, saw {pure} pure"
+    );
+    // Two share rows, three self-bridge rows, two member rows, three doc bridges.
+    assert!(
+        records >= 10,
+        "the seed must produce records on both sides, saw {records}"
+    );
+}
+
 /// A scope naming two roles over three rows stores five facts, not eight.
 ///
 /// The roles a policy admits are a fact about the policy, so they belong on the scope object.

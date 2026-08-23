@@ -959,26 +959,31 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::ExistsMembership {
             join_table,
-            fk_col,
+            fk_cols,
             user_col,
             parent_type,
             extra_predicates,
             gate,
         } => {
             let join_table_sql = quote_sql_identifier(join_table);
-            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
+            let fk_parts = quoted_key_parts(fk_cols);
             let user_col_sql = quote_sql_identifier(user_col.as_str());
             // The extra predicate joins a conjunction of NULL guards, so it is
             // parenthesised: a disjunction would otherwise break out of the AND.
-            let null_guards = format!("{fk_col_sql} IS NOT NULL AND {user_col_sql} IS NOT NULL");
-            let object_sql = typed_name_sql(parent_type, [fk_col_sql.as_str()]);
+            let null_guards = fk_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .chain([format!("{user_col_sql} IS NOT NULL")])
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            let object_sql = typed_name_sql(parent_type, fk_parts.iter().map(String::as_str));
             let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let null_guards = join_row_is_nameable(
                 &null_guards,
                 &object_sql,
                 Some(&subject_sql),
                 join_table,
-                core::slice::from_ref(fk_col),
+                fk_cols,
                 core::slice::from_ref(user_col),
                 names,
             );
@@ -1027,7 +1032,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
             };
             let group_by = if gate.aggregate {
-                format!("\nGROUP BY {fk_col_sql}, {user_col_sql}")
+                format!("\nGROUP BY {}, {user_col_sql}", fk_parts.join(", "))
             } else {
                 String::new()
             };
@@ -1283,33 +1288,43 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::ParentBridge {
             table,
-            fk_col,
+            fk_cols,
             parent_type,
             relation,
         } => {
-            let Some((object_cols, parent_ref_col)) = resolve_bridge_columns(table, fk_col, db)
+            let Some((object_cols, parent_ref_cols)) = resolve_bridge_columns(table, fk_cols, db)
             else {
+                let missing = fk_cols
+                    .iter()
+                    .find(|col| !table_has_column(db, table, col.as_str()))
+                    .or_else(|| fk_cols.first())?;
                 return Some(skipped_query(&SkippedTuples::BridgeColumnMissing {
                     table: table.clone(),
                     parent_type: parent_type.clone(),
-                    fk_col: fk_col.clone(),
+                    fk_col: missing.clone(),
                 }));
             };
             let table_sql = owner_table_reference(table, only_own_rows);
             let object_parts = quoted_key_parts(&object_cols);
-            let parent_ref_col_sql = quote_sql_identifier(parent_ref_col.as_str());
+            let parent_ref_parts = quoted_key_parts(&parent_ref_cols);
             let object_sql = typed_name_sql(owner_type, object_parts.iter().map(String::as_str));
-            let subject_sql = typed_name_sql(parent_type, [parent_ref_col_sql.as_str()]);
+            let subject_sql =
+                typed_name_sql(parent_type, parent_ref_parts.iter().map(String::as_str));
             let bridge_guards = join_row_is_nameable(
                 "",
                 &object_sql,
                 Some(&subject_sql),
                 table,
                 &object_cols,
-                core::slice::from_ref(&parent_ref_col),
+                &parent_ref_cols,
                 names,
             );
             let object_not_null = object_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .collect::<Vec<_>>()
+                .join("\nAND ");
+            let parent_not_null = parent_ref_parts
                 .iter()
                 .map(|part| format!("{part} IS NOT NULL"))
                 .collect::<Vec<_>>()
@@ -1322,7 +1337,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                      {subject_sql} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {object_not_null}\n\
-                     AND {parent_ref_col_sql} IS NOT NULL{bridge_guards};"
+                     AND {parent_not_null}{bridge_guards};"
                 ),
                 description: None,
                 condition: None,
@@ -1535,18 +1550,21 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
 }
 
 /// The columns naming the bridge's two ends: every column identifying a row of `table`,
-/// and the one whose value names the parent.
+/// and the ones whose values name the parent.
 ///
-/// The parent side stays a single column because a subject is named by one value, and it
-/// has to be a column of `table`, since the policy compares it against the membership
-/// row. A name the schema does not carry is a bridge nobody can write.
+/// The parent-side columns have to be columns of `table`, since the policy compares
+/// them against the membership row. A name the schema does not carry is a bridge
+/// nobody can write.
 pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     table: &str,
-    fk_column: &ColumnName,
+    fk_cols: &[ColumnName],
     db: &DB,
-) -> Option<(Vec<ColumnName>, ColumnName)> {
+) -> Option<(Vec<ColumnName>, Vec<ColumnName>)> {
     let object_cols = resolve_pk_columns(table, db)?;
-    table_has_column(db, table, fk_column.as_str()).then(|| (object_cols, fk_column.clone()))
+    fk_cols
+        .iter()
+        .all(|col| table_has_column(db, table, col.as_str()))
+        .then(|| (object_cols, fk_cols.to_vec()))
 }
 
 /// The `FROM` reference for a query minting this type's objects.
@@ -1713,28 +1731,28 @@ CREATE TABLE 日本(id uuid primary key);
         .expect("schema should parse");
 
         assert_eq!(
-            resolve_bridge_columns("missing", &ColumnName::from_stored("project_id"), &db),
+            resolve_bridge_columns("missing", &[ColumnName::from_stored("project_id")], &db),
             None
         );
         assert_eq!(
-            resolve_bridge_columns("docs", &ColumnName::from_stored("project_id"), &db),
+            resolve_bridge_columns("docs", &[ColumnName::from_stored("project_id")], &db),
             Some((
                 vec![ColumnName::from_stored("id")],
-                ColumnName::from_stored("project_id")
+                vec![ColumnName::from_stored("project_id")]
             ))
         );
         // A column the table does not carry is a bridge nobody writes, whatever the name
         // suggests about the parent.
         assert_eq!(
-            resolve_bridge_columns("projects", &ColumnName::from_stored("project_id"), &db),
+            resolve_bridge_columns("projects", &[ColumnName::from_stored("project_id")], &db),
             None
         );
         assert_eq!(
-            resolve_bridge_columns("status", &ColumnName::from_stored("status_id"), &db),
+            resolve_bridge_columns("status", &[ColumnName::from_stored("status_id")], &db),
             None
         );
         assert_eq!(
-            resolve_bridge_columns("categories", &ColumnName::from_stored("category_id"), &db),
+            resolve_bridge_columns("categories", &[ColumnName::from_stored("category_id")], &db),
             None
         );
         // Both names canonicalize to `resource`, which used to be enough to bridge one
@@ -1743,27 +1761,39 @@ CREATE TABLE 日本(id uuid primary key);
         assert_eq!(
             resolve_bridge_columns(
                 "\u{65e5}\u{672c}",
-                &ColumnName::from_stored("\u{4e2d}\u{6587}"),
+                &[ColumnName::from_stored("\u{4e2d}\u{6587}")],
                 &db
             ),
             None
         );
         assert_eq!(
-            resolve_bridge_columns("\u{65e5}\u{672c}", &ColumnName::from_stored("id"), &db),
+            resolve_bridge_columns("\u{65e5}\u{672c}", &[ColumnName::from_stored("id")], &db),
             Some((
                 vec![ColumnName::from_stored("id")],
-                ColumnName::from_stored("id")
+                vec![ColumnName::from_stored("id")]
             ))
         );
         assert_eq!(
-            resolve_bridge_columns("events", &ColumnName::from_stored("project_id"), &db),
+            resolve_bridge_columns("events", &[ColumnName::from_stored("project_id")], &db),
             Some((
                 vec![ColumnName::from_stored("event_uuid")],
-                ColumnName::from_stored("project_id")
+                vec![ColumnName::from_stored("project_id")]
             ))
         );
+        // One present and one absent column: the absent one closes the bridge.
         assert_eq!(
-            resolve_bridge_columns("links", &ColumnName::from_stored("project_id"), &db),
+            resolve_bridge_columns(
+                "docs",
+                &[
+                    ColumnName::from_stored("project_id"),
+                    ColumnName::from_stored("absent")
+                ],
+                &db
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_bridge_columns("links", &[ColumnName::from_stored("project_id")], &db),
             None
         );
     }

@@ -1629,8 +1629,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             (
                 PatternClass::P4ExistsMembership(ExistsMembership {
                     join_table: "t".into(),
-                    fk_column: ColumnName::from_stored("c"),
-                    outer_column: ColumnName::from_stored("o"),
+                    pairs: vec![MembershipJoinPair {
+                        join_column: ColumnName::from_stored("c"),
+                        outer_column: ColumnName::from_stored("o"),
+                    }],
                     user_column: ColumnName::from_stored("u"),
                     extra_predicates: ResidualPredicates::default(),
                 }),
@@ -1736,8 +1738,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table: "t".into(),
-                fk_column: ColumnName::from_stored("c"),
-                outer_column: ColumnName::from_stored("o"),
+                pairs: vec![MembershipJoinPair {
+                    join_column: ColumnName::from_stored("c"),
+                    outer_column: ColumnName::from_stored("o"),
+                }],
                 user_column: ColumnName::from_stored("u"),
                 extra_predicates: ResidualPredicates::default(),
             })
@@ -1789,8 +1793,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                     ClassifiedExpr {
                         pattern: PatternClass::P4ExistsMembership(ExistsMembership {
                             join_table: "t".into(),
-                            fk_column: ColumnName::from_stored("c"),
-                            outer_column: ColumnName::from_stored("o"),
+                            pairs: vec![MembershipJoinPair {
+                                join_column: ColumnName::from_stored("c"),
+                                outer_column: ColumnName::from_stored("o"),
+                            }],
                             user_column: ColumnName::from_stored("u"),
                             extra_predicates: ResidualPredicates::default(),
                         }),
