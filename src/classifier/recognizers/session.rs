@@ -352,16 +352,7 @@ fn setting_key_read_by(root: &Expr, registry: &FunctionRegistry) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    fn parse_expr(sql: &str) -> Expr {
-        Parser::new(&PostgreSqlDialect {})
-            .try_with_sql(sql)
-            .expect("tokenizes")
-            .parse_expr()
-            .expect("parses")
-    }
+    use crate::parser::expr::parse_expr_for_tests as parse_expr;
 
     fn registry_with(attributes: Vec<SessionAttribute>) -> FunctionRegistry {
         let mut registry = FunctionRegistry::new();

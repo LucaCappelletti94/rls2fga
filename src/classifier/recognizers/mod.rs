@@ -103,8 +103,7 @@ pub fn recognize_p2<DB: DatabaseLike>(
                     return None;
                 }
 
-                let role_names = extract_role_names_from_in_list(list, true);
-
+                let role_names = extract_role_names_from_in_list(list, true)?;
                 if !role_names.is_empty() {
                     return Some(ClassifiedExpr {
                         pattern: PatternClass::P2RoleNameInList(RoleNameInList {
@@ -258,7 +257,7 @@ fn recognize_role_accessor_comparison(
     } = expr
     {
         let func_name = extract_role_func_name(inner)?;
-        let role_names = extract_role_names_from_in_list(list, false);
+        let role_names = extract_role_names_from_in_list(list, false)?;
 
         if role_names.is_empty() {
             return None;
@@ -278,9 +277,14 @@ fn recognize_role_accessor_comparison(
     None
 }
 
-fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Vec<String> {
+/// Every element as a role literal, or `None` when any element is not one.
+///
+/// A non-literal element is a per-row grant the literals cannot stand in for, so
+/// keeping only the literals would translate a subset of the policy and report it
+/// as faithful.
+fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Option<Vec<String>> {
     list.iter()
-        .filter_map(|e| {
+        .map(|e| {
             if let Expr::Value(v) = e {
                 return match &v.value {
                     Value::SingleQuotedString(s) => Some(s.clone()),

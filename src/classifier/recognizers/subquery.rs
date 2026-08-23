@@ -1094,6 +1094,9 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         {
             return None;
         }
+        if predicate_subquery_reads_other_table(predicate, &source.table_name) {
+            return None;
+        }
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
         extras.push(residual_predicate(&normalized));
@@ -1387,17 +1390,12 @@ pub(super) fn selection_references_current_user(
         _ => is_current_user_expr(predicate, registry),
     })
 }
-pub(super) fn extract_table_name_from_table_factor(tf: &TableFactor) -> Option<String> {
-    if let TableFactor::Table { name, .. } = tf {
-        Some(name.to_string())
-    } else {
-        None
-    }
-}
-
-pub(super) fn extract_table_alias_from_table_factor(tf: &TableFactor) -> Option<String> {
-    if let TableFactor::Table { alias, .. } = tf {
-        alias.as_ref().map(|a| a.name.value.clone())
+pub(super) fn table_factor_parts(tf: &TableFactor) -> Option<(String, Option<String>)> {
+    if let TableFactor::Table { name, alias, .. } = tf {
+        Some((
+            name.to_string(),
+            alias.as_ref().map(|a| a.name.value.clone()),
+        ))
     } else {
         None
     }
@@ -1426,10 +1424,8 @@ fn relation_sources(select: &Select) -> Vec<RelationSource> {
 }
 
 fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource> {
-    Some(RelationSource {
-        table_name: extract_table_name_from_table_factor(tf)?,
-        alias: extract_table_alias_from_table_factor(tf),
-    })
+    let (table_name, alias) = table_factor_parts(tf)?;
+    Some(RelationSource { table_name, alias })
 }
 
 fn membership_sources_include_ambiguous_unresolvable_shape<DB: DatabaseLike>(
@@ -1789,6 +1785,11 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
                 return None;
             }
+            // A subquery in an extra predicate is evaluated as the caller by
+            // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
+            if predicate_subquery_reads_other_table(pred, join_table) {
+                return None;
+            }
             // Keep additional predicates for tuple filtering.
             // Strip join-table qualifiers at the AST level before rendering to SQL.
             // This handles double-quoted identifiers, dollar-quoted strings, and other
@@ -1986,6 +1987,39 @@ pub(super) fn predicate_references_other_table(
         join_alias,
         subquery_depth: 0,
     };
+    expr.visit(&mut checker).is_break()
+}
+
+/// True when a subquery inside `expr` reads anything but the join table.
+///
+/// `PostgreSQL` evaluates the predicate as the caller, filtering every table it
+/// reads by that caller's own policies, while the tuple query precomputes it from
+/// the loader's view. Only the join table is safe, since the loading query already
+/// reads it as the loader. A source that is not a plainly named table fails closed.
+pub(super) fn predicate_subquery_reads_other_table(expr: &Expr, join_table: &str) -> bool {
+    use core::ops::ControlFlow;
+    use sqlparser::ast::{TableFactor, Visit, Visitor};
+
+    struct SubqueryTableChecker<'a> {
+        join_table: &'a str,
+    }
+
+    impl Visitor for SubqueryTableChecker<'_> {
+        type Break = ();
+
+        fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
+            match factor {
+                TableFactor::Table { name, .. }
+                    if same_identifier(&name.to_string(), self.join_table) =>
+                {
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Break(()),
+            }
+        }
+    }
+
+    let mut checker = SubqueryTableChecker { join_table };
     expr.visit(&mut checker).is_break()
 }
 

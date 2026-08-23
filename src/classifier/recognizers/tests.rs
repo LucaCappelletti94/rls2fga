@@ -5,13 +5,7 @@ use sqlparser::ast::{SetExpr, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
-fn parse_expr(expr_sql: &str) -> Expr {
-    Parser::new(&PostgreSqlDialect {})
-        .try_with_sql(expr_sql)
-        .expect("expression should parse")
-        .parse_expr()
-        .expect("expression should parse")
-}
+use crate::parser::expr::parse_expr_for_tests as parse_expr;
 
 fn parse_select(sql: &str) -> Select {
     let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).expect("query should parse");
@@ -278,6 +272,36 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         recognize_p2(&not_matched, &db, &empty_registry).is_none(),
         "unregistered role function should not match P2"
+    );
+}
+
+/// A non-literal element of a role IN-list is a per-row grant the literals cannot
+/// stand in for: `IN ('viewer', owner_id)` admits a row whose threshold equals the
+/// row's own `owner_id`, and keeping only the literal would translate a subset of
+/// the policy and report it as faithful.
+#[test]
+fn p2_in_list_refuses_a_mixed_literal_and_non_literal_list() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+
+    let mixed_threshold =
+        parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', owner_id)");
+    assert!(
+        recognize_p2(&mixed_threshold, &db, &registry).is_none(),
+        "a non-literal element in a threshold IN-list fails closed"
+    );
+
+    let mut accessor_registry = FunctionRegistry::new();
+    accessor_registry.register_if_absent(
+        "role",
+        &FunctionSemantic::RoleAccessor {
+            returns: "text".to_string(),
+        },
+    );
+    let mixed_accessor = parse_expr("auth.role() IN ('admin', owner_id)");
+    assert!(
+        recognize_p2(&mixed_accessor, &db, &accessor_registry).is_none(),
+        "a non-literal element in a role-accessor IN-list fails closed"
     );
 }
 
@@ -825,6 +849,133 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 }
 
+/// An extra predicate whose subquery reads a table other than the membership table
+/// would be precomputed from the loader's view of that table, while `PostgreSQL`
+/// evaluates the policy as the caller and filters that table by its own RLS. A
+/// single-table tuple query cannot carry the caller's view of a second table.
+#[test]
+fn recognize_p4_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = current_user
+                 AND role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "an extra predicate whose subquery reads a third table fails closed for P4"
+    );
+}
+
+/// The holder shape carries the same extras, so a third-table subquery in an
+/// uncorrelated membership fails closed there too.
+#[test]
+fn uncorrelated_membership_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE user_id = current_user
+                 AND role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "an uncorrelated membership whose extra predicate reads a third table fails closed"
+    );
+}
+
+/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite, so the
+/// third-table subquery fails closed there too.
+#[test]
+fn recognize_p4_in_subquery_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = registry_with_role_level();
+
+    let in_expr = parse_expr(
+        "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+                 AND dm.role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4_in_subquery(&in_expr, &db, &registry, "docs", PolicyCommand::Select).is_none(),
+        "the IN spelling of a third-table-subquery extra predicate fails closed"
+    );
+}
+
+/// A subquery that reads the membership table itself adds no table the tuple query
+/// does not already read as the loader, so it stays an extra predicate.
+#[test]
+fn recognize_p4_allows_an_extra_predicate_subquery_reading_the_join_table() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = current_user
+                 AND role_name = ANY (SELECT role_name FROM doc_members)
+             )",
+    );
+
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    assert!(
+        matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
+                if extra_predicates
+                    .sql()
+                    .is_some_and(|sql| sql.to_ascii_lowercase().contains("select role_name from doc_members"))
+        ),
+        "a subquery over the join table stays an extra predicate, got: {:?}",
+        classified.pattern
+    );
+}
+
 #[test]
 fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
     let db = db_with_docs_and_members();
@@ -1170,18 +1321,15 @@ fn membership_column_extraction_requires_explicit_user_predicate() {
 fn table_extractors_cover_non_table_and_alias_paths() {
     let table_select = parse_select("SELECT dm.doc_id AS projected FROM doc_members dm");
     let from = &table_select.from[0];
-    let table_name =
-        extract_table_name_from_table_factor(&from.relation).expect("table factor should resolve");
+    let (table_name, alias) =
+        table_factor_parts(&from.relation).expect("table factor should resolve");
     assert_eq!(table_name, "doc_members");
-    assert_eq!(
-        extract_table_alias_from_table_factor(&from.relation).as_deref(),
-        Some("dm")
-    );
+    assert_eq!(alias.as_deref(), Some("dm"));
 
     let derived_select = parse_select("SELECT x.id FROM (SELECT 1 AS id) x WHERE x.id = 1");
     let derived_from = &derived_select.from[0];
     assert!(
-        extract_table_name_from_table_factor(&derived_from.relation).is_none(),
+        table_factor_parts(&derived_from.relation).is_none(),
         "derived table should not resolve to a table name"
     );
 }
@@ -2184,8 +2332,8 @@ fn extract_table_alias_from_table_factor_returns_none_for_derived() {
     let from = &select.from[0];
     // The relation is a Derived subquery, not a Table.
     assert!(
-        extract_table_alias_from_table_factor(&from.relation).is_none(),
-        "Derived subquery should return None from extract_table_alias_from_table_factor"
+        table_factor_parts(&from.relation).is_none(),
+        "Derived subquery should return None from table_factor_parts"
     );
 }
 

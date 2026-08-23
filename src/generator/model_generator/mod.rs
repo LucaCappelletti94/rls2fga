@@ -112,6 +112,40 @@ pub(crate) enum DirectSubject {
     },
 }
 
+impl DirectSubject {
+    /// Structural identity of one subject, stable against `Debug` formatting.
+    fn identity_key(&self) -> String {
+        match self {
+            Self::Type(name) => format!("t:{name}"),
+            Self::Wildcard(name) => format!("w:{name}"),
+            Self::ConditionalWildcard {
+                type_name,
+                condition,
+            } => format!("wc:{type_name}:{condition}"),
+            Self::ConditionalType {
+                type_name,
+                condition,
+            } => format!("tc:{type_name}:{condition}"),
+        }
+    }
+
+    /// The DSL spelling inside a type restriction list.
+    pub(super) fn dsl_text(&self) -> String {
+        match self {
+            Self::Type(name) => name.clone(),
+            Self::Wildcard(name) => format!("{name}:*"),
+            Self::ConditionalWildcard {
+                type_name,
+                condition,
+            } => format!("{type_name}:* with {condition}"),
+            Self::ConditionalType {
+                type_name,
+                condition,
+            } => format!("{type_name} with {condition}"),
+        }
+    }
+}
+
 /// A condition the model declares and a relation reference names.
 ///
 /// One `CEL` expression over parameters that arrive from two places: the tuple
@@ -174,18 +208,7 @@ impl RowParameter {
 fn subject_key(subjects: &[DirectSubject]) -> String {
     subjects
         .iter()
-        .map(|subject| match subject {
-            DirectSubject::Type(name) => format!("t:{name}"),
-            DirectSubject::Wildcard(name) => format!("w:{name}"),
-            DirectSubject::ConditionalWildcard {
-                type_name,
-                condition,
-            } => format!("wc:{type_name}:{condition}"),
-            DirectSubject::ConditionalType {
-                type_name,
-                condition,
-            } => format!("tc:{type_name}:{condition}"),
-        })
+        .map(DirectSubject::identity_key)
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -351,25 +374,20 @@ impl TypePlan {
     ) -> RelationName {
         let base = clamp_relation_name(relation.into());
         let key = subject_key(&subjects);
-        let mut relation = RelationName::from_resolved(base.clone());
         // A name already held must yield rather than emit a second `define` or inherit
         // subjects it does not accept. The yielded name can be held too, since it is derived
         // from the value while whatever holds it may come from the schema, so keep looking:
         // the two maps are separate, and inserting blind would declare one name twice.
-        for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
-            let held = self.computed_relations.contains_key(&relation)
+        let relation = yield_until_free(&base, &key, |relation| {
+            self.computed_relations.contains_key(relation)
                 || self
                     .direct_relations
-                    .get(&relation)
+                    .get(relation)
                     .is_some_and(|held| *held != subjects)
-                || reserved_relation_subjects(&relation, &self.well_known)
+                || reserved_relation_subjects(relation, &self.well_known)
                     .is_some_and(|held| held != subjects)
-                || generator_defines(&relation);
-            if !held {
-                break;
-            }
-            relation = yielded_relation_name(&base, &key, attempt);
-        }
+                || generator_defines(relation)
+        });
         self.direct_relations
             .entry(relation.clone())
             .or_insert(subjects);
@@ -390,20 +408,15 @@ impl TypePlan {
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> RelationName {
         let base = clamp_relation_name(relation.into());
         let key = userset_key(&expr);
-        let mut relation = RelationName::from_resolved(base.clone());
         // One name, one rule, or a caller deriving the name reads the wrong definition.
-        for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
-            let held = self.direct_relations.contains_key(&relation)
+        let relation = yield_until_free(&base, &key, |relation| {
+            self.direct_relations.contains_key(relation)
                 || self
                     .computed_relations
-                    .get(&relation)
+                    .get(relation)
                     .is_some_and(|held| *held != expr)
-                || generator_defines(&relation);
-            if !held {
-                break;
-            }
-            relation = yielded_relation_name(&base, &key, attempt);
-        }
+                || generator_defines(relation)
+        });
         self.computed_relations
             .entry(relation.clone())
             .or_insert(expr);
@@ -429,6 +442,18 @@ impl TypePlan {
     fn add_source(&mut self, source: TupleSource) {
         self.table_tuple_sources.push(source);
     }
+}
+
+/// The first name `held` does not refuse, renaming from `base` under `key` until free.
+fn yield_until_free(base: &str, key: &str, held: impl Fn(&RelationName) -> bool) -> RelationName {
+    let mut relation = RelationName::from_resolved(base.to_string());
+    for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
+        if !held(&relation) {
+            break;
+        }
+        relation = yielded_relation_name(base, key, attempt);
+    }
+    relation
 }
 
 /// Choices a deployment makes about the emitted model.
@@ -1209,16 +1234,14 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                 }
             });
             // An update that names no row reads nothing, so `PostgreSQL` applies the
-            // UPDATE policies to it and not the SELECT policies. Check this relation
-            // only for `UPDATE t SET c = ...` with no WHERE: pick it for a statement
-            // that does name rows and the grant is wider than the database's.
-            let blanket = if using_expr == check_expr {
-                using_expr.clone()
-            } else {
-                UsersetExpr::Intersection(vec![using_expr.clone(), check_expr.clone()])
-            };
+            // UPDATE policies to it and not the SELECT policies. This relation is the
+            // USING half alone: it judges the row as it is, and where the clauses
+            // differ [`action_relations`](crate::generator::action_relations) pairs it
+            // with `can_update_check` against the result. Fusing the check in would
+            // answer the check against the existing row, which grants a change the
+            // clause was written to refuse.
             self.plan
-                .set_computed(can_update_without_reading_relation(), blanket);
+                .set_computed(can_update_without_reading_relation(), using_expr.clone());
             if using_expr == check_expr {
                 self.plan
                     .set_computed(can_update_relation(), requires_read_access(using_expr));

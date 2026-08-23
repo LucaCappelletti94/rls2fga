@@ -61,19 +61,25 @@ pub(crate) fn rule_implies(
             if walked != tupleset {
                 return false;
             }
-            let targets: Vec<&TypePlan> = plan
-                .direct_relations
-                .get(tupleset)
-                .into_iter()
-                .flatten()
-                .filter_map(|subject| match subject {
-                    DirectSubject::Type(name) => by_name.get(name.as_str()).copied(),
-                    DirectSubject::Wildcard(_)
-                    | DirectSubject::ConditionalWildcard { .. }
-                    | DirectSubject::ConditionalType { .. } => None,
-                })
-                .collect();
-            // A pointer this plan cannot resolve is no evidence, so the gate stays.
+            // A condition restricts which tuples exist, not which type they name, so a
+            // conditional subject resolves like a plain one. A wildcard cannot be
+            // walked, so it is no evidence and the gate stays.
+            let subjects = plan.direct_relations.get(tupleset).into_iter().flatten();
+            let mut targets: Vec<&TypePlan> = Vec::new();
+            for subject in subjects {
+                match subject {
+                    DirectSubject::Type(name)
+                    | DirectSubject::ConditionalType {
+                        type_name: name, ..
+                    } => match by_name.get(name.as_str()) {
+                        Some(target) => targets.push(target),
+                        None => return false,
+                    },
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => {
+                        return false
+                    }
+                }
+            }
             !targets.is_empty()
                 && targets.iter().all(|target| {
                     rule_implies(
@@ -204,10 +210,11 @@ pub(crate) fn repoint_inlined_aliases(
                 .into_iter()
                 .flatten()
                 .filter_map(|subject| match subject {
-                    DirectSubject::Type(name) => aliases.get(name.as_str()),
-                    DirectSubject::Wildcard(_)
-                    | DirectSubject::ConditionalWildcard { .. }
-                    | DirectSubject::ConditionalType { .. } => None,
+                    DirectSubject::Type(name)
+                    | DirectSubject::ConditionalType {
+                        type_name: name, ..
+                    } => aliases.get(name.as_str()),
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
                 })
                 .find_map(|dropped| dropped.get(computed));
             if let Some(replacement) = replacement {
@@ -329,10 +336,11 @@ pub(crate) fn reach_userset(
                 .into_iter()
                 .flatten()
                 .filter_map(|subject| match subject {
-                    DirectSubject::Type(name) => by_name.get(name.as_str()),
-                    DirectSubject::Wildcard(_)
-                    | DirectSubject::ConditionalWildcard { .. }
-                    | DirectSubject::ConditionalType { .. } => None,
+                    DirectSubject::Type(name)
+                    | DirectSubject::ConditionalType {
+                        type_name: name, ..
+                    } => by_name.get(name.as_str()),
+                    DirectSubject::Wildcard(_) | DirectSubject::ConditionalWildcard { .. } => None,
                 })
             {
                 if !reached.insert((target.type_name.to_string(), computed.clone())) {

@@ -119,19 +119,25 @@ pub fn reads_relation(expr: &Expr, mut matches: impl FnMut(&str) -> bool) -> boo
 }
 
 #[cfg(test)]
+use sqlparser::dialect::PostgreSqlDialect;
+#[cfg(test)]
+use sqlparser::parser::Parser;
+
+/// Parse one SQL expression for tests.
+#[cfg(test)]
+pub(crate) fn parse_expr_for_tests(sql: &str) -> Expr {
+    Parser::new(&PostgreSqlDialect {})
+        .try_with_sql(sql)
+        .expect("expression should parse")
+        .parse_expr()
+        .expect("expression should parse")
+}
+
+#[cfg(test)]
 mod tests {
+    use super::parse_expr_for_tests as parse_expr;
     use super::*;
     use sqlparser::ast::{Expr, Ident};
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    fn parse_expr(sql: &str) -> Expr {
-        Parser::new(&PostgreSqlDialect {})
-            .try_with_sql(sql)
-            .unwrap()
-            .parse_expr()
-            .unwrap()
-    }
 
     #[test]
     fn extract_column_name_handles_simple_and_qualified_identifiers() {

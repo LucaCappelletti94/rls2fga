@@ -66,16 +66,6 @@ pub enum ActionAnswer {
     /// model refusing is not the database refusing: a policy the classifier could not read
     /// falls closed to this and says so through a `BelowThreshold` note.
     Denied,
-    /// One relation fuses the two versions, so no single row version answers it.
-    ///
-    /// `can_update_without_reading` is `USING and WITH CHECK` in one relation, and the
-    /// `USING` half exists nowhere else without the read gate a blind update does not
-    /// need. Asking it is answering the check clause against the row as it is, which
-    /// grants a change the clause was written to refuse.
-    NotSeparable {
-        /// The relation the model answers this action with.
-        relation: RelationName,
-    },
 }
 
 /// A statement shape the model answers for.
@@ -184,15 +174,19 @@ fn update_judgements(plan: &TypePlan) -> Vec<ActionJudgement> {
     }
 }
 
-/// A blind update applies both clauses without the read gate, which the model spells as
-/// one fused relation wherever the clauses differ.
+/// A blind update applies both clauses without the read gate. The unread relation is
+/// the `USING` half, so where the clauses differ the check half is judged beside it
+/// against the result.
 fn blind_update_answer(plan: &TypePlan) -> ActionAnswer {
     let relation = can_update_without_reading_relation();
     if !plan.computed_relations.contains_key(&relation) {
         return ActionAnswer::Judged(update_judgements(plan));
     }
     if clauses_answered_apart(plan) {
-        return ActionAnswer::NotSeparable { relation };
+        return ActionAnswer::Judged(vec![
+            judge(relation, RowVersion::Existing),
+            judge(can_update_check_relation(), RowVersion::Resulting),
+        ]);
     }
     ActionAnswer::Judged(vec![
         judge(relation.clone(), RowVersion::Existing),
@@ -257,7 +251,6 @@ fn answer_grants_nobody(plan: &TypePlan, answer: &ActionAnswer) -> bool {
         ActionAnswer::Judged(judges) => judges
             .iter()
             .any(|judge| relation_grants_nothing(plan, &judge.relation)),
-        ActionAnswer::NotSeparable { relation } => relation_grants_nothing(plan, relation),
         _ => false,
     }
 }

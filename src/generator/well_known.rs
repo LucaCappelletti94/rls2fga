@@ -168,9 +168,9 @@ pub fn can_update_check_relation() -> RelationName {
     RelationName::from_resolved("can_update_check")
 }
 
-/// Updating without naming a row, as `UPDATE t SET c = 1` does. `PostgreSQL` applies
-/// the `UPDATE` policies to it and not the `SELECT` policies, since the statement reads
-/// no row to decide which to change.
+/// The `UPDATE` `USING` half without the read gate, which is what filters an update
+/// that names no row, as `UPDATE t SET c = 1` does. Where the clauses differ the check
+/// half is judged beside it against the result, never fused into it.
 #[must_use]
 pub fn can_update_without_reading_relation() -> RelationName {
     RelationName::from_resolved("can_update_without_reading")

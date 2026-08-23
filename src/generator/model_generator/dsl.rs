@@ -60,18 +60,7 @@ fn dsl_parameter_type(kind: &ConditionParameter) -> String {
 fn format_subjects(subjects: &[DirectSubject]) -> String {
     let parts = subjects
         .iter()
-        .map(|s| match s {
-            DirectSubject::Type(t) => t.clone(),
-            DirectSubject::Wildcard(t) => format!("{t}:*"),
-            DirectSubject::ConditionalWildcard {
-                type_name,
-                condition,
-            } => format!("{type_name}:* with {condition}"),
-            DirectSubject::ConditionalType {
-                type_name,
-                condition,
-            } => format!("{type_name} with {condition}"),
-        })
+        .map(DirectSubject::dsl_text)
         .collect::<Vec<_>>();
     format!("[{}]", parts.join(", "))
 }
