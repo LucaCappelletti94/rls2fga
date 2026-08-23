@@ -98,7 +98,9 @@ struct Rendered {
 fn translate(sql: &str, level: ConfidenceLevel) -> Result<Rendered> {
     let db = parse_schema(sql).context("parsing the SQL schema")?;
     let translator = TranslatorBuilder::new().with_min_confidence(level).build();
-    let translation = translator.translate(&db);
+    let translation = translator
+        .translate(&db)
+        .context("planning the authorization model")?;
     let diverging: Vec<TranslationNote> = translation
         .notes()
         .iter()
