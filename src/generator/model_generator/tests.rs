@@ -1,7 +1,6 @@
 use super::actions::{using_targets, with_check_targets, RoleLimitedRule};
 use super::dsl::*;
 use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaffold};
-use super::role_threshold::*;
 use super::*;
 use crate::generator::well_known::{WellKnownTypes, TEAM_TYPE, USER_TYPE};
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
