@@ -84,6 +84,17 @@ CREATE POLICY notes_u ON notes FOR UPDATE
   WITH CHECK (false);
 ";
 
+/// Two clauses that both classify but differ, with a read policy beside them, so the
+/// `USING` half must exist somewhere without the read gate a blind update does not need.
+const DIFFERING_CLAUSES: &str = "
+CREATE TABLE notes(id INTEGER PRIMARY KEY, owner TEXT, editor TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_s ON notes FOR SELECT USING (owner = current_setting('app.user_id', true));
+CREATE POLICY notes_u ON notes FOR UPDATE
+  USING (owner = current_setting('app.user_id', true))
+  WITH CHECK (editor = current_setting('app.user_id', true));
+";
+
 /// An `UPDATE` policy alone: reads are denied, so every statement that names a row is
 /// refused, while a blanket `UPDATE` reads nothing and still grants.
 const BLANKET_UPDATE_ONLY: &str = "
@@ -101,7 +112,7 @@ ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY notes_r ON notes AS RESTRICTIVE USING (owner = current_setting('app.user_id', true));
 ";
 
-const EVERY_SCHEMA: [(&str, &str); 9] = [
+const EVERY_SCHEMA: [(&str, &str); 10] = [
     ("one condition", ONE_CONDITION),
     ("two conditions", TWO_CONDITIONS),
     ("reads only", READS_ONLY),
@@ -111,6 +122,7 @@ const EVERY_SCHEMA: [(&str, &str); 9] = [
     ("check denies the result", CHECK_DENIES_THE_RESULT),
     ("blanket update only", BLANKET_UPDATE_ONLY),
     ("restrictive only", RESTRICTIVE_ONLY),
+    ("differing clauses", DIFFERING_CLAUSES),
 ];
 
 /// Every statement the report answers for, read off the report rather than restated.
@@ -242,7 +254,6 @@ fn named_relations(entry: &ActionRelations) -> Vec<String> {
             .iter()
             .map(|judge| judge.relation.as_str().to_string())
             .collect(),
-        ActionAnswer::NotSeparable { relation } => vec![relation.as_str().to_string()],
         _ => Vec::new(),
     }
 }
@@ -423,18 +434,46 @@ fn a_blind_update_of_one_condition_names_its_relation_for_both_versions() {
     );
 }
 
-/// The fused relation is `USING and WITH CHECK` in one, and nothing carries the
-/// `USING` half without the read gate a blind update does not need.
+/// A blind update applies `USING` to the row as it is and `WITH CHECK` to the result,
+/// so where the clauses differ each half is judged against its own row version, and the
+/// unread relation carries the `USING` half alone.
 #[test]
-fn a_blind_update_of_two_clauses_has_no_single_version_answer() {
-    let entries = report(TWO_CONDITIONS);
-    let entry = entry(&entries, "notes", ActionStatement::UpdateWithoutWhere);
-    match &entry.answer {
-        ActionAnswer::NotSeparable { relation } => {
-            assert_eq!(relation.as_str(), "can_update_without_reading");
-        }
-        other => panic!("a fused relation cannot be judged per version, got {other:?}"),
-    }
+fn a_blind_update_of_two_clauses_judges_each_clause_against_its_row_version() {
+    assert_eq!(
+        judges(entry(
+            &report(TWO_CONDITIONS),
+            "notes",
+            ActionStatement::UpdateWithoutWhere
+        )),
+        judged(&[
+            ("can_update_without_reading", RowVersion::Existing),
+            ("can_update_check", RowVersion::Resulting),
+        ])
+    );
+}
+
+/// The unread relation is the `USING` half and nothing else: fusing the check into it
+/// answers the check against the row as it is, which grants a change the clause was
+/// written to refuse.
+#[test]
+fn the_unread_update_relation_carries_only_the_using_half() {
+    let model = dsl(DIFFERING_CLAUSES);
+    assert_eq!(
+        relation_definition(&model, "notes", "can_update_without_reading").as_deref(),
+        Some("owner"),
+        "the check half must not be answered against the existing row:\n{model}"
+    );
+    assert_eq!(
+        judges(entry(
+            &report(DIFFERING_CLAUSES),
+            "notes",
+            ActionStatement::UpdateWithoutWhere
+        )),
+        judged(&[
+            ("can_update_without_reading", RowVersion::Existing),
+            ("can_update_check", RowVersion::Resulting),
+        ])
+    );
 }
 
 /// So a consumer learns the answer is no, rather than being handed a relation to ask
@@ -635,16 +674,19 @@ fn a_locking_read_the_update_policies_refuse_is_reported_refused() {
     );
 }
 
-/// One relation fuses the two row versions, so a consumer cannot ask it, but a fusion
-/// that grants nobody needs no asking.
+/// The check half admits no result, so the blind update is refused through the pair
+/// while the unread relation keeps carrying the `USING` half it answers for.
 #[test]
-fn a_fused_relation_granting_nobody_is_refused_rather_than_unanswerable() {
+fn a_check_granting_nobody_refuses_the_blind_update_without_narrowing_the_using_half() {
     let model = dsl(CHECK_DENIES_THE_RESULT);
-    let fused = relation_definition(&model, "notes", "can_update_without_reading")
-        .expect("the two clauses differ, so the model fuses them");
     assert!(
-        relation_denies(&model, "notes", "can_update_without_reading"),
-        "one half of the fusion admits nobody, so the fusion grants nobody: {fused}"
+        !relation_denies(&model, "notes", "can_update_without_reading"),
+        "the USING half still grants, and folding the check into it would answer the \
+         check against the row as it is:\n{model}"
+    );
+    assert!(
+        relation_denies(&model, "notes", "can_update_check"),
+        "the check half is where nobody passes:\n{model}"
     );
     let entries = report(CHECK_DENIES_THE_RESULT);
     assert_eq!(

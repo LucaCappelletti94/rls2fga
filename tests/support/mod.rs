@@ -31,14 +31,12 @@ pub(crate) fn scalar_text(value: &serde_json::Value) -> Option<Cow<'_, str>> {
 
 fn parse_bytea(text: &str) -> Option<Vec<u8>> {
     let hex = text.strip_prefix("\\x")?;
-    let mut chunks = hex.as_bytes().chunks_exact(2);
-    let mut out = Vec::with_capacity(hex.len() / 2);
-    for pair in &mut chunks {
-        let high = hex_nibble(pair[0])?;
-        let low = hex_nibble(pair[1])?;
-        out.push((high << 4) | low);
+    let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+    let mut out = Vec::with_capacity(pairs.len());
+    for [high, low] in pairs {
+        out.push((hex_nibble(*high)? << 4) | hex_nibble(*low)?);
     }
-    chunks.remainder().is_empty().then_some(out)
+    remainder.is_empty().then_some(out)
 }
 
 fn hex_nibble(byte: u8) -> Option<u8> {

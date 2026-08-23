@@ -656,8 +656,9 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
     assert!(
-        matches!(&c.pattern, PatternClass::P4ExistsMembership(ExistsMembership { fk_column, outer_column, .. })
-            if fk_column == "doc_id" && outer_column == "id"),
+        matches!(&c.pattern, PatternClass::P4ExistsMembership(ExistsMembership { pairs, .. })
+            if matches!(pairs.as_slice(), [pair]
+                if pair.join_column == "doc_id" && pair.outer_column == "id")),
         "the guarded side of the correlation is docs.id, got: {:?}",
         c.pattern
     );

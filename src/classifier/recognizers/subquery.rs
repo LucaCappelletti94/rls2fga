@@ -863,8 +863,7 @@ fn classify_membership_select<DB: DatabaseLike>(
             join_table,
             columns:
                 MembershipColumns {
-                    fk_column,
-                    outer_column,
+                    pairs,
                     user_column,
                     member_match: MemberMatch::Caller,
                     extra_predicates,
@@ -872,8 +871,7 @@ fn classify_membership_select<DB: DatabaseLike>(
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
-                fk_column,
-                outer_column,
+                pairs,
                 user_column,
                 extra_predicates,
             }),
@@ -883,24 +881,30 @@ fn classify_membership_select<DB: DatabaseLike>(
             join_table,
             columns:
                 MembershipColumns {
-                    fk_column,
-                    outer_column,
+                    pairs,
                     user_column,
                     member_match: MemberMatch::InCallerSet { source, separator },
                     extra_predicates,
                 },
-        } => Some(ClassifiedExpr {
-            pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
-                join_table,
-                fk_column,
-                outer_column,
-                member_column: user_column,
-                separator,
-                source,
-                extra_predicates,
-            }),
-            confidence: ConfidenceLevel::A,
-        }),
+        } => {
+            // The set gate hangs off one bridge column, so a caller-set membership
+            // joined on several columns falls closed.
+            let [pair] = pairs.as_slice() else {
+                return None;
+            };
+            Some(ClassifiedExpr {
+                pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+                    join_table,
+                    fk_column: pair.join_column.clone(),
+                    outer_column: pair.outer_column.clone(),
+                    member_column: user_column,
+                    separator,
+                    source,
+                    extra_predicates,
+                }),
+                confidence: ConfidenceLevel::A,
+            })
+        }
         MembershipSelectAnalysis::Uncorrelated {
             member_table,
             user_column,
@@ -918,6 +922,7 @@ fn classify_membership_select<DB: DatabaseLike>(
         | MembershipSelectAnalysis::JoinsAnotherTable { .. }
         | MembershipSelectAnalysis::ScansEntityByOwnKey { .. }
         | MembershipSelectAnalysis::RescansGuardedTable
+        | MembershipSelectAnalysis::UnkeyedPairing { .. }
         | MembershipSelectAnalysis::NoMatch => None,
     }
 }
@@ -945,6 +950,11 @@ enum MembershipSelectAnalysis {
         member_table: String,
         user_column: ColumnName,
         extra_predicates: ResidualPredicates,
+    },
+    /// The equalities pair several columns, and the pairing names no single parent
+    /// object per membership row.
+    UnkeyedPairing {
+        reason: String,
     },
     /// The subquery scans the guarded table itself, which `PostgreSQL` refuses to plan:
     /// reading it re-enters the policy being evaluated. Verified on `PostgreSQL` 18, which
@@ -991,12 +1001,19 @@ fn analyze_membership_select<DB: DatabaseLike>(
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
     match matches.pop() {
-        Some((join_table, columns)) => {
+        Some((join_table, mut columns)) => {
+            columns.pairs =
+                match resolve_membership_pairing(columns.pairs, &join_table, outer_table, db) {
+                    Ok((pairs, _)) => pairs,
+                    Err(reason) => return MembershipSelectAnalysis::UnkeyedPairing { reason },
+                };
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
-            if scans_root_entity_by_its_key(db, &join_table, columns.fk_column.as_str()) {
-                return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
+            if let [pair] = columns.pairs.as_slice() {
+                if scans_root_entity_by_its_key(db, &join_table, pair.join_column.as_str()) {
+                    return MembershipSelectAnalysis::ScansEntityByOwnKey { join_table };
+                }
             }
             // A third table in the subquery carries conditions that no single
             // membership relation can express, and keeping only the matching side
@@ -1094,6 +1111,9 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         {
             return None;
         }
+        if predicate_subquery_reads_other_table(predicate, &source.table_name) {
+            return None;
+        }
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
         extras.push(residual_predicate(&normalized));
@@ -1104,6 +1124,194 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         user_column: user_column?,
         extra_predicates: ResidualPredicates::new(extras),
     })
+}
+
+/// How an accepted membership pairing names its parent.
+pub(crate) enum MembershipPairing {
+    /// One pair, the plain shape: the parent is decided from the single column.
+    Single,
+    /// The pairs are the host columns of one declared foreign key onto this
+    /// table's full primary key.
+    ForeignKey {
+        /// The referenced table, as the schema spells it.
+        parent_table: String,
+    },
+    /// The outer columns are the guarded table's own full primary key, so the
+    /// parent is the guarded row itself.
+    SelfKeyed,
+}
+
+/// The pairs ordered by the key that names the parent object, with the route that
+/// accepted them, or the refusal reason.
+///
+/// One pair is the plain shape and passes untouched. Several pairs name one parent
+/// object per membership row exactly when they are the host columns of one declared
+/// foreign key onto a table's full primary key, or a bijection onto the guarded
+/// table's own primary key. The one resolver for classification and emission, so an
+/// oracle-supplied pattern is validated by the same rules the recognizer applies.
+pub(crate) fn resolve_membership_pairing<DB: DatabaseLike>(
+    pairs: Vec<MembershipJoinPair>,
+    join_table: &str,
+    outer_table: &str,
+    db: &DB,
+) -> Result<(Vec<MembershipJoinPair>, MembershipPairing), String> {
+    if pairs.is_empty() {
+        return Err("the membership subquery correlates no column pair".to_string());
+    }
+    if pairs.len() == 1 {
+        return Ok((pairs, MembershipPairing::Single));
+    }
+    if let Some(column) = first_duplicate_pair_column(&pairs) {
+        return Err(format!(
+            "the membership equalities pair '{column}' twice, which is not a key pairing"
+        ));
+    }
+    match composite_fk_pair_order(&pairs, join_table, db) {
+        FkPairing::One {
+            ordered,
+            parent_table,
+        } => return Ok((ordered, MembershipPairing::ForeignKey { parent_table })),
+        FkPairing::Several => {
+            return Err(format!(
+                "two foreign keys of '{join_table}' cover the joined columns, so the \
+                 parent they name is ambiguous"
+            ))
+        }
+        FkPairing::None => {}
+    }
+    if let Some(ordered) = self_key_pair_order(&pairs, outer_table, db) {
+        return Ok((ordered, MembershipPairing::SelfKeyed));
+    }
+    Err(format!(
+        "the {} membership equalities match neither a declared foreign key of \
+         '{join_table}' nor the primary key of '{outer_table}', so no single parent \
+         object is named",
+        pairs.len()
+    ))
+}
+
+/// A column either side of the pairing names twice, if any.
+fn first_duplicate_pair_column(pairs: &[MembershipJoinPair]) -> Option<&ColumnName> {
+    let mut join_seen = BTreeSet::new();
+    let mut outer_seen = BTreeSet::new();
+    for pair in pairs {
+        if !join_seen.insert(pair.join_column.as_str()) {
+            return Some(&pair.join_column);
+        }
+        if !outer_seen.insert(pair.outer_column.as_str()) {
+            return Some(&pair.outer_column);
+        }
+    }
+    None
+}
+
+/// How the declared foreign keys of the join table cover a pairing.
+enum FkPairing {
+    /// Exactly one covers it, and the pairs come back in its referenced key's order.
+    One {
+        ordered: Vec<MembershipJoinPair>,
+        parent_table: String,
+    },
+    /// More than one covers it, so the parent is ambiguous.
+    Several,
+    /// None covers it.
+    None,
+}
+
+/// The pairs reordered by the primary key of the table one declared foreign key
+/// references, when the pairs' join columns are exactly that key's host columns.
+///
+/// The referenced columns must be the referenced table's full primary key, which is
+/// how the parent's own rows name its objects, so the order threads through to one
+/// spelling per object. Hosts and referenced columns pair positionally.
+fn composite_fk_pair_order<DB: DatabaseLike>(
+    pairs: &[MembershipJoinPair],
+    join_table: &str,
+    db: &DB,
+) -> FkPairing {
+    let Some(table) = lookup_table(db, join_table) else {
+        return FkPairing::None;
+    };
+    let join_set: BTreeSet<&str> = pairs.iter().map(|pair| pair.join_column.as_str()).collect();
+    let mut matched: Option<(Vec<MembershipJoinPair>, String)> = None;
+    for fk in table.foreign_keys(db).into_iter().flatten() {
+        let Ok(hosts) = fk.host_columns(db) else {
+            continue;
+        };
+        let hosts: Vec<String> = hosts.map(|c| c.stored_column_name().into_owned()).collect();
+        if hosts.len() != pairs.len()
+            || hosts.iter().map(String::as_str).collect::<BTreeSet<_>>() != join_set
+        {
+            continue;
+        }
+        let (Ok(referenced_table), Ok(referenced)) =
+            (fk.referenced_table(db), fk.referenced_columns(db))
+        else {
+            continue;
+        };
+        let referenced: Vec<String> = referenced
+            .map(|c| c.stored_column_name().into_owned())
+            .collect();
+        let Ok(pk) = referenced_table.primary_key_columns(db) else {
+            continue;
+        };
+        let pk: Vec<String> = pk.map(|c| c.stored_column_name().into_owned()).collect();
+        if pk.is_empty()
+            || pk.len() != referenced.len()
+            || pk.iter().collect::<BTreeSet<_>>() != referenced.iter().collect::<BTreeSet<_>>()
+        {
+            continue;
+        }
+        let ordered: Option<Vec<MembershipJoinPair>> = pk
+            .iter()
+            .map(|pk_col| {
+                let position = referenced.iter().position(|column| column == pk_col)?;
+                let host = hosts.get(position)?.as_str();
+                pairs
+                    .iter()
+                    .find(|pair| pair.join_column.as_str() == host)
+                    .cloned()
+            })
+            .collect();
+        let Some(ordered) = ordered else {
+            continue;
+        };
+        if matched.is_some() {
+            return FkPairing::Several;
+        }
+        matched = Some((ordered, referenced_table.table_name().to_string()));
+    }
+    matched.map_or(FkPairing::None, |(ordered, parent_table)| FkPairing::One {
+        ordered,
+        parent_table,
+    })
+}
+
+/// The pairs reordered by the guarded table's primary key, when the outer columns
+/// are exactly that key. The parent is then the guarded row itself, named as its
+/// own key names it.
+fn self_key_pair_order<DB: DatabaseLike>(
+    pairs: &[MembershipJoinPair],
+    outer_table: &str,
+    db: &DB,
+) -> Option<Vec<MembershipJoinPair>> {
+    let table = lookup_table(db, outer_table)?;
+    let pk: Vec<String> = table
+        .primary_key_columns(db)
+        .ok()?
+        .map(|c| c.stored_column_name().into_owned())
+        .collect();
+    if pk.len() != pairs.len() {
+        return None;
+    }
+    pk.iter()
+        .map(|pk_col| {
+            pairs
+                .iter()
+                .find(|pair| pair.outer_column.as_str() == pk_col.as_str())
+                .cloned()
+        })
+        .collect()
 }
 
 /// True when `column` is `table`'s own identity rather than a link to a parent:
@@ -1170,6 +1378,7 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
                  guarded row, so drop the inner scan and correlate against '{outer_table}' \
                  directly"
             )),
+            MembershipSelectAnalysis::UnkeyedPairing { reason } => Some(reason),
             MembershipSelectAnalysis::Unique { .. }
             | MembershipSelectAnalysis::Uncorrelated { .. }
             | MembershipSelectAnalysis::NoMatch => None,
@@ -1184,9 +1393,20 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         };
     }
 
-    let (_, query, refusal) = membership_subquery_operands(expr)?;
+    let (lhs, query, refusal) = membership_subquery_operands(expr)?;
     if let Some(refusal) = refusal {
         return Some(refusal.reason());
+    }
+    // A row-value IN pairs several columns at once. The EXISTS spelling of the same
+    // policy translates through the pairing routes, so the reason names the
+    // respelling rather than a projection problem.
+    if matches!(unparenthesize(lhs), Expr::Tuple(_)) {
+        return Some(
+            "A row-value IN compares several columns at once, which has no translation. \
+             Spell the policy as EXISTS with one equality per column, which translates \
+             when the columns pair onto a key"
+                .to_string(),
+        );
     }
     if single_projected_column(query_select(query)?).is_none() {
         return Some(
@@ -1387,17 +1607,12 @@ pub(super) fn selection_references_current_user(
         _ => is_current_user_expr(predicate, registry),
     })
 }
-pub(super) fn extract_table_name_from_table_factor(tf: &TableFactor) -> Option<String> {
-    if let TableFactor::Table { name, .. } = tf {
-        Some(name.to_string())
-    } else {
-        None
-    }
-}
-
-pub(super) fn extract_table_alias_from_table_factor(tf: &TableFactor) -> Option<String> {
-    if let TableFactor::Table { alias, .. } = tf {
-        alias.as_ref().map(|a| a.name.value.clone())
+pub(super) fn table_factor_parts(tf: &TableFactor) -> Option<(String, Option<String>)> {
+    if let TableFactor::Table { name, alias, .. } = tf {
+        Some((
+            name.to_string(),
+            alias.as_ref().map(|a| a.name.value.clone()),
+        ))
     } else {
         None
     }
@@ -1426,10 +1641,8 @@ fn relation_sources(select: &Select) -> Vec<RelationSource> {
 }
 
 fn relation_source_from_table_factor(tf: &TableFactor) -> Option<RelationSource> {
-    Some(RelationSource {
-        table_name: extract_table_name_from_table_factor(tf)?,
-        alias: extract_table_alias_from_table_factor(tf),
-    })
+    let (table_name, alias) = table_factor_parts(tf)?;
+    Some(RelationSource { table_name, alias })
 }
 
 fn membership_sources_include_ambiguous_unresolvable_shape<DB: DatabaseLike>(
@@ -1536,10 +1749,9 @@ pub(super) enum MemberMatch {
 
 /// The columns one membership subquery names, once the analysis has read every predicate.
 struct MembershipColumns {
-    /// Column of the scanned table naming the parent entity.
-    fk_column: ColumnName,
-    /// Column of the guarded table the policy compares against `fk_column`.
-    outer_column: ColumnName,
+    /// The equalities linking the scanned table to the guarded table, as accumulated.
+    /// [`resolve_membership_pairing`] is what orders them and refuses an unkeyed set.
+    pairs: Vec<MembershipJoinPair>,
     /// Column of the scanned table naming who the row admits.
     user_column: ColumnName,
     member_match: MemberMatch,
@@ -1696,7 +1908,7 @@ pub(super) fn extract_membership_columns(
     join_cols: &[String],
     outer_table: &str,
     registry: &FunctionRegistry,
-) -> Option<(ColumnName, ColumnName, ColumnName, ResidualPredicates)> {
+) -> Option<(Vec<MembershipJoinPair>, ColumnName, ResidualPredicates)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
         select,
         join_table,
@@ -1706,14 +1918,7 @@ pub(super) fn extract_membership_columns(
         None,
         registry,
     )
-    .map(|columns| {
-        (
-            columns.fk_column,
-            columns.outer_column,
-            columns.user_column,
-            columns.extra_predicates,
-        )
-    })
+    .map(|columns| (columns.pairs, columns.user_column, columns.extra_predicates))
 }
 
 fn extract_membership_columns_with_db<DB: DatabaseLike>(
@@ -1725,7 +1930,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     db: Option<&DB>,
     registry: &FunctionRegistry,
 ) -> Option<MembershipColumns> {
-    let mut correlated: Option<(ColumnName, ColumnName)> = None;
+    let mut correlated: Vec<MembershipJoinPair> = Vec::new();
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<(ColumnName, MemberMatch)> = None;
     let mut extras: Vec<ResidualPredicate> = Vec::new();
@@ -1760,16 +1965,15 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                     join_column,
                     correlated: reference,
                 } => {
-                    let candidate = (join_column, guarded_row_column(reference, outer_table)?);
-                    if correlated
-                        .as_ref()
-                        .is_none_or(|existing| existing == &candidate)
-                    {
-                        correlated = Some(candidate);
-                        fk_col_is_explicit = true;
-                        continue;
+                    let pair = MembershipJoinPair {
+                        join_column,
+                        outer_column: guarded_row_column(reference, outer_table)?,
+                    };
+                    if !correlated.contains(&pair) {
+                        correlated.push(pair);
                     }
-                    return None;
+                    fk_col_is_explicit = true;
+                    continue;
                 }
                 MembershipEqAnalysis::OuterCorrelation => {
                     // Outer correlation predicates are implicit in tuple queries and
@@ -1787,6 +1991,11 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                 return None;
             }
             if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
+                return None;
+            }
+            // A subquery in an extra predicate is evaluated as the caller by
+            // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
+            if predicate_subquery_reads_other_table(pred, join_table) {
                 return None;
             }
             // Keep additional predicates for tuple filtering.
@@ -1815,27 +2024,28 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                 join_column,
                 correlated: reference,
             } => {
-                let candidate = (join_column, guarded_row_column(reference, outer_table)?);
-                if correlated
-                    .as_ref()
-                    .is_none_or(|existing| existing == &candidate)
-                {
-                    correlated = Some(candidate);
-                    fk_col_is_explicit = true;
+                let pair = MembershipJoinPair {
+                    join_column,
+                    outer_column: guarded_row_column(reference, outer_table)?,
+                };
+                if !correlated.contains(&pair) {
+                    correlated.push(pair);
                 }
+                fk_col_is_explicit = true;
             }
             MembershipEqAnalysis::OuterCorrelation | MembershipEqAnalysis::NotRelevant => {}
         }
     }
 
     let (user_column, member_match) = user_col?;
-    let (fk_column, outer_column) = correlated?;
+    if correlated.is_empty() {
+        return None;
+    }
 
     let extra_predicates = ResidualPredicates::new(extras);
 
     Some(MembershipColumns {
-        fk_column,
-        outer_column,
+        pairs: correlated,
         user_column,
         member_match,
         extra_predicates,
@@ -1986,6 +2196,39 @@ pub(super) fn predicate_references_other_table(
         join_alias,
         subquery_depth: 0,
     };
+    expr.visit(&mut checker).is_break()
+}
+
+/// True when a subquery inside `expr` reads anything but the join table.
+///
+/// `PostgreSQL` evaluates the predicate as the caller, filtering every table it
+/// reads by that caller's own policies, while the tuple query precomputes it from
+/// the loader's view. Only the join table is safe, since the loading query already
+/// reads it as the loader. A source that is not a plainly named table fails closed.
+pub(super) fn predicate_subquery_reads_other_table(expr: &Expr, join_table: &str) -> bool {
+    use core::ops::ControlFlow;
+    use sqlparser::ast::{TableFactor, Visit, Visitor};
+
+    struct SubqueryTableChecker<'a> {
+        join_table: &'a str,
+    }
+
+    impl Visitor for SubqueryTableChecker<'_> {
+        type Break = ();
+
+        fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
+            match factor {
+                TableFactor::Table { name, .. }
+                    if same_identifier(&name.to_string(), self.join_table) =>
+                {
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Break(()),
+            }
+        }
+    }
+
+    let mut checker = SubqueryTableChecker { join_table };
     expr.visit(&mut checker).is_break()
 }
 

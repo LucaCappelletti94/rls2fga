@@ -1,7 +1,6 @@
 use super::actions::{using_targets, with_check_targets, RoleLimitedRule};
 use super::dsl::*;
 use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaffold};
-use super::role_threshold::*;
 use super::*;
 use crate::generator::well_known::{WellKnownTypes, TEAM_TYPE, USER_TYPE};
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
@@ -1790,5 +1789,132 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
     assert!(
         has_inner_note,
         "P5 with inner no_access should produce a TODO, notes: {notes:?}"
+    );
+}
+
+/// A tupleset admitting a conditional subject of another type reaches that type's
+/// objects too, so the implication must hold there as well. Skipping it reads a mixed
+/// tupleset as if only the plain subject existed, which drops a read gate the
+/// conditional side does not imply.
+#[test]
+fn rule_implies_consults_conditional_tupleset_subjects() {
+    let mut docs = TypePlan::new("docs");
+    docs.ensure_direct(
+        "grants",
+        vec![
+            DirectSubject::Type("teams".to_string()),
+            DirectSubject::ConditionalType {
+                type_name: "groups".to_string(),
+                condition: "while_valid".to_string(),
+            },
+        ],
+    );
+    let mut teams = TypePlan::new("teams");
+    teams.set_computed(
+        "viewer",
+        UsersetExpr::Union(vec![UsersetExpr::Computed(RelationName::from_resolved(
+            "editor",
+        ))]),
+    );
+    // On `groups` the two relations are unrelated, so nothing implies the gate there.
+    let mut groups = TypePlan::new("groups");
+    groups.ensure_direct("viewer", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    groups.ensure_direct("editor", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+
+    let plans = [docs, teams, groups];
+    let by_name: BTreeMap<&str, &TypePlan> = plans
+        .iter()
+        .map(|plan| (plan.type_name.as_str(), plan))
+        .collect();
+    let rule = UsersetExpr::TupleToUserset {
+        tupleset: RelationName::from_resolved("grants"),
+        computed: RelationName::from_resolved("editor"),
+    };
+    let visible = UsersetExpr::TupleToUserset {
+        tupleset: RelationName::from_resolved("grants"),
+        computed: RelationName::from_resolved("viewer"),
+    };
+
+    assert!(
+        !simplify::rule_implies(&rule, &visible, &plans[0], &by_name, &mut BTreeSet::new()),
+        "`groups` reaches editors who are not viewers, so the implication does not hold"
+    );
+}
+
+/// The walk reaches a target type through a conditional subject exactly as through a
+/// plain one: the condition restricts which tuples exist, not which type they name.
+#[test]
+fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned() {
+    let mut docs = TypePlan::new("docs");
+    docs.set_computed(
+        can_select_relation(),
+        UsersetExpr::TupleToUserset {
+            tupleset: RelationName::from_resolved("parent"),
+            computed: RelationName::from_resolved("granted"),
+        },
+    );
+    docs.ensure_direct(
+        "parent",
+        vec![DirectSubject::ConditionalType {
+            type_name: "groups".to_string(),
+            condition: "while_valid".to_string(),
+        }],
+    );
+    let mut groups = TypePlan::new("groups");
+    groups.ensure_direct("granted", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+
+    let mut all_types =
+        BTreeMap::from([("docs".to_string(), docs), ("groups".to_string(), groups)]);
+    prune_unreferenced_relations(&mut all_types);
+
+    assert!(
+        all_types["groups"]
+            .direct_relations
+            .contains_key(&RelationName::from_resolved("granted")),
+        "the model references groups#granted through the conditional subject, so \
+         pruning it leaves a reference to something the model does not define"
+    );
+}
+
+/// An alias reached through a conditional tupleset subject is repointed exactly as one
+/// reached through a plain subject, or the walk dangles on the dropped name.
+#[test]
+fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
+    let alias = RelationName::from_resolved("inherited_x");
+    let mut docs = TypePlan::new("docs");
+    docs.set_computed(
+        can_select_relation(),
+        UsersetExpr::TupleToUserset {
+            tupleset: RelationName::from_resolved("parent"),
+            computed: alias.clone(),
+        },
+    );
+    docs.ensure_direct(
+        "parent",
+        vec![DirectSubject::ConditionalType {
+            type_name: "groups".to_string(),
+            condition: "while_valid".to_string(),
+        }],
+    );
+    let mut groups = TypePlan::new("groups");
+    groups.ensure_direct("granted", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    groups.set_computed(
+        alias.clone(),
+        UsersetExpr::Computed(RelationName::from_resolved("granted")),
+    );
+
+    let mut all_types =
+        BTreeMap::from([("docs".to_string(), docs), ("groups".to_string(), groups)]);
+    inline_synthetic_rule_aliases(&mut all_types);
+
+    let UsersetExpr::TupleToUserset { computed, .. } =
+        &all_types["docs"].computed_relations[&can_select_relation()]
+    else {
+        panic!("the walk survives inlining");
+    };
+    assert_eq!(
+        computed.as_str(),
+        "granted",
+        "the alias was dropped on groups, so the walk must point at what it named"
     );
 }

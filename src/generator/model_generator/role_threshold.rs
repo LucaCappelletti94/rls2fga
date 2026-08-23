@@ -111,10 +111,16 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     }
 
     // --- The row's pointer at the owner it carries ---
-    if bridge_is_buildable(table_plan, source_table, scope.column, scope.type_name, db) {
+    if bridge_is_buildable(
+        table_plan,
+        source_table,
+        core::slice::from_ref(scope.column),
+        scope.type_name,
+        db,
+    ) {
         table_plan.add_source(TupleSource::ParentBridge {
             table: source_table.to_string(),
-            fk_col: scope.column.clone(),
+            fk_cols: vec![scope.column.clone()],
             parent_type: scope.type_name.to_string(),
             relation: scope.pointer.clone(),
         });

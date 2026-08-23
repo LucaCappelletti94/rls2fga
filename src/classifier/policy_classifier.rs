@@ -109,31 +109,17 @@ fn normalize_boolean_case(
         return None;
     }
 
-    Some(fold_or(true_conditions))
+    Some(fold_binary(true_conditions, &BinaryOperator::Or))
 }
 
-/// Fold a non-empty list of expressions into a left-associative OR tree.
-fn fold_or(mut exprs: Vec<Expr>) -> Expr {
+/// Fold a non-empty list into a left-associative tree under one operator.
+fn fold_binary(mut exprs: Vec<Expr>, op: &BinaryOperator) -> Expr {
     assert!(!exprs.is_empty());
     let mut result = exprs.remove(0);
     for next in exprs {
         result = Expr::BinaryOp {
             left: Box::new(result),
-            op: BinaryOperator::Or,
-            right: Box::new(next),
-        };
-    }
-    result
-}
-
-/// Fold a non-empty list of expressions into a left-associative AND tree.
-fn fold_and(mut exprs: Vec<Expr>) -> Expr {
-    assert!(!exprs.is_empty());
-    let mut result = exprs.remove(0);
-    for next in exprs {
-        result = Expr::BinaryOp {
-            left: Box::new(result),
-            op: BinaryOperator::And,
+            op: op.clone(),
             right: Box::new(next),
         };
     }
@@ -260,7 +246,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
                         right: Box::new(r.clone()),
                     })
                     .collect();
-                let conjunction = fold_and(equalities);
+                let conjunction = fold_binary(equalities, &BinaryOperator::And);
                 return classify_expr_depth(&conjunction, db, registry, table, command, depth + 1);
             }
         }
@@ -546,6 +532,14 @@ fn classify_expr_inner<DB: DatabaseLike>(
 }
 
 /// Why naming `func_name` does not tell the translator how to translate the call.
+///
+/// A `SECURITY DEFINER` body wrapping a membership `EXISTS` is blamed here rather than
+/// expanded, which makes the dominant idiom for working around policy self-recursion
+/// come out all-deny. Expanding it is designed and waits on
+/// `apache/datafusion-sqlparser-rs` PR #2447: until that merges, a quoted argument name
+/// arrives with its quotes inside the value and its quote flag cleared, so an argument
+/// shadowing a column of the body's own table cannot be detected, and substituting it
+/// would compare that column to itself and admit every row.
 fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) -> String {
     match registry.get(func_name) {
         Some(FunctionSemantic::Unknown { reason }) => {
@@ -667,18 +661,9 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::expr::parse_expr_for_tests as parse_expr;
     use crate::parser::identifiers::ColumnName;
     use crate::parser::sql_parser::{parse_schema, ParserDB};
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    fn parse_expr(expr_sql: &str) -> Expr {
-        Parser::new(&PostgreSqlDialect {})
-            .try_with_sql(expr_sql)
-            .expect("expression should parse")
-            .parse_expr()
-            .expect("expression should parse")
-    }
 
     fn docs_db() -> ParserDB {
         parse_schema(
@@ -1644,8 +1629,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             (
                 PatternClass::P4ExistsMembership(ExistsMembership {
                     join_table: "t".into(),
-                    fk_column: ColumnName::from_stored("c"),
-                    outer_column: ColumnName::from_stored("o"),
+                    pairs: vec![MembershipJoinPair {
+                        join_column: ColumnName::from_stored("c"),
+                        outer_column: ColumnName::from_stored("o"),
+                    }],
                     user_column: ColumnName::from_stored("u"),
                     extra_predicates: ResidualPredicates::default(),
                 }),
@@ -1751,8 +1738,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table: "t".into(),
-                fk_column: ColumnName::from_stored("c"),
-                outer_column: ColumnName::from_stored("o"),
+                pairs: vec![MembershipJoinPair {
+                    join_column: ColumnName::from_stored("c"),
+                    outer_column: ColumnName::from_stored("o"),
+                }],
                 user_column: ColumnName::from_stored("u"),
                 extra_predicates: ResidualPredicates::default(),
             })
@@ -1804,8 +1793,10 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                     ClassifiedExpr {
                         pattern: PatternClass::P4ExistsMembership(ExistsMembership {
                             join_table: "t".into(),
-                            fk_column: ColumnName::from_stored("c"),
-                            outer_column: ColumnName::from_stored("o"),
+                            pairs: vec![MembershipJoinPair {
+                                join_column: ColumnName::from_stored("c"),
+                                outer_column: ColumnName::from_stored("o"),
+                            }],
                             user_column: ColumnName::from_stored("u"),
                             extra_predicates: ResidualPredicates::default(),
                         }),

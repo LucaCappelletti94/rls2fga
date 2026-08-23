@@ -5,13 +5,7 @@ use sqlparser::ast::{SetExpr, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
-fn parse_expr(expr_sql: &str) -> Expr {
-    Parser::new(&PostgreSqlDialect {})
-        .try_with_sql(expr_sql)
-        .expect("expression should parse")
-        .parse_expr()
-        .expect("expression should parse")
-}
+use crate::parser::expr::parse_expr_for_tests as parse_expr;
 
 fn parse_select(sql: &str) -> Select {
     let stmts = Parser::parse_sql(&PostgreSqlDialect {}, sql).expect("query should parse");
@@ -278,6 +272,36 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
     assert!(
         recognize_p2(&not_matched, &db, &empty_registry).is_none(),
         "unregistered role function should not match P2"
+    );
+}
+
+/// A non-literal element of a role IN-list is a per-row grant the literals cannot
+/// stand in for: `IN ('viewer', owner_id)` admits a row whose threshold equals the
+/// row's own `owner_id`, and keeping only the literal would translate a subset of
+/// the policy and report it as faithful.
+#[test]
+fn p2_in_list_refuses_a_mixed_literal_and_non_literal_list() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+
+    let mixed_threshold =
+        parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', owner_id)");
+    assert!(
+        recognize_p2(&mixed_threshold, &db, &registry).is_none(),
+        "a non-literal element in a threshold IN-list fails closed"
+    );
+
+    let mut accessor_registry = FunctionRegistry::new();
+    accessor_registry.register_if_absent(
+        "role",
+        &FunctionSemantic::RoleAccessor {
+            returns: "text".to_string(),
+        },
+    );
+    let mixed_accessor = parse_expr("auth.role() IN ('admin', owner_id)");
+    assert!(
+        recognize_p2(&mixed_accessor, &db, &accessor_registry).is_none(),
+        "a non-literal element in a role-accessor IN-list fails closed"
     );
 }
 
@@ -583,12 +607,12 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
-            fk_column,
+            pairs,
             user_column,
             extra_predicates,
-            ..
         }) if join_table == "doc_members"
-            && fk_column == "doc_id"
+            && matches!(pairs.as_slice(), [pair]
+                if pair.join_column == "doc_id" && pair.outer_column == "id")
             && user_column == "user_id"
             && extra_predicates
                 .sql()
@@ -639,12 +663,11 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
-            fk_column,
+            pairs,
             user_column,
             extra_predicates,
-            ..
         }) if join_table == "doc_members"
-            && fk_column == "doc_id"
+            && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
             && user_column == "user_id"
             && extra_predicates
                 .sql()
@@ -825,6 +848,396 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 }
 
+/// An extra predicate whose subquery reads a table other than the membership table
+/// would be precomputed from the loader's view of that table, while `PostgreSQL`
+/// evaluates the policy as the caller and filters that table by its own RLS. A
+/// single-table tuple query cannot carry the caller's view of a second table.
+#[test]
+fn recognize_p4_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = current_user
+                 AND role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "an extra predicate whose subquery reads a third table fails closed for P4"
+    );
+}
+
+/// The holder shape carries the same extras, so a third-table subquery in an
+/// uncorrelated membership fails closed there too.
+#[test]
+fn uncorrelated_membership_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE user_id = current_user
+                 AND role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "an uncorrelated membership whose extra predicate reads a third table fails closed"
+    );
+}
+
+/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite, so the
+/// third-table subquery fails closed there too.
+#[test]
+fn recognize_p4_in_subquery_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = registry_with_role_level();
+
+    let in_expr = parse_expr(
+        "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+                 AND dm.role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    assert!(
+        recognize_p4_in_subquery(&in_expr, &db, &registry, "docs", PolicyCommand::Select).is_none(),
+        "the IN spelling of a third-table-subquery extra predicate fails closed"
+    );
+}
+
+/// A membership subquery joined on every column of the guarded table's composite
+/// primary key states the same relationship as the single-column shape, with the
+/// share scoped by the extra key columns, so it classifies no worse.
+#[test]
+fn recognize_p4_accepts_a_join_on_every_column_of_a_composite_key() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p2(tenant_id INT NOT NULL, id INT NOT NULL, owner TEXT,
+                PRIMARY KEY(tenant_id, id));
+CREATE TABLE s2(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, paper_id, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM s2 s
+               WHERE s.tenant_id = p2.tenant_id
+                 AND s.paper_id = p2.id
+                 AND s.viewer = current_user
+             )",
+    );
+
+    let classified = recognize_p4(&exists_expr, &db, &registry, "p2")
+        .expect("a two-column composite-key join is the one-column shape scoped by tenant");
+    assert_eq!(
+        classified.confidence,
+        ConfidenceLevel::A,
+        "one added equality between two key columns narrows the relationship"
+    );
+}
+
+/// Three key columns behave as two do: the join names one guarded row per share row.
+#[test]
+fn recognize_p4_accepts_a_join_on_three_columns_of_a_composite_key() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p3(region_id INT NOT NULL, tenant_id INT NOT NULL, id INT NOT NULL, owner TEXT,
+                PRIMARY KEY(region_id, tenant_id, id));
+CREATE TABLE s3(region_id INT NOT NULL, tenant_id INT NOT NULL, paper_id INT NOT NULL,
+                viewer TEXT NOT NULL,
+                PRIMARY KEY(region_id, tenant_id, paper_id, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM s3 s
+               WHERE s.region_id = p3.region_id
+                 AND s.tenant_id = p3.tenant_id
+                 AND s.paper_id = p3.id
+                 AND s.viewer = current_user
+             )",
+    );
+
+    let classified = recognize_p4(&exists_expr, &db, &registry, "p3")
+        .expect("a three-column composite-key join is the same shape again");
+    assert_eq!(classified.confidence, ConfidenceLevel::A);
+}
+
+/// The join columns carry one declared composite foreign key to a parent table, so
+/// each membership row names exactly one parent object, the same relationship the
+/// single-column FK-backed shape states.
+#[test]
+fn recognize_p4_accepts_a_join_backed_by_a_composite_foreign_key() {
+    let db = parse_schema(
+        r"
+CREATE TABLE projects(tenant_id INT NOT NULL, id INT NOT NULL,
+                      PRIMARY KEY(tenant_id, id));
+CREATE TABLE docs(doc_id INT PRIMARY KEY, tenant_id INT NOT NULL, project_id INT NOT NULL,
+                  FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, id));
+CREATE TABLE project_members(tenant_id INT NOT NULL, project_id INT NOT NULL,
+                             user_id TEXT NOT NULL,
+                             PRIMARY KEY(tenant_id, project_id, user_id),
+                             FOREIGN KEY (tenant_id, project_id)
+                               REFERENCES projects(tenant_id, id));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM project_members m
+               WHERE m.tenant_id = docs.tenant_id
+                 AND m.project_id = docs.project_id
+                 AND m.user_id = current_user
+             )",
+    );
+
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs")
+        .expect("a composite-FK-backed join is the single-column FK shape widened");
+    assert_eq!(classified.confidence, ConfidenceLevel::A);
+}
+
+/// A strict subset of the composite key answers for every row sharing the prefix,
+/// so the pairing names no single guarded row and fails closed.
+#[test]
+fn recognize_p4_refuses_a_join_on_a_subset_of_a_composite_key() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p4(region_id INT NOT NULL, tenant_id INT NOT NULL, id INT NOT NULL,
+                PRIMARY KEY(region_id, tenant_id, id));
+CREATE TABLE s4(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, paper_id, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM s4 s
+               WHERE s.tenant_id = p4.tenant_id
+                 AND s.paper_id = p4.id
+                 AND s.viewer = current_user
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "p4").is_none(),
+        "two pairs cannot stand in for a three-column key"
+    );
+}
+
+/// A duplicate outer column is not a key pairing: two share columns matching one
+/// guarded column names no bijection onto any key.
+#[test]
+fn recognize_p4_refuses_a_pairing_naming_one_outer_column_twice() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p5(tenant_id INT NOT NULL, id INT NOT NULL, PRIMARY KEY(tenant_id, id));
+CREATE TABLE s5(a INT NOT NULL, b INT NOT NULL, viewer TEXT NOT NULL,
+                PRIMARY KEY(a, b, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM s5 s
+               WHERE s.a = p5.tenant_id
+                 AND s.b = p5.tenant_id
+                 AND s.viewer = current_user
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "p5").is_none(),
+        "a duplicate outer column fails closed"
+    );
+}
+
+/// Two declared foreign keys cover the same joined columns, so the parent they
+/// name is ambiguous and the pairing fails closed.
+#[test]
+fn recognize_p4_refuses_a_pairing_two_foreign_keys_cover() {
+    let db = parse_schema(
+        r"
+CREATE TABLE pa(x INT NOT NULL, y INT NOT NULL, PRIMARY KEY(x, y));
+CREATE TABLE pb(x INT NOT NULL, y INT NOT NULL, PRIMARY KEY(x, y));
+CREATE TABLE docs(doc_id INT PRIMARY KEY, a INT NOT NULL, b INT NOT NULL);
+CREATE TABLE grants_two(a INT NOT NULL, b INT NOT NULL, user_id TEXT NOT NULL,
+                        PRIMARY KEY(a, b, user_id),
+                        FOREIGN KEY (a, b) REFERENCES pa(x, y),
+                        FOREIGN KEY (a, b) REFERENCES pb(x, y));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM grants_two g
+               WHERE g.a = docs.a
+                 AND g.b = docs.b
+                 AND g.user_id = current_user
+             )",
+    );
+
+    assert!(
+        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        "two covering foreign keys leave the parent ambiguous"
+    );
+}
+
+/// The refusal names what failed, so the operator reads a decision rather than
+/// "does not match any known pattern".
+#[test]
+fn an_unkeyed_pairing_is_diagnosed_with_its_reason() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p6(region_id INT NOT NULL, tenant_id INT NOT NULL, id INT NOT NULL,
+                PRIMARY KEY(region_id, tenant_id, id));
+CREATE TABLE s6(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, paper_id, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM s6 s
+               WHERE s.tenant_id = p6.tenant_id
+                 AND s.paper_id = p6.id
+                 AND s.viewer = current_user
+             )",
+    );
+
+    let reason = diagnose_p4_membership_ambiguity(&exists_expr, &db, &registry, "p6")
+        .expect("an unkeyed pairing carries a reason");
+    assert!(
+        reason.contains("neither a declared foreign key") && reason.contains("s6"),
+        "the reason names the failed routes, got: {reason}"
+    );
+}
+
+/// The row-value `IN` spelling of a composite-key membership is refused, and the
+/// reason names the `EXISTS` respelling that translates, not a projection problem.
+#[test]
+fn a_row_value_in_subquery_is_diagnosed_with_its_respelling() {
+    let db = parse_schema(
+        r"
+CREATE TABLE p7(tenant_id INT NOT NULL, id INT NOT NULL, PRIMARY KEY(tenant_id, id));
+CREATE TABLE s7(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, paper_id, viewer));
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let in_expr = parse_expr(
+        "(tenant_id, id) IN (
+               SELECT s.tenant_id, s.paper_id
+               FROM s7 s
+               WHERE s.viewer = current_user
+             )",
+    );
+
+    assert!(
+        recognize_p4_in_subquery(&in_expr, &db, &registry, "p7", PolicyCommand::Select).is_none(),
+        "the row-value spelling stays refused"
+    );
+    let reason = diagnose_p4_membership_ambiguity(&in_expr, &db, &registry, "p7")
+        .expect("the refusal carries a reason");
+    assert!(
+        reason.contains("EXISTS") && reason.contains("row-value"),
+        "the reason names the respelling, got: {reason}"
+    );
+}
+/// A subquery that reads the membership table itself adds no table the tuple query
+/// does not already read as the loader, so it stays an extra predicate.
+#[test]
+fn recognize_p4_allows_an_extra_predicate_subquery_reading_the_join_table() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+
+    let exists_expr = parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM doc_members
+               WHERE doc_members.doc_id = docs.id
+                 AND doc_members.user_id = current_user
+                 AND role_name = ANY (SELECT role_name FROM doc_members)
+             )",
+    );
+
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    assert!(
+        matches!(
+            &classified.pattern,
+            PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
+                if extra_predicates
+                    .sql()
+                    .is_some_and(|sql| sql.to_ascii_lowercase().contains("select role_name from doc_members"))
+        ),
+        "a subquery over the join table stays an extra predicate, got: {:?}",
+        classified.pattern
+    );
+}
+
 #[test]
 fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
     let db = db_with_docs_and_members();
@@ -879,10 +1292,11 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
-            fk_column,
+            pairs,
             user_column,
             ..
-        }) if fk_column == "doc_id" && user_column == "user_id"
+        }) if matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+            && user_column == "user_id"
     ));
 }
 
@@ -973,7 +1387,7 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
              )",
     );
     let in_subquery = parse_expr(
-        "doc_id IN (
+        "id IN (
                SELECT dm.doc_id
                FROM doc_members dm
                WHERE dm.user_id = auth_current_user_id()
@@ -986,31 +1400,29 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
         recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
             .expect("expected IN-subquery match");
 
-    let (exists_join_table, exists_fk_column, exists_user_column, exists_extra_predicates) =
+    let (exists_join_table, exists_pairs, exists_user_column, exists_extra_predicates) =
         match exists.pattern {
             PatternClass::P4ExistsMembership(ExistsMembership {
                 join_table,
-                fk_column,
+                pairs,
                 user_column,
                 extra_predicates,
-                ..
-            }) => (join_table, fk_column, user_column, extra_predicates),
+            }) => (join_table, pairs, user_column, extra_predicates),
             other => panic!("expected P4 EXISTS classification, got: {other:?}"),
         };
 
-    let (in_join_table, in_fk_column, in_user_column, in_extra_predicates) = match in_sub.pattern {
+    let (in_join_table, in_pairs, in_user_column, in_extra_predicates) = match in_sub.pattern {
         PatternClass::P4ExistsMembership(ExistsMembership {
             join_table,
-            fk_column,
+            pairs,
             user_column,
             extra_predicates,
-            ..
-        }) => (join_table, fk_column, user_column, extra_predicates),
+        }) => (join_table, pairs, user_column, extra_predicates),
         other => panic!("expected P4 IN-subquery classification, got: {other:?}"),
     };
 
     assert_eq!(exists_join_table, in_join_table);
-    assert_eq!(exists_fk_column, in_fk_column);
+    assert_eq!(exists_pairs, in_pairs);
     assert_eq!(exists_user_column, in_user_column);
     assert_eq!(exists_extra_predicates, in_extra_predicates);
 }
@@ -1170,18 +1582,15 @@ fn membership_column_extraction_requires_explicit_user_predicate() {
 fn table_extractors_cover_non_table_and_alias_paths() {
     let table_select = parse_select("SELECT dm.doc_id AS projected FROM doc_members dm");
     let from = &table_select.from[0];
-    let table_name =
-        extract_table_name_from_table_factor(&from.relation).expect("table factor should resolve");
+    let (table_name, alias) =
+        table_factor_parts(&from.relation).expect("table factor should resolve");
     assert_eq!(table_name, "doc_members");
-    assert_eq!(
-        extract_table_alias_from_table_factor(&from.relation).as_deref(),
-        Some("dm")
-    );
+    assert_eq!(alias.as_deref(), Some("dm"));
 
     let derived_select = parse_select("SELECT x.id FROM (SELECT 1 AS id) x WHERE x.id = 1");
     let derived_from = &derived_select.from[0];
     assert!(
-        extract_table_name_from_table_factor(&derived_from.relation).is_none(),
+        table_factor_parts(&derived_from.relation).is_none(),
         "derived table should not resolve to a table name"
     );
 }
@@ -1292,12 +1701,15 @@ fn extract_membership_columns_detects_reversed_predicates() {
         "role".to_string(),
     ];
 
-    let extracted =
+    let (pairs, user_column, _) =
         extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("reversed predicates should still infer membership columns");
-    assert_eq!(extracted.0, "doc_id");
-    assert_eq!(extracted.1, "id");
-    assert_eq!(extracted.2, "user_id");
+    assert!(
+        matches!(pairs.as_slice(), [pair]
+            if pair.join_column == "doc_id" && pair.outer_column == "id"),
+        "got: {pairs:?}"
+    );
+    assert_eq!(user_column, "user_id");
 }
 
 #[test]
@@ -1538,13 +1950,16 @@ fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
         "role".to_string(),
     ];
 
-    let extracted =
+    let (pairs, user_column, extras) =
         extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("columns should still be inferred");
-    assert_eq!(extracted.0, "doc_id");
-    assert_eq!(extracted.1, "id");
-    assert_eq!(extracted.2, "user_id");
-    assert!(extracted.3.sql().is_some_and(|s| s.contains("role > 'a'")));
+    assert!(
+        matches!(pairs.as_slice(), [pair]
+            if pair.join_column == "doc_id" && pair.outer_column == "id"),
+        "got: {pairs:?}"
+    );
+    assert_eq!(user_column, "user_id");
+    assert!(extras.sql().is_some_and(|s| s.contains("role > 'a'")));
 }
 
 #[test]
@@ -1612,8 +2027,11 @@ fn membership_column_extraction_fails_when_fk_remains_ambiguous() {
     );
 }
 
+/// Extraction accumulates every correlated pair. Whether the pairing names one
+/// parent object is decided by `resolve_membership_pairing`, pinned through
+/// `recognize_p4` in the composite-key tests.
 #[test]
-fn extract_membership_columns_fails_when_join_predicates_conflict() {
+fn extract_membership_columns_accumulates_every_correlated_pair() {
     let select = parse_select(
         "SELECT m.doc_id
              FROM doc_members m
@@ -1628,11 +2046,16 @@ fn extract_membership_columns_fails_when_join_predicates_conflict() {
         "user_id".to_string(),
     ];
 
-    let extracted =
-        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry);
+    let (pairs, _, _) =
+        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry)
+            .expect("both correlated pairs are accumulated");
     assert!(
-        extracted.is_none(),
-        "conflicting join predicates should fail closed"
+        matches!(pairs.as_slice(), [first, second]
+            if first.join_column == "doc_id"
+                && first.outer_column == "id"
+                && second.join_column == "project_id"
+                && second.outer_column == "project_id"),
+        "got: {pairs:?}"
     );
 }
 
@@ -2122,8 +2545,8 @@ fn extract_membership_columns_via_join_on_clause() {
         result.is_some(),
         "ON-clause fk_col and WHERE user_col should be extracted"
     );
-    let (fk, _outer, user, _extras) = result.unwrap();
-    assert_eq!(fk, "doc_id");
+    let (pairs, user, _extras) = result.unwrap();
+    assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
 }
 
@@ -2184,8 +2607,8 @@ fn extract_table_alias_from_table_factor_returns_none_for_derived() {
     let from = &select.from[0];
     // The relation is a Derived subquery, not a Table.
     assert!(
-        extract_table_alias_from_table_factor(&from.relation).is_none(),
-        "Derived subquery should return None from extract_table_alias_from_table_factor"
+        table_factor_parts(&from.relation).is_none(),
+        "Derived subquery should return None from table_factor_parts"
     );
 }
 
@@ -2257,8 +2680,8 @@ fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
         result.is_some(),
         "ON-clause user_col (left=join) should be extracted"
     );
-    let (fk, _outer, user, _extras) = result.unwrap();
-    assert_eq!(fk, "doc_id");
+    let (pairs, user, _extras) = result.unwrap();
+    assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
 }
 
@@ -2282,8 +2705,8 @@ fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
         result.is_some(),
         "ON-clause user_col (right=join) should be extracted"
     );
-    let (fk, _outer, user, _extras) = result.unwrap();
-    assert_eq!(fk, "doc_id");
+    let (pairs, user, _extras) = result.unwrap();
+    assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
 }
 
@@ -2307,8 +2730,8 @@ fn extract_membership_columns_on_clause_fk_right_is_join() {
         result.is_some(),
         "ON-clause FK (right_is_join) should be extracted"
     );
-    let (fk, _outer, user, _extras) = result.unwrap();
-    assert_eq!(fk, "doc_id");
+    let (pairs, user, _extras) = result.unwrap();
+    assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
 }
 
@@ -2806,8 +3229,8 @@ fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
     let result =
         extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(result.is_some());
-    let (fk, _outer, user, _) = result.unwrap();
-    assert_eq!(fk, "doc_id");
+    let (pairs, user, _) = result.unwrap();
+    assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
 }
 

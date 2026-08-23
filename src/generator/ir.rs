@@ -123,13 +123,14 @@ pub(crate) enum TupleSource {
     },
 
     /// P4 membership, from `EXISTS` or an `IN` subquery.
-    /// Produces `(parent_type:fk_col, member, user:user_col)`.
+    /// Produces `(parent_type:fk_cols, member, user:user_col)`.
     ExistsMembership {
         join_table: String,
-        /// Column of `join_table` referencing the parent resource.
-        fk_col: ColumnName,
+        /// Columns of `join_table` naming the parent resource, in the parent
+        /// key's order.
+        fk_cols: Vec<ColumnName>,
         user_col: ColumnName,
-        /// Resolved from the table `fk_col` references, not from its name.
+        /// Resolved from the table the columns reference, not from their names.
         parent_type: String,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
@@ -137,13 +138,14 @@ pub(crate) enum TupleSource {
         gate: Option<MembershipGate>,
     },
 
-    /// P4/P5 child-to-parent link. Produces `(type:pk, relation, parent_type:fk_col)`.
+    /// P4/P5 child-to-parent link. Produces `(type:pk, relation, parent_type:fk_cols)`.
     ///
     /// The object column is resolved at render time, keeping the IR free of schema
     /// lookups.
     ParentBridge {
         table: String,
-        fk_col: ColumnName,
+        /// Columns of `table` naming the parent, in the parent key's order.
+        fk_cols: Vec<ColumnName>,
         parent_type: String,
         /// Named after `parent_type` but subject to the shorter relation-name limit,
         /// so the two can differ.
@@ -468,22 +470,22 @@ impl TupleSource {
             }
             Self::ExistsMembership {
                 join_table,
-                fk_col,
+                fk_cols,
                 user_col,
                 parent_type,
                 extra_predicates,
                 gate,
             } => {
                 let extra = extra_predicates.sql().unwrap_or_default();
-                format!("p4:{join_table}:{fk_col}:{user_col}:{parent_type}:{extra}:{gate:?}")
+                format!("p4:{join_table}:{fk_cols:?}:{user_col}:{parent_type}:{extra}:{gate:?}")
             }
             Self::ParentBridge {
                 table,
-                fk_col,
+                fk_cols,
                 parent_type,
                 relation,
             } => {
-                format!("bridge:{table}:{fk_col}:{parent_type}:{relation}")
+                format!("bridge:{table}:{fk_cols:?}:{parent_type}:{relation}")
             }
             Self::PublicFlag {
                 table,
@@ -702,7 +704,7 @@ mod tests {
     fn dedup_key_differentiates_exists_membership_by_user_col_and_predicate() {
         let base = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: ColumnName::from_stored("project_id"),
+            fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
             extra_predicates: ResidualPredicates::default(),
@@ -710,7 +712,7 @@ mod tests {
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: ColumnName::from_stored("project_id"),
+            fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("member_id"),
             parent_type: "projects".to_string(),
             extra_predicates: ResidualPredicates::default(),
@@ -718,7 +720,7 @@ mod tests {
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: "members".to_string(),
-            fk_col: ColumnName::from_stored("project_id"),
+            fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {

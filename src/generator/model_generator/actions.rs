@@ -122,19 +122,15 @@ pub(crate) fn relations_fed_by(target: ActionTarget) -> Vec<RelationName> {
             can_update_using_relation(),
             can_update_without_reading_relation(),
         ],
-        ActionTarget::UpdateCheck => vec![
-            can_update_relation(),
-            can_update_check_relation(),
-            can_update_without_reading_relation(),
-        ],
+        ActionTarget::UpdateCheck => vec![can_update_relation(), can_update_check_relation()],
         ActionTarget::Delete => vec![can_delete_relation()],
     }
 }
 
 /// Relation names these targets diverge, deduplicated: the two UPDATE targets feed
-/// `can_update` and `can_update_without_reading` in common, so a policy losing both
-/// would otherwise name each of them twice. The scar is a set, so the note has to be
-/// one too, or the two surfaces disagree about what was lost.
+/// `can_update` in common, so a policy losing both would otherwise name it twice. The
+/// scar is a set, so the note has to be one too, or the two surfaces disagree about
+/// what was lost.
 pub(crate) fn narrowed_by(targets: &[ActionTarget]) -> BTreeSet<RelationName> {
     targets
         .iter()

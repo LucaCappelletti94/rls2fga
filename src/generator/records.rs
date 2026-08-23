@@ -187,6 +187,11 @@ impl PartialEq<&str> for ColumnRead {
 impl Eq for ColumnRead {}
 
 /// One row cell as decoded by the consumer.
+///
+/// Every spelling variant must carry `PostgreSQL`'s own text output for the value,
+/// as `::text` renders it under the session settings the tuple script pins (`UTC`,
+/// `ISO, MDY`, hex bytea). The spelling is the identity: a `numeric` rendered `1.00`
+/// by the database and handed here as `1` names a different object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowCell<'a> {
     /// The row image has no such column.

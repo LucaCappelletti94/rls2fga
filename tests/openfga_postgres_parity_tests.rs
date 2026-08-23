@@ -7010,3 +7010,463 @@ fn postgres_row_is_visible(
     })
     .expect("reading under row level security should not error")
 }
+
+/// Typed schema for the composite-key self-membership case. Both tables key rows by
+/// `(tenant_id, <id>)`, and the share table's pair points at the paper's own key.
+mod tenant_paper_schema {
+    diesel::table! {
+        tenant_papers (tenant_id, id) {
+            tenant_id -> diesel::sql_types::Text,
+            id -> diesel::sql_types::Text,
+            title -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        tenant_shares (tenant_id, paper_id, viewer) {
+            tenant_id -> diesel::sql_types::Text,
+            paper_id -> diesel::sql_types::Text,
+            viewer -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(tenant_papers, tenant_shares);
+}
+
+/// Paper keys the plain login role reads, with `app.current_user_id` set to `user_id`,
+/// rendered as the objects name them.
+fn postgres_readable_tenant_papers(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use tenant_paper_schema::tenant_papers;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let keys: Vec<(String, String)> = tenant_papers::table
+            .select((tenant_papers::tenant_id, tenant_papers::id))
+            .load(conn)?;
+        Ok(keys
+            .into_iter()
+            .map(|(tenant, id)| format!("{tenant}|{id}"))
+            .collect())
+    })
+    .expect("Failed to read the tenant papers")
+}
+
+/// A share joined on both columns of the guarded table's key, the shape the connetto
+/// report probed. The two tenants deliberately share one `paper_id`, so a model keyed
+/// on either column alone grants each viewer the other tenant's paper and fails in
+/// both directions.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn composite_key_self_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE tenant_papers (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE tenant_shares (
+    tenant_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    viewer TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, paper_id, viewer)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE tenant_papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_visible ON tenant_papers FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM tenant_shares s
+        WHERE s.tenant_id = tenant_papers.tenant_id
+          AND s.paper_id = tenant_papers.id
+          AND s.viewer = auth_current_user_id()));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the tenant-paper schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; GRANT SELECT ON tenant_papers, tenant_shares TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    // One `paper_id` exists in both tenants, plus one unshared paper.
+    let papers = [
+        ("t1", "p-shared", "alpha"),
+        ("t2", "p-shared", "beta"),
+        ("t1", "p-solo", "gamma"),
+    ];
+    let shares = [("t1", "p-shared", USER_ALICE), ("t2", "p-shared", USER_BOB)];
+    {
+        use tenant_paper_schema::{tenant_papers, tenant_shares};
+        diesel::insert_into(tenant_papers::table)
+            .values(
+                papers
+                    .map(|(tenant, id, title)| {
+                        (
+                            tenant_papers::tenant_id.eq(tenant),
+                            tenant_papers::id.eq(id),
+                            tenant_papers::title.eq(title),
+                        )
+                    })
+                    .to_vec(),
+            )
+            .execute(&mut conn)
+            .expect("Failed to seed tenant papers");
+        diesel::insert_into(tenant_shares::table)
+            .values(
+                shares
+                    .map(|(tenant, paper, viewer)| {
+                        (
+                            tenant_shares::tenant_id.eq(tenant),
+                            tenant_shares::paper_id.eq(paper),
+                            tenant_shares::viewer.eq(viewer),
+                        )
+                    })
+                    .to_vec(),
+            )
+            .execute(&mut conn)
+            .expect("Failed to seed tenant shares");
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "composite-key-self-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for user in [USER_ALICE, USER_BOB] {
+        let readable = postgres_readable_tenant_papers(&mut conn, user);
+        // One paper each: the shared id must not leak across tenants.
+        assert_eq!(
+            readable.len(),
+            1,
+            "{user} reads one paper, PostgreSQL showed {readable:?}"
+        );
+        for (tenant, id, _) in papers {
+            let key = format!("{tenant}|{id}");
+            let expected = readable.contains(&key);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("tenant_papers:{key}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "tenant_papers:{key} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // A model that denied everything, or granted everything, would pass a one-sided case.
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA composite-key self-membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Typed schema for the composite-FK membership case: docs group under projects keyed
+/// by `(tenant_id, id)`, and both `docs` and `project_members` carry a declared
+/// composite foreign key onto that whole key.
+mod composite_fk_schema {
+    diesel::table! {
+        projects (tenant_id, id) {
+            tenant_id -> diesel::sql_types::Text,
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        docs (doc_id) {
+            doc_id -> diesel::sql_types::Text,
+            tenant_id -> diesel::sql_types::Text,
+            project_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        project_members (tenant_id, project_id, user_id) {
+            tenant_id -> diesel::sql_types::Text,
+            project_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::allow_tables_to_appear_in_same_query!(projects, docs, project_members);
+}
+
+/// Doc ids the plain login role reads, with `app.current_user_id` set to `user_id`.
+fn postgres_readable_composite_fk_docs(conn: &mut PgConnection, user_id: &str) -> BTreeSet<String> {
+    use composite_fk_schema::docs;
+
+    conn.transaction::<BTreeSet<String>, diesel::result::Error, _>(|conn| {
+        // Role switching and session settings have no query DSL form.
+        diesel::sql_query("SET LOCAL ROLE app_user").execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+        let ids: Vec<String> = docs::table.select(docs::doc_id).load(conn)?;
+        Ok(ids.into_iter().collect())
+    })
+    .expect("Failed to read the composite-FK docs")
+}
+
+/// The FK route: the membership pairs are the host columns of one declared composite
+/// foreign key onto `projects`' whole key. The two tenants share one project id, so a
+/// parent keyed on `project_id` alone merges the projects and grants each member the
+/// other tenant's doc.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn composite_fk_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE projects (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE docs (
+    doc_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE TABLE project_members (
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, project_id, user_id),
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_visible ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM project_members m
+        WHERE m.tenant_id = docs.tenant_id
+          AND m.project_id = docs.project_id
+          AND m.user_id = auth_current_user_id()));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the composite-FK schema");
+    conn.batch_execute(
+        "CREATE ROLE app_user LOGIN; \
+         GRANT SELECT ON projects, docs, project_members TO app_user;",
+    )
+    .expect("Failed to create the querying role");
+
+    // One project id exists in both tenants, plus a memberless project.
+    let projects = [("t1", "proj"), ("t2", "proj"), ("t1", "proj-empty")];
+    let docs = [
+        ("doc-t1", "t1", "proj"),
+        ("doc-t2", "t2", "proj"),
+        ("doc-empty", "t1", "proj-empty"),
+    ];
+    let members = [("t1", "proj", USER_ALICE), ("t2", "proj", USER_BOB)];
+    {
+        use composite_fk_schema::{
+            docs as docs_table, project_members, projects as projects_table,
+        };
+        diesel::insert_into(projects_table::table)
+            .values(
+                projects
+                    .map(|(tenant, id)| {
+                        (
+                            projects_table::tenant_id.eq(tenant),
+                            projects_table::id.eq(id),
+                        )
+                    })
+                    .to_vec(),
+            )
+            .execute(&mut conn)
+            .expect("Failed to seed projects");
+        diesel::insert_into(docs_table::table)
+            .values(
+                docs.map(|(doc, tenant, project)| {
+                    (
+                        docs_table::doc_id.eq(doc),
+                        docs_table::tenant_id.eq(tenant),
+                        docs_table::project_id.eq(project),
+                    )
+                })
+                .to_vec(),
+            )
+            .execute(&mut conn)
+            .expect("Failed to seed docs");
+        diesel::insert_into(project_members::table)
+            .values(
+                members
+                    .map(|(tenant, project, user)| {
+                        (
+                            project_members::tenant_id.eq(tenant),
+                            project_members::project_id.eq(project),
+                            project_members::user_id.eq(user),
+                        )
+                    })
+                    .to_vec(),
+            )
+            .execute(&mut conn)
+            .expect("Failed to seed project members");
+    }
+
+    let registry_json =
+        r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut service_client, "composite-fk-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+
+    let rows = execute_tuple_queries(&mut conn, &tuple_queries);
+    let writes = rows
+        .iter()
+        .map(|row| support::openfga::make_tuple(&row.object, &row.relation, &row.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for user in [USER_ALICE, USER_BOB] {
+        let readable = postgres_readable_composite_fk_docs(&mut conn, user);
+        // One doc each: the shared project id must not leak across tenants.
+        assert_eq!(
+            readable.len(),
+            1,
+            "{user} reads one doc, PostgreSQL showed {readable:?}"
+        );
+        for (doc, _, _) in docs {
+            let expected = readable.contains(doc);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{user}"),
+                "can_select",
+                &format!("docs:{doc}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "docs:{doc} for {user}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    // A model that denied everything, or granted everything, would pass a one-sided case.
+    assert!(granted > 0 && denied > 0, "the case needs both answers");
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA composite-FK membership parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}

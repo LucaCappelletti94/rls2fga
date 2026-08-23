@@ -382,16 +382,17 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // the records current.
         TupleSource::ExistsMembership {
             join_table,
-            fk_col,
+            fk_cols,
             user_col,
             parent_type,
             extra_predicates,
             gate,
         } => {
-            let mut guards = vec![
-                not_null(join_table, fk_col, db),
-                not_null(join_table, user_col, db),
-            ];
+            let mut guards: Vec<Guard> = fk_cols
+                .iter()
+                .map(|column| not_null(join_table, column, db))
+                .collect();
+            guards.push(not_null(join_table, user_col, db));
             let Some(gate) = gate else {
                 let Some(residual) = residual_guards(join_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
@@ -402,8 +403,8 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             queries: bind(
                                 &query,
                                 join_table,
-                                core::slice::from_ref(fk_col),
-                                &bound_eq(None, core::slice::from_ref(fk_col)),
+                                fk_cols,
+                                &bound_eq(None, fk_cols),
                                 ReplayScope::Object {
                                     object_type: parent_type.clone(),
                                     relations: vec![member_relation()],
@@ -422,7 +423,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 return Some(from_row(
                     join_table,
                     parent_type,
-                    value_column(join_table, fk_col, db),
+                    ObjectKey::new(key_parts(join_table, fk_cols, db)),
                     &member_relation(),
                     well_known.user.as_str(),
                     value_column(join_table, user_col, db),
@@ -439,8 +440,8 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         queries: bind(
                             &query,
                             join_table,
-                            core::slice::from_ref(fk_col),
-                            &bound_eq(None, core::slice::from_ref(fk_col)),
+                            fk_cols,
+                            &bound_eq(None, fk_cols),
                             ReplayScope::Object {
                                 object_type: parent_type.clone(),
                                 relations: vec![member_relation()],
@@ -478,7 +479,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 join_table,
                 RecordTemplate {
                     object_type: parent_type.clone(),
-                    object_key: ObjectKey::new(vec![value_column(join_table, fk_col, db)]),
+                    object_key: ObjectKey::new(key_parts(join_table, fk_cols, db)),
                     relation: member_relation(),
                     subject_type: well_known.user.clone(),
                     subject_key: subject_column(join_table, user_col, db),
@@ -493,25 +494,30 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::ParentBridge {
             table,
-            fk_col,
+            fk_cols,
             parent_type,
             relation,
         } => {
             // The renderer emits a TODO comment rather than a query here, so
             // there are no records to describe.
-            let (object_cols, parent_ref_col) = resolve_bridge_columns(table, fk_col, db)?;
+            let (object_cols, parent_ref_cols) = resolve_bridge_columns(table, fk_cols, db)?;
+            let (first_ref, rest_refs) = parent_ref_cols.split_first()?;
             let mut guards: Vec<Guard> = object_cols
                 .iter()
                 .map(|column| not_null(table, column, db))
                 .collect();
-            guards.push(not_null(table, &parent_ref_col, db));
+            guards.extend(
+                parent_ref_cols
+                    .iter()
+                    .map(|column| not_null(table, column, db)),
+            );
             Some(from_row(
                 table,
                 owner_type,
                 ObjectKey::new(key_parts(table, &object_cols, db)),
                 relation,
                 parent_type,
-                subject_column(table, &parent_ref_col, db),
+                composite_subject(table, first_ref, rest_refs, db),
                 guards,
             ))
         }
