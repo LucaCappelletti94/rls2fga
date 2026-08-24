@@ -919,3 +919,64 @@ fn the_row_evaluator_holds_no_database_handle() {
         );
     }
 }
+
+/// The first fenced block of `language` in `text`, without the fence lines.
+fn fenced_block(text: &str, language: &str) -> String {
+    let open = format!("```{language}\n");
+    let start = text
+        .find(&open)
+        .unwrap_or_else(|| panic!("the README has no ```{language} fence"))
+        + open.len();
+    let end = text[start..]
+        .find("\n```")
+        .unwrap_or_else(|| panic!("the ```{language} fence never closes"))
+        + start;
+    text[start..end].to_string()
+}
+
+/// The README's example blocks are the crate's rustdoc landing page, and both had
+/// drifted from the real output once. The schema, the model and the tuple SQL are
+/// pinned together: the schema must appear in the usage fence, and the fga and sql
+/// fences must hold exactly what that schema yields.
+#[test]
+fn the_readme_example_blocks_match_the_output() {
+    let schema = "
+    CREATE TABLE documents (
+        id       UUID PRIMARY KEY,
+        owner_id UUID NOT NULL
+    );
+    CREATE FUNCTION current_user_id() RETURNS UUID
+        LANGUAGE sql STABLE
+        AS 'SELECT current_setting(''app.current_user_id'', true)::uuid';
+    ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY documents_owner ON documents
+        FOR SELECT TO PUBLIC
+        USING (owner_id = current_user_id());
+";
+    let readme = read_module("README.md");
+    assert!(
+        readme.contains(schema),
+        "the README usage fence no longer holds the schema this guard runs"
+    );
+
+    let db = rls2fga::parser::sql_parser::parse_schema(schema).expect("the schema parses");
+    let outputs = rls2fga::translator::TranslatorBuilder::new()
+        .with_min_confidence(rls2fga::classifier::patterns::ConfidenceLevel::B)
+        .build()
+        .translate(&db)
+        .expect("the schema plans")
+        .outputs()
+        .expect("every clause translates");
+
+    assert_eq!(
+        outputs.model().trim_end(),
+        fenced_block(&readme, "fga").trim_end(),
+        "the README model block drifted from the output"
+    );
+    let rendered = rls2fga::generator::tuple_generator::format_tuples(&outputs.tuple_queries());
+    assert_eq!(
+        rendered.trim_end(),
+        fenced_block(&readme, "sql").trim_end(),
+        "the README tuple block drifted from the output"
+    );
+}
