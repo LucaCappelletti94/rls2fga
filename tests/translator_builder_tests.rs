@@ -996,3 +996,62 @@ CREATE POLICY p ON docs FOR SELECT USING (approved_at IS NOT NULL AND auth.uid()
         classified[0].1
     );
 }
+
+/// `Outputs` consumes the `Translation`, so the analysis surface must stay
+/// reachable through the accessor rather than force a clone up front.
+#[test]
+fn outputs_keep_the_translation_reachable() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id));
+CREATE FUNCTION auth_uid() RETURNS UUID LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translation = TranslatorBuilder::new()
+        .build()
+        .translate(&db)
+        .expect("translation should plan");
+    let relations_before = translation.relations();
+    let outputs = translation.outputs().expect("nothing goes unhandled");
+    assert_eq!(outputs.translation().relations(), relations_before);
+    assert!(!outputs.translation().action_relations().is_empty());
+}
+
+/// The output types serialize and come back equal, so a consumer can store a
+/// translation's results and reload them without re-planning.
+#[test]
+fn output_types_round_trip_through_serde() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id));
+CREATE FUNCTION auth_uid() RETURNS UUID LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.user_id'')::uuid';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let translation = TranslatorBuilder::new()
+        .build()
+        .translate(&db)
+        .expect("translation should plan");
+
+    let notes = translation.notes().to_vec();
+    let json = serde_json::to_string(&notes).expect("notes serialize");
+    let reloaded: Vec<rls2fga::generator::notes::TranslationNote> =
+        serde_json::from_str(&json).expect("notes deserialize");
+    assert_eq!(reloaded, notes);
+
+    let outputs = translation.outputs().expect("nothing goes unhandled");
+    let description = outputs
+        .tuple_queries()
+        .into_iter()
+        .find_map(|query| query.description)
+        .expect("a query describes its records");
+    let json = serde_json::to_string(&description).expect("description serializes");
+    let reloaded: rls2fga::generator::records::RecordDescription =
+        serde_json::from_str(&json).expect("description deserializes");
+    assert_eq!(reloaded, description);
+}

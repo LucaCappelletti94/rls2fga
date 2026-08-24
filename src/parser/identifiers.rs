@@ -261,8 +261,20 @@ compares_against_text!(TypeName);
 /// which is the four minting methods on a type plan, the four derived scope names, the
 /// collision yield, the role pair, and the reserved names.
 ///
-/// Serializes as its text, since the JSON model spells a relation as a bare name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize)]
+/// Serializes as its text, since the JSON model spells a relation as a bare name, and
+/// deserializes the same way, taking the text as a name the emitter already decided.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(transparent)]
 pub struct RelationName(String);
 

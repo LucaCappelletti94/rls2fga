@@ -11,6 +11,10 @@ use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemant
 use crate::parser::sql_parser::DatabaseLike;
 
 /// Classify all policies in the database.
+///
+/// Uses default accessor-inference settings and enriches the registry from the
+/// schema before classifying. For explicit settings or the enriched registry,
+/// go through [`crate::translator::Translator::classify_with_effective_registry`].
 pub fn classify_policies<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
@@ -19,17 +23,9 @@ pub fn classify_policies<DB: DatabaseLike>(
     classify_policies_with_effective_registry_and_settings(db, registry, &settings).0
 }
 
-/// Classify all policies and return the enriched function registry used by the classifier.
-pub fn classify_policies_with_effective_registry<DB: DatabaseLike>(
-    db: &DB,
-    registry: &FunctionRegistry,
-) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
-    let settings = AccessorInferenceSettings::default();
-    classify_policies_with_effective_registry_and_settings(db, registry, &settings)
-}
-
-/// Classify all policies using explicit accessor-inference settings.
-pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
+/// Classify all policies using explicit accessor-inference settings, returning the
+/// enriched function registry the classifier used.
+pub(crate) fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     settings: &AccessorInferenceSettings,
@@ -47,7 +43,7 @@ pub fn classify_policies_with_effective_registry_and_settings<DB: DatabaseLike>(
 }
 
 /// Classify all policies using the provided (already prepared) function registry.
-pub fn classify_policies_with_registry<DB: DatabaseLike>(
+fn classify_policies_with_registry<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
 ) -> Vec<ClassifiedPolicy> {

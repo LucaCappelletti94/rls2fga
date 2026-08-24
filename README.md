@@ -92,7 +92,7 @@ Running the SQL and writing the tuples are yours, since the crate keeps no datab
 
 ## Cargo features
 
-`std` is on by default and carries the file output surface (`Translator::write_output`, `output::formatter`). Without it the crate builds on `no_std` plus `alloc`, verified against `thumbv7em-none-eabi`, with the whole parse, classify and generate pipeline intact. `client` adds the model writer and implies `std`.
+`std` is on by default and carries the file output surface (`Outputs::write`, backed by `output::formatter`). Without it the crate builds on `no_std` plus `alloc`, verified against `thumbv7em-none-eabi`, with the whole parse, classify and generate pipeline intact. `client` adds the model writer and implies `std`.
 
 ## Supported patterns
 

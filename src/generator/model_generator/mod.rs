@@ -129,6 +129,19 @@ impl DirectSubject {
         }
     }
 
+    /// The type a tupleset walk resolves this subject to, `None` for a wildcard,
+    /// which cannot be walked. A condition restricts which tuples exist, not which
+    /// type they name, so a conditional subject resolves like a plain one.
+    fn resolved_type_name(&self) -> Option<&str> {
+        match self {
+            Self::Type(name)
+            | Self::ConditionalType {
+                type_name: name, ..
+            } => Some(name),
+            Self::Wildcard(_) | Self::ConditionalWildcard { .. } => None,
+        }
+    }
+
     /// The DSL spelling inside a type restriction list.
     pub(super) fn dsl_text(&self) -> String {
         match self {

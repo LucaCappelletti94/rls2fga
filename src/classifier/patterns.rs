@@ -142,7 +142,7 @@ pub enum BoolOp {
 /// Comparison an attribute guard applies.
 ///
 /// `#[non_exhaustive]`: a recognizer widening to another operator adds a variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AttributeOperator {
     /// `=`
@@ -163,7 +163,7 @@ pub enum AttributeOperator {
 ///
 /// A number keeps its source spelling, so the generated SQL reproduces the literal
 /// the policy wrote rather than a reformatted one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AttributeLiteral {
     /// A string literal.
@@ -175,7 +175,7 @@ pub enum AttributeLiteral {
 }
 
 /// A column compared against a literal constant, which the row alone decides.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttributePredicate {
     /// Column the guard reads, folded to its stored name.
     pub column: ColumnName,

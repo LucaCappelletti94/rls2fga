@@ -161,6 +161,15 @@ fn default_parameter_name(key: &str, path: &[String]) -> String {
     name
 }
 
+/// Why a function registry JSON payload was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RegistryLoadError {
+    /// The payload is not the JSON object of function semantics the registry expects.
+    #[error("Invalid function registry JSON: {0}")]
+    InvalidJson(String),
+}
+
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
@@ -286,9 +295,9 @@ impl FunctionRegistry {
     }
 
     /// Load function semantics from a JSON string.
-    pub fn load_from_json(&mut self, json: &str) -> Result<(), String> {
+    pub fn load_from_json(&mut self, json: &str) -> Result<(), RegistryLoadError> {
         let parsed: BTreeMap<String, FunctionSemantic> = serde_json::from_str(json)
-            .map_err(|e| format!("Invalid function registry JSON: {e}"))?;
+            .map_err(|e| RegistryLoadError::InvalidJson(e.to_string()))?;
         // Registry takes precedence over analyzed functions
         for (name, semantic) in parsed {
             for key in Self::normalized_function_keys(&name) {
@@ -446,7 +455,10 @@ mod tests {
         let err = registry
             .load_from_json("{not-valid-json")
             .expect_err("invalid json should fail");
-        assert!(err.contains("Invalid function registry JSON"));
+        assert!(matches!(err, RegistryLoadError::InvalidJson(_)));
+        assert!(err
+            .to_string()
+            .starts_with("Invalid function registry JSON"));
     }
 
     #[test]
