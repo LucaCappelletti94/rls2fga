@@ -182,6 +182,9 @@ pub(crate) fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
             .iter()
             .flat_map(|part| dropped_attribute_guards(&part.pattern))
             .collect(),
+        PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) => {
+            dropped_attribute_guards(&inner.pattern)
+        }
         _ => Vec::new(),
     }
 }

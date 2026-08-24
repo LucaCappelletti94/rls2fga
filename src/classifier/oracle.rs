@@ -67,9 +67,10 @@ use crate::no_std_prelude::*;
 use crate::classifier::patterns::{
     composite_confidence, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
     CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
-    ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, JsonbFieldOwnership,
-    MembershipInCallerSet, NumericThreshold, ParentInheritance, PatternClass, RoleNameInList,
-    RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
+    ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
+    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PatternClass,
+    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
+    UncorrelatedMembership,
 };
 
 /// Which clause of a policy an expression came from.
@@ -282,6 +283,11 @@ where
             relationship_part, ..
         }) => consult_expr(relationship_part, policy_name, clause, oracle, answered)
             .then(|| composite_confidence([relationship_part.as_ref()])),
+        // The expansion is proven, so the grade stays the body's rather than being
+        // capped as a composite.
+        PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) => {
+            consult_expr(inner, policy_name, clause, oracle, answered).then_some(inner.confidence)
+        }
         PatternClass::P8Composite(Composite { parts, .. }) => {
             let mut any = false;
             for part in parts.iter_mut() {

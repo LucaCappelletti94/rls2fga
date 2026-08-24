@@ -6,7 +6,8 @@ use crate::no_std_prelude::*;
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
 use crate::generator::db_lookup::resolve_pk_columns;
 use crate::generator::identity::{
-    typed_name_literal, typed_name_sql, MAX_OBJECT_NAME_CHARS, MAX_SUBJECT_NAME_BYTES,
+    typed_name_literal, typed_name_sql, wildcard_subject_literal, MAX_OBJECT_NAME_CHARS,
+    MAX_SUBJECT_NAME_BYTES,
 };
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
@@ -708,6 +709,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     names: NameContext<'_, DB>,
     db: &DB,
 ) -> Option<TupleQuery> {
+    let wildcard_subject = wildcard_subject_literal(&well_known.user);
     match source {
         TupleSource::DirectOwnership {
             table,
@@ -1125,7 +1127,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, '{relation}' AS relation, \
-                     'user:*' AS subject,\n\
+                     {wildcard_subject} AS subject,\n\
                      \x20 '{condition}' AS condition, \
                      jsonb_build_object({context}) AS context\n\
                      FROM {join_table_sql}{where_clause};"
@@ -1356,7 +1358,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 comment: format!("-- Public access flag ({flag_col})"),
                 sql: format!(
                     "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
-                     'user:*' AS subject\n\
+                     {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null}\n\
                      AND {flag_col_sql} = TRUE;"
@@ -1383,7 +1385,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
-                     'user:*' AS subject\n\
+                     {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null}\n\
                      AND {column_sql} {operator} {value_sql};"
@@ -1413,7 +1415,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, '{relation}' AS relation, \
-                     'user:*' AS subject,\n\
+                     {wildcard_subject} AS subject,\n\
                      \x20 '{condition}' AS condition, \
                      jsonb_build_object({parameter_sql}, {column_sql}) AS context\n\
                      FROM {table_sql}\n\
@@ -1458,7 +1460,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, '{relation}' AS relation, \
-                     'user:*' AS subject,\n\
+                     {wildcard_subject} AS subject,\n\
                      \x20 '{condition}' AS condition, \
                      jsonb_build_object({parameter_sql}, {carried_sql}) AS context\n\
                      FROM {table_sql}\n\
@@ -1476,7 +1478,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
                 sql: format!(
                     "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
-                     'user:*' AS subject\n\
+                     {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null};"
                 ),

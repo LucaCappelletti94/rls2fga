@@ -13,7 +13,7 @@ use alloc::collections::BTreeMap;
 
 use crate::classifier::patterns::{AttributeLiteral, AttributeOperator, AttributePredicate};
 use crate::generator::identity::{
-    encode_identity, encode_part, object_name_fits, subject_name_fits,
+    encode_identity, encode_part, hex_digit, object_name_fits, subject_name_fits,
 };
 use crate::generator::well_known::WILDCARD_SUBJECT_ID;
 use crate::parser::identifiers::{ColumnName, RelationName};
@@ -757,20 +757,26 @@ pub trait RowValues {
 }
 
 /// Why a description's records could not be produced from a row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RecordError {
     /// The description reads more than the one row.
+    #[error("records do not follow from one row and must be queried: {0}")]
     NotDerivableFromOneRow(String),
     /// The row's values render a name longer than the target accepts.
+    #[error("the row renders an identifier of {0}, longer than the target accepts")]
     RowCannotBeNamed(usize),
     /// A subject slice is keyed on one column, and the replayed key carried this many values.
+    #[error("a subject slice is keyed on one column, and the replayed key carried {0}")]
     SubjectKeyNotSingular(usize),
     /// The row image did not carry a column this record needs.
+    #[error("the row image did not carry {0}")]
     ColumnAbsent(String),
     /// The row image carried a column value the consumer could not decode.
+    #[error("the row image carried an undecodable value for {0}")]
     ColumnUndecodable(String),
     /// The schema declares a type this row evaluator refuses to print.
+    #[error("the row column {column} has unsupported type {kind:?}")]
     ColumnTypeUnsupported {
         /// The requested column.
         column: String,
@@ -778,6 +784,7 @@ pub enum RecordError {
         kind: ColumnKind,
     },
     /// The decoded cell kind does not match the schema.
+    #[error("the row column {column} decoded as {actual:?}, not {expected:?}")]
     ColumnTypeMismatch {
         /// The requested column.
         column: String,
@@ -787,47 +794,9 @@ pub enum RecordError {
         actual: ColumnKind,
     },
     /// The database needs state the row image does not carry to compare this column.
+    #[error("the row comparison on {0} needs the database")]
     ComparisonNeedsQuery(String),
 }
-
-impl core::fmt::Display for RecordError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotDerivableFromOneRow(reason) => write!(
-                f,
-                "records do not follow from one row and must be queried: {reason}"
-            ),
-            Self::RowCannotBeNamed(length) => write!(
-                f,
-                "the row renders an identifier of {length}, longer than the target accepts"
-            ),
-            Self::SubjectKeyNotSingular(count) => write!(
-                f,
-                "a subject slice is keyed on one column, and the replayed key carried {count}"
-            ),
-            Self::ColumnAbsent(column) => write!(f, "the row image did not carry {column}"),
-            Self::ColumnUndecodable(column) => {
-                write!(f, "the row image carried an undecodable value for {column}")
-            }
-            Self::ColumnTypeUnsupported { column, kind } => {
-                write!(f, "the row column {column} has unsupported type {kind:?}")
-            }
-            Self::ColumnTypeMismatch {
-                column,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "the row column {column} decoded as {actual:?}, not {expected:?}"
-            ),
-            Self::ComparisonNeedsQuery(column) => {
-                write!(f, "the row comparison on {column} needs the database")
-            }
-        }
-    }
-}
-
-impl core::error::Error for RecordError {}
 
 enum Eval<T> {
     Value(T),
@@ -1232,14 +1201,6 @@ fn bytea_sql_text(bytes: &[u8]) -> String {
         out.push(hex_digit(byte & 0x0f));
     }
     out
-}
-
-fn hex_digit(nibble: u8) -> char {
-    match nibble {
-        0..=9 => char::from(b'0' + nibble),
-        10..=15 => char::from(b'a' + (nibble - 10)),
-        _ => char::from(b'0'),
-    }
 }
 
 fn compare_decimals(left: &str, right: &str) -> Option<core::cmp::Ordering> {

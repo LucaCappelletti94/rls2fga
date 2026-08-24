@@ -170,7 +170,7 @@ fn classify_public_flag_registered_column_gives_confidence_a() {
 }
 
 #[test]
-fn classify_abac_status_as_p7() {
+fn classify_abac_status_as_a_threshold_beside_a_literal_guard() {
     let (db, registry) = support::load_fixture_db_and_registry("abac_status");
 
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -178,15 +178,24 @@ fn classify_abac_status_as_p7() {
 
     let cp = &classified[0];
     let classification = cp.using_classification.as_ref().unwrap();
+    // The literal guard is row data the tuples carry, so the pair keeps its
+    // structure instead of flattening to the partial P7 column name.
     assert!(
         matches!(
-            classification.pattern,
-            PatternClass::P7AbacAnd(AbacAnd { .. })
+            &classification.pattern,
+            PatternClass::P8Composite(Composite { parts, .. })
+                if parts.iter().any(|part| matches!(
+                    &part.pattern,
+                    PatternClass::P1NumericThreshold(NumericThreshold { .. })
+                )) && parts.iter().any(|part| matches!(
+                    &part.pattern,
+                    PatternClass::P9AttributeCondition(AttributeCondition { predicate: Some(_), .. })
+                ))
         ),
-        "Expected P7, got {:?}",
+        "Expected threshold beside the literal guard, got {:?}",
         classification.pattern,
     );
-    assert_eq!(classification.confidence, ConfidenceLevel::C);
+    assert_eq!(classification.confidence, ConfidenceLevel::B);
 }
 
 #[test]

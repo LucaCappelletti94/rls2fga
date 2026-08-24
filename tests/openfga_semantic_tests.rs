@@ -190,6 +190,12 @@ async fn openfga_semantic_checks_all_patterns() {
             min_confidence: ConfidenceLevel::C,
             tuples: vec![
                 ("ownables:item1", "owner_id", "owner_grants_owner:o1"),
+                // item1 is a status = 'active' row: the guard now translates as a
+                // per-row gate the tuple loader fills, rather than being dropped
+                // with a runtime-enforcement note.
+                ("ownables:item1", "public_viewer", "user:*"),
+                // item2 is not active, so the guard denies whatever the ladder says.
+                ("ownables:item2", "owner_id", "owner_grants_owner:o1"),
                 ("owner_grants_owner:o1", "owner_user", "user:alice"),
                 ("owner_grants_owner:o1", "owner_team", "team:alpha"),
                 ("team:alpha", "member", "user:bob"),
@@ -234,6 +240,12 @@ async fn openfga_semantic_checks_all_patterns() {
                     "user:nobody",
                     "can_update_without_reading",
                     "ownables:item1",
+                    false,
+                ),
+                (
+                    "user:alice",
+                    "can_update_without_reading",
+                    "ownables:item2",
                     false,
                 ),
             ],

@@ -58,6 +58,10 @@ required-features = ["client"]
 name = "per_row_record_parity_tests"
 required-features = ["client"]
 
+[[test]]
+name = "dump_round_trip_tests"
+required-features = ["client"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"

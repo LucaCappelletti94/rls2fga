@@ -25,6 +25,20 @@ pub(crate) fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
     }
 }
 
+/// The string literal an expression spells, once its casts and parentheses are peeled.
+///
+/// A non-literal is not static and a literal of any other kind is not a string, so both
+/// refuse. Callers add their own reason for wanting one.
+pub(crate) fn string_literal(expr: &Expr) -> Option<String> {
+    match unwrap_cast_or_nested(expr) {
+        Expr::Value(value) => match &value.value {
+            sqlparser::ast::Value::SingleQuotedString(text) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Extract a simple column name from an expression.
 ///
 /// Supports plain identifiers (`owner_id`) and qualified identifiers

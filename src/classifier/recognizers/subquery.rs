@@ -1,4 +1,5 @@
 use super::*;
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::identifiers::ColumnName;
 use crate::parser::names::unquote_identifier;
@@ -11,8 +12,15 @@ pub fn recognize_p4<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    state: &ExpansionState,
 ) -> Option<ClassifiedExpr> {
-    classify_membership_select(readable_exists_select(expr)?, db, registry, outer_table)
+    classify_membership_select(
+        readable_exists_select(expr)?,
+        db,
+        registry,
+        outer_table,
+        state,
+    )
 }
 
 /// Parent inheritance via correlated EXISTS.
@@ -22,6 +30,7 @@ pub fn recognize_p5<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
     command: PolicyCommand,
+    state: &ExpansionState,
 ) -> Option<ClassifiedExpr> {
     let select = readable_exists_select(expr)?;
     let analysis = analyze_p5_parent_inheritance(select, db, outer_table)?;
@@ -72,12 +81,13 @@ pub fn recognize_p5<DB: DatabaseLike>(
                 {
                     continue;
                 }
-                crate::classifier::policy_classifier::classify_expr(
+                crate::classifier::policy_classifier::classify_expr_in_state(
                     &inner_expr,
                     db,
                     registry,
                     &parent_table,
                     command,
+                    state,
                 )
             }
             None => ClassifiedExpr {
@@ -88,17 +98,7 @@ pub fn recognize_p5<DB: DatabaseLike>(
         // Only accept relationship patterns, not attribute checks. A constant `TRUE` is
         // admitted because it is the bare delegation above, where the parent's gate is
         // the entire rule.
-        if !matches!(
-            inner_classified.pattern,
-            PatternClass::P1NumericThreshold(NumericThreshold { .. })
-                | PatternClass::P2RoleNameInList(RoleNameInList { .. })
-                | PatternClass::P3DirectOwnership(DirectOwnership { .. })
-                | PatternClass::P4ExistsMembership(ExistsMembership { .. })
-                | PatternClass::P5ParentInheritance(ParentInheritance { .. })
-                | PatternClass::P7AbacAnd(AbacAnd { .. })
-                | PatternClass::P8Composite(Composite { .. })
-                | PatternClass::P10ConstantBool(ConstantBool { value: true })
-        ) {
+        if !p5_accepts_inner(&inner_classified.pattern) {
             continue;
         }
 
@@ -116,6 +116,27 @@ pub fn recognize_p5<DB: DatabaseLike>(
         return matches.into_iter().next();
     }
     None
+}
+
+/// Whether an inherited parent rule is a relationship the P5 gate may carry.
+/// Attribute checks are refused: they read the parent row rather than relate
+/// the caller to it. A constant `TRUE` is the bare delegation, where the
+/// parent's own gate is the entire rule.
+fn p5_accepts_inner(pattern: &PatternClass) -> bool {
+    match pattern {
+        PatternClass::P1NumericThreshold(NumericThreshold { .. })
+        | PatternClass::P2RoleNameInList(RoleNameInList { .. })
+        | PatternClass::P3DirectOwnership(DirectOwnership { .. })
+        | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P5ParentInheritance(ParentInheritance { .. })
+        | PatternClass::P7AbacAnd(AbacAnd { .. })
+        | PatternClass::P8Composite(Composite { .. })
+        | PatternClass::P10ConstantBool(ConstantBool { value: true }) => true,
+        PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) => {
+            p5_accepts_inner(&inner.pattern)
+        }
+        _ => false,
+    }
 }
 
 /// Rewrite each reference to a joined relation into the parent's own column, where the
@@ -764,10 +785,11 @@ pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
     command: PolicyCommand,
+    state: &ExpansionState,
 ) -> Option<ClassifiedExpr> {
     let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table)?;
-    recognize_p5(&rewritten, db, registry, outer_table, command)
-        .or_else(|| recognize_p4(&rewritten, db, registry, outer_table))
+    recognize_p5(&rewritten, db, registry, outer_table, command, state)
+        .or_else(|| recognize_p4(&rewritten, db, registry, outer_table, state))
 }
 
 /// `x IN (SELECT y FROM t WHERE p)` as `EXISTS (SELECT y FROM t WHERE p AND t.y = outer.x)`.
@@ -857,8 +879,9 @@ fn classify_membership_select<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    state: &ExpansionState,
 ) -> Option<ClassifiedExpr> {
-    match analyze_membership_select(select, db, registry, outer_table) {
+    match analyze_membership_select(select, db, registry, outer_table, state) {
         MembershipSelectAnalysis::Unique {
             join_table,
             columns:
@@ -968,6 +991,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    state: &ExpansionState,
 ) -> MembershipSelectAnalysis {
     if membership_sources_include_ambiguous_unresolvable_shape(select, db)
         && selection_references_current_user(select, registry)
@@ -988,10 +1012,13 @@ fn analyze_membership_select<DB: DatabaseLike>(
 
     // Scanning the guarded table inside its own policy is a read PostgreSQL refuses to
     // plan, and the scan is a fresh one either way, so nothing in the subquery names the
-    // guarded row.
-    if all_sources
-        .iter()
-        .any(|source| same_identifier(&source.table_name, outer_table))
+    // guarded row. Inside a definer expansion whose reads provably bypass row level
+    // security the scan is the owner's, which probe A shows never recurses, so the
+    // membership routes below answer it.
+    if !state.reading_as_owner()
+        && all_sources
+            .iter()
+            .any(|source| same_identifier(&source.table_name, outer_table))
     {
         return MembershipSelectAnalysis::RescansGuardedTable;
     }
@@ -1344,14 +1371,16 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    state: &ExpansionState,
 ) -> Option<String> {
     fn diagnose_select<DB: DatabaseLike>(
         select: &Select,
         db: &DB,
         registry: &FunctionRegistry,
         outer_table: &str,
+        state: &ExpansionState,
     ) -> Option<String> {
-        match analyze_membership_select(select, db, registry, outer_table) {
+        match analyze_membership_select(select, db, registry, outer_table, state) {
             MembershipSelectAnalysis::AmbiguousMultiple => Some(
                 "Ambiguous membership pattern: multiple candidate membership sources matched"
                     .to_string(),
@@ -1389,7 +1418,7 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
         let (select, refusal) = exists_subquery_select(expr)?;
         return match refusal {
             Some(refusal) => Some(refusal.reason()),
-            None => diagnose_select(select, db, registry, outer_table),
+            None => diagnose_select(select, db, registry, outer_table, state),
         };
     }
 
@@ -1421,7 +1450,7 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     let Expr::Exists { subquery, .. } = &rewritten else {
         return None;
     };
-    diagnose_select(query_select(subquery)?, db, registry, outer_table)
+    diagnose_select(query_select(subquery)?, db, registry, outer_table, state)
 }
 
 pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
@@ -1430,6 +1459,7 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     outer_table: &str,
     command: PolicyCommand,
+    state: &ExpansionState,
 ) -> Option<String> {
     // The `IN (SELECT ...)` spelling reaches the recognizers rewritten, so the diagnosis
     // has to read the same expression they refused.
@@ -1466,12 +1496,13 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
                 candidate.parent_table
             ));
         }
-        match crate::classifier::policy_classifier::classify_expr(
+        match crate::classifier::policy_classifier::classify_expr_in_state(
             &inner,
             db,
             registry,
             &candidate.parent_table,
             command,
+            state,
         )
         .pattern
         {
@@ -2344,13 +2375,14 @@ pub(super) fn qualifier_matches_table(
     table_name: &str,
     alias: Option<&str>,
 ) -> bool {
-    if alias.is_some_and(|a| same_identifier(qualifier, a)) {
-        return true;
+    // An alias replaces the table's own name for its scope, so a qualifier
+    // spelling the hidden name refers to an enclosing scope's table.
+    match alias {
+        Some(alias) => same_identifier(qualifier, alias),
+        None => table_qualifier_candidates(table_name)
+            .iter()
+            .any(|candidate| same_identifier(qualifier, candidate)),
     }
-
-    table_qualifier_candidates(table_name)
-        .iter()
-        .any(|candidate| same_identifier(qualifier, candidate))
 }
 
 pub(super) fn table_qualifier_candidates(table_name: &str) -> Vec<String> {

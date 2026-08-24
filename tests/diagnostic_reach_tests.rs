@@ -294,10 +294,20 @@ CREATE POLICY p ON docs FOR SELECT USING (get_owner_role(current_user, owner_id)
 }
 
 /// An attribute the model hands to the application, which only appears below the default
-/// threshold, so it is the one family that needs a lower one to be seen at all.
+/// threshold, so it is the one family that needs a lower one to be seen at all. A literal
+/// IN-list guard beside the threshold is the shape the tuples cannot carry.
 #[test]
 fn an_attribute_left_to_the_application_is_reported_and_skipped() {
-    let (classified, db, registry) = support::try_load_fixture_classified("abac_status");
+    let (classified, db, registry) = support::classify_sql(
+        &format!(
+            "{GRANT_TABLE}
+CREATE TABLE ownables(id TEXT PRIMARY KEY, owner_id TEXT, status TEXT);
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+CREATE POLICY ownables_update ON ownables FOR UPDATE
+    USING (get_owner_role(current_user, owner_id) >= 3 AND status IN ('active', 'draft'));"
+        ),
+        Some(GRANTS),
+    );
     let planned = Translation::plan(
         classified,
         &db,

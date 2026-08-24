@@ -2,7 +2,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{Expr, FunctionArguments, FunctionSecurity, SelectItem, Statement, Value};
+use sqlparser::ast::{Expr, FunctionArguments, FunctionSecurity, SelectItem, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
@@ -565,15 +565,9 @@ pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let ([arg] | [arg, _]) = arg_list.args.as_slice() else {
         return None;
     };
-    let arg_expr = function_arg_expr(arg)?;
-    let Expr::Value(value) = arg_expr else {
-        return None;
-    };
-    let Value::SingleQuotedString(key) = &value.value else {
-        return None;
-    };
+    let key = crate::parser::expr::string_literal(function_arg_expr(arg)?)?;
 
-    Some(normalize_setting_key(key))
+    Some(normalize_setting_key(&key))
 }
 
 fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenceSettings) -> bool {
@@ -680,6 +674,12 @@ impl FunctionSemantic {
 fn runs_as_owner_reading_effective_user(body_lower: &str, security: &FunctionSecurity) -> bool {
     matches!(security, FunctionSecurity::Definer)
         && contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(body_lower))
+}
+
+/// True when the body reads `current_user` or `current_role` as a token,
+/// keyword spellings inside literals and comments excluded.
+pub(crate) fn body_reads_effective_user(body: &str) -> bool {
+    contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(&body.to_lowercase()))
 }
 
 #[cfg(test)]

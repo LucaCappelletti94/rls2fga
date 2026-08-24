@@ -1,0 +1,538 @@
+//! A policy calling a single-expression `LANGUAGE sql` function expands to the
+//! function body, so the documented workaround for policy self-recursion
+//! translates from the dump alone. Every guard refuses by falling closed.
+
+use rls2fga::classifier::patterns::{
+    ConfidenceLevel, ExistsMembership, ExpandedFunction, PatternClass, UnclassifiedExpr,
+};
+use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+
+mod support;
+
+use support::footgun::{db_of, relation_denies, translator};
+
+/// The classified USING pattern of the one policy on `docs`.
+fn docs_using_pattern(sql: &str) -> PatternClass {
+    let db = db_of(sql);
+    let classified = translator(ConfidenceLevel::B).classify(&db);
+    let policy = classified
+        .iter()
+        .find(|policy| policy.table == "docs")
+        .expect("docs policy should classify");
+    policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern
+        .clone()
+}
+
+/// The refusal reason when the `docs` policy falls closed.
+fn docs_refusal_reason(sql: &str) -> String {
+    match docs_using_pattern(sql) {
+        PatternClass::Unknown(UnclassifiedExpr { reason, .. }) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// Probe A's idiom: a definer wrapper around a membership EXISTS, owner unmoved.
+const DEFINER_MEMBERSHIP: &str = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+
+#[test]
+fn a_definer_wrapped_membership_expands_to_the_body_membership() {
+    let pattern = docs_using_pattern(DEFINER_MEMBERSHIP);
+    let PatternClass::ExpandedFunction(ExpandedFunction {
+        function,
+        reads_bypass_rls,
+        inner,
+    }) = pattern
+    else {
+        panic!("expected an expanded call, got {pattern:?}");
+    };
+    assert_eq!(function, "is_member");
+    assert!(
+        reads_bypass_rls,
+        "the one schema principal owns both the function and the read table"
+    );
+    assert!(
+        matches!(
+            &inner.pattern,
+            PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
+                if join_table == "doc_members"
+                    && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+        ),
+        "the body should classify as the membership it wraps, got {:?}",
+        inner.pattern
+    );
+}
+
+#[test]
+fn an_expanded_policy_carries_a_faithful_note_naming_the_function() {
+    let db = db_of(DEFINER_MEMBERSHIP);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    let note = translation
+        .notes()
+        .iter()
+        .find(|note| matches!(note, TranslationNote::FunctionExpanded { .. }))
+        .expect("an expanded policy should disclose the expansion");
+    assert_eq!(note.severity(), NoteSeverity::Faithful);
+    let TranslationNote::FunctionExpanded { policy, function } = note else {
+        unreachable!()
+    };
+    assert_eq!(policy, "docs_sel");
+    assert_eq!(function, "is_member");
+}
+
+/// The definer bypass is what distinguishes probe C2 from C1: the caller cannot
+/// read the membership table at all, and the rows still count.
+#[test]
+fn a_definer_bypass_grants_through_an_unreadable_membership_table() {
+    let db = db_of(DEFINER_MEMBERSHIP);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    assert!(
+        !translation.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::MembershipTableGrantsNoReads { .. }
+                | TranslationNote::MembershipTableGuarded { .. }
+        )),
+        "a provably bypassed read is not the caller's readability question: {:?}",
+        translation.notes()
+    );
+    let dsl = translation.outputs_accepting_gaps().model();
+    assert!(
+        !relation_denies(&dsl, "docs", "can_select"),
+        "the definer read bypasses the membership policies:\n{dsl}"
+    );
+}
+
+/// The same body as `SECURITY INVOKER` runs as the caller, so the membership
+/// table's own emptiness of read grants denies, exactly as an inline EXISTS.
+#[test]
+fn an_invoker_wrapper_keeps_the_caller_side_readability_question() {
+    let sql = DEFINER_MEMBERSHIP.replace(" SECURITY DEFINER ", " ");
+    let db = db_of(&sql);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    assert!(
+        translation
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::MembershipTableGrantsNoReads { .. })),
+        "an invoker read is the caller's, and the caller reads nothing: {:?}",
+        translation.notes()
+    );
+    let dsl = translation.outputs_accepting_gaps().model();
+    assert!(
+        relation_denies(&dsl, "docs", "can_select"),
+        "no membership row is visible to any caller:\n{dsl}"
+    );
+}
+
+#[test]
+fn force_row_level_security_on_the_read_table_refuses() {
+    let sql = format!("{DEFINER_MEMBERSHIP}ALTER TABLE doc_members FORCE ROW LEVEL SECURITY;");
+    let reason = docs_refusal_reason(&sql);
+    assert!(
+        reason.contains("FORCE ROW LEVEL SECURITY"),
+        "probe B raises at runtime, so the shape refuses: {reason}"
+    );
+}
+
+#[test]
+fn a_split_function_owner_refuses() {
+    let sql = format!(
+        "CREATE ROLE third_role;\n{DEFINER_MEMBERSHIP}\
+         ALTER FUNCTION is_member(UUID) OWNER TO third_role;"
+    );
+    let reason = docs_refusal_reason(&sql);
+    assert!(
+        reason.contains("is_member") && reason.contains("third_role"),
+        "probe C1 filters the definer's read by policies the schema cannot answer: {reason}"
+    );
+}
+
+#[test]
+fn a_bypassrls_function_owner_expands() {
+    let sql = format!(
+        "CREATE ROLE svc BYPASSRLS;\n{DEFINER_MEMBERSHIP}\
+         ALTER FUNCTION is_member(UUID) OWNER TO svc;"
+    );
+    let pattern = docs_using_pattern(&sql);
+    assert!(
+        matches!(
+            pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction {
+                reads_bypass_rls: true,
+                ..
+            })
+        ),
+        "probe D: BYPASSRLS reads everything, got {pattern:?}"
+    );
+}
+
+#[test]
+fn current_user_in_a_definer_body_stays_refused() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id::text = current_user)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("current_user"),
+        "the value is the owner's for every caller: {reason}"
+    );
+}
+
+#[test]
+fn a_plpgsql_body_refuses_naming_the_language() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS
+'BEGIN RETURN TRUE; END';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("plpgsql"),
+        "a second parser of record was rejected, so the language refuses: {reason}"
+    );
+}
+
+#[test]
+fn a_multi_statement_body_refuses() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT 1; SELECT TRUE';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("single-expression"),
+        "earlier statements can change what the last one reads: {reason}"
+    );
+}
+
+/// The Q6 hazard: inside a `LANGUAGE sql` body a bare name matching both an
+/// argument and a column of a table in scope resolves to the column, silently,
+/// so the clause compares the column to itself and admits every row.
+#[test]
+fn a_shadowed_argument_refuses_naming_the_function_and_the_argument() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(doc_id UUID) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = doc_id AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("is_member") && reason.contains("doc_id") && reason.contains("shadow"),
+        "PostgreSQL resolves the bare name to the column: {reason}"
+    );
+}
+
+/// The same guard through a quoted argument name, which is what sqlparser #2447
+/// makes visible: `\"doc_id\"` arrives with its quote flag set and the value
+/// unmangled, so the collision with the column is detected.
+#[test]
+fn a_quoted_shadowed_argument_refuses_too() {
+    let sql = r#"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member("doc_id" UUID) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = "doc_id" AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+"#;
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("doc_id") && reason.contains("shadow"),
+        "a quoted spelling of the same name is the same collision: {reason}"
+    );
+}
+
+/// One membership, three spellings of the argument reference: positional,
+/// bare name, and function-qualified. All three substitute to the same clause.
+#[test]
+fn positional_named_and_qualified_substitution_agree() {
+    let bodies = [
+        "'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = $1 AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)'",
+        "'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)'",
+        "'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = is_member.d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)'",
+    ];
+    for body in bodies {
+        let sql = format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS {body};
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+"
+        );
+        let pattern = docs_using_pattern(&sql);
+        let PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) = pattern else {
+            panic!("expected an expansion for body {body}, got {pattern:?}");
+        };
+        assert!(
+            matches!(
+                &inner.pattern,
+                PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
+                    if join_table == "doc_members"
+                        && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+            ),
+            "body {body} should reach the same membership, got {:?}",
+            inner.pattern
+        );
+    }
+}
+
+/// The self-referential idiom itself: the membership table's own policy calls
+/// the definer wrapper with its `doc_id`. A bare substitution of that column
+/// would be captured by the subquery's own `doc_id` and compare the column to
+/// itself, admitting every row, so the substituted reference must stay the
+/// outer table's.
+#[test]
+fn a_substituted_column_is_not_captured_by_the_body_scope() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
+";
+    let db = db_of(sql);
+    let classified = translator(ConfidenceLevel::B).classify(&db);
+    let policy = classified
+        .iter()
+        .find(|policy| policy.table == "doc_members")
+        .expect("doc_members policy should classify");
+    let pattern = &policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern;
+    assert!(
+        !matches!(
+            pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(&inner.pattern, PatternClass::P13UncorrelatedMembership(_))
+        ),
+        "a captured substitution reads as an uncorrelated grant of every row: {pattern:?}"
+    );
+    assert!(
+        matches!(
+            pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
+                        if join_table == "doc_members"
+                            && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
+                )
+        ),
+        "the row's own doc_id keys the membership: {pattern:?}"
+    );
+}
+
+/// The body scans the same table without an alias, so a qualified reference to
+/// the guarded row cannot be spelled from inside: the scan's own name claims it.
+#[test]
+fn an_unaliased_scan_of_the_arguments_table_refuses_the_capture() {
+    let sql = r"
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+'SELECT EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = d AND doc_members.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
+";
+    let db = db_of(sql);
+    let classified = translator(ConfidenceLevel::B).classify(&db);
+    let policy = classified.first().expect("one policy");
+    let pattern = &policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern;
+    assert!(
+        matches!(
+            pattern,
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("captured")
+        ),
+        "an unspellable outer reference falls closed: {pattern:?}"
+    );
+}
+
+/// Probe A end to end at the model level: both tables grant through the
+/// definer, the membership table's rows keyed by their own doc.
+#[test]
+fn the_probe_a_idiom_grants_both_tables() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
+";
+    let db = db_of(sql);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    let outputs = translation.outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert!(
+        !relation_denies(&dsl, "docs", "can_select"),
+        "members read their docs through the definer:\n{dsl}"
+    );
+    assert!(
+        !relation_denies(&dsl, "doc_members", "can_select"),
+        "members read the membership rows of their docs:\n{dsl}"
+    );
+    assert!(
+        !outputs.tuple_queries().is_empty(),
+        "the membership rows are the facts the model needs"
+    );
+}
+
+/// The `RETURN expression` spelling parses the body up front, and expands the
+/// same way the quoted-string spelling does.
+#[test]
+fn a_return_expression_body_expands() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+RETURN EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(&inner.pattern, PatternClass::P4ExistsMembership(_))
+        ),
+        "RETURN expression is the pre-parsed spelling of the same body, got {pattern:?}"
+    );
+}
+
+/// A function whose body calls itself can never finish expanding, and the
+/// refusal has to name the cycle rather than hang or overflow.
+#[test]
+fn a_self_calling_function_refuses_the_cycle() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT is_member(d)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("cycle"),
+        "expansion must terminate on self-reference and name why: {reason}"
+    );
+}
+
+/// Two functions expanding each other terminate the same way a self-call does,
+/// even though each expansion starts from a different name.
+#[test]
+fn mutually_recursive_functions_refuse() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION even_hop(d UUID) RETURNS BOOLEAN LANGUAGE sql AS 'SELECT odd_hop(d)';
+CREATE FUNCTION odd_hop(d UUID) RETURNS BOOLEAN LANGUAGE sql AS 'SELECT even_hop(d)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (even_hop(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("cycle"),
+        "mutual recursion must terminate and name why: {reason}"
+    );
+}
+
+/// A registry declaration wins over the body: an operator who said what a
+/// function means, or that it is unknown, is not second-guessed by expansion.
+#[test]
+fn a_registry_declared_function_is_not_expanded() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let db = db_of(sql);
+    let translator = rls2fga::translator::TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_registry_json(
+            r#"{"is_member": {"kind": "unknown", "reason": "audited and declined"}}"#,
+        )
+        .expect("registry json should load")
+        .build();
+    let classified = translator.classify(&db);
+    let policy = classified
+        .iter()
+        .find(|policy| policy.table == "docs")
+        .expect("docs policy should classify");
+    let pattern = &policy
+        .using_classification
+        .as_ref()
+        .expect("USING should classify")
+        .pattern;
+    assert!(
+        matches!(
+            pattern,
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("audited and declined")
+        ),
+        "the declaration wins over the body: {pattern:?}"
+    );
+}
+
+/// A call whose argument count disagrees with the declaration is not the
+/// declared function's meaning, so it refuses rather than substituting a guess.
+#[test]
+fn an_arity_mismatch_refuses() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID, extra INT) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT TRUE';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+";
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(&pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("argument")),
+        "one argument against a two-argument declaration is no expansion: {pattern:?}"
+    );
+}

@@ -27,21 +27,8 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // Reading the member table is still reading it as the caller, so its own
     // RLS decides which membership rows count, exactly as for P4.
-    match join_table_readability(member_table, db, readability) {
-        JoinTableReadability::Unreadable => {
-            notes.push(TranslationNote::MembershipTableGrantsNoReads {
-                policy: policy_name.to_string(),
-                join_table: member_table.clone(),
-            });
-            return deny_expr(table_plan);
-        }
-        JoinTableReadability::Guarded { .. } => {
-            notes.push(TranslationNote::MembershipTableGuarded {
-                policy: policy_name.to_string(),
-                join_table: member_table.clone(),
-            });
-        }
-        JoinTableReadability::Open => {}
+    if noted_membership_read_scope(member_table, ctx, readability, notes).is_none() {
+        return deny_expr(table_plan);
     }
     // Before any note or any minting: the grant hangs off a bridge from this row
     // to the holder, so with no row identity there is nothing to hang it on, a
@@ -83,7 +70,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // One holder per member source, never per table and never per policy: two
     // policies reading the same table may share, and two reading different
     // ones must not pool their members.
-    let holder_type = holder_type_name(member_table, table_types);
+    let holder_type = holder_type_name(member_table, table_types, ctx.db);
     ensure_member_type(all_types, &holder_type, &table_plan.well_known);
     if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
         holder_plan.add_direct_subject(
@@ -148,22 +135,9 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // The subquery reads `join_table` as the user, so its own RLS decides which
     // membership rows count.
-    let read_scope_roles = match join_table_readability(join_table, db, readability) {
-        JoinTableReadability::Unreadable => {
-            notes.push(TranslationNote::MembershipTableGrantsNoReads {
-                policy: policy_name.to_string(),
-                join_table: join_table.clone(),
-            });
-            return deny_expr(table_plan);
-        }
-        JoinTableReadability::Guarded { roles } => {
-            notes.push(TranslationNote::MembershipTableGuarded {
-                policy: policy_name.to_string(),
-                join_table: join_table.clone(),
-            });
-            roles
-        }
-        JoinTableReadability::Open => Vec::new(),
+    let Some(read_scope_roles) = noted_membership_read_scope(join_table, ctx, readability, notes)
+    else {
+        return deny_expr(table_plan);
     };
 
     // The classifier's own resolver, so an oracle-supplied pairing obeys the same
@@ -328,7 +302,8 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
 
     // Only those roles can read the membership rows, so only they inherit
     // the grant.
-    let scope_relation = membership_read_scope_relation_name(join_table);
+    let scope_relation =
+        membership_read_scope_relation_name(&ctx.table_types.resolve(ctx.db, join_table));
     register_pg_role_scope(
         table_plan,
         all_types,

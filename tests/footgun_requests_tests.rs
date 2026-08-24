@@ -458,30 +458,30 @@ CREATE POLICY docs_json ON docs FOR SELECT
 /// A jsonb or array comparison against a literal is an attribute guard, exactly as
 /// `status = 'published'` is. Leaving it unrecognized made the same policy shape behave
 /// differently depending on whether the attribute lived in a column or a document: the
-/// plain spelling reached P7 and kept its relationship half, the jsonb one collapsed the
-/// whole `AND` to `no_access`.
+/// jsonb spelling collapsed the whole `AND` to `no_access` and lost the relationship
+/// half. A plain column literal now goes further and becomes per-row tuples, while a
+/// document-held guard keeps the relationship half beside a runtime-enforcement note.
 #[test]
 fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
-    const PLAIN: &str = "status = 'published'";
-    let plain_db = db_of(&format!(
+    let plain_db = db_of(
         "CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, data JSONB, tags TEXT[], status TEXT);
          ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
          CREATE POLICY docs_hybrid ON docs FOR SELECT
-           USING (owner_id = current_user AND {PLAIN});"
-    ));
-    let expected = relation_definition(
-        &translator(ConfidenceLevel::C)
-            .translate(&plain_db)
-            .expect("translation should plan")
-            .outputs_accepting_gaps()
-            .model(),
-        "docs",
-        "can_select",
-    )
-    .expect("the plain spelling defines can_select");
+           USING (owner_id = current_user AND status = 'published');",
+    );
     assert_eq!(
-        expected, "owner",
-        "guard precondition: the plain attribute guard keeps its relationship half"
+        relation_definition(
+            &translator(ConfidenceLevel::C)
+                .translate(&plain_db)
+                .expect("translation should plan")
+                .outputs_accepting_gaps()
+                .model(),
+            "docs",
+            "can_select",
+        )
+        .as_deref(),
+        Some("owner and public_viewer"),
+        "a plain column literal is row data the tuples carry"
     );
 
     for guard in [
@@ -496,16 +496,26 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
              CREATE POLICY docs_hybrid ON docs FOR SELECT
                USING (owner_id = current_user AND {guard});"
         ));
-        let dsl = translator(ConfidenceLevel::C)
+        let outputs = translator(ConfidenceLevel::C)
             .translate(&db)
             .expect("translation should plan")
-            .outputs_accepting_gaps()
-            .model();
+            .outputs_accepting_gaps();
+        let dsl = outputs.model();
         let can_select = relation_definition(&dsl, "docs", "can_select")
             .unwrap_or_else(|| panic!("`{guard}`: docs must define can_select:\n{dsl}"));
         assert_eq!(
-            can_select, expected,
-            "`{guard}`: must behave like `{PLAIN}`, which yields '{expected}':\n{dsl}"
+            can_select, "owner",
+            "`{guard}`: the relationship half survives the guard the tuples cannot carry:\n{dsl}"
+        );
+        assert!(
+            outputs.notes().iter().any(|note| {
+                matches!(
+                    note,
+                    TranslationNote::AttributeNeedsRuntimeEnforcement { .. }
+                )
+            }),
+            "`{guard}`: the dropped guard is disclosed:\n{:#?}",
+            outputs.notes()
         );
     }
 }

@@ -24,37 +24,16 @@ use crate::generator::json_model::AuthorizationModel;
 /// Why a model did not reach the server.
 ///
 /// `#[non_exhaustive]`: a later failure costs a caller no rewrite.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WriteModelError {
     /// The model did not translate into the client's own types, which is this
     /// crate's fault rather than the caller's.
-    Untranslatable(serde_json::Error),
+    #[error("the model does not translate into a write request: {0}")]
+    Untranslatable(#[source] serde_json::Error),
     /// The server refused the write.
-    Refused(Status),
-}
-
-impl core::fmt::Display for WriteModelError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Untranslatable(error) => {
-                write!(
-                    f,
-                    "the model does not translate into a write request: {error}"
-                )
-            }
-            Self::Refused(status) => write!(f, "the server refused the model: {status}"),
-        }
-    }
-}
-
-impl core::error::Error for WriteModelError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Untranslatable(error) => Some(error),
-            Self::Refused(status) => Some(status),
-        }
-    }
+    #[error("the server refused the model: {0}")]
+    Refused(#[source] Status),
 }
 
 /// Write `model` to `store_id` and return the id it was stored under.

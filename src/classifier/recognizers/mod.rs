@@ -87,17 +87,7 @@ pub fn recognize_p2<DB: DatabaseLike>(
     _db: &DB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    if let Expr::InList {
-        expr: inner_expr,
-        list,
-        negated,
-    } = expr
-    {
-        // Negated IN-lists cannot be expressed as static tuples.
-        if *negated {
-            return None;
-        }
-
+    if let Some((inner_expr, list)) = constant_in_list(expr) {
         if let Some(func_name) = extract_function_name(inner_expr) {
             if registry.is_role_threshold(&func_name) {
                 if !function_has_current_user_arg(inner_expr, registry) {
@@ -176,22 +166,10 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     };
 
     // The privilege decides which members the policy admits, so a privilege the crate cannot
-    // read is refused rather than taken for plain membership.
-    let privilege = match privilege_expr {
-        Expr::Value(v) => match &v.value {
-            Value::SingleQuotedString(s) => RolePrivilege::parse(s)?,
-            _ => return None,
-        },
-        _ => return None,
-    };
-
-    let role_name = match role_expr {
-        Expr::Value(v) => match &v.value {
-            Value::SingleQuotedString(s) => s.clone(),
-            _ => return None,
-        },
-        _ => return None,
-    };
+    // read is refused rather than taken for plain membership. A dump deparses both literals
+    // with casts, `'editor'::name` and `'MEMBER'::text`, which the reader peels.
+    let privilege = RolePrivilege::parse(&string_literal(privilege_expr)?)?;
+    let role_name = string_literal(role_expr)?;
 
     Some(ClassifiedExpr {
         pattern: PatternClass::P2RoleNameInList(RoleNameInList {
@@ -230,13 +208,7 @@ fn recognize_role_accessor_comparison(
             (name, left.as_ref())
         };
 
-        let role_name = match literal_expr {
-            Expr::Value(v) => match &v.value {
-                Value::SingleQuotedString(s) => s.clone(),
-                _ => return None,
-            },
-            _ => return None,
-        };
+        let role_name = string_literal(literal_expr)?;
 
         return Some(ClassifiedExpr {
             pattern: PatternClass::P2RoleNameInList(RoleNameInList {
@@ -251,12 +223,7 @@ fn recognize_role_accessor_comparison(
         });
     }
 
-    if let Expr::InList {
-        expr: inner,
-        list,
-        negated: false,
-    } = expr
-    {
+    if let Some((inner, list)) = constant_in_list(expr) {
         let func_name = extract_role_func_name(inner)?;
         let role_names = extract_role_names_from_in_list(list, false)?;
 
@@ -286,7 +253,8 @@ fn recognize_role_accessor_comparison(
 fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Option<Vec<String>> {
     list.iter()
         .map(|e| {
-            if let Expr::Value(v) = e {
+            // A dump deparses list elements with casts, which change no value here.
+            if let Expr::Value(v) = unwrap_cast_or_nested(e) {
                 return match &v.value {
                     Value::SingleQuotedString(s) => Some(s.clone()),
                     Value::Number(n, _) if allow_numeric => Some(n.clone()),
@@ -296,6 +264,28 @@ fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Option
             None
         })
         .collect()
+}
+
+/// `x IN (a, b)` and its dumped spelling `x = ANY (ARRAY[a, b])`, one
+/// expression with two spellings. Negated lists refuse elsewhere.
+pub(super) fn constant_in_list(expr: &Expr) -> Option<(&Expr, &[Expr])> {
+    match expr {
+        Expr::InList {
+            expr,
+            list,
+            negated: false,
+        } => Some((expr, list)),
+        Expr::AnyOp {
+            left,
+            compare_op: BinaryOperator::Eq,
+            right,
+            is_some: false,
+        } => match unwrap_cast_or_nested(right) {
+            Expr::Array(array) => Some((left, &array.elem)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Direct ownership check.
@@ -562,19 +552,7 @@ fn json_value_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
     }
 }
 
-/// The string literal an expression spells, once its casts and parentheses are peeled.
-///
-/// A non-literal is not static and a literal of any other kind is not a string, so both
-/// refuse. Callers add their own reason for wanting one.
-pub(super) fn string_literal(expr: &Expr) -> Option<String> {
-    match unwrap_cast_or_nested(expr) {
-        Expr::Value(value) => match &value.value {
-            Value::SingleQuotedString(key) => Some(key.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+pub(super) use crate::parser::expr::string_literal;
 
 /// Constant boolean policy.
 pub fn recognize_p10_constant_bool<DB: DatabaseLike>(

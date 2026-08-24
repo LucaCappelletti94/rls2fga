@@ -284,7 +284,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
 }
 
 #[test]
-fn p7_abac_and_emits_tuple_warning_for_dropped_attribute() {
+fn a_literal_guard_beside_ownership_emits_gate_tuples() {
     let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (
@@ -319,11 +319,11 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
 
     assert!(
         tuples.contains("'owner' AS relation"),
-        "P7 should still emit relationship tuples, got:\n{tuples}"
+        "the relationship half still emits its tuples, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("attribute condition"),
-        "P7 should emit a warning about the dropped attribute guard, got:\n{tuples}"
+        tuples.contains("\"status\" = 'active'"),
+        "the literal guard is row data, so its gate emits per-row tuples, got:\n{tuples}"
     );
 }
 

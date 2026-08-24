@@ -278,6 +278,9 @@ fn attribute_literal(expr: &Expr) -> Option<AttributeLiteral> {
 
 /// Column name compared in a non-user attribute guard, if `expr` is one.
 pub fn is_attribute_check(expr: &Expr) -> Option<ColumnName> {
+    // A dump parenthesizes every conjunct, and the parentheses are not part
+    // of the shape.
+    let expr = unparenthesize(expr);
     if let Expr::BinaryOp { left, op, right } = expr {
         if matches!(
             op,
@@ -300,12 +303,7 @@ pub fn is_attribute_check(expr: &Expr) -> Option<ColumnName> {
             }
         }
     }
-    if let Expr::InList {
-        expr: col_expr,
-        list,
-        negated: false,
-    } = expr
-    {
+    if let Some((col_expr, list)) = constant_in_list(unparenthesize(expr)) {
         if let Some(col) = extract_column_name(col_expr) {
             if !is_user_related_column_name(col.as_str())
                 && !list.is_empty()

@@ -260,6 +260,44 @@ pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, Type
     }
 }
 
+/// Narrow every grants source to the ladder levels the model still declares.
+///
+/// A grants query names one relation per level, and a single row naming a pruned
+/// relation poisons the whole write batch, so the source follows the pruning.
+/// Owned by the plan rather than one renderer, so the tuple SQL, the bound
+/// queries and the record descriptions all read the same levels.
+pub(crate) fn narrow_grant_sources_to_declared(all_types: &mut BTreeMap<String, TypePlan>) {
+    let declared: BTreeSet<(String, RelationName)> = all_types
+        .values()
+        .flat_map(|plan| {
+            plan.direct_relations
+                .keys()
+                .chain(plan.computed_relations.keys())
+                .map(|relation| (plan.type_name.to_string(), relation.clone()))
+        })
+        .collect();
+    for plan in all_types.values_mut() {
+        for source in &mut plan.table_tuple_sources {
+            if let TupleSource::ExplicitGrants {
+                owner_type,
+                role_cases,
+                ..
+            } = source
+            {
+                role_cases.retain(|(_, grant_rel, _)| {
+                    declared.contains(&(owner_type.clone(), grant_rel.clone()))
+                });
+            }
+        }
+        plan.table_tuple_sources.retain(|source| {
+            !matches!(
+                source,
+                TupleSource::ExplicitGrants { role_cases, .. } if role_cases.is_empty()
+            )
+        });
+    }
+}
+
 /// Whether a relation this type defines can never grant.
 ///
 /// The relation-level door to [`grants_nothing`], so a caller holding a name rather than

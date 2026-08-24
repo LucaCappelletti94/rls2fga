@@ -86,8 +86,8 @@ use role_threshold::populate_role_threshold_sources;
 pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
     drop_implied_insert_readback, grants_nothing, inline_synthetic_rule_aliases,
-    prune_unreferenced_relations, reach_userset, requires_read_access,
-    simplify_redundant_select_gates,
+    narrow_grant_sources_to_declared, prune_unreferenced_relations, reach_userset,
+    requires_read_access, simplify_redundant_select_gates,
 };
 
 /// `OpenFGA` authorization model schema version.
@@ -500,10 +500,13 @@ pub(crate) struct SchemaPlan {
 }
 
 /// Why a translation cannot be planned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum PlanningError {
     /// A table claimed a configured type name that belongs to the generator.
+    #[error(
+        "table '{table}' takes configured well-known type '{type_name}' from setting '{setting}'"
+    )]
     ReservedTypeName {
         /// Table whose canonical name claims the configured type.
         table: String,
@@ -513,23 +516,6 @@ pub enum PlanningError {
         type_name: String,
     },
 }
-
-impl core::fmt::Display for PlanningError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::ReservedTypeName {
-                table,
-                setting,
-                type_name,
-            } => write!(
-                f,
-                "table '{table}' takes configured well-known type '{type_name}' from setting '{setting}'"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for PlanningError {}
 
 /// Render the DSL text for a plan.
 pub(crate) fn render_dsl_from_plan(plan: &SchemaPlan) -> String {
@@ -891,6 +877,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     define_blanket_update_relations(&mut all_types);
     prune_plain_subjects_fed_only_by_gated_sources(&mut all_types, &settings.well_known);
     prune_unreferenced_relations(&mut all_types);
+    narrow_grant_sources_to_declared(&mut all_types);
 
     // After pruning, so a model with nothing to deny carries no such type, and only then,
     // since a denial that survives has to name a type the model declares.
@@ -1113,6 +1100,7 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                     db: self.db,
                     table_types: self.table_types,
                     source_table: self.source_table,
+                    membership_reads_bypass_rls: false,
                     settings: self.settings,
                 },
                 self.plan,
@@ -1629,10 +1617,19 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
 /// reading different ones cannot pool their members. Disambiguated against the table
 /// types, which are all assigned before any policy is translated, so a schema that
 /// happens to declare a table by this name keeps it.
-fn holder_type_name(member_table: &str, table_types: &TableTypes) -> String {
+fn holder_type_name<DB: DatabaseLike>(
+    member_table: &str,
+    table_types: &TableTypes,
+    db: &DB,
+) -> String {
     let base = canonical_fga_type_name(&format!("{member_table}_holder"));
     if table_types.claims(&base) {
-        return format!("{base}_{}", stable_hex_suffix(member_table));
+        // Keyed on the resolved type rather than the spelling, so a dumped
+        // qualification cannot move the name.
+        return format!(
+            "{base}_{}",
+            stable_hex_suffix(&table_types.resolve(db, member_table))
+        );
     }
     base
 }
@@ -1668,10 +1665,19 @@ fn owner_type_name(
 /// One per join table, so two policies sharing it agree and two over different tables do
 /// not pool their rows. Disambiguated against the table types, which are all assigned
 /// before any policy is translated, so a schema declaring this name keeps it.
-fn share_type_name(join_table: &str, table_types: &TableTypes) -> String {
+fn share_type_name<DB: DatabaseLike>(
+    join_table: &str,
+    table_types: &TableTypes,
+    db: &DB,
+) -> String {
     let base = canonical_fga_type_name(&format!("{join_table}_share"));
     if table_types.claims(&base) {
-        return format!("{base}_{}", stable_hex_suffix(join_table));
+        // Keyed on the resolved type rather than the spelling, so a dumped
+        // qualification cannot move the name.
+        return format!(
+            "{base}_{}",
+            stable_hex_suffix(&table_types.resolve(db, join_table))
+        );
     }
     base
 }
@@ -1739,6 +1745,38 @@ fn join_table_readability<DB: DatabaseLike>(
     memo.entry(join_table.to_string())
         .or_insert_with(|| read_join_table_readability(join_table, db))
         .clone()
+}
+
+/// The role scope reading `join_table` requires, readability notes pushed.
+/// `None` means nothing grants reads, so the caller denies.
+fn noted_membership_read_scope<DB: DatabaseLike>(
+    join_table: &str,
+    ctx: &PatternCtx<'_, DB>,
+    memo: &mut BTreeMap<String, JoinTableReadability>,
+    notes: &mut Vec<TranslationNote>,
+) -> Option<Vec<String>> {
+    // A proven definer bypass reads the table whole, so there is no caller-side
+    // readability question to ask.
+    if ctx.membership_reads_bypass_rls {
+        return Some(Vec::new());
+    }
+    match join_table_readability(join_table, ctx.db, memo) {
+        JoinTableReadability::Unreadable => {
+            notes.push(TranslationNote::MembershipTableGrantsNoReads {
+                policy: ctx.policy_name.to_string(),
+                join_table: join_table.to_string(),
+            });
+            None
+        }
+        JoinTableReadability::Guarded { roles } => {
+            notes.push(TranslationNote::MembershipTableGuarded {
+                policy: ctx.policy_name.to_string(),
+                join_table: join_table.to_string(),
+            });
+            Some(roles)
+        }
+        JoinTableReadability::Open => Some(Vec::new()),
+    }
 }
 
 fn read_join_table_readability<DB: DatabaseLike>(
@@ -2100,6 +2138,7 @@ fn pattern_to_expr_against(
             db: &db,
             table_types: &TableTypes::default(),
             source_table: "test_table",
+            membership_reads_bypass_rls: false,
             settings: &GeneratorSettings::default(),
         },
         table_plan,
@@ -2128,6 +2167,9 @@ struct PatternCtx<'a, DB: DatabaseLike> {
     source_table: &'a str,
     /// Caller-chosen names the emitted conditions have to respect.
     settings: &'a GeneratorSettings,
+    /// True inside a definer expansion whose table reads were proven to bypass
+    /// those tables' policies, so membership readability is not asked.
+    membership_reads_bypass_rls: bool,
 }
 
 impl<'a, DB: DatabaseLike> PatternCtx<'a, DB> {
@@ -2135,12 +2177,17 @@ impl<'a, DB: DatabaseLike> PatternCtx<'a, DB> {
     /// translated against.
     fn for_table(&self, source_table: &'a str) -> Self {
         Self {
-            policy_name: self.policy_name,
-            registry: self.registry,
-            db: self.db,
-            table_types: self.table_types,
             source_table,
-            settings: self.settings,
+            ..*self
+        }
+    }
+
+    /// The same context inside a definer expansion whose reads were proven to
+    /// bypass the read tables' policies.
+    fn with_bypassed_reads(&self) -> Self {
+        Self {
+            membership_reads_bypass_rls: true,
+            ..*self
         }
     }
 }
@@ -2244,6 +2291,25 @@ fn translate_pattern<DB: DatabaseLike>(
             notes,
             readability,
         ),
+        PatternClass::ExpandedFunction(expanded) => {
+            notes.push(TranslationNote::FunctionExpanded {
+                policy: ctx.policy_name.to_string(),
+                function: expanded.function.clone(),
+            });
+            let ctx = if expanded.reads_bypass_rls {
+                ctx.with_bypassed_reads()
+            } else {
+                ctx.for_table(source_table)
+            };
+            translate_pattern(
+                &expanded.inner.pattern,
+                &ctx,
+                table_plan,
+                all_types,
+                notes,
+                readability,
+            )
+        }
         PatternClass::P6BooleanFlag(boolean_flag) => {
             emit_boolean_flag(boolean_flag, ctx, table_plan)
         }

@@ -1,5 +1,6 @@
 use super::subquery::*;
 use super::*;
+use crate::classifier::expansion::ExpansionState;
 use crate::parser::sql_parser::{parse_schema, ParserDB};
 use sqlparser::ast::{SetExpr, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
@@ -603,7 +604,7 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
                WHERE doc_members.doc_id = docs.id
              )",
     );
-    assert!(recognize_p4(&negated, &db, &registry, "docs").is_none());
+    assert!(recognize_p4(&negated, &db, &registry, "docs", &ExpansionState::new()).is_none());
 
     let exists_expr = parse_expr(
         "EXISTS (
@@ -614,7 +615,8 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
                  AND doc_members.role = 'admin'
              )",
     );
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
@@ -650,7 +652,7 @@ fn recognize_p4_exists_refuses_a_subquery_reading_the_guarded_table() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "a subquery scanning 'docs' cannot name the guarded row"
     );
 }
@@ -670,7 +672,8 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
@@ -703,7 +706,7 @@ fn recognize_p4_fails_closed_for_outer_table_is_false_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "outer-table IS FALSE predicate should fail closed for P4"
     );
 }
@@ -731,7 +734,7 @@ fn recognize_p4_fails_closed_for_outer_table_boolean_is_wrappers() {
         ));
 
         assert!(
-            recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+            recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
             "outer-table predicate `{clause}` should fail closed for P4"
         );
     }
@@ -759,7 +762,7 @@ fn recognize_p4_fails_closed_for_outer_table_distinct_predicates() {
         ));
 
         assert!(
-            recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+            recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
             "outer-table DISTINCT predicate `{clause}` should fail closed for P4"
         );
     }
@@ -780,7 +783,8 @@ fn recognize_p4_supports_function_wrapped_membership_predicates_without_alias_le
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
@@ -811,7 +815,7 @@ fn recognize_p4_fails_closed_for_function_wrapped_outer_table_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "function-wrapped outer-table predicate should fail closed for P4"
     );
 }
@@ -833,7 +837,7 @@ fn recognize_p4_fails_closed_for_joined_source_unqualified_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "joined-source unqualified extra predicate should fail closed for P4"
     );
 }
@@ -855,7 +859,7 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "derived joined-source unqualified extra predicate should fail closed for P4"
     );
 }
@@ -887,7 +891,7 @@ CREATE TABLE roles(name TEXT);
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "an extra predicate whose subquery reads a third table fails closed for P4"
     );
 }
@@ -916,7 +920,7 @@ CREATE TABLE roles(name TEXT);
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "an uncorrelated membership whose extra predicate reads a third table fails closed"
     );
 }
@@ -945,7 +949,15 @@ CREATE TABLE roles(name TEXT);
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_expr, &db, &registry, "docs", PolicyCommand::Select).is_none(),
+        recognize_p4_in_subquery(
+            &in_expr,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "the IN spelling of a third-table-subquery extra predicate fails closed"
     );
 }
@@ -976,7 +988,7 @@ CREATE TABLE s2(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "p2")
+    let classified = recognize_p4(&exists_expr, &db, &registry, "p2", &ExpansionState::new())
         .expect("a two-column composite-key join is the one-column shape scoped by tenant");
     assert_eq!(
         classified.confidence,
@@ -1011,7 +1023,7 @@ CREATE TABLE s3(region_id INT NOT NULL, tenant_id INT NOT NULL, paper_id INT NOT
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "p3")
+    let classified = recognize_p4(&exists_expr, &db, &registry, "p3", &ExpansionState::new())
         .expect("a three-column composite-key join is the same shape again");
     assert_eq!(classified.confidence, ConfidenceLevel::A);
 }
@@ -1047,7 +1059,7 @@ CREATE TABLE project_members(tenant_id INT NOT NULL, project_id INT NOT NULL,
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs")
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
         .expect("a composite-FK-backed join is the single-column FK shape widened");
     assert_eq!(classified.confidence, ConfidenceLevel::A);
 }
@@ -1078,7 +1090,7 @@ CREATE TABLE s4(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "p4").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "p4", &ExpansionState::new()).is_none(),
         "two pairs cannot stand in for a three-column key"
     );
 }
@@ -1108,7 +1120,7 @@ CREATE TABLE s5(a INT NOT NULL, b INT NOT NULL, viewer TEXT NOT NULL,
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "p5").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "p5", &ExpansionState::new()).is_none(),
         "a duplicate outer column fails closed"
     );
 }
@@ -1142,7 +1154,7 @@ CREATE TABLE grants_two(a INT NOT NULL, b INT NOT NULL, user_id TEXT NOT NULL,
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "two covering foreign keys leave the parent ambiguous"
     );
 }
@@ -1172,8 +1184,14 @@ CREATE TABLE s6(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
              )",
     );
 
-    let reason = diagnose_p4_membership_ambiguity(&exists_expr, &db, &registry, "p6")
-        .expect("an unkeyed pairing carries a reason");
+    let reason = diagnose_p4_membership_ambiguity(
+        &exists_expr,
+        &db,
+        &registry,
+        "p6",
+        &ExpansionState::new(),
+    )
+    .expect("an unkeyed pairing carries a reason");
     assert!(
         reason.contains("neither a declared foreign key") && reason.contains("s6"),
         "the reason names the failed routes, got: {reason}"
@@ -1203,11 +1221,20 @@ CREATE TABLE s7(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_expr, &db, &registry, "p7", PolicyCommand::Select).is_none(),
+        recognize_p4_in_subquery(
+            &in_expr,
+            &db,
+            &registry,
+            "p7",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "the row-value spelling stays refused"
     );
-    let reason = diagnose_p4_membership_ambiguity(&in_expr, &db, &registry, "p7")
-        .expect("the refusal carries a reason");
+    let reason =
+        diagnose_p4_membership_ambiguity(&in_expr, &db, &registry, "p7", &ExpansionState::new())
+            .expect("the refusal carries a reason");
     assert!(
         reason.contains("EXISTS") && reason.contains("row-value"),
         "the reason names the respelling, got: {reason}"
@@ -1236,7 +1263,8 @@ CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected P4 match");
     assert!(
         matches!(
             &classified.pattern,
@@ -1265,7 +1293,8 @@ fn recognize_p4_allows_single_source_unqualified_extra_predicate() {
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected P4 match");
+    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected P4 match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
@@ -1287,9 +1316,15 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
-    assert!(
-        recognize_p4_in_subquery(&negated, &db, &registry, "docs", PolicyCommand::Select).is_none()
-    );
+    assert!(recognize_p4_in_subquery(
+        &negated,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new()
+    )
+    .is_none());
 
     let in_subquery = parse_expr(
         "doc_id IN (
@@ -1298,9 +1333,15 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
-    let classified =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .expect("expected match");
+    let classified = recognize_p4_in_subquery(
+        &in_subquery,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new(),
+    )
+    .expect("expected match");
     assert!(matches!(
         &classified.pattern,
         PatternClass::P4ExistsMembership(ExistsMembership {
@@ -1327,8 +1368,15 @@ fn recognize_p4_in_subquery_refuses_a_subquery_reading_the_guarded_table() {
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .is_none(),
+        recognize_p4_in_subquery(
+            &in_subquery,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "a subquery scanning 'docs' cannot name the guarded row"
     );
 }
@@ -1355,8 +1403,15 @@ fn recognize_p4_in_subquery_fails_closed_for_non_membership_distinct_predicates(
         ));
 
         assert!(
-            recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-                .is_none(),
+            recognize_p4_in_subquery(
+                &in_subquery,
+                &db,
+                &registry,
+                "docs",
+                PolicyCommand::Select,
+                &ExpansionState::new()
+            )
+            .is_none(),
             "non-membership DISTINCT predicate `{clause}` should fail closed for P4 IN-subquery"
         );
     }
@@ -1378,8 +1433,15 @@ fn recognize_p4_in_subquery_fails_closed_for_function_wrapped_non_membership_ref
     );
 
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .is_none(),
+        recognize_p4_in_subquery(
+            &in_subquery,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "function-wrapped non-membership reference should fail closed for P4 IN-subquery"
     );
 }
@@ -1407,10 +1469,17 @@ fn recognize_p4_paths_remain_parity_aligned_for_membership_shape() {
              )",
     );
 
-    let exists = recognize_p4(&exists_expr, &db, &registry, "docs").expect("expected EXISTS match");
-    let in_sub =
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .expect("expected IN-subquery match");
+    let exists = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
+        .expect("expected EXISTS match");
+    let in_sub = recognize_p4_in_subquery(
+        &in_subquery,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new(),
+    )
+    .expect("expected IN-subquery match");
 
     let (exists_join_table, exists_pairs, exists_user_column, exists_extra_predicates) =
         match exists.pattern {
@@ -1468,12 +1537,19 @@ CREATE TABLE memberships(doc_id UUID, user_id UUID);
     );
 
     assert!(
-        recognize_p4(&exists_expr, &db, &registry, "docs").is_none(),
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
         "ambiguous EXISTS sources should fail closed"
     );
     assert!(
-        recognize_p4_in_subquery(&in_subquery, &db, &registry, "docs", PolicyCommand::Select)
-            .is_none(),
+        recognize_p4_in_subquery(
+            &in_subquery,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "ambiguous IN-subquery sources should fail closed"
     );
 }
@@ -1797,7 +1873,7 @@ CREATE TABLE odd_members(alpha text, beta text);
                WHERE odd_members.alpha = 'x'
              )",
     );
-    assert!(recognize_p4(&exists_expr, &db, &registry, "docs").is_none());
+    assert!(recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none());
 
     let in_subquery_expr = parse_expr(
         "id IN (
@@ -1811,7 +1887,8 @@ CREATE TABLE odd_members(alpha text, beta text);
         &db,
         &registry,
         "docs",
-        PolicyCommand::Select
+        PolicyCommand::Select,
+        &ExpansionState::new()
     )
     .is_none());
 }
@@ -1839,8 +1916,14 @@ CREATE TABLE doc_members(doc_id UUID NOT NULL, user_id UUID NOT NULL);
                WHERE doc_members.user_id = current_user
              )",
     );
-    let classified = recognize_p4(&uncorrelated, &db, &registry, "docs")
-        .expect("an uncorrelated membership check translates through a holder");
+    let classified = recognize_p4(
+        &uncorrelated,
+        &db,
+        &registry,
+        "docs",
+        &ExpansionState::new(),
+    )
+    .expect("an uncorrelated membership check translates through a holder");
     assert!(
         matches!(
             classified.pattern,
@@ -1863,7 +1946,14 @@ fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
                WHERE ghost_members.doc_id = docs.id
              )",
     );
-    assert!(recognize_p4(&unknown_table, &db, &registry, "docs").is_none());
+    assert!(recognize_p4(
+        &unknown_table,
+        &db,
+        &registry,
+        "docs",
+        &ExpansionState::new()
+    )
+    .is_none());
 
     let unsupported = parse_expr(
         "doc_id IN (
@@ -1872,10 +1962,15 @@ fn recognize_p4_and_in_subquery_fail_for_unknown_or_unsupported_subqueries() {
                (SELECT dm.doc_id FROM doc_members dm)
              )",
     );
-    assert!(
-        recognize_p4_in_subquery(&unsupported, &db, &registry, "docs", PolicyCommand::Select)
-            .is_none()
-    );
+    assert!(recognize_p4_in_subquery(
+        &unsupported,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new()
+    )
+    .is_none());
 }
 
 #[test]
@@ -1886,11 +1981,23 @@ fn recognize_p4_paths_fail_closed_for_values_subqueries() {
     let exists_values = parse_expr("EXISTS (VALUES (1))");
     let in_values = parse_expr("id IN (VALUES (1))");
 
-    assert!(recognize_p4(&exists_values, &db, &registry, "docs").is_none());
-    assert!(
-        recognize_p4_in_subquery(&in_values, &db, &registry, "docs", PolicyCommand::Select)
-            .is_none()
-    );
+    assert!(recognize_p4(
+        &exists_values,
+        &db,
+        &registry,
+        "docs",
+        &ExpansionState::new()
+    )
+    .is_none());
+    assert!(recognize_p4_in_subquery(
+        &in_values,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new()
+    )
+    .is_none());
 }
 
 #[test]
@@ -1908,7 +2015,14 @@ fn recognize_p4_multi_from_requires_user_predicate() {
              )",
     );
     assert!(
-        recognize_p4(&exists_no_user, &db, &registry, "docs").is_none(),
+        recognize_p4(
+            &exists_no_user,
+            &db,
+            &registry,
+            "docs",
+            &ExpansionState::new()
+        )
+        .is_none(),
         "EXISTS with no user predicate is an 'exists any row' false positive"
     );
 
@@ -1922,7 +2036,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
              )",
     );
     assert!(matches!(
-        recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs", PolicyCommand::Select),
+        recognize_p4_in_subquery(&in_with_user, &db, &registry, "docs", PolicyCommand::Select, &ExpansionState::new()),
         Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership(ExistsMembership { ref join_table, .. }),
             ..
@@ -2091,8 +2205,15 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
              )",
     );
 
-    let classified = recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select)
-        .expect("expected P5 classification");
+    let classified = recognize_p5(
+        &expr,
+        &db,
+        &registry,
+        "tasks",
+        PolicyCommand::Select,
+        &ExpansionState::new(),
+    )
+    .expect("expected P5 classification");
     assert!(matches!(
         classified.pattern,
         PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, ref fk_column, .. })
@@ -2134,7 +2255,15 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
     );
 
     assert!(
-        recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select).is_none(),
+        recognize_p5(
+            &expr,
+            &db,
+            &registry,
+            "tasks",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
         "the join drops a project with no tags, so the parent's rule is not the whole rule"
     );
 }
@@ -2274,7 +2403,15 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
     let expr = parse_expr(
             "NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user)",
         );
-    assert!(recognize_p5(&expr, &db, &registry, "tasks", PolicyCommand::Select).is_none());
+    assert!(recognize_p5(
+        &expr,
+        &db,
+        &registry,
+        "tasks",
+        PolicyCommand::Select,
+        &ExpansionState::new()
+    )
+    .is_none());
 }
 
 #[test]
@@ -2510,7 +2647,8 @@ fn diagnose_p4_membership_ambiguity_in_subquery_form() {
     // Multiple membership sources -> ambiguous
     let expr = parse_expr("id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
     // The IN-subquery form should at least not panic
-    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs");
+    let result =
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new());
     // It should return None (single match) or Some (ambiguous)
     // either is fine -- we just need the code path exercised
     let _ = result;
@@ -2530,7 +2668,8 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);",
         &db,
         &FunctionRegistry::new(),
         "tasks",
-        PolicyCommand::Select
+        PolicyCommand::Select,
+        &ExpansionState::new()
     )
     .is_none());
 }
@@ -2897,7 +3036,8 @@ CREATE TABLE doc_editors(doc_id UUID, user_id UUID);
                   AND de.doc_id = docs.id
             )",
     );
-    let result = diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs");
+    let result =
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new());
     // Should reach the InSubquery branch and produce Some diagnostic
     // (either "multiple candidate" or "could not infer")
     assert!(
@@ -2911,7 +3051,14 @@ fn diagnose_p4_membership_ambiguity_returns_none_for_non_exists_non_insubquery()
     let db = db_with_docs_and_members();
     let registry = FunctionRegistry::new();
     let expr = parse_expr("owner_id = current_user");
-    assert!(diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none());
+    assert!(diagnose_p4_membership_ambiguity(
+        &expr,
+        &db,
+        &registry,
+        "docs",
+        &ExpansionState::new()
+    )
+    .is_none());
 }
 
 // 10. diagnose_p5_parent_inheritance_ambiguity: negated, non-Select, conflicting join
@@ -2934,7 +3081,8 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
             &db,
             &FunctionRegistry::new(),
             "tasks",
-            PolicyCommand::Select
+            PolicyCommand::Select,
+            &ExpansionState::new()
         )
         .is_none(),
         "negated EXISTS should return None"
@@ -2957,7 +3105,8 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
             &db,
             &FunctionRegistry::new(),
             "tasks",
-            PolicyCommand::Select
+            PolicyCommand::Select,
+            &ExpansionState::new()
         )
         .is_none(),
         "non-Select body should return None"
@@ -2989,6 +3138,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id),
         &FunctionRegistry::new(),
         "tasks",
         PolicyCommand::Select,
+        &ExpansionState::new(),
     );
     assert!(
         result.is_some(),
@@ -3043,6 +3193,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         &FunctionRegistry::new(),
         "tasks",
         PolicyCommand::Select,
+        &ExpansionState::new(),
     );
     let Some(classified) = result else {
         panic!("a bare correlation delegates to the parent's own rule");
@@ -3093,6 +3244,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
                 &FunctionRegistry::new(),
                 "tasks",
                 PolicyCommand::Select,
+                &ExpansionState::new(),
             )
             .map(|classified| classified.pattern),
             Some(PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, .. }))
@@ -3126,6 +3278,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
             &FunctionRegistry::new(),
             "tasks",
             PolicyCommand::Select,
+            &ExpansionState::new(),
         )
         .is_none(),
         "a rule of its own competes with a membership lookup, so the key still decides"
@@ -3253,7 +3406,8 @@ fn diagnose_p4_membership_ambiguity_exists_non_select_body() {
     let registry = FunctionRegistry::new();
     let expr = parse_expr("EXISTS (VALUES (1))");
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new())
+            .is_none(),
         "EXISTS with non-Select body should return None"
     );
 }
@@ -3267,7 +3421,8 @@ fn diagnose_p4_membership_ambiguity_negated_exists() {
         "NOT EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
     );
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new())
+            .is_none(),
         "negated EXISTS should return None from diagnose_p4"
     );
 }
@@ -3280,7 +3435,8 @@ fn diagnose_p4_membership_ambiguity_negated_in_subquery() {
     let expr =
         parse_expr("id NOT IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
     assert!(
-        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs").is_none(),
+        diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new())
+            .is_none(),
         "negated IN subquery should return None"
     );
 }

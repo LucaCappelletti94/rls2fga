@@ -453,22 +453,9 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     }
     // The subquery reads `join_table` as the caller, so its own RLS decides which
     // membership rows count, exactly as it does for a membership naming a person.
-    let read_scope_roles = match join_table_readability(join_table, db, readability) {
-        JoinTableReadability::Unreadable => {
-            notes.push(TranslationNote::MembershipTableGrantsNoReads {
-                policy: policy_name.to_string(),
-                join_table: join_table.clone(),
-            });
-            return deny_expr(table_plan);
-        }
-        JoinTableReadability::Guarded { roles } => {
-            notes.push(TranslationNote::MembershipTableGuarded {
-                policy: policy_name.to_string(),
-                join_table: join_table.clone(),
-            });
-            roles
-        }
-        JoinTableReadability::Open => Vec::new(),
+    let Some(read_scope_roles) = noted_membership_read_scope(join_table, ctx, readability, notes)
+    else {
+        return deny_expr(table_plan);
     };
     if !read_scope_roles.is_empty() {
         // Only those roles see the membership rows, so only they inherit the
@@ -567,7 +554,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
 
     // The gate rides the share type, keyed on the share row. The guarded type links to it
     // and reaches the gate by tuple-to-userset, so two viewers union rather than collide.
-    let share_type = share_type_name(join_table, ctx.table_types);
+    let share_type = share_type_name(join_table, ctx.table_types, ctx.db);
     let (gate_relation, condition) = {
         let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
             TypePlan::new_with_well_known(&share_type, &ctx.settings.well_known)

@@ -178,7 +178,7 @@ CREATE POLICY p ON docs FOR SELECT TO app_user, admin_role USING (owner_id = cur
 // ── Composite patterns ───────────────────────────────────────────────────────
 
 #[test]
-fn p7_with_p3_inner_classified_correctly() {
+fn ownership_beside_a_literal_guard_keeps_the_composite_structure() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID, status TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -188,9 +188,18 @@ CREATE POLICY p ON docs FOR SELECT
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
     let c = classified[0].using_classification.as_ref().unwrap();
+    // A literal guard is row data the tuples carry, so the pair keeps its
+    // structure instead of flattening to the partial P7 column name.
     assert!(
-        matches!(&c.pattern, PatternClass::P7AbacAnd(AbacAnd { .. })),
-        "Expected P7 for ownership + attribute AND, got: {:?}",
+        matches!(
+            &c.pattern,
+            PatternClass::P8Composite(Composite { parts, .. })
+                if parts.iter().any(|part| matches!(
+                    &part.pattern,
+                    PatternClass::P9AttributeCondition(AttributeCondition { predicate: Some(_), .. })
+                ))
+        ),
+        "Expected the literal guard to keep its predicate, got: {:?}",
         c.pattern
     );
 }

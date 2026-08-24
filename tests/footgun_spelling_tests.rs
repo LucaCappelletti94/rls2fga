@@ -351,3 +351,304 @@ CREATE POLICY p ON docs FOR SELECT TO "current_user" USING (owner_id = current_u
         outputs.notes()
     );
 }
+
+/// The model one schema translates to at `threshold`, with `attributes` declared.
+fn model_at(
+    sql: &str,
+    registry_json: Option<&str>,
+    attributes: &str,
+    threshold: ConfidenceLevel,
+) -> String {
+    let declared: Vec<rls2fga::classifier::function_registry::SessionAttribute> =
+        serde_json::from_str(attributes).expect("attribute json should parse");
+    let mut builder = rls2fga::translator::TranslatorBuilder::new()
+        .with_min_confidence(threshold)
+        .with_session_attributes(declared);
+    if let Some(json) = registry_json {
+        builder = builder
+            .with_registry_json(json)
+            .expect("registry json should parse");
+    }
+    builder
+        .build()
+        .translate(&db_of(sql))
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model()
+}
+
+/// The model one schema translates to at threshold B, with `attributes` declared.
+fn model_with_attributes(sql: &str, registry_json: Option<&str>, attributes: &str) -> String {
+    model_at(sql, registry_json, attributes, ConfidenceLevel::B)
+}
+
+/// `pg_dump` deparses every stored policy expression, so a literal argument
+/// comes back with a type cast: `pg_has_role(CURRENT_USER, 'editor'::name,
+/// 'MEMBER'::text)`. The dumped spelling must classify as the written one.
+#[test]
+fn a_cast_role_literal_in_pg_has_role_classifies_as_the_plain_one() {
+    let schema = |using: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING ({using});\n"
+        )
+    };
+    let plain = model_with_attributes(
+        &schema("pg_has_role(current_user, 'editor', 'MEMBER')"),
+        None,
+        "[]",
+    );
+    let dumped = model_with_attributes(
+        &schema("pg_has_role(CURRENT_USER, 'editor'::name, 'MEMBER'::text)"),
+        None,
+        "[]",
+    );
+    assert!(
+        plain.contains("pg_role"),
+        "the plain spelling must gate on the role, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, dumped, "the cast literals are the same policy");
+}
+
+/// `pg_dump` deparses `IN (2, 3, 4)` as `= ANY (ARRAY[2, 3, 4])`, one
+/// expression with two spellings.
+#[test]
+fn an_any_array_list_classifies_as_the_in_list() {
+    let registry = std::fs::read_to_string("tests/fixtures/role_in_list/function_registry.json")
+        .expect("fixture registry should be readable");
+    let written = std::fs::read_to_string("tests/fixtures/role_in_list/input.sql")
+        .expect("fixture SQL should be readable");
+    let written_spelling = "get_owner_role(auth_current_user_id(), owner_id) IN (2, 3, 4)";
+    assert!(
+        written.contains(written_spelling),
+        "the fixture must carry the written IN-list this test respells"
+    );
+    let dumped_sql = written.replace(
+        written_spelling,
+        "(get_owner_role(auth_current_user_id(), owner_id) = ANY (ARRAY[2, 3, 4]))",
+    );
+    let plain = model_with_attributes(&written, Some(&registry), "[]");
+    let dumped = model_with_attributes(&dumped_sql, Some(&registry), "[]");
+    assert!(
+        !support::footgun::relation_denies(&plain, "ownables", "can_select"),
+        "the written IN-list must translate, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, dumped, "= ANY (ARRAY[...]) is the dumped IN-list");
+}
+
+/// `pg_dump` casts the setting key itself: `current_setting('app.tenant_id'::text)`.
+#[test]
+fn a_cast_setting_key_classifies_as_the_plain_one() {
+    let attributes = r#"[{ "key": "app.tenant_id", "kind": "scalar_attribute" }]"#;
+    let schema = |using: &str| {
+        format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, tenant_id UUID);\n\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY documents_tenant ON documents USING ({using});\n"
+        )
+    };
+    let plain = model_with_attributes(
+        &schema("tenant_id = current_setting('app.tenant_id')::uuid"),
+        None,
+        attributes,
+    );
+    let dumped = model_with_attributes(
+        &schema("tenant_id = (current_setting('app.tenant_id'::text))::uuid"),
+        None,
+        attributes,
+    );
+    assert!(
+        plain.contains("with when_"),
+        "the written key must become a condition gate, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, dumped, "the cast on the key is the same setting");
+}
+
+/// The dumped spelling of a jsonb claim set carries the cast key inside the
+/// subquery: `current_setting('request.jwt.claims'::text)::jsonb -> 'teams'::text`.
+#[test]
+fn a_cast_claim_set_key_classifies_as_the_plain_one() {
+    let attributes =
+        r#"[{ "key": "request.jwt.claims", "path": ["teams"], "kind": "set_attribute" }]"#;
+    let schema = |using: &str| {
+        format!(
+            "CREATE TABLE documents(id UUID PRIMARY KEY, team_id TEXT);\n\
+             ALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY documents_team ON documents FOR SELECT USING ({using});\n"
+        )
+    };
+    let plain = model_with_attributes(
+        &schema(
+            "team_id IN (SELECT jsonb_array_elements_text(current_setting('request.jwt.claims')::jsonb -> 'teams'))",
+        ),
+        None,
+        attributes,
+    );
+    let dumped = model_with_attributes(
+        &schema(
+            "team_id IN ( SELECT jsonb_array_elements_text(((current_setting('request.jwt.claims'::text))::jsonb -> 'teams'::text)) AS jsonb_array_elements_text)",
+        ),
+        None,
+        attributes,
+    );
+    assert!(
+        plain.contains("with when_"),
+        "the written claim set must become a condition gate, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, dumped, "the cast claim key is the same declared set");
+}
+
+/// A dumped policy spells the membership table schema-qualified. The read
+/// scope relation's name must not change with the spelling, or a dumped
+/// schema asks the operator for tuples under a different name.
+#[test]
+fn a_qualified_membership_spelling_keeps_the_scope_relation_name() {
+    let schema = |members_ref: &str| {
+        format!(
+            "CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+             CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID, user_id TEXT);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY members_read ON doc_members FOR SELECT TO auditor USING (true);\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (EXISTS (\n\
+               SELECT 1 FROM {members_ref} m WHERE m.doc_id = docs.id AND m.user_id = current_user));\n"
+        )
+    };
+    let plain = model_with_attributes(&schema("doc_members"), None, "[]");
+    let qualified = model_with_attributes(&schema("public.doc_members"), None, "[]");
+    assert!(
+        plain.contains("read_scope_doc_members_"),
+        "the guarded membership must mint a read scope, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, qualified, "one table, one scope relation name");
+}
+
+/// The holder type standing for everyone in an uncorrelated member table must
+/// keep its name across spellings too, when a declared table claims the base.
+#[test]
+fn a_qualified_member_table_spelling_keeps_the_holder_type_name() {
+    let schema = |staff_ref: &str| {
+        format!(
+            "CREATE TABLE staff_holder(id UUID PRIMARY KEY);\n\
+             ALTER TABLE staff_holder ENABLE ROW LEVEL SECURITY;\n\
+             CREATE TABLE staff(id UUID PRIMARY KEY, user_id TEXT);\n\
+             CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (EXISTS (\n\
+               SELECT 1 FROM {staff_ref} WHERE user_id = current_user));\n"
+        )
+    };
+    let plain = model_with_attributes(&schema("staff"), None, "[]");
+    let qualified = model_with_attributes(&schema("public.staff"), None, "[]");
+    assert!(
+        plain.contains("staff_holder_"),
+        "the claimed base must force the disambiguating suffix, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, qualified, "one member table, one holder type name");
+}
+
+/// The share type of a caller-set membership keeps its name across spellings,
+/// when a declared table claims the base.
+#[test]
+fn a_qualified_share_table_spelling_keeps_the_share_type_name() {
+    let attributes = r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#;
+    let schema = |shares_ref: &str| {
+        format!(
+            "CREATE TABLE shares_share(id UUID PRIMARY KEY);\n\
+             ALTER TABLE shares_share ENABLE ROW LEVEL SECURITY;\n\
+             CREATE TABLE shares(id UUID PRIMARY KEY, parent_id UUID, viewer TEXT);\n\
+             CREATE TABLE docs(id UUID PRIMARY KEY);\n\
+             ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY docs_sel ON docs FOR SELECT USING (EXISTS (\n\
+               SELECT 1 FROM {shares_ref} s WHERE s.parent_id = docs.id\n\
+               AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));\n"
+        )
+    };
+    let plain = model_with_attributes(&schema("shares"), None, attributes);
+    let qualified = model_with_attributes(&schema("public.shares"), None, attributes);
+    assert!(
+        plain.contains("shares_share_"),
+        "the claimed base must force the disambiguating suffix, or this proves nothing:\n{plain}"
+    );
+    assert_eq!(plain, qualified, "one share table, one share type name");
+}
+
+/// `pg_dump` parenthesizes every conjunct. A parenthesized attribute guard must
+/// not classify differently from the bare one: both spellings carry a literal
+/// the row decides, which translates, so both must reach the same model.
+#[test]
+fn a_parenthesized_attribute_conjunct_classifies_as_the_bare_one() {
+    let registry = std::fs::read_to_string("tests/fixtures/abac_status/function_registry.json")
+        .expect("fixture registry should be readable");
+    let schema = |using: &str| {
+        format!(
+            "CREATE TABLE ownables(id UUID PRIMARY KEY, owner_id UUID, status TEXT);\n\
+             ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY ownables_update ON ownables FOR UPDATE USING ({using});\n"
+        )
+    };
+    let plain = model_with_attributes(
+        &schema("get_owner_role(auth_current_user_id(), owner_id) >= 3 AND status = 'active'"),
+        Some(&registry),
+        "[]",
+    );
+    let dumped = model_with_attributes(
+        &schema(
+            "((get_owner_role(auth_current_user_id(), owner_id) >= 3) AND (status = 'active'::text))",
+        ),
+        Some(&registry),
+        "[]",
+    );
+    assert!(
+        !support::footgun::relation_denies(&plain, "ownables", "can_update_without_reading"),
+        "a literal guard is row data the tuples carry, so the pair translates:\n{plain}"
+    );
+    assert_eq!(
+        plain, dumped,
+        "parentheses and the cast are the same policy"
+    );
+}
+
+/// The same pair with an attribute half the tuples cannot carry (a literal
+/// IN-list): both spellings must fall to the same partial classification, and
+/// the dumped list spelling is `= ANY (ARRAY[...])` with cast elements.
+#[test]
+fn a_parenthesized_opaque_attribute_conjunct_classifies_as_the_bare_one() {
+    let registry = std::fs::read_to_string("tests/fixtures/abac_status/function_registry.json")
+        .expect("fixture registry should be readable");
+    let schema = |using: &str| {
+        format!(
+            "CREATE TABLE ownables(id UUID PRIMARY KEY, owner_id UUID, status TEXT);\n\
+             ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY ownables_update ON ownables FOR UPDATE USING ({using});\n"
+        )
+    };
+    let plain = model_at(
+        &schema(
+            "get_owner_role(auth_current_user_id(), owner_id) >= 3 \
+             AND status IN ('active', 'draft')",
+        ),
+        Some(&registry),
+        "[]",
+        ConfidenceLevel::C,
+    );
+    let dumped = model_at(
+        &schema(
+            "((get_owner_role(auth_current_user_id(), owner_id) >= 3) \
+             AND (status = ANY (ARRAY['active'::text, 'draft'::text])))",
+        ),
+        Some(&registry),
+        "[]",
+        ConfidenceLevel::C,
+    );
+    assert_eq!(
+        relation_definition(&plain, "ownables", "can_update_without_reading").as_deref(),
+        Some("role_editor from owner_id"),
+        "the pair keeps its relationship half and drops the guard with a note:\n{plain}"
+    );
+    assert_eq!(
+        plain, dumped,
+        "parentheses and the list spelling are not a classification"
+    );
+}
