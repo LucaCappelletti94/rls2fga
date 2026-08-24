@@ -190,12 +190,8 @@ pub struct DifferenceDef {
 }
 
 /// Render a JSON-serializable `AuthorizationModel` from a planned schema.
-pub(crate) fn json_model_from_plan(plan: SchemaPlan) -> AuthorizationModel {
-    let type_definitions = plan
-        .types
-        .into_iter()
-        .map(type_plan_to_definition)
-        .collect();
+pub(crate) fn json_model_from_plan(plan: &SchemaPlan) -> AuthorizationModel {
+    let type_definitions = plan.types.iter().map(type_plan_to_definition).collect();
 
     let conditions = (!plan.conditions.is_empty()).then(|| {
         plan.conditions
@@ -226,7 +222,7 @@ pub(crate) fn json_model_from_plan(plan: SchemaPlan) -> AuthorizationModel {
     }
 }
 
-fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
+fn type_plan_to_definition(plan: &TypePlan) -> TypeDefinition {
     if plan.direct_relations.is_empty() && plan.computed_relations.is_empty() {
         return TypeDefinition {
             type_name: plan.type_name.to_string(),
@@ -238,7 +234,7 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
     let mut relations = BTreeMap::new();
     let mut meta_relations = BTreeMap::new();
 
-    for (name, subjects) in plan.direct_relations {
+    for (name, subjects) in &plan.direct_relations {
         relations.insert(
             name.clone(),
             Userset::This {
@@ -247,15 +243,15 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
         );
 
         let refs = subjects
-            .into_iter()
+            .iter()
             .map(|subject| match subject {
                 DirectSubject::Type(t) => RelationReference {
-                    type_name: t,
+                    type_name: t.clone(),
                     wildcard: None,
                     condition: None,
                 },
                 DirectSubject::Wildcard(t) => RelationReference {
-                    type_name: t,
+                    type_name: t.clone(),
                     wildcard: Some(EmptyObject {}),
                     condition: None,
                 },
@@ -263,31 +259,31 @@ fn type_plan_to_definition(plan: TypePlan) -> TypeDefinition {
                     type_name,
                     condition,
                 } => RelationReference {
-                    type_name,
+                    type_name: type_name.clone(),
                     wildcard: Some(EmptyObject {}),
-                    condition: Some(condition),
+                    condition: Some(condition.clone()),
                 },
                 DirectSubject::ConditionalType {
                     type_name,
                     condition,
                 } => RelationReference {
-                    type_name,
+                    type_name: type_name.clone(),
                     wildcard: None,
-                    condition: Some(condition),
+                    condition: Some(condition.clone()),
                 },
             })
             .collect::<Vec<_>>();
 
         meta_relations.insert(
-            name,
+            name.clone(),
             RelationMetadata {
                 directly_related_user_types: refs,
             },
         );
     }
 
-    for (name, expr) in plan.computed_relations {
-        relations.insert(name, expr_to_userset(&expr));
+    for (name, expr) in &plan.computed_relations {
+        relations.insert(name.clone(), expr_to_userset(expr));
     }
 
     TypeDefinition {

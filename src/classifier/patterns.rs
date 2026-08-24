@@ -427,6 +427,19 @@ pub struct ParentInheritance {
     pub inner_pattern: Box<ClassifiedExpr>,
 }
 
+/// A call to a declared function, replaced by that function's body with the
+/// call-site arguments substituted. The classification is the body's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpandedFunction {
+    /// The called function, as declared.
+    pub function: String,
+    /// The body's table reads run as an owner `PostgreSQL` lets past those
+    /// tables' policies, so membership readability is not the caller's question.
+    pub reads_bypass_rls: bool,
+    /// The substituted body's classification.
+    pub inner: Box<ClassifiedExpr>,
+}
+
 /// P6: Boolean flag or public access: `is_public = TRUE`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BooleanFlag {
@@ -649,6 +662,9 @@ pub enum PatternClass {
     /// grant is a request-completed gate on the parent rather than a subject named by
     /// the row: the member value is not a person.
     P18MembershipInCallerSet(MembershipInCallerSet),
+    /// A call to a declared single-expression `LANGUAGE sql` function, replaced
+    /// by its body with the call-site arguments substituted.
+    ExpandedFunction(ExpandedFunction),
     /// No known pattern matched.
     Unknown(UnclassifiedExpr),
 }

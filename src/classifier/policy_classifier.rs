@@ -1,9 +1,10 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::parser::identifiers::ColumnName;
-use crate::parser::names::table_has_column;
+use crate::parser::names::{normalize_relation_name, table_has_column};
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
+use crate::classifier::expansion::{self, ExpansionState};
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
@@ -140,7 +141,29 @@ pub fn classify_expr<DB: DatabaseLike>(
     table: &str,
     command: PolicyCommand,
 ) -> ClassifiedExpr {
-    classify_expr_depth(expr, db, registry, table, command, 0)
+    classify_expr_depth(
+        expr,
+        db,
+        registry,
+        table,
+        command,
+        0,
+        &ExpansionState::new(),
+    )
+}
+
+/// [`classify_expr`] carrying the caller's expansion state, which a recognizer
+/// re-entering classification must pass on: a fresh state there would let a
+/// mutual function recursion escape the cycle cut.
+pub(crate) fn classify_expr_in_state<DB: DatabaseLike>(
+    expr: &Expr,
+    db: &DB,
+    registry: &FunctionRegistry,
+    table: &str,
+    command: PolicyCommand,
+    state: &ExpansionState,
+) -> ClassifiedExpr {
+    classify_expr_depth(expr, db, registry, table, command, 0, state)
 }
 
 fn classify_expr_depth<DB: DatabaseLike>(
@@ -150,6 +173,7 @@ fn classify_expr_depth<DB: DatabaseLike>(
     table: &str,
     command: PolicyCommand,
     depth: u32,
+    state: &ExpansionState,
 ) -> ClassifiedExpr {
     if depth > MAX_CLASSIFY_DEPTH {
         return unknown_d(
@@ -160,7 +184,7 @@ fn classify_expr_depth<DB: DatabaseLike>(
             ),
         );
     }
-    let classified = classify_expr_inner(expr, db, registry, table, command, depth);
+    let classified = classify_expr_inner(expr, db, registry, table, command, depth, state);
     // Every classification passes through here, including each part of a composite and
     // the inner rule of an inheritance, each against its own table.
     match guarded_column(&classified.pattern) {
@@ -202,7 +226,10 @@ fn guarded_column(pattern: &PatternClass) -> Option<&ColumnName> {
         // absent from the list above: `resolve_bridge_columns` already refuses it with
         // `BridgeColumnMissing`, which names the bridge that could not be written, and
         // refusing here instead would replace that with a threshold drop saying less.
-        PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        // An expanded call's inner classification passed this check against the same
+        // table when it was produced, so the wrapper reads nothing of its own.
+        PatternClass::ExpandedFunction(ExpandedFunction { .. })
+        | PatternClass::P4ExistsMembership(ExistsMembership { .. })
         | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
         | PatternClass::P1NumericThreshold(NumericThreshold { .. })
         | PatternClass::P2RoleNameInList(RoleNameInList { .. })
@@ -223,6 +250,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
     table: &str,
     command: PolicyCommand,
     depth: u32,
+    state: &ExpansionState,
 ) -> ClassifiedExpr {
     // Gap 7: Row-value comparison decomposition.
     if let Expr::BinaryOp {
@@ -243,7 +271,15 @@ fn classify_expr_inner<DB: DatabaseLike>(
                     })
                     .collect();
                 let conjunction = fold_binary(equalities, &BinaryOperator::And);
-                return classify_expr_depth(&conjunction, db, registry, table, command, depth + 1);
+                return classify_expr_depth(
+                    &conjunction,
+                    db,
+                    registry,
+                    table,
+                    command,
+                    depth + 1,
+                    state,
+                );
             }
         }
     }
@@ -252,9 +288,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
     if let Expr::BinaryOp { left, op, right } = expr {
         match op {
             BinaryOperator::Or => {
-                let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
+                let left_class =
+                    classify_expr_depth(left, db, registry, table, command, depth + 1, state);
                 let right_class =
-                    classify_expr_depth(right, db, registry, table, command, depth + 1);
+                    classify_expr_depth(right, db, registry, table, command, depth + 1, state);
 
                 let confidence = composite_confidence([&left_class, &right_class]);
 
@@ -270,18 +307,45 @@ fn classify_expr_inner<DB: DatabaseLike>(
                 // "the caller is known" beside a rule that already needs the caller adds
                 // nothing, so the rule stands alone rather than the pair being refused.
                 if recognizers::is_redundant_caller_presence(left, registry) {
-                    return classify_expr_depth(right, db, registry, table, command, depth + 1);
+                    return classify_expr_depth(
+                        right,
+                        db,
+                        registry,
+                        table,
+                        command,
+                        depth + 1,
+                        state,
+                    );
                 }
                 if recognizers::is_redundant_caller_presence(right, registry) {
-                    return classify_expr_depth(left, db, registry, table, command, depth + 1);
+                    return classify_expr_depth(
+                        left,
+                        db,
+                        registry,
+                        table,
+                        command,
+                        depth + 1,
+                        state,
+                    );
                 }
-                let left_class = classify_expr_depth(left, db, registry, table, command, depth + 1);
+                let left_class =
+                    classify_expr_depth(left, db, registry, table, command, depth + 1, state);
                 let right_class =
-                    classify_expr_depth(right, db, registry, table, command, depth + 1);
+                    classify_expr_depth(right, db, registry, table, command, depth + 1, state);
 
-                // Check if either branch is an attribute check → P7
-                let left_attr = recognizers::is_attribute_check(left);
-                let right_attr = recognizers::is_attribute_check(right);
+                // Either branch may be an attribute check beside a relationship, the
+                // P7 pair. Only a guard the tuples cannot carry takes that door: a
+                // literal or request-scoped predicate translates in full, so it keeps
+                // its structure through the ordinary composite below instead of being
+                // flattened to a column name and graded partial.
+                let untranslatable_attr = |side: &Expr| {
+                    recognizers::is_attribute_check(side).filter(|_| {
+                        recognizers::attribute_literal_predicate(side).is_none()
+                            && recognizers::attribute_request_predicate(side).is_none()
+                    })
+                };
+                let left_attr = untranslatable_attr(left);
+                let right_attr = untranslatable_attr(right);
 
                 if let Some(attr) = left_attr {
                     if is_relationship_pattern_for_p7(&right_class.pattern) {
@@ -322,7 +386,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
 
     // Handle nested parens / grouped expressions
     if let Expr::Nested(inner) = expr {
-        return classify_expr_depth(inner, db, registry, table, command, depth + 1);
+        return classify_expr_depth(inner, db, registry, table, command, depth + 1, state);
     }
 
     // Gap 4: CASE WHEN cond1 THEN TRUE WHEN cond2 THEN TRUE ... ELSE FALSE END
@@ -335,7 +399,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
     } = expr
     {
         if let Some(rewritten) = normalize_boolean_case(conditions, else_result.as_deref()) {
-            return classify_expr_depth(&rewritten, db, registry, table, command, depth + 1);
+            return classify_expr_depth(&rewritten, db, registry, table, command, depth + 1, state);
         }
     }
 
@@ -349,7 +413,8 @@ fn classify_expr_inner<DB: DatabaseLike>(
         if let Some(classified) = recognizers::recognize_p10_constant_bool(expr, db, registry) {
             return classified;
         }
-        let inner_classified = classify_expr_depth(inner, db, registry, table, command, depth + 1);
+        let inner_classified =
+            classify_expr_depth(inner, db, registry, table, command, depth + 1, state);
         let desc = pattern_short_name(&inner_classified.pattern);
         return unknown_d(
             expr,
@@ -428,29 +493,31 @@ fn classify_expr_inner<DB: DatabaseLike>(
     }
 
     // Try P5: parent inheritance via correlated EXISTS
-    if let Some(classified) = recognizers::recognize_p5(expr, db, registry, table, command) {
+    if let Some(classified) = recognizers::recognize_p5(expr, db, registry, table, command, state) {
         return classified;
     }
 
     // Try P4: EXISTS membership
-    if let Some(classified) = recognizers::recognize_p4(expr, db, registry, table) {
+    if let Some(classified) = recognizers::recognize_p4(expr, db, registry, table, state) {
         return classified;
     }
 
     // Try P4 and P5: the IN-subquery spellings, normalized into the EXISTS one.
     if let Some(classified) =
-        recognizers::recognize_p4_in_subquery(expr, db, registry, table, command)
+        recognizers::recognize_p4_in_subquery(expr, db, registry, table, command, state)
     {
         return classified;
     }
 
-    if let Some(reason) =
-        recognizers::diagnose_p5_parent_inheritance_ambiguity(expr, db, registry, table, command)
-    {
+    if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(
+        expr, db, registry, table, command, state,
+    ) {
         return unknown_d(expr, reason);
     }
 
-    if let Some(reason) = recognizers::diagnose_p4_membership_ambiguity(expr, db, registry, table) {
+    if let Some(reason) =
+        recognizers::diagnose_p4_membership_ambiguity(expr, db, registry, table, state)
+    {
         return unknown_d(expr, reason);
     }
 
@@ -506,6 +573,48 @@ fn classify_expr_inner<DB: DatabaseLike>(
         };
     }
 
+    // A call naming a declared function expands to that function's body, so the
+    // documented workaround for policy self-recursion translates. After every
+    // recognizer, so a registered semantic keeps its handling, and before the
+    // blame below, which is where such a call fell until now.
+    if let Some(expansion) = expansion::expand_function_call(expr, db, registry, table, state) {
+        return match expansion {
+            expansion::Expansion::Refused { reason } => unknown_d(expr, reason),
+            expansion::Expansion::Body {
+                function,
+                reads_bypass_rls,
+                expr: body,
+            } => {
+                state.enter(normalize_relation_name(&function));
+                if reads_bypass_rls {
+                    state.enter_owner_read();
+                }
+                let inner =
+                    classify_expr_depth(&body, db, registry, table, command, depth + 1, state);
+                if reads_bypass_rls {
+                    state.leave_owner_read();
+                }
+                state.leave();
+                if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &inner.pattern {
+                    unknown_d(
+                        expr,
+                        format!("The body of '{function}' does not translate: {reason}"),
+                    )
+                } else {
+                    let confidence = inner.confidence;
+                    ClassifiedExpr {
+                        pattern: PatternClass::ExpandedFunction(ExpandedFunction {
+                            function,
+                            reads_bypass_rls,
+                            inner: Box::new(inner),
+                        }),
+                        confidence,
+                    }
+                }
+            }
+        };
+    }
+
     let mut blamed: Vec<String> = recognizers::subquery_set_constructors(expr)
         .into_iter()
         .map(|name| describe_set_constructor(&name))
@@ -531,11 +640,9 @@ fn classify_expr_inner<DB: DatabaseLike>(
 ///
 /// A `SECURITY DEFINER` body wrapping a membership `EXISTS` is blamed here rather than
 /// expanded, which makes the dominant idiom for working around policy self-recursion
-/// come out all-deny. Expanding it is designed and waits on
-/// `apache/datafusion-sqlparser-rs` PR #2447: until that merges, a quoted argument name
-/// arrives with its quotes inside the value and its quote flag cleared, so an argument
-/// shadowing a column of the body's own table cannot be detected, and substituting it
-/// would compare that column to itself and admit every row.
+/// come out all-deny. Expanding it is designed and unblocked since sqlparser
+/// #2447 merged: a quoted argument name now arrives with its quote flag set,
+/// so the shadowed-argument guard the expansion needs can see it.
 fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) -> String {
     match registry.get(func_name) {
         Some(FunctionSemantic::Unknown { reason }) => {
@@ -609,6 +716,7 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
             "declared caller value equal to a constant"
         }
         PatternClass::Unknown(UnclassifiedExpr { .. }) => "unrecognized expression",
+        PatternClass::ExpandedFunction(ExpandedFunction { .. }) => "expanded function call",
     }
 }
 
@@ -633,6 +741,10 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         PatternClass::P7AbacAnd(AbacAnd {
             relationship_part, ..
         }) => is_relationship_pattern_for_p7(&relationship_part.pattern),
+        // The expansion is the body, so whether it is a relationship is the body's answer.
+        PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) => {
+            is_relationship_pattern_for_p7(&inner.pattern)
+        }
         PatternClass::P8Composite(Composite { parts, .. }) => {
             !parts.is_empty()
                 && parts
@@ -701,21 +813,34 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     }
 
     #[test]
-    fn classify_and_with_attribute_on_each_side_maps_to_p7() {
+    fn classify_and_with_a_literal_guard_keeps_the_composite_structure() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
 
+        // A literal guard is row data the tuples carry, so the pair keeps its
+        // structure rather than being flattened to the partial P7 column name.
         for expr_sql in [
             "status = 'published' AND owner_id = current_user",
             "owner_id = current_user AND status = 'published'",
         ] {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            assert!(matches!(
-                &classified.pattern,
-                PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) if attribute_part == "status"
-            ));
-            assert_eq!(classified.confidence, ConfidenceLevel::C);
+            assert!(
+                matches!(
+                    &classified.pattern,
+                    PatternClass::P8Composite(Composite { op: BoolOp::And, parts })
+                        if parts.iter().any(|part| matches!(
+                            &part.pattern,
+                            PatternClass::P9AttributeCondition(AttributeCondition {
+                                predicate: Some(_),
+                                ..
+                            })
+                        ))
+                ),
+                "the literal guard keeps its predicate, got: {:?}",
+                classified.pattern
+            );
+            assert_eq!(classified.confidence, ConfidenceLevel::B);
         }
     }
 
@@ -1901,9 +2026,16 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         assert!(
             matches!(
                 &classified.pattern,
-                PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) if attribute_part == "status"
+                PatternClass::P8Composite(Composite { op: BoolOp::And, parts })
+                    if parts.iter().any(|part| matches!(
+                        &part.pattern,
+                        PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"
+                    )) && parts.iter().any(|part| matches!(
+                        &part.pattern,
+                        PatternClass::P9AttributeCondition(AttributeCondition { predicate: Some(_), .. })
+                    ))
             ),
-            "Row-value comparison should decompose and classify as P7, got: {:?}",
+            "Row-value comparison should decompose to ownership beside the literal guard, got: {:?}",
             classified.pattern
         );
     }

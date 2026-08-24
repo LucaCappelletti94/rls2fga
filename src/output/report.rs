@@ -5,7 +5,7 @@ use core::fmt::Write;
 use crate::classifier::patterns::{
     AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag, CallerScalarEqualsConstant,
     ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel, ConstantBool,
-    ConstantInCallerSet, DirectOwnership, ExistsMembership, JsonbFieldOwnership,
+    ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction, JsonbFieldOwnership,
     MembershipInCallerSet, NumericThreshold, ParentInheritance, RoleNameInList,
     RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
 };
@@ -198,6 +198,11 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         }
         PatternClass::P5ParentInheritance(ParentInheritance { parent_table, .. }) => {
             format!("P5 (inherits from {parent_table})")
+        }
+        PatternClass::ExpandedFunction(ExpandedFunction {
+            function, inner, ..
+        }) => {
+            format!("{} via {function}()", format_pattern(&inner.pattern))
         }
         PatternClass::P6BooleanFlag(BooleanFlag { column }) => format!("P6 ({column})"),
         PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) => {

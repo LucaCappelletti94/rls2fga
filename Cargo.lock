@@ -2583,7 +2583,7 @@ dependencies = [
 [[package]]
 name = "sql-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#981b57f0724086ef1606fbce110758bcaa1ef0cd"
+source = "git+https://github.com/earth-metabolome-initiative/sql-traits?branch=main#57555a10f5da70916a2bcc64164d3930554c1e5b"
 dependencies = [
  "geometric-traits",
  "sha2",
@@ -2604,7 +2604,7 @@ dependencies = [
 [[package]]
 name = "sqlparser"
 version = "0.62.0"
-source = "git+https://github.com/apache/datafusion-sqlparser-rs?branch=main#30d0836b673d2198262f0662596ac8dbb7379987"
+source = "git+https://github.com/apache/datafusion-sqlparser-rs?branch=main#183e083ee87b65ea965fa30dea621f13e81fdd66"
 dependencies = [
  "log",
  "recursive",
@@ -2615,7 +2615,7 @@ dependencies = [
 [[package]]
 name = "sqlparser_derive"
 version = "0.5.0"
-source = "git+https://github.com/apache/datafusion-sqlparser-rs?branch=main#30d0836b673d2198262f0662596ac8dbb7379987"
+source = "git+https://github.com/apache/datafusion-sqlparser-rs?branch=main#183e083ee87b65ea965fa30dea621f13e81fdd66"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2734,7 +2734,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.52.0",

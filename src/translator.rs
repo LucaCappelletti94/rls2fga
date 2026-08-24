@@ -345,7 +345,7 @@ impl<'a, DB: DatabaseLike> Outputs<'a, DB> {
     /// The `OpenFGA` JSON authorization model.
     #[must_use]
     pub fn json_model(&self) -> AuthorizationModel {
-        json_model_from_plan(self.0.plan.clone())
+        json_model_from_plan(&self.0.plan)
     }
 
     /// SQL that populates the relationship tuples.

@@ -18,8 +18,11 @@ FROM "ownables"
 WHERE "id" IS NOT NULL
 AND "owner_id" IS NOT NULL;
 
--- TODO [Level C]: attribute condition 'status' on ownables requires runtime enforcement
--- No tuple can express the attribute filter 'status', so application logic must enforce it.
+-- Attribute gate (status = 'active')
+SELECT 'ownables:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_viewer' AS relation, 'user:*' AS subject
+FROM "ownables"
+WHERE "id" IS NOT NULL
+AND "status" = 'active';
 
 -- Owner identities that are rows of users
 SELECT 'owner_grants_owner:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner_user' AS relation, 'user:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS subject
@@ -31,11 +34,10 @@ SELECT 'owner_grants_owner:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN
 FROM "teams"
 WHERE "id" IS NOT NULL;
 
--- Explicit grants over owner_grants_owner identities (role_id: 2=viewer, 3=editor, 4=admin)
+-- Explicit grants over owner_grants_owner identities (role_id: 3=editor, 4=admin)
 SELECT
   'owner_grants_owner:' || CASE WHEN og."granted_owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN og."granted_owner_id"::text ELSE '~' || encode(convert_to(og."granted_owner_id"::text, 'UTF8'), 'hex') END AS object,
   CASE og."role_id"
-    WHEN 2 THEN 'grant_viewer'
     WHEN 3 THEN 'grant_editor'
     WHEN 4 THEN 'grant_admin'
   END AS relation,
@@ -46,5 +48,5 @@ SELECT
 FROM "owner_grants" og
 LEFT JOIN "users" u ON u."id" = og."grantee_owner_id"
                  LEFT JOIN "teams" t ON t."id" = og."grantee_owner_id"
-WHERE og."role_id" IN (2, 3, 4)
+WHERE og."role_id" IN (3, 4)
 AND (u."id" IS NOT NULL OR t."id" IS NOT NULL);

@@ -713,6 +713,202 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
     );
 }
 
+/// One reader for the definer fixture: `(app user id, login role, has any grant
+/// on doc_members)`. The third reader is probe A's point: no grant on the
+/// membership table at all, and the definer still answers their docs.
+const DEFINER_READERS: [(&str, &str, bool); 3] = [
+    (USER_ALICE, "app_alice", true),
+    (USER_BOB, "app_bob", true),
+    (USER_CAROL, "app_carol", false),
+];
+
+/// One seeded `doc_members` row: `(id, doc_id, user_id)`.
+const DEFINER_DOC_MEMBERS: [(&str, &str, &str); 3] = [
+    ("dm-alice", DOC_1, USER_ALICE),
+    ("dm-bob", DOC_1, USER_BOB),
+    ("dm-carol", DOC_2, USER_CAROL),
+];
+
+/// Whether `login_role`, acting as `user_id`, can read the `doc_members` row.
+fn postgres_allows_member_select(
+    conn: &mut PgConnection,
+    user_id: &str,
+    login_role: &str,
+    member_row_id: &str,
+) -> bool {
+    conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+        // Session settings and role switching have no query DSL form.
+        diesel::sql_query(format!("SET LOCAL ROLE {login_role}")).execute(conn)?;
+        diesel::sql_query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind::<Text, _>(user_id)
+            .execute(conn)?;
+
+        let visible: i64 = doc_members::table
+            .filter(doc_members::id.eq(member_row_id))
+            .count()
+            .get_result(conn)?;
+        Ok(visible == 1)
+    })
+    .expect("reading doc_members under row level security should not error")
+}
+
+/// Probe A end to end: a `SECURITY DEFINER` wrapper around the membership
+/// EXISTS, called by `docs` and by `doc_members`' own self-referential policy.
+/// The pre-expansion tree translated this fixture as all-deny.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn definer_membership_parity_postgres18_and_openfga() {
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("definer_membership");
+    let (classified, db, registry) = support::load_fixture_classified("definer_membership");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the definer_membership schema on PostgreSQL 18");
+
+    diesel::insert_into(users::table)
+        .values(
+            DEFINER_READERS
+                .map(|(user_id, _, _)| users::id.eq(user_id))
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed users");
+    diesel::insert_into(docs::table)
+        .values([DOC_1, DOC_2].map(|id| docs::id.eq(id)).to_vec())
+        .execute(&mut conn)
+        .expect("Failed to seed docs");
+    diesel::insert_into(doc_members::table)
+        .values(
+            DEFINER_DOC_MEMBERS
+                .map(|(id, doc_id, user_id)| {
+                    (
+                        doc_members::id.eq(id),
+                        doc_members::doc_id.eq(doc_id),
+                        doc_members::user_id.eq(user_id),
+                    )
+                })
+                .to_vec(),
+        )
+        .execute(&mut conn)
+        .expect("Failed to seed doc_members");
+
+    for (_, login_role, member_grant) in DEFINER_READERS {
+        let member_grant = if member_grant {
+            format!("GRANT SELECT ON doc_members TO {login_role};")
+        } else {
+            String::new()
+        };
+        conn.batch_execute(&format!(
+            "CREATE ROLE {login_role} LOGIN; \
+             GRANT SELECT ON docs TO {login_role}; \
+             {member_grant}"
+        ))
+        .expect("Failed to create a querying role");
+    }
+
+    let model = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .json_model();
+    let tuple_queries = Translation::plan(
+        classified.clone(),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries();
+    let tuple_keys = execute_tuple_queries(&mut conn, &tuple_queries);
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "definer-membership-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+
+    let writes: Vec<openfga_client::client::TupleKey> = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, writes).await;
+
+    let mut failures = Vec::new();
+    for (user_id, login_role, member_grant) in DEFINER_READERS {
+        for doc_id in [DOC_1, DOC_2] {
+            let expected = postgres_allows_select(&mut conn, user_id, login_role, doc_id);
+            let user = format!("user:{user_id}");
+            let object = format!("docs:{doc_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+        // A reader with no privilege on the table cannot ask PostgreSQL at all,
+        // so only granted readers compare the membership rows.
+        if !member_grant {
+            continue;
+        }
+        for (member_row_id, _, _) in DEFINER_DOC_MEMBERS {
+            let expected =
+                postgres_allows_member_select(&mut conn, user_id, login_role, member_row_id);
+            let user = format!("user:{user_id}");
+            let object = format!("doc_members:{member_row_id}");
+            let actual =
+                support::openfga::check_allowed(&client, &user, "can_select", &object).await;
+            if expected != actual {
+                failures.push(format!(
+                    "{user} as {login_role} can_select {object}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    let granted =
+        failures.is_empty() && postgres_allows_select(&mut conn, USER_CAROL, "app_carol", DOC_2);
+    assert!(
+        granted,
+        "PostgreSQL/OpenFGA definer membership parity mismatches (an empty list means \
+         the case went vacuous: carol must reach her doc through the definer):\n{}",
+        failures.join("\n")
+    );
+}
+
 /// One reviewer relationship: `(note id, owner, reviewer)`. The last row is owned by
 /// the reader outside `contractor`, whom the barrier must not touch.
 const SEEDED_REVIEWED_NOTES: [(&str, &str, &str); 3] = [

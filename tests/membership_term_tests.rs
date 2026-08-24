@@ -168,9 +168,10 @@ fn a_term_naming_no_caller_is_refused() {
     );
 }
 
-/// Assertion 4: a residual no tuple can express refuses, whatever confidence the caller
-/// asked for. At `C` the shapes are otherwise identical to the term without it, so
-/// serving them would admit every order of the caller whatever its status.
+/// Assertion 4: a residual no chain of records can express refuses, whatever
+/// confidence the caller asked for. The parent's rule became the membership
+/// subject beside a row gate, which one chain cannot carry, so serving the
+/// chain alone would admit every order of the caller whatever its status.
 #[test]
 fn a_residual_no_tuple_can_express_is_refused() {
     for min in [ConfidenceLevel::C, ConfidenceLevel::D] {
@@ -184,8 +185,8 @@ fn a_residual_no_tuple_can_express_is_refused() {
             min,
         );
         assert!(
-            reason.contains("status"),
-            "the refusal names the condition left unenforced at {min:?}, got: {reason}"
+            reason.contains("no record can carry it"),
+            "the refusal says the chain cannot carry the rule at {min:?}, got: {reason}"
         );
     }
 }
@@ -507,9 +508,9 @@ fn a_filter_reading_a_json_field_names_one_link() {
     );
 }
 
-/// The caller's own threshold still applies. The residual filter grades `C`, so at `B`
-/// it is dropped before anything is compiled, and the refusal says so rather than
-/// reporting the residual it never reached.
+/// The caller's threshold no longer decides this shape: the row gate translates
+/// at `B`, so the same chain refusal answers at every threshold rather than a
+/// grade-dependent one.
 #[test]
 fn the_callers_threshold_still_refuses() {
     let reason = refuse_on(
@@ -522,8 +523,8 @@ fn the_callers_threshold_still_refuses() {
         ConfidenceLevel::B,
     );
     assert!(
-        reason.contains("below the threshold"),
-        "the refusal names the threshold that dropped it, got: {reason}"
+        reason.contains("no record can carry it"),
+        "the refusal is the chain's at B too, got: {reason}"
     );
 }
 

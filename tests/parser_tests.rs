@@ -362,3 +362,54 @@ fn a_foreign_key_the_schema_does_not_satisfy_is_refused() {
         );
     }
 }
+
+/// The constraint spellings `pg_dump -s` emits: keys and foreign keys arrive
+/// through `ALTER TABLE ONLY ... ADD CONSTRAINT` after every `CREATE TABLE`,
+/// with the keyed columns `NOT NULL` inline, and inheritance children present.
+/// `sql-traits` `57555a1` grants the `ONLY` per constraint kind, so a dumped
+/// schema's keys resolve instead of refusing the whole input.
+#[test]
+fn the_dumped_constraint_spelling_parses_and_translates() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs (id UUID NOT NULL, owner TEXT);
+CREATE TABLE doc_members (id UUID NOT NULL, doc_id UUID, user_id TEXT);
+CREATE TABLE archived_docs (stale BOOLEAN) INHERITS (docs);
+ALTER TABLE ONLY docs ADD CONSTRAINT docs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY doc_members ADD CONSTRAINT doc_members_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY doc_members ADD CONSTRAINT doc_members_doc_id_fkey FOREIGN KEY (doc_id) REFERENCES docs(id);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT
+  USING (EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+",
+    )
+    .expect("the dumped constraint spelling should parse and apply");
+    let translation = rls2fga::translator::TranslatorBuilder::new()
+        .with_min_confidence(rls2fga::classifier::patterns::ConfidenceLevel::B)
+        .build()
+        .translate(&db)
+        .expect("translation should plan");
+    let dsl = translation.outputs_accepting_gaps().model();
+    assert!(
+        dsl.contains("type docs"),
+        "the dumped keys should resolve and the membership translate:\n{dsl}"
+    );
+}
+
+/// The same `ONLY` primary key over a column the inheriting child leaves
+/// nullable is a key `PostgreSQL` would let child rows escape, so the schema
+/// refuses rather than keying objects on a column that may be NULL below.
+#[test]
+fn an_only_primary_key_on_a_nullable_inherited_column_refuses() {
+    let refused = parse_schema(
+        r"
+CREATE TABLE docs (id UUID, owner TEXT);
+CREATE TABLE archived_docs (stale BOOLEAN) INHERITS (docs);
+ALTER TABLE ONLY docs ADD CONSTRAINT docs_pkey PRIMARY KEY (id);
+",
+    );
+    assert!(
+        refused.is_err_and(|error| error.to_string().contains("id")),
+        "a nullable keyed column below the ONLY must refuse the schema"
+    );
+}

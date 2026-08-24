@@ -282,6 +282,13 @@ pub enum TranslationNote {
         /// Guarded membership table.
         join_table: String,
     },
+    /// A policy call was replaced by the named function's body.
+    FunctionExpanded {
+        /// Policy whose clause called the function.
+        policy: String,
+        /// The expanded function.
+        function: String,
+    },
     /// The membership check carries a predicate beyond the join.
     MembershipExtraPredicate {
         /// Policy holding the check.
@@ -379,6 +386,7 @@ impl TranslationNote {
             | Self::NoPermissivePolicy { .. }
             | Self::PolicyClauseAbsent { .. }
             | Self::MembershipTableGrantsNoReads { .. }
+            | Self::FunctionExpanded { .. }
             | Self::MembershipExtraPredicate { .. } => NoteSeverity::Faithful,
         }
     }
@@ -412,6 +420,7 @@ impl TranslationNote {
             | Self::MembershipReadScope { policy, .. }
             | Self::RoleNameRewritten { policy, .. }
             | Self::MembershipTableGrantsNoReads { policy, .. }
+            | Self::FunctionExpanded { policy, .. }
             | Self::MembershipTableGuarded { policy, .. }
             | Self::MembershipExtraPredicate { policy, .. }
             | Self::ParentRuleUntranslated { policy, .. }
@@ -634,6 +643,12 @@ impl fmt::Display for TranslationNote {
                  and the generated query leaves a longer one out rather than shortening it, \
                  which would merge two rows into one object. Check whether any row exceeds \
                  it: the model denies those rows where PostgreSQL grants them."
+            ),
+            Self::FunctionExpanded { function, .. } => write!(
+                f,
+                "The call to '{function}' was replaced by the function's single SQL \
+                 expression with the arguments substituted, so the translation is the \
+                 body's"
             ),
             Self::MembershipTableGrantsNoReads { join_table, .. } => write!(
                 f,

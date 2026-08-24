@@ -2,32 +2,11 @@ pub use sql_traits::prelude::*;
 use sqlparser::dialect::PostgreSqlDialect;
 
 /// Why a SQL schema could not be turned into a [`ParserDB`].
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SchemaError {
     /// The schema is invalid or references something it does not define.
-    Schema(sql_traits::errors::Error),
-}
-
-impl core::fmt::Display for SchemaError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Schema(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl core::error::Error for SchemaError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Schema(error) => Some(error),
-        }
-    }
-}
-
-impl From<sql_traits::errors::Error> for SchemaError {
-    fn from(error: sql_traits::errors::Error) -> Self {
-        Self::Schema(error)
-    }
+    #[error("{0}")]
+    Schema(#[from] sql_traits::errors::Error),
 }
 
 /// Parse SQL DDL into a [`ParserDB`].

@@ -1,5 +1,7 @@
 /// Maps SQL function names to their known semantics (role-threshold, current-user accessor, etc.).
 pub mod function_registry;
+// `expansion` documents itself in the file.
+pub mod expansion;
 // `oracle` documents itself in the file. A second doc here would merge with it and
 // resolve its intra-doc links in this file's scope.
 pub mod oracle;

@@ -10,6 +10,8 @@ use crate::no_std_prelude::*;
 use alloc::borrow::Cow;
 use core::fmt::Write;
 
+use crate::generator::well_known::WILDCARD_SUBJECT_ID;
+
 /// Introduces an escaped value. Outside [`is_spelled_verbatim`], so no verbatim
 /// value can begin with it and the mapping stays injective.
 pub(crate) const ESCAPE_MARKER: char = '~';
@@ -66,7 +68,7 @@ fn is_spelled_verbatim(value: &str) -> bool {
 /// One nibble as a lowercase hex digit, matching what
 /// `encode(convert_to(v,'UTF8'),'hex')` renders on the SQL side. The two must
 /// agree byte for byte.
-const fn hex_digit(nibble: u8) -> char {
+pub(crate) const fn hex_digit(nibble: u8) -> char {
     let nibble = nibble & 0x0f;
     (if nibble < 10 {
         b'0' + nibble
@@ -161,6 +163,12 @@ where
 /// quote, so the literal needs no further escaping.
 pub(crate) fn typed_name_literal(type_name: &str, key: &str) -> String {
     format!("'{type_name}:{}'", encode_part(key))
+}
+
+/// The typed wildcard subject as a SQL literal. The `*` stays verbatim: it is
+/// the target's wildcard, not a value to encode.
+pub(crate) fn wildcard_subject_literal(user_type: &str) -> String {
+    format!("'{user_type}:{WILDCARD_SUBJECT_ID}'")
 }
 
 #[cfg(test)]
