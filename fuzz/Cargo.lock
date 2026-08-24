@@ -422,6 +422,7 @@ dependencies = [
  "serde_json",
  "sql-traits",
  "sqlparser",
+ "thiserror",
 ]
 
 [[package]]

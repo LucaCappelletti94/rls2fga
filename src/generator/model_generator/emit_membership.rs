@@ -112,7 +112,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             member_table: member_table.clone(),
             user_col: user_column.clone(),
             extra_predicates: extra_predicates.clone(),
-            gate: gate.clone(),
+            gate,
         });
     }
     table_plan.add_source(TupleSource::HolderBridge {

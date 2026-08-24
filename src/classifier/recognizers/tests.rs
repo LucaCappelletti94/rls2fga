@@ -394,18 +394,30 @@ fn recognize_p3_requires_registration_for_unregistered_current_user_like_names()
 }
 
 #[test]
-fn recognize_p3_supports_is_not_distinct_from() {
+fn recognize_p3_refuses_null_safe_equality() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
-
-    // Registered accessor with owner-like column is accepted.
     let expr = parse_expr("owner_id IS NOT DISTINCT FROM auth_current_user_id()");
-    let classified = recognize_p3(&expr, &db, &registry).expect("expected ownership match");
+
+    assert!(
+        recognize_p3(&expr, &db, &registry).is_none(),
+        "NULL equals NULL here, unlike direct ownership"
+    );
+}
+
+#[test]
+fn recognize_p3_accepts_null_safe_equality_for_the_sql_caller() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+    let expr = parse_expr("owner_id IS NOT DISTINCT FROM current_user");
+
     assert!(matches!(
-        classified.pattern,
-        PatternClass::P3DirectOwnership(DirectOwnership { ref column }) if column == "owner_id"
+        recognize_p3(&expr, &db, &registry),
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P3DirectOwnership(DirectOwnership { column }),
+            confidence: ConfidenceLevel::A,
+        }) if column == "owner_id"
     ));
-    assert_eq!(classified.confidence, ConfidenceLevel::A);
 }
 
 #[test]

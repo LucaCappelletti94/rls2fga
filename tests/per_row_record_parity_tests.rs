@@ -2202,12 +2202,9 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         let rendered: BTreeSet<String> = rows_of(&mut conn, &entry.table)
             .iter()
             .filter_map(|row| {
-                entry
-                    .key
-                    .render(entry.type_name.as_str(), &JsonRowValues(row))
-                    .unwrap_or_else(|error| {
-                        panic!("a row of {} cannot be named: {error:?}", entry.table)
-                    })
+                entry.render(&JsonRowValues(row)).unwrap_or_else(|error| {
+                    panic!("a row of {} cannot be named: {error:?}", entry.table)
+                })
             })
             .collect();
         let prefix = format!("{}:", entry.type_name);
@@ -2314,8 +2311,7 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
         assert_eq!(rows.len(), 1, "each partition holds one seeded row");
         for row in &rows {
             let object = entry
-                .key
-                .render(entry.type_name.as_str(), &JsonRowValues(row))
+                .render(&JsonRowValues(row))
                 .expect("a partition row renders")
                 .expect("every key column is filled");
             assert!(

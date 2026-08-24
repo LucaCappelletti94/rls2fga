@@ -874,7 +874,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                          \x20 END"
                     )
                 }
-                (Some(_), None) => user_subject_sql.clone(),
+                (Some(_), None) => user_subject_sql,
                 (None, Some(tp)) => {
                     let team_tbl_sql = quote_sql_identifier(&tp.table);
                     let team_pk_sql = quote_sql_identifier(tp.pk_col.as_str());
@@ -1072,7 +1072,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let parameter_sql = quote_sql_string_literal(row_parameter);
             let pk_parts = quoted_key_parts(pk_cols);
             let object_sql = typed_name_sql(share_type, pk_parts.iter().map(String::as_str));
-            let mut null_cols = pk_parts.clone();
+            let mut null_cols = pk_parts;
             if !pk_cols.contains(member_col) {
                 null_cols.push(member_col_sql.clone());
             }

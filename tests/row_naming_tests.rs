@@ -127,8 +127,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     let subject = row(&[("id", "a|b"), ("owner", "alice")]);
 
     let rendered = docs
-        .key
-        .render(docs.type_name.as_str(), &subject)
+        .render(&subject)
         .expect("the row is nameable")
         .expect("the name fits");
 
@@ -164,7 +163,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     let subject = row(&[("id", "{a,b}"), ("owner", "alice")]);
 
     assert_eq!(
-        docs.key.render(docs.type_name.as_str(), &subject),
+        docs.render(&subject),
         Err(RecordError::ColumnTypeUnsupported {
             column: "id".to_string(),
             kind: ColumnKind::Unsupported,
@@ -330,9 +329,7 @@ CREATE POLICY p ON events FOR SELECT USING (tenant = {CALLER});
         "the partition is keyed exactly as the root is"
     );
     assert_eq!(
-        partition
-            .key
-            .render("events", &row(&[("id", "e-1"), ("at", "2026-05-01")])),
+        partition.render(&row(&[("id", "e-1"), ("at", "2026-05-01")])),
         Ok(Some("events:e-1|2026-05-01".to_string())),
         "the rendered name is the root's object"
     );

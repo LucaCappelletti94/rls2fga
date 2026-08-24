@@ -5085,8 +5085,7 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
             region: region.to_string(),
         };
         let object = entry
-            .key
-            .render(entry.type_name.as_str(), &row)
+            .render(&row)
             .expect("the key renders")
             .expect("every key column is filled");
         objects.push((id.to_string(), object));

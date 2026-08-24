@@ -251,21 +251,14 @@ impl FunctionRegistry {
         );
     }
 
-    /// Declare the request-scoped values a policy may read.
-    ///
-    /// One source holds one kind, so a set read where one value belongs finds no
-    /// declaration and stays unclassified. A source already described in the function
-    /// table keeps that description: a name cannot mean two things at once.
+    /// Declare request-scoped values, replacing an earlier declaration for the same source.
     pub fn declare_session_attributes<I>(&mut self, attributes: I)
     where
         I: IntoIterator<Item = SessionAttribute>,
     {
         for attribute in attributes {
-            if self.get(attribute.setting_key()).is_some() {
-                continue;
-            }
-            self.session_attributes
-                .insert((attribute.key.clone(), attribute.path.clone()), attribute);
+            let key = (attribute.key.clone(), attribute.path.clone());
+            self.session_attributes.insert(key, attribute);
         }
     }
 

@@ -304,13 +304,13 @@ pub fn recognize_p3<DB: DatabaseLike>(
     _db: &DB,
     registry: &FunctionRegistry,
 ) -> Option<ClassifiedExpr> {
-    let (left, right) = match expr {
+    let (left, right, null_safe) = match expr {
         Expr::BinaryOp {
             left,
             op: BinaryOperator::Eq,
             right,
-        }
-        | Expr::IsNotDistinctFrom(left, right) => (left.as_ref(), right.as_ref()),
+        } => (left.as_ref(), right.as_ref(), false),
+        Expr::IsNotDistinctFrom(left, right) => (left.as_ref(), right.as_ref(), true),
         _ => return None,
     };
 
@@ -359,6 +359,9 @@ pub fn recognize_p3<DB: DatabaseLike>(
     // Strict policy: only SQL current-user keywords and accessors somebody named,
     // by function or by setting key, are eligible for P3.
     if !is_named && !is_sql_keyword {
+        return None;
+    }
+    if null_safe && !is_sql_keyword {
         return None;
     }
 
@@ -1004,53 +1007,25 @@ fn is_current_user_keyword(name: &str) -> bool {
 }
 
 fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
-    match unwrap_cast_or_nested(expr) {
-        Expr::Identifier(ident) => {
+    match accessor_root(expr) {
+        Some(Expr::Identifier(ident)) => {
             ident.quote_style.is_none()
                 && is_current_user_keyword(&normalize_relation_name(&ident.value))
         }
-        Expr::Function(func) => {
+        Some(Expr::Function(func)) => {
             split_schema_and_relation(&func.name.to_string()).is_none()
                 && matches!(func.args, FunctionArguments::None)
                 && is_current_user_keyword(&normalized_function_name(func))
-        }
-        Expr::Subquery(query) => {
-            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                if select.projection.len() == 1 {
-                    if let Some(
-                        SelectItem::UnnamedExpr(inner)
-                        | SelectItem::ExprWithAlias { expr: inner, .. },
-                    ) = select.projection.first()
-                    {
-                        return is_sql_current_user_keyword_expr(inner);
-                    }
-                }
-            }
-            false
         }
         _ => false,
     }
 }
 
 fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
-    match unwrap_cast_or_nested(expr) {
-        Expr::Function(func) => is_current_user_keyword(&normalized_function_name(func)),
-        Expr::Subquery(query) => {
-            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                if select.projection.len() == 1 {
-                    if let Some(
-                        SelectItem::UnnamedExpr(inner)
-                        | SelectItem::ExprWithAlias { expr: inner, .. },
-                    ) = select.projection.first()
-                    {
-                        return is_keyword_named_function_call_expr(inner);
-                    }
-                }
-            }
-            false
-        }
-        _ => false,
-    }
+    matches!(
+        accessor_root(expr),
+        Some(Expr::Function(func)) if is_current_user_keyword(&normalized_function_name(func))
+    )
 }
 
 /// `caller IS NOT NULL`, which says nothing a tuple does not already say.

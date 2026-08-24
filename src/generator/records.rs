@@ -346,7 +346,7 @@ impl ObjectKey {
     /// [`RecordError::RowCannotBeNamed`] when the encoded name is longer than
     /// the target accepts. Shortening it would merge two rows into one object,
     /// so this refuses instead.
-    pub fn render<R: RowValues + ?Sized>(
+    pub(crate) fn render<R: RowValues + ?Sized>(
         &self,
         object_type: &str,
         row: &R,

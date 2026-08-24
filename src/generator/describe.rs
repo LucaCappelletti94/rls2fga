@@ -169,9 +169,7 @@ fn rendered<DB: DatabaseLike>(
 
 /// One value source per key column, in declared order.
 ///
-/// A missing part makes [`ObjectKey::render`] yield no record, which is why no
-/// description carries a `NOT NULL` guard for a key column: the guard would
-/// duplicate that and read as load bearing while guarding nothing.
+/// A missing part yields no record, so a `NOT NULL` guard would duplicate the key.
 fn column_read<DB: DatabaseLike>(table: &str, column: &ColumnName, db: &DB) -> ColumnRead {
     ColumnRead::new(column.clone(), column_kind(table, column.as_str(), db))
 }

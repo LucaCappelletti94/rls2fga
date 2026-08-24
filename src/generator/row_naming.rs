@@ -18,7 +18,7 @@ use alloc::collections::BTreeMap;
 
 use crate::generator::db_lookup::{column_kind, resolve_pk_columns};
 use crate::generator::model_generator::{qualified_table_name, SchemaPlan, TypePlan};
-use crate::generator::records::{ColumnRead, ObjectKey, ValueSource};
+use crate::generator::records::{ColumnRead, ObjectKey, RecordError, RowValues, ValueSource};
 use crate::parser::identifiers::ColumnName;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 
@@ -35,9 +35,15 @@ pub struct RowNaming {
     pub table: String,
     /// The type the model assigned it, after any collision suffix.
     pub type_name: String,
-    /// How one of its rows is named. Render it with
-    /// [`ObjectKey::render`](crate::generator::records::ObjectKey::render).
+    /// How the row's key is built.
     pub key: ObjectKey,
+}
+
+impl RowNaming {
+    /// Render this row under the type the translation assigned it.
+    pub fn render<R: RowValues + ?Sized>(&self, row: &R) -> Result<Option<String>, RecordError> {
+        self.key.render(&self.type_name, row)
+    }
 }
 
 /// The type a table's rows are named by, and the columns that key them.

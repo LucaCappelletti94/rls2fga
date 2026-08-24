@@ -6,6 +6,7 @@ use rls2fga::classifier::patterns::{
     ExistsMembership, MembershipInCallerSet, PatternClass, RowValueEqualsCallerScalar,
     RowValueInCallerSet, UnclassifiedExpr,
 };
+use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
@@ -566,6 +567,43 @@ CREATE POLICY p_editor ON docs FOR UPDATE USING (editor_id = current_setting('ot
         ["editor_id", "owner_id"],
         "both keys name the caller: {classified:#?}"
     );
+}
+
+#[test]
+fn function_and_setting_names_use_separate_namespaces() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+    tenant_id = current_setting('app.tenant_id', true)
+);
+";
+    let db = parse_schema(sql).expect("schema should parse");
+    let mut registry = FunctionRegistry::new();
+    registry.register_if_absent(
+        "app.tenant_id",
+        &FunctionSemantic::CurrentUserAccessor {
+            returns: "uuid".to_string(),
+        },
+    );
+    let classified = TranslatorBuilder::new()
+        .with_registry(registry)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.tenant_id",
+            SessionAttributeKind::ScalarAttribute,
+        )])
+        .build()
+        .classify(&db);
+    let using = classified[0]
+        .using_classification
+        .as_ref()
+        .expect("the policy has a USING clause");
+
+    assert!(matches!(
+        &using.pattern,
+        PatternClass::P15RowValueEqualsCallerScalar(RowValueEqualsCallerScalar { column, .. })
+            if column == "tenant_id"
+    ));
 }
 
 // ── The session attribute vocabulary ──────────────────────────────────

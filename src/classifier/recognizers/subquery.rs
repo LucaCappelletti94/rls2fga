@@ -1799,7 +1799,7 @@ fn analyze_membership_eq_predicate(
             ) {
                 if let Some((source, separator)) = caller_set(right, registry) {
                     return MembershipEqAnalysis::UserColumn(
-                        column.clone(),
+                        column,
                         MemberMatch::InCallerSet {
                             source: source.clone(),
                             separator,
