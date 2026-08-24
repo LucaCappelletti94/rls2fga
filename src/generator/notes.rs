@@ -11,9 +11,10 @@ use crate::classifier::patterns::{ConfidenceLevel, RolePrivilege};
 use crate::no_std_prelude::*;
 use crate::parser::identifiers::{ColumnName, RelationName};
 use core::fmt;
+use serde::{Deserialize, Serialize};
 
 /// How a note bears on what the model says compared with the database.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum NoteSeverity {
     /// Nothing is missing. The model says what the database says.
@@ -62,7 +63,7 @@ impl NoteSeverity {
 }
 
 /// One thing a translation has to tell its caller about itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum TranslationNote {
     /// A function running as its owner cannot identify the caller.

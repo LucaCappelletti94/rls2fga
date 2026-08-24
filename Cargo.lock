@@ -2253,6 +2253,7 @@ dependencies = [
  "sql-traits",
  "sqlparser",
  "testcontainers",
+ "thiserror",
  "tokio",
 ]
 

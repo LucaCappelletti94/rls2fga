@@ -3,6 +3,7 @@ use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
+use rls2fga::output::formatter::WriteError;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
@@ -47,7 +48,10 @@ fn write_output_rejects_empty_name() {
     let err = any_outputs(&db)
         .write(&dir, "")
         .expect_err("empty name should be rejected");
-    assert!(err.contains("empty"), "Error: {err}");
+    assert!(
+        matches!(&err, WriteError::InvalidName { reason, .. } if reason.contains("empty")),
+        "Error: {err}"
+    );
 }
 
 #[test]
@@ -58,7 +62,7 @@ fn write_output_rejects_absolute_path() {
         .write(&dir, "/etc/passwd")
         .expect_err("absolute path should be rejected");
     assert!(
-        err.contains("absolute") || err.contains("Invalid"),
+        matches!(&err, WriteError::InvalidName { .. }),
         "Error: {err}"
     );
 }

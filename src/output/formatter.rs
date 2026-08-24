@@ -1,35 +1,60 @@
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::generator::tuple_generator::{self, TupleQuery};
+
+/// Why writing the output files failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum WriteError {
+    /// The output name is unusable as a filename.
+    #[error("Invalid output name '{name}': {reason}")]
+    InvalidName {
+        /// The name as the caller spelled it.
+        name: String,
+        /// What makes it unusable.
+        reason: &'static str,
+    },
+    /// The output directory could not be created.
+    #[error("Failed to create output directory: {source}")]
+    CreateDirectory {
+        /// The underlying filesystem error.
+        source: std::io::Error,
+    },
+    /// One of the output files could not be written.
+    #[error("Failed to write {}: {source}", path.display())]
+    WriteFile {
+        /// The file that failed.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: std::io::Error,
+    },
+}
 
 /// Write the model, the tuple SQL and the report into `output_dir`.
 ///
 /// # Errors
 ///
-/// Returns a message when `name` is unusable as a filename or a write fails.
+/// Returns [`WriteError`] when `name` is unusable as a filename or a write fails.
 pub(crate) fn write_output(
     output_dir: &Path,
     name: &str,
     dsl: &str,
     tuples: &[TupleQuery],
     report: &str,
-) -> Result<(), String> {
+) -> Result<(), WriteError> {
     validate_output_name(name)?;
 
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+    std::fs::create_dir_all(output_dir).map_err(|source| WriteError::CreateDirectory { source })?;
 
-    let fga_path = output_dir.join(format!("{name}.fga"));
-    std::fs::write(&fga_path, dsl)
-        .map_err(|e| format!("Failed to write {}: {e}", fga_path.display()))?;
-
-    let tuples_path = output_dir.join(format!("{name}_tuples.sql"));
-    std::fs::write(&tuples_path, tuple_generator::format_tuples(tuples))
-        .map_err(|e| format!("Failed to write {}: {e}", tuples_path.display()))?;
-
-    let report_path = output_dir.join(format!("{name}_report.md"));
-    std::fs::write(&report_path, report)
-        .map_err(|e| format!("Failed to write {}: {e}", report_path.display()))?;
+    let write_file = |path: PathBuf, contents: &str| {
+        std::fs::write(&path, contents).map_err(|source| WriteError::WriteFile { path, source })
+    };
+    write_file(output_dir.join(format!("{name}.fga")), dsl)?;
+    write_file(
+        output_dir.join(format!("{name}_tuples.sql")),
+        &tuple_generator::format_tuples(tuples),
+    )?;
+    write_file(output_dir.join(format!("{name}_report.md")), report)?;
 
     Ok(())
 }
@@ -41,35 +66,33 @@ const WINDOWS_RESERVED: &[&str] = &[
 ];
 const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-fn validate_output_name(name: &str) -> Result<(), String> {
+fn validate_output_name(name: &str) -> Result<(), WriteError> {
+    let refuse = |reason: &'static str| {
+        Err(WriteError::InvalidName {
+            name: name.to_string(),
+            reason,
+        })
+    };
     if name.trim().is_empty() {
-        return Err("Output name must not be empty".to_string());
+        return refuse("must not be empty");
     }
     // Reject names containing null bytes or other control characters.
     if name.chars().any(char::is_control) {
-        return Err(format!(
-            "Invalid output name '{name}': control characters are not allowed"
-        ));
+        return refuse("control characters are not allowed");
     }
     // Reject a bare dot (current directory reference).
     if name == "." || name == ".." {
-        return Err(format!(
-            "Invalid output name '{name}': '.' and '..' are not allowed"
-        ));
+        return refuse("'.' and '..' are not allowed");
     }
     // Reject invalid filename characters on Windows.
     if name
         .chars()
         .any(|ch| WINDOWS_INVALID_FILENAME_CHARS.contains(&ch))
     {
-        return Err(format!(
-            "Invalid output name '{name}': contains characters invalid in Windows filenames"
-        ));
+        return refuse("contains characters invalid in Windows filenames");
     }
     if name.ends_with(' ') || name.ends_with('.') {
-        return Err(format!(
-            "Invalid output name '{name}': trailing spaces or dots are not allowed"
-        ));
+        return refuse("trailing spaces or dots are not allowed");
     }
     // Reject Windows reserved device names (case-insensitive), including
     // names with extensions (`CON.txt`) and trailing dot/space variants.
@@ -79,15 +102,11 @@ fn validate_output_name(name: &str) -> Result<(), String> {
         .map_or(windows_component, |(stem, _)| stem);
     let upper = windows_stem.to_ascii_uppercase();
     if WINDOWS_RESERVED.contains(&upper.as_str()) {
-        return Err(format!(
-            "Invalid output name '{name}': Windows reserved device name"
-        ));
+        return refuse("Windows reserved device name");
     }
     let candidate = Path::new(name);
     if candidate.is_absolute() {
-        return Err(format!(
-            "Invalid output name '{name}': absolute paths are not allowed"
-        ));
+        return refuse("absolute paths are not allowed");
     }
     if candidate.components().any(|component| {
         matches!(
@@ -95,9 +114,7 @@ fn validate_output_name(name: &str) -> Result<(), String> {
             Component::ParentDir | Component::RootDir | Component::Prefix(_)
         )
     }) {
-        return Err(format!(
-            "Invalid output name '{name}': traversal segments are not allowed"
-        ));
+        return refuse("traversal segments are not allowed");
     }
     Ok(())
 }
@@ -108,7 +125,7 @@ mod tests {
 
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_path(prefix: &str) -> std::path::PathBuf {
+    fn unique_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should be monotonic")
@@ -125,7 +142,7 @@ mod tests {
 
         let err = write_output(&path, "output", "model", &[], REPORT)
             .expect_err("directory creation should fail");
-        assert!(err.contains("Failed to create output directory"));
+        assert!(matches!(err, WriteError::CreateDirectory { .. }));
     }
 
     #[test]
@@ -135,11 +152,11 @@ mod tests {
 
         let err = write_output(&dir, "nested/output", "model", &[], REPORT)
             .expect_err("unsafe output name should fail validation");
-        assert!(err.contains("Invalid output name"));
+        assert!(matches!(err, WriteError::InvalidName { .. }));
 
         let err = write_output(&dir, "../escape", "model", &[], REPORT)
             .expect_err("path traversal should fail validation");
-        assert!(err.contains("Invalid output name"));
+        assert!(matches!(err, WriteError::InvalidName { .. }));
     }
 
     #[test]

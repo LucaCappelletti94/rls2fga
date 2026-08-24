@@ -3,7 +3,7 @@ use crate::no_std_prelude::*;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
+use crate::classifier::function_registry::{FunctionRegistry, RegistryLoadError, SessionAttribute};
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
 use crate::generator::action_relations::{action_relations, ActionRelations};
@@ -21,7 +21,7 @@ use crate::generator::tuple_generator::{
 use crate::generator::unrestricted::{unrestricted_tables, UnrestrictedTable};
 use crate::generator::well_known::WellKnownTypes;
 #[cfg(feature = "std")]
-use crate::output::formatter::write_output;
+use crate::output::formatter::{write_output, WriteError};
 use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
 use crate::parser::sql_parser::{DatabaseLike, ParserDB};
@@ -67,7 +67,11 @@ impl TranslatorBuilder {
     }
 
     /// Merge function semantics from JSON into the base registry.
-    pub fn with_registry_json(mut self, json: &str) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryLoadError`] when the JSON is not a registry payload.
+    pub fn with_registry_json(mut self, json: &str) -> Result<Self, RegistryLoadError> {
         self.registry.load_from_json(json)?;
         Ok(self)
     }
@@ -322,7 +326,16 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
 #[derive(Debug, Clone)]
 pub struct Outputs<'a, DB: DatabaseLike = ParserDB>(Translation<'a, DB>);
 
-impl<DB: DatabaseLike> Outputs<'_, DB> {
+impl<'a, DB: DatabaseLike> Outputs<'a, DB> {
+    /// The translation these outputs were rendered from, for the analysis
+    /// surface ([`Translation::relations`], [`Translation::row_naming`],
+    /// [`Translation::action_relations`], [`Translation::unrestricted_tables`])
+    /// without cloning before [`Translation::outputs`] consumes it.
+    #[must_use]
+    pub fn translation(&self) -> &Translation<'a, DB> {
+        &self.0
+    }
+
     /// The `OpenFGA` DSL model.
     #[must_use]
     pub fn model(&self) -> String {
@@ -377,9 +390,9 @@ impl<DB: DatabaseLike> Outputs<'_, DB> {
     ///
     /// # Errors
     ///
-    /// Returns a message when the name is unusable as a filename or a write fails.
+    /// Returns [`WriteError`] when the name is unusable as a filename or a write fails.
     #[cfg(feature = "std")]
-    pub fn write(&self, output_dir: &Path, name: &str) -> Result<(), String> {
+    pub fn write(&self, output_dir: &Path, name: &str) -> Result<(), WriteError> {
         write_output(
             output_dir,
             name,

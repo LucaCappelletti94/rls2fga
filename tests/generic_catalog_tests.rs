@@ -11,10 +11,7 @@ use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::{
     ConfidenceLevel, DirectOwnership, PatternClass, PolicyCommand,
 };
-use rls2fga::classifier::policy_classifier::{
-    classify_expr, classify_policies, classify_policies_with_effective_registry,
-    classify_policies_with_effective_registry_and_settings, classify_policies_with_registry,
-};
+use rls2fga::classifier::policy_classifier::{classify_expr, classify_policies};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::relations::RelationShapes;
 use rls2fga::generator::tuple_generator::format_tuples;
@@ -72,17 +69,8 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     let settings = AccessorInferenceSettings::default();
     let generator = GeneratorSettings::default();
 
-    // The four free classifiers, plus the two registry enrichers.
+    // The free classifier, plus the two registry enrichers.
     let classified = classify_policies(db, &registry);
-    assert_eq!(
-        classify_policies_with_registry(db, &registry).len(),
-        classified.len()
-    );
-    let (with_effective, _) = classify_policies_with_effective_registry(db, &registry);
-    assert_eq!(with_effective.len(), classified.len());
-    let (with_settings, effective) =
-        classify_policies_with_effective_registry_and_settings(db, &registry, &settings);
-    assert_eq!(with_settings.len(), classified.len());
 
     let mut enriched = FunctionRegistry::new();
     enriched.enrich_from_schema(db);
@@ -106,7 +94,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
         .with_min_confidence(ConfidenceLevel::B)
         .build();
     assert_eq!(translator.classify(db).len(), classified.len());
-    let (facade_classified, _) = translator.classify_with_effective_registry(db);
+    let (facade_classified, effective) = translator.classify_with_effective_registry(db);
     assert_eq!(facade_classified.len(), classified.len());
 
     let translation = translator.translate(db).expect("translation should plan");

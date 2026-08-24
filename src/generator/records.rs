@@ -17,10 +17,11 @@ use crate::generator::identity::{
 };
 use crate::generator::well_known::WILDCARD_SUBJECT_ID;
 use crate::parser::identifiers::{ColumnName, RelationName};
+use serde::{Deserialize, Serialize};
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
 /// SQL renders it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Record {
     /// `type:key`.
     pub object: String,
@@ -38,7 +39,7 @@ pub struct Record {
 
 /// One key and value a record puts in its condition context, under the condition
 /// the tuple has to name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RecordContextValue {
     /// Condition the tuple names, declared by the model.
     pub condition: String,
@@ -48,7 +49,7 @@ pub struct RecordContextValue {
 }
 
 /// Column type family the row interface can render like `PostgreSQL`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnKind {
     /// Text types.
     Text,
@@ -114,7 +115,7 @@ impl ColumnKind {
 }
 
 /// One column read with the type the schema declares.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnRead {
     column: ColumnName,
     kind: ColumnKind,
@@ -236,7 +237,7 @@ pub enum RowList<'a> {
 }
 
 /// One condition context spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextRendering {
     /// Render like tuple SQL text.
     SqlText,
@@ -245,7 +246,7 @@ pub enum ContextRendering {
 }
 
 /// Where one side of a record takes its value on the row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ValueSource {
     /// A scalar column. One record per row.
@@ -278,7 +279,7 @@ impl ValueSource {
 }
 
 /// A condition the row must satisfy for the records to exist.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Guard {
     /// The column is not SQL NULL.
@@ -314,7 +315,7 @@ impl Guard {
 /// `("1|a", "b")` cannot render alike. A single column key is a list of one.
 /// Ask this for the name rather than assembling one: the whole-table SQL builds
 /// the same string, and two spellings of it drift silently.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectKey {
     parts: Vec<ValueSource>,
 }
@@ -375,10 +376,9 @@ impl ObjectKey {
             "{object_type}:{}",
             encode_identity(values.iter().map(String::as_str))
         );
-        if object_name_fits(&name) {
-            Eval::Value(name)
-        } else {
-            Eval::Refuse(RecordError::RowCannotBeNamed(name.chars().count()))
+        match fit_object_name(name) {
+            Ok(name) => Eval::Value(name),
+            Err(error) => Eval::Refuse(error),
         }
     }
 }
@@ -386,7 +386,7 @@ impl ObjectKey {
 /// How a subject's name is built from a row.
 ///
 /// One part, which may expand into several subjects when it is a list column.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubjectKey {
     part: ValueSource,
     /// Further parts when the subject is a composite-key object, joined the way an
@@ -501,10 +501,9 @@ impl SubjectKey {
                 "{subject_type}:{}",
                 encode_identity(values.iter().map(String::as_str))
             );
-            return if subject_name_fits(&name) {
-                Eval::Value(vec![name])
-            } else {
-                Eval::Refuse(RecordError::RowCannotBeNamed(name.len()))
+            return match fit_subject_name(name) {
+                Ok(name) => Eval::Value(vec![name]),
+                Err(error) => Eval::Refuse(error),
             };
         }
         match expand(&self.part, row) {
@@ -512,10 +511,9 @@ impl SubjectKey {
                 let mut subjects = Vec::with_capacity(values.len());
                 for value in values {
                     let name = format!("{subject_type}:{}", encode_part(&value));
-                    if subject_name_fits(&name) {
-                        subjects.push(name);
-                    } else {
-                        return Eval::Refuse(RecordError::RowCannotBeNamed(name.len()));
+                    match fit_subject_name(name) {
+                        Ok(name) => subjects.push(name),
+                        Err(error) => return Eval::Refuse(error),
                     }
                 }
                 Eval::Value(subjects)
@@ -539,7 +537,7 @@ impl From<ValueSource> for SubjectKey {
 }
 
 /// How the object, relation and subject of a record compose.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordTemplate {
     /// `OpenFGA` type the object belongs to.
     pub object_type: String,
@@ -561,7 +559,7 @@ pub struct RecordTemplate {
 
 /// How a record's condition context is built from a row: the condition it names and
 /// each parameter the row fills.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordContext {
     /// Condition the tuple names, declared by the model.
     pub condition: String,
@@ -570,7 +568,7 @@ pub struct RecordContext {
 }
 
 /// One parameter a record's condition context fills, and where its value comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordContextEntry {
     /// Condition parameter the value fills.
     pub key: String,
@@ -582,7 +580,7 @@ pub struct RecordContextEntry {
 
 /// A query bound by the columns keying the slice it determines, for a shape whose
 /// records no single row decides.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundQuery {
     /// Table the change arrived on.
     pub table: String,
@@ -615,7 +613,7 @@ pub struct BoundQuery {
 /// Whole only as **this shape** states it: a consumer reconciling the slice
 /// must first establish that no other shape states facts in the same slice,
 /// or the reconciliation deletes the other shape's facts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplayScope {
     /// Every fact `relations` state about the one object the bound key names.
     Object {
@@ -651,31 +649,42 @@ impl ReplayScope {
     /// slice is handed anything but its one key value.
     pub fn rendered_key(&self, values: &[&str]) -> Result<String, RecordError> {
         match self {
-            Self::Object { object_type, .. } => {
-                let name = format!("{object_type}:{}", encode_identity(values.iter().copied()));
-                if object_name_fits(&name) {
-                    Ok(name)
-                } else {
-                    Err(RecordError::RowCannotBeNamed(name.chars().count()))
-                }
-            }
+            Self::Object { object_type, .. } => fit_object_name(format!(
+                "{object_type}:{}",
+                encode_identity(values.iter().copied())
+            )),
             Self::Subject { subject_type, .. } => {
                 let [value] = values else {
                     return Err(RecordError::SubjectKeyNotSingular(values.len()));
                 };
-                let name = format!("{subject_type}:{}", encode_part(value));
-                if subject_name_fits(&name) {
-                    Ok(name)
-                } else {
-                    Err(RecordError::RowCannotBeNamed(name.len()))
-                }
+                fit_subject_name(format!("{subject_type}:{}", encode_part(value)))
             }
         }
     }
 }
 
+/// `name` when the target accepts it as an object, refusing with its length in
+/// characters, the unit the object cap is measured in.
+fn fit_object_name(name: String) -> Result<String, RecordError> {
+    if object_name_fits(&name) {
+        Ok(name)
+    } else {
+        Err(RecordError::RowCannotBeNamed(name.chars().count()))
+    }
+}
+
+/// `name` when the target accepts it as a subject, refusing with its length in
+/// bytes, the unit the subject cap is measured in.
+fn fit_subject_name(name: String) -> Result<String, RecordError> {
+    if subject_name_fits(&name) {
+        Ok(name)
+    } else {
+        Err(RecordError::RowCannotBeNamed(name.len()))
+    }
+}
+
 /// Whether a description's records follow from one row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum RecordDerivation {
     /// The records are a function of one row of `table`, however many records
@@ -709,7 +718,7 @@ pub enum RecordDerivation {
 }
 
 /// The records one tuple query produces, described as structure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordDescription {
     /// Every table the query reads, so a caller can refuse a table its change
     /// stream does not carry. Sorted and deduplicated.
