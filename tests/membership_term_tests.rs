@@ -7,13 +7,13 @@
 use rls2fga::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
 };
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::records::{RecordDerivation, ValueSource};
-use rls2fga::generator::relations::RelationShapes;
-use rls2fga::parser::identifiers::RelationName;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::term::{describe_membership_term, TermChain, TermShapes};
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RelationName;
+use rls2fga::types::RelationShapes;
+use rls2fga::types::{RecordDerivation, ValueSource};
 use sqlparser::ast::Expr;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -82,7 +82,7 @@ fn row_shape(entry: &RelationShapes) -> (String, String) {
             entry.relation
         );
     };
-    (table.clone(), subject.clone().to_string())
+    (table.to_string(), subject.clone().to_string())
 }
 
 fn entry<'a>(
@@ -558,7 +558,7 @@ ALTER TABLE a.notes ENABLE ROW LEVEL SECURITY;
         .row_naming();
     let entry = named
         .iter()
-        .find(|entry| entry.table == "a.notes")
+        .find(|entry| entry.table.to_string() == "a.notes")
         .expect("the guarded table is named");
     assert_ne!(
         compiled.object_type, entry.type_name,

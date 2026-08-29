@@ -34,8 +34,7 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    source_table: &str,
-    policy_name: &str,
+    source_table: &TableId,
     db: &DB,
     spec: RoleScopeSpec<'_>,
 ) -> bool {
@@ -54,13 +53,13 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         // multiplies the whole table by the number of roles the clause names.
         let scope_object = scope_relation.as_str().to_string();
         let scope_plan = all_types
-            .entry(well_known.pg_role_scope.clone())
+            .entry(well_known.pg_role_scope.to_string())
             .or_insert_with(|| {
-                TypePlan::new_with_well_known(&well_known.pg_role_scope, &well_known)
+                TypePlan::new_with_well_known(well_known.pg_role_scope.as_str(), &well_known)
             });
         let roles = scope_plan.ensure_direct(
             scope_roles_relation(),
-            vec![DirectSubject::Type(well_known.pg_role.clone())],
+            vec![DirectSubject::Type(well_known.pg_role.to_string())],
         );
         scope_plan.ensure_computed(
             walked.as_str().to_string(),
@@ -71,32 +70,22 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         );
         table_plan.ensure_direct(
             scope_relation.clone(),
-            vec![DirectSubject::Type(well_known.pg_role_scope.clone())],
+            vec![DirectSubject::Type(well_known.pg_role_scope.to_string())],
         );
         notes.push(scope_note);
         table_plan.add_source(TupleSource::PolicyScope {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             pk_cols,
             scope_relation: scope_relation.clone(),
-            scope_type: well_known.pg_role_scope.clone(),
+            scope_type: well_known.pg_role_scope.to_string(),
             scope_object: scope_object.clone(),
         });
         for role in role_names {
-            let pg_role = canonical_fga_type_name(role);
-            // A quoted role can rewrite onto a different existing role, which
-            // changes who the policy admits.
-            if normalize_identifier(role) != pg_role {
-                notes.push(TranslationNote::RoleNameRewritten {
-                    policy: policy_name.to_string(),
-                    role: role.clone(),
-                    pg_role: pg_role.clone(),
-                });
-            }
             table_plan.add_source(TupleSource::PolicyScopeRoles {
-                scope_type: well_known.pg_role_scope.clone(),
+                scope_type: well_known.pg_role_scope.to_string(),
                 scope_object: scope_object.clone(),
                 relation: roles.clone(),
-                pg_role,
+                pg_role: role.clone(),
             });
         }
         true
@@ -132,7 +121,6 @@ pub(crate) fn handle_p2_role_gate<DB: DatabaseLike>(
         all_types,
         notes,
         source_table,
-        policy_name,
         db,
         RoleScopeSpec {
             scope_relation: &scope_relation,
@@ -320,8 +308,28 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         return None;
     };
 
+    let Some(grant_table) = resolve_table_id(db, grant_table) else {
+        notes.push(TranslationNote::ExpressionRefused {
+            policy: policy_name.to_string(),
+            reason: format!("the grant table '{grant_table}' does not resolve"),
+        });
+        return None;
+    };
+    let team_membership_table = match team_membership_table {
+        Some(table) => {
+            let Some(table) = resolve_table_id(db, table) else {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!("the team membership table '{table}' does not resolve"),
+                });
+                return None;
+            };
+            Some(table)
+        }
+        None => None,
+    };
     let has_team_support = team_membership_table.is_some();
-    let owner_type = owner_type_name(grant_table, function_name, registry, ctx.table_types);
+    let owner_type = owner_type_name(&grant_table, function_name, registry, ctx.table_types);
     let refuse = |table_plan: &mut TypePlan, reason: SkippedTuples| {
         table_plan.add_source(TupleSource::Skipped { reason });
         Some(RoleThresholdPrepared {
@@ -337,7 +345,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         return refuse(
             table_plan,
             SkippedTuples::NoBridge {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 parent_type: owner_type,
                 reason: missing_object_identifier_reason(source_table, db),
             },
@@ -353,7 +361,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         return refuse(
             table_plan,
             SkippedTuples::NoOwnerColumn {
-                table: source_table.to_string(),
+                table: source_table.clone(),
             },
         );
     };
@@ -367,7 +375,11 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     );
     populate_role_threshold_sources(
         function_name,
-        source_table,
+        &RoleThresholdTables {
+            source: source_table,
+            grant: &grant_table,
+            team_membership: team_membership_table.as_ref(),
+        },
         db,
         registry,
         &OwnerScope {
@@ -421,7 +433,7 @@ pub(crate) fn ensure_role_threshold_scaffold(
     );
     let well_known = table_plan.well_known.clone();
     if has_team_support {
-        ensure_member_type(all_types, &well_known.team, &well_known);
+        ensure_member_type(all_types, well_known.team.as_str(), &well_known);
     }
     let owner_plan = all_types
         .entry(owner_type.to_string())
@@ -429,22 +441,22 @@ pub(crate) fn ensure_role_threshold_scaffold(
 
     owner_plan.ensure_direct(
         owner_user_relation(),
-        vec![DirectSubject::Type(well_known.user.clone())],
+        vec![DirectSubject::Type(well_known.user.to_string())],
     );
     if has_team_support {
         owner_plan.ensure_direct(
             owner_team_relation(),
-            vec![DirectSubject::Type(well_known.team.clone())],
+            vec![DirectSubject::Type(well_known.team.to_string())],
         );
     }
 
     let grant_subjects = if has_team_support {
         vec![
-            DirectSubject::Type(well_known.user.clone()),
-            DirectSubject::Type(well_known.team.clone()),
+            DirectSubject::Type(well_known.user.to_string()),
+            DirectSubject::Type(well_known.team.to_string()),
         ]
     } else {
-        vec![DirectSubject::Type(well_known.user.clone())]
+        vec![DirectSubject::Type(well_known.user.to_string())]
     };
 
     for role in &sorted_roles {

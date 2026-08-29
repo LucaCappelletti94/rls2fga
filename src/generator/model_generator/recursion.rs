@@ -17,6 +17,7 @@ use super::actions::{
 use super::TableTypes;
 use crate::classifier::patterns::PolicyCommand;
 use crate::parser::expr::reads_relation;
+use crate::parser::names::resolve_table_id;
 use crate::parser::sql_parser::{DatabaseLike, PolicyLike};
 
 /// Loops in the policy read graph, and what each one denies.
@@ -153,7 +154,9 @@ fn resolve<DB: DatabaseLike>(
     if let Some(known) = memo.get(name) {
         return known.clone();
     }
-    let resolved = table_types.get(db, name).map(ToString::to_string);
+    let resolved = resolve_table_id(db, name)
+        .and_then(|table| table_types.get(&table))
+        .map(ToString::to_string);
     memo.insert(name.to_string(), resolved.clone());
     resolved
 }
@@ -192,7 +195,7 @@ fn loops_reachable_from(
                             .get(at..)
                             .unwrap_or_default()
                             .iter()
-                            .map(|node| table_types.spelling(node).to_string())
+                            .map(|node| table_types.spelling(node).clone())
                             .collect(),
                     );
                     frame.2 = frame.2.or(Some(index));

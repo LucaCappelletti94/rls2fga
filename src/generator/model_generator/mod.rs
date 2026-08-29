@@ -7,12 +7,12 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    composite_primary_key_columns, resolve_pk_columns, row_uniquely_keys, single_pk_column,
+    column_kind, composite_primary_key_columns, resolve_pk_columns, row_uniquely_keys,
+    single_pk_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
 use crate::generator::ir::{GateContextColumn, MembershipGate, PrincipalInfo, TupleSource};
-use crate::generator::notes::{SkippedTuples, TranslationNote};
-use crate::generator::relations::RequestComparison;
+use crate::generator::notes::SkippedTuples;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::tuple_generator::{resolve_bridge_columns, UnboundedColumns};
 use crate::generator::well_known::{
@@ -24,16 +24,20 @@ use crate::generator::well_known::{
     STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
 };
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::identifiers::{ColumnName, RelationName, TableId, TypeName};
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
-    gate_condition_name, is_owner_like_column_name, lookup_table,
-    membership_read_scope_relation_name, normalize_identifier, normalize_relation_name,
-    parent_type_from_fk_column, role_limited_relation_name, role_scope_name, same_identifier,
-    stable_hex_suffix, table_has_column, yielded_relation_name, MAX_RELATION_RENAME_ATTEMPTS,
+    gate_condition_name, is_owner_like_column_name, lookup_table, lookup_table_id,
+    membership_read_scope_relation_name, normalize_relation_name, parent_type_from_fk_column,
+    resolve_table_id, role_limited_relation_name, role_scope_name, row_presence_relation_name,
+    same_identifier, stable_hex_suffix, table_id_has_column, table_identity, yielded_relation_name,
+    MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
+};
+use crate::types::{
+    ColumnKind, ColumnName, ConditionParameterName, RelationName, RequestComparison, TableId,
+    TranslationNote, TypeName,
 };
 
 /// Which relation a command reads, and how a policy's clauses reach it.
@@ -71,7 +75,7 @@ use emit_membership::{
 };
 use emit_ownership::{
     emit_attribute_condition, emit_boolean_flag, emit_constant_bool, emit_row_ownership,
-    emit_unclassified,
+    emit_row_presence_gate, emit_unclassified,
 };
 use emit_requests::{
     conditional_gate_expr, declare_temporal_condition, emit_membership_in_caller_set,
@@ -82,7 +86,7 @@ use emit_roles::{
     RoleScopeSpec,
 };
 use recursion::PolicyReadRecursion;
-use role_threshold::populate_role_threshold_sources;
+use role_threshold::{populate_role_threshold_sources, RoleThresholdTables};
 pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
     drop_implied_insert_readback, grants_nothing, inline_synthetic_rule_aliases,
@@ -182,7 +186,7 @@ pub(crate) enum ConditionParameter {
 }
 
 /// What a tuple puts in the context under the parameter the request cannot supply.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RowParameter {
     /// Read from this column of the row.
     Column {
@@ -205,14 +209,6 @@ impl RowParameter {
     pub(crate) fn parameter(&self) -> &str {
         match self {
             Self::Column { parameter, .. } | Self::Literal { parameter, .. } => parameter,
-        }
-    }
-
-    /// The column a row reads it from, `None` for a constant.
-    pub(crate) fn column(&self) -> Option<&ColumnName> {
-        match self {
-            Self::Column { column, .. } => Some(column),
-            Self::Literal { .. } => None,
         }
     }
 }
@@ -263,7 +259,7 @@ fn child_keys(children: &[UsersetExpr]) -> String {
         .join(",")
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct TypePlan {
     pub type_name: TypeName,
     pub direct_relations: BTreeMap<RelationName, Vec<DirectSubject>>,
@@ -292,7 +288,7 @@ pub(crate) struct TypePlan {
     /// type nothing keys on a row (`user`, a team, a holder). Written where the type
     /// name is bound to the table, so nothing has to re-derive the association from
     /// the shapes, where two tables can key a row alike.
-    pub source_table: Option<String>,
+    pub source_table: Option<TableId>,
 }
 
 /// Subjects the generator's own structural relations hold, or `None` when the
@@ -303,13 +299,13 @@ fn reserved_relation_subjects(
     well_known: &WellKnownTypes,
 ) -> Option<Vec<DirectSubject>> {
     if *relation == deny_relation() {
-        Some(vec![DirectSubject::Type(well_known.nobody.clone())])
+        Some(vec![DirectSubject::Type(well_known.nobody.to_string())])
     } else if *relation == member_relation() || *relation == owner_user_relation() {
-        Some(vec![DirectSubject::Type(well_known.user.clone())])
+        Some(vec![DirectSubject::Type(well_known.user.to_string())])
     } else if *relation == public_relation() {
-        Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
+        Some(vec![DirectSubject::Wildcard(well_known.user.to_string())])
     } else if *relation == owner_team_relation() {
-        Some(vec![DirectSubject::Type(well_known.team.clone())])
+        Some(vec![DirectSubject::Type(well_known.team.to_string())])
     } else {
         None
     }
@@ -330,18 +326,25 @@ impl TypePlan {
 
     fn new_with_well_known(type_name: impl Into<String>, well_known: &WellKnownTypes) -> Self {
         Self {
-            type_name: TypeName::from_resolved(type_name),
+            type_name: TypeName::canonicalized(type_name.into()),
+            direct_relations: BTreeMap::new(),
+            computed_relations: BTreeMap::new(),
             well_known: well_known.clone(),
-            ..Self::default()
+            table_tuple_sources: Vec::new(),
+            ownership_relations: BTreeMap::new(),
+            conditions: BTreeMap::new(),
+            reads_only_its_own_rows: false,
+            narrowed_relations: BTreeSet::new(),
+            source_table: None,
         }
     }
 
     /// Record which table's rows this type names, keeping the first spelling bound to
     /// it: a parent reached from a child is bound before the parent's own group is
     /// built, and both name one table.
-    fn names_rows_of(&mut self, table: &str) {
+    fn names_rows_of(&mut self, table: &TableId) {
         if self.source_table.is_none() {
-            self.source_table = Some(table.to_string());
+            self.source_table = Some(table.clone());
         }
     }
 
@@ -357,22 +360,35 @@ impl TypePlan {
 
         let base = parent_type_from_fk_column(name_source);
         let taken = |name: &str, plan: &Self| {
-            let name = RelationName::from_resolved(name);
+            let name = RelationName::canonicalized(name);
             reserved_relation_subjects(&name, &plan.well_known).is_some()
                 || generator_defines(&name)
                 || plan.direct_relations.contains_key(&name)
                 || plan.computed_relations.contains_key(&name)
         };
-        let relation = RelationName::from_resolved(clamp_relation_name(if taken(&base, self) {
+        let name = if taken(&base, self) {
             let fallback = format!("owner_{}", canonical_fga_type_name(name_source));
             if taken(&fallback, self) {
-                format!("{fallback}_{}", stable_hex_suffix(memo_key))
+                let hashed = format!("{fallback}_{}", stable_hex_suffix(memo_key));
+                if taken(&hashed, self) {
+                    let mut counter = 2u32;
+                    loop {
+                        let candidate = format!("{hashed}_{counter}");
+                        if !taken(&candidate, self) {
+                            break candidate;
+                        }
+                        counter += 1;
+                    }
+                } else {
+                    hashed
+                }
             } else {
                 fallback
             }
         } else {
             base
-        }));
+        };
+        let relation = RelationName::canonicalized(clamp_relation_name(name));
 
         self.ownership_relations
             .insert(memo_key.to_string(), relation.clone());
@@ -437,13 +453,13 @@ impl TypePlan {
     }
 
     fn set_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> RelationName {
-        let mut relation = RelationName::from_resolved(clamp_relation_name(relation.into()));
+        let mut relation = RelationName::canonicalized(clamp_relation_name(relation.into()));
         // A name a direct relation already holds yields, exactly as `ensure_direct` and
         // `ensure_computed` do. Overwriting a computed rule is this function's whole
         // job, so only the direct case is a clash.
         if self.direct_relations.contains_key(&relation) {
             let key = userset_key(&expr);
-            relation = RelationName::from_resolved(clamp_relation_name(format!(
+            relation = RelationName::canonicalized(clamp_relation_name(format!(
                 "{relation}_{}",
                 stable_hex_suffix(key.as_str())
             )));
@@ -459,7 +475,7 @@ impl TypePlan {
 
 /// The first name `held` does not refuse, renaming from `base` under `key` until free.
 fn yield_until_free(base: &str, key: &str, held: impl Fn(&RelationName) -> bool) -> RelationName {
-    let mut relation = RelationName::from_resolved(base.to_string());
+    let mut relation = RelationName::canonicalized(base);
     for attempt in 0..MAX_RELATION_RENAME_ATTEMPTS {
         if !held(&relation) {
             break;
@@ -475,7 +491,7 @@ fn yield_until_free(base: &str, key: &str, held: impl Fn(&RelationName) -> bool)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratorSettings {
     /// Condition parameter the caller supplies for a guard against statement time.
-    pub request_time_parameter: String,
+    pub request_time_parameter: ConditionParameterName,
     /// Type names the generator treats as its own vocabulary.
     pub well_known: WellKnownTypes,
 }
@@ -483,7 +499,7 @@ pub struct GeneratorSettings {
 impl Default for GeneratorSettings {
     fn default() -> Self {
         Self {
-            request_time_parameter: REQUEST_TIME_PARAMETER.to_string(),
+            request_time_parameter: ConditionParameterName::derived(REQUEST_TIME_PARAMETER),
             well_known: WellKnownTypes::default(),
         }
     }
@@ -515,6 +531,102 @@ pub enum PlanningError {
         /// The type name both sides tried to use.
         type_name: String,
     },
+    /// Two request sources were configured under one condition parameter.
+    #[error("condition parameter `{parameter}` aliases request sources `{first}` and `{second}`")]
+    ConditionParameterCollision {
+        /// Parameter both sources tried to use.
+        parameter: ConditionParameterName,
+        /// Source configured first.
+        first: String,
+        /// Source configured second.
+        second: String,
+    },
+}
+
+struct ConditionParameterAllocator {
+    request_sources: BTreeMap<ConditionParameterName, String>,
+}
+
+impl ConditionParameterAllocator {
+    fn new(
+        settings: &GeneratorSettings,
+        registry: &FunctionRegistry,
+    ) -> Result<Self, PlanningError> {
+        let mut allocator = Self {
+            request_sources: BTreeMap::new(),
+        };
+        allocator.reserve_request(
+            settings.request_time_parameter.clone(),
+            "request time".to_string(),
+        )?;
+        for attribute in registry.session_attributes() {
+            let source = if attribute.path().is_empty() {
+                attribute.setting_key().to_string()
+            } else {
+                format!("{}.{}", attribute.setting_key(), attribute.path().join("."))
+            };
+            allocator.reserve_request(attribute.condition_parameter().clone(), source)?;
+        }
+        Ok(allocator)
+    }
+
+    fn reserve_request(
+        &mut self,
+        parameter: ConditionParameterName,
+        source: String,
+    ) -> Result<(), PlanningError> {
+        if let Some(first) = self.request_sources.get(&parameter) {
+            return Err(PlanningError::ConditionParameterCollision {
+                parameter,
+                first: first.clone(),
+                second: source,
+            });
+        }
+        self.request_sources.insert(parameter, source);
+        Ok(())
+    }
+
+    fn namespace<'a>(
+        &self,
+        request_parameters: impl IntoIterator<Item = &'a ConditionParameterName>,
+    ) -> ConditionParameterNamespace {
+        let used = request_parameters
+            .into_iter()
+            .map(|parameter| {
+                debug_assert!(self.request_sources.contains_key(parameter));
+                parameter.clone()
+            })
+            .collect();
+        ConditionParameterNamespace { used }
+    }
+}
+
+struct ConditionParameterNamespace {
+    used: BTreeSet<ConditionParameterName>,
+}
+
+impl ConditionParameterNamespace {
+    fn allocate_row(&mut self, source: &str) -> ConditionParameterName {
+        let base = ConditionParameterName::derived(source);
+        if self.used.insert(base.clone()) {
+            return base;
+        }
+
+        let suffixed =
+            ConditionParameterName::derived(&format!("{base}_{}", stable_hex_suffix(source)));
+        if self.used.insert(suffixed.clone()) {
+            return suffixed;
+        }
+
+        let mut sequence = 2_u64;
+        loop {
+            let candidate = ConditionParameterName::derived(&format!("{suffixed}_{sequence}"));
+            if self.used.insert(candidate.clone()) {
+                return candidate;
+            }
+            sequence += 1;
+        }
+    }
 }
 
 /// Render the DSL text for a plan.
@@ -528,18 +640,35 @@ pub(crate) fn build_filtered_schema_plan<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     min_confidence: ConfidenceLevel,
     settings: &GeneratorSettings,
+    bounds: &UnboundedColumns,
 ) -> Result<SchemaPlan, PlanningError> {
     let filtered = filter_policies_for_output(policies, min_confidence);
-    build_schema_plan(&filtered, db, registry, settings)
+    build_plan_typing(
+        &filtered,
+        db,
+        registry,
+        settings,
+        bounds,
+        TypeScope::WithPolicies,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn build_schema_plan<DB: DatabaseLike>(
     policies: &[ClassifiedPolicy],
     db: &DB,
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
 ) -> Result<SchemaPlan, PlanningError> {
-    build_plan_typing(policies, db, registry, settings, TypeScope::WithPolicies)
+    let bounds = UnboundedColumns::resolve(db);
+    build_plan_typing(
+        policies,
+        db,
+        registry,
+        settings,
+        &bounds,
+        TypeScope::WithPolicies,
+    )
 }
 
 /// Which tables earn a type, which is the schema's row-level security everywhere except
@@ -610,8 +739,8 @@ fn declared_permissive_policies<'a, DB: DatabaseLike>(
 /// One pass, since `inheritors` walks every table per call. Partitions are not in this edge: a
 /// partitioned root holds no rows of its own and its key spans every partition, so its plain
 /// read is exact.
-fn inheritance_children<DB: DatabaseLike>(db: &DB) -> BTreeMap<TableId, Vec<String>> {
-    let mut children: BTreeMap<TableId, Vec<String>> = BTreeMap::new();
+fn inheritance_children<DB: DatabaseLike>(db: &DB) -> BTreeMap<TableId, Vec<TableId>> {
+    let mut children: BTreeMap<TableId, Vec<TableId>> = BTreeMap::new();
     for table in db.tables() {
         // A table iterated out of `db` is in `db`, so an unreadable parent list is
         // an empty one.
@@ -619,7 +748,7 @@ fn inheritance_children<DB: DatabaseLike>(db: &DB) -> BTreeMap<TableId, Vec<Stri
             children
                 .entry(table_identity(parent))
                 .or_default()
-                .push(qualified_table_name(table));
+                .push(table_identity(table));
         }
     }
     children
@@ -651,8 +780,10 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
+    bounds: &UnboundedColumns,
     scope: TypeScope<'_>,
 ) -> Result<SchemaPlan, PlanningError> {
+    let condition_parameters = ConditionParameterAllocator::new(settings, registry)?;
     let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
@@ -672,11 +803,8 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
     let table_types = TableTypes::assign(db, scope, &settings.well_known, &mut notes)?;
     let recursion = PolicyReadRecursion::detect(db, &table_types);
-    // Resolved once for the whole plan, like the recursion graph above it: asking per
-    // table went through `lookup_table`, which walks every table.
-    let bounds = UnboundedColumns::resolve(db);
     // Answered once per membership table rather than once per clause naming it.
-    let mut readability: BTreeMap<String, JoinTableReadability> = BTreeMap::new();
+    let mut readability: BTreeMap<TableId, JoinTableReadability> = BTreeMap::new();
     let readability = &mut readability;
 
     let inheritance_children = inheritance_children(db);
@@ -692,23 +820,24 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         // `parse_schema` refuses such a schema (`TableNotFoundForPolicy`), for an absent
         // name and an ambiguous unqualified one alike, so this answers a consumer's own
         // `DatabaseLike` rather than anything parsed here.
-        let Some(canonical_table_name) = table_types.get(db, &source_table_name) else {
-            if lookup_table(db, &source_table_name).is_none() {
-                let bearers = types_bearing_name(db, &source_table_name, &table_types);
-                for cp in &table_policies {
-                    notes.push(TranslationNote::UnresolvedPolicyTable {
-                        policy: cp.name().to_string(),
-                        named: source_table_name.clone(),
-                    });
-                    let lost: BTreeSet<RelationName> = narrowed_by(&targets_a_policy_feeds(cp));
-                    for bearer in &bearers {
-                        unresolved_losses
-                            .entry(bearer.clone())
-                            .or_default()
-                            .extend(lost.iter().cloned());
-                    }
+        let Some(source_table) = resolve_table_id(db, &source_table_name) else {
+            let bearers = types_bearing_name(db, &source_table_name, &table_types);
+            for cp in &table_policies {
+                notes.push(TranslationNote::UnresolvedPolicyTable {
+                    policy: cp.name().to_string(),
+                    named: source_table_name.clone(),
+                });
+                let lost: BTreeSet<RelationName> = narrowed_by(&targets_a_policy_feeds(cp));
+                for bearer in &bearers {
+                    unresolved_losses
+                        .entry(bearer.clone())
+                        .or_default()
+                        .extend(lost.iter().cloned());
                 }
             }
+            continue;
+        };
+        let Some(canonical_table_name) = table_types.get(&source_table) else {
             continue;
         };
         let canonical_table_name = canonical_table_name.to_string();
@@ -718,12 +847,11 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
             &canonical_table_name,
             &settings.well_known,
             |table_plan, other_types| {
-                table_plan.names_rows_of(&source_table_name);
+                table_plan.names_rows_of(&source_table);
 
                 // Once per table: `by_table` holds each table exactly once.
-                let children = lookup_table(db, &source_table_name)
-                    .map(table_identity)
-                    .and_then(|identity| inheritance_children.get(&identity))
+                let children = inheritance_children
+                    .get(&source_table)
                     .cloned()
                     .unwrap_or_default();
                 if !children.is_empty() {
@@ -731,7 +859,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                     let mut children = children;
                     children.sort();
                     notes.push(TranslationNote::InheritanceParentReadsOwnRowsOnly {
-                        table: source_table_name.clone(),
+                        table: source_table.clone(),
                         children,
                     });
                 }
@@ -742,7 +870,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
                 // Whether a row of this table can be named at all, which decides whether any tuple
                 // source can be emitted for it. Resolved once here rather than per policy.
-                let object_identifier = resolve_pk_columns(&source_table_name, db);
+                let object_identifier = resolve_pk_columns(&source_table, db);
 
                 // UPDATE and DELETE name the row they change, so a denied read closes them.
                 // INSERT does not name a row, and the read is the gate itself.
@@ -786,7 +914,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                         }
                         mark_narrowed(table_plan, &targets);
                         notes.push(TranslationNote::ClauseBelowThreshold {
-                            table: source_table_name.clone(),
+                            table: source_table.clone(),
                             policy: cp.name().to_string(),
                             mode: cp.mode().to_string(),
                             clause: clause.to_string(),
@@ -798,7 +926,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                 }
 
                 let mut build = TableBuild {
-                    source_table: &source_table_name,
+                    source_table: &source_table,
                     plan: table_plan,
                     other_types,
                     notes: &mut notes,
@@ -808,6 +936,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                     registry,
                     settings,
                     table_types: &table_types,
+                    condition_parameters: &condition_parameters,
                 };
                 let action_buckets = build.translate_policies(
                     table_policies,
@@ -821,9 +950,9 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                 scar_unfillable_grants(
                     build.plan,
                     build.notes,
-                    &source_table_name,
+                    &source_table,
                     &canonical_table_name,
-                    &bounds,
+                    bounds,
                     db,
                 );
                 note_request_contracts(build.plan, build.notes, settings);
@@ -842,7 +971,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                 fill_and_report_coverage(
                     build.plan,
                     build.notes,
-                    &source_table_name,
+                    &source_table,
                     declared_here,
                     &SettledCommands {
                         blocked: &blocked_commands,
@@ -864,9 +993,9 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     }
 
     all_types
-        .entry(settings.well_known.user.clone())
+        .entry(settings.well_known.user.to_string())
         .or_insert_with(|| {
-            TypePlan::new_with_well_known(&settings.well_known.user, &settings.well_known)
+            TypePlan::new_with_well_known(settings.well_known.user.as_str(), &settings.well_known)
         });
 
     simplify_redundant_select_gates(&mut all_types);
@@ -886,13 +1015,16 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         .any(|plan| plan.direct_relations.contains_key(&deny_relation()))
     {
         all_types
-            .entry(settings.well_known.nobody.clone())
+            .entry(settings.well_known.nobody.to_string())
             .or_insert_with(|| {
-                TypePlan::new_with_well_known(&settings.well_known.nobody, &settings.well_known)
+                TypePlan::new_with_well_known(
+                    settings.well_known.nobody.as_str(),
+                    &settings.well_known,
+                )
             });
     }
 
-    let types = ordered_types(all_types, &settings.well_known.user);
+    let types = ordered_types(all_types, settings.well_known.user.as_str());
     let conditions = surviving_conditions(&types);
 
     Ok(SchemaPlan {
@@ -911,7 +1043,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 /// of them, so they live here and each stage takes only what varies.
 struct TableBuild<'a, DB: DatabaseLike> {
     /// Table as the schema spells it.
-    source_table: &'a str,
+    source_table: &'a TableId,
     /// The plan being built, out of the map for the duration.
     plan: &'a mut TypePlan,
     /// Every other type, which minting a parent or a holder reaches.
@@ -919,7 +1051,7 @@ struct TableBuild<'a, DB: DatabaseLike> {
     /// Everything the translation has to say.
     notes: &'a mut Vec<TranslationNote>,
     /// Which membership tables a caller can read, answered once each.
-    readability: &'a mut BTreeMap<String, JoinTableReadability>,
+    readability: &'a mut BTreeMap<TableId, JoinTableReadability>,
     /// Per-clause grades, for the report.
     confidence_summary: &'a mut Vec<(String, ConfidenceLevel)>,
     /// The schema.
@@ -928,6 +1060,7 @@ struct TableBuild<'a, DB: DatabaseLike> {
     registry: &'a FunctionRegistry,
     /// Caller-chosen names the emitted conditions respect.
     settings: &'a GeneratorSettings,
+    condition_parameters: &'a ConditionParameterAllocator,
     /// Which table each type name belongs to.
     table_types: &'a TableTypes,
 }
@@ -1067,7 +1200,6 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                 &mut *self.other_types,
                 self.notes,
                 self.source_table,
-                cp.name(),
                 self.db,
                 RoleScopeSpec {
                     scope_relation: &relation,
@@ -1102,6 +1234,7 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                     source_table: self.source_table,
                     membership_reads_bypass_rls: false,
                     settings: self.settings,
+                    condition_parameters: self.condition_parameters,
                 },
                 self.plan,
                 &mut *self.other_types,
@@ -1198,7 +1331,7 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
             denied_by_loop.values().flatten().copied().collect();
         for (cycle, commands) in denied_by_loop {
             self.notes.push(TranslationNote::PolicyReadRecursion {
-                table: self.source_table.to_string(),
+                table: self.source_table.clone(),
                 commands: commands.into_iter().map(ToString::to_string).collect(),
                 cycle: cycle.to_vec(),
             });
@@ -1237,7 +1370,7 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
             // An update that names no row reads nothing, so `PostgreSQL` applies the
             // UPDATE policies to it and not the SELECT policies. This relation is the
             // USING half alone: it judges the row as it is, and where the clauses
-            // differ [`action_relations`](crate::generator::action_relations) pairs it
+            // differ [`ActionRelations`](crate::types::ActionRelations) pairs it
             // with `can_update_check` against the result. Fusing the check in would
             // answer the check against the existing row, which grants a change the
             // clause was written to refuse.
@@ -1290,7 +1423,7 @@ struct SettledCommands<'a> {
 fn fill_and_report_coverage<DB: DatabaseLike>(
     plan: &mut TypePlan,
     notes: &mut Vec<TranslationNote>,
-    source_table: &str,
+    source_table: &TableId,
     declared_here: &[&DB::Policy],
     settled: &SettledCommands<'_>,
     db: &DB,
@@ -1309,13 +1442,13 @@ fn fill_and_report_coverage<DB: DatabaseLike>(
             .partition(|command| covered_by_schema.contains(command));
         if !unpolicied.is_empty() {
             notes.push(TranslationNote::NoPermissivePolicy {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 commands: unpolicied.iter().map(|c| (*c).to_string()).collect(),
             });
         }
         if !dropped.is_empty() {
             notes.push(TranslationNote::CoveringPoliciesBelowThreshold {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 commands: dropped.iter().map(|c| (*c).to_string()).collect(),
             });
         }
@@ -1337,7 +1470,7 @@ fn fill_and_report_coverage<DB: DatabaseLike>(
         && relation_grants_nothing(plan, &can_select_relation())
     {
         notes.push(TranslationNote::ReadsDeniedSoWritesCannotName {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             commands: settled
                 .row_scoped_writes
                 .iter()
@@ -1355,7 +1488,7 @@ fn fill_and_report_coverage<DB: DatabaseLike>(
 fn scar_unfillable_grants<DB: DatabaseLike>(
     plan: &TypePlan,
     notes: &mut Vec<TranslationNote>,
-    source_table: &str,
+    source_table: &TableId,
     type_name: &str,
     bounds: &UnboundedColumns,
     db: &DB,
@@ -1378,7 +1511,7 @@ fn scar_unfillable_grants<DB: DatabaseLike>(
         .collect();
     if !unfillable.is_empty() {
         notes.push(TranslationNote::RowsCannotBeNamed {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             reason: missing_object_identifier_reason(source_table, db),
             sources: unfillable.into_iter().collect(),
         });
@@ -1402,7 +1535,7 @@ fn scar_unfillable_grants<DB: DatabaseLike>(
         .collect();
     for (parent_type, column) in unbridged {
         notes.push(TranslationNote::BridgeColumnMissing {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             parent_type,
             column,
         });
@@ -1413,7 +1546,7 @@ fn scar_unfillable_grants<DB: DatabaseLike>(
     // `uuid` or integer key stays silent instead of putting a line on every table.
     if let Some(budget) = row_identifier_budget(source_table, type_name, bounds, db) {
         notes.push(TranslationNote::RowIdentifierBudget {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             budget,
         });
     }
@@ -1463,7 +1596,7 @@ fn note_request_contracts(
                 ));
                 // A clock composed into the gate is a second value the caller supplies.
                 if !temporal_context.is_empty() {
-                    contracts.insert((settings.request_time_parameter.clone(), None, None));
+                    contracts.insert((settings.request_time_parameter.to_string(), None, None));
                 }
             }
             // The clock is a request value the caller supplies, whether it gates a single
@@ -1471,7 +1604,7 @@ fn note_request_contracts(
             TupleSource::ConditionalAttributeGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
             | TupleSource::HolderMembers { gate: Some(_), .. } => {
-                contracts.insert((settings.request_time_parameter.clone(), None, None));
+                contracts.insert((settings.request_time_parameter.to_string(), None, None));
             }
             _ => {}
         }
@@ -1603,7 +1736,7 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
             && table.has_forced_row_level_security(db) != Ok(true)
         {
             notes.push(TranslationNote::TableOwnerBypassesPolicies {
-                table: qualified_table_name(table),
+                table: table_identity(table),
                 // An unreadable answer is not a name, so the note stays generic.
                 owner: table.owner(db).ok().flatten().map(str::to_string),
             });
@@ -1617,18 +1750,14 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
 /// reading different ones cannot pool their members. Disambiguated against the table
 /// types, which are all assigned before any policy is translated, so a schema that
 /// happens to declare a table by this name keeps it.
-fn holder_type_name<DB: DatabaseLike>(
-    member_table: &str,
-    table_types: &TableTypes,
-    db: &DB,
-) -> String {
+fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> String {
     let base = canonical_fga_type_name(&format!("{member_table}_holder"));
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
         return format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(db, member_table))
+            stable_hex_suffix(&table_types.resolve(member_table))
         );
     }
     base
@@ -1642,7 +1771,7 @@ fn holder_type_name<DB: DatabaseLike>(
 /// grant-table spellings name different tables, and a shared name would merge two ladders
 /// whose levels differ.
 fn owner_type_name(
-    grant_table: &str,
+    grant_table: &TableId,
     function_name: &str,
     registry: &FunctionRegistry,
     table_types: &TableTypes,
@@ -1665,18 +1794,14 @@ fn owner_type_name(
 /// One per join table, so two policies sharing it agree and two over different tables do
 /// not pool their rows. Disambiguated against the table types, which are all assigned
 /// before any policy is translated, so a schema declaring this name keeps it.
-fn share_type_name<DB: DatabaseLike>(
-    join_table: &str,
-    table_types: &TableTypes,
-    db: &DB,
-) -> String {
+fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> String {
     let base = canonical_fga_type_name(&format!("{join_table}_share"));
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
         return format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(db, join_table))
+            stable_hex_suffix(&table_types.resolve(join_table))
         );
     }
     base
@@ -1738,11 +1863,11 @@ enum JoinTableReadability {
 /// runs once per clause naming that table, so a schema whose tables all join one membership
 /// table pays it quadratically. Memoized on the spelling, which `lookup_table` resolves.
 fn join_table_readability<DB: DatabaseLike>(
-    join_table: &str,
+    join_table: &TableId,
     db: &DB,
-    memo: &mut BTreeMap<String, JoinTableReadability>,
+    memo: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> JoinTableReadability {
-    memo.entry(join_table.to_string())
+    memo.entry(join_table.clone())
         .or_insert_with(|| read_join_table_readability(join_table, db))
         .clone()
 }
@@ -1750,9 +1875,9 @@ fn join_table_readability<DB: DatabaseLike>(
 /// The role scope reading `join_table` requires, readability notes pushed.
 /// `None` means nothing grants reads, so the caller denies.
 fn noted_membership_read_scope<DB: DatabaseLike>(
-    join_table: &str,
+    join_table: &TableId,
     ctx: &PatternCtx<'_, DB>,
-    memo: &mut BTreeMap<String, JoinTableReadability>,
+    memo: &mut BTreeMap<TableId, JoinTableReadability>,
     notes: &mut Vec<TranslationNote>,
 ) -> Option<Vec<String>> {
     // A proven definer bypass reads the table whole, so there is no caller-side
@@ -1764,14 +1889,14 @@ fn noted_membership_read_scope<DB: DatabaseLike>(
         JoinTableReadability::Unreadable => {
             notes.push(TranslationNote::MembershipTableGrantsNoReads {
                 policy: ctx.policy_name.to_string(),
-                join_table: join_table.to_string(),
+                join_table: join_table.clone(),
             });
             None
         }
         JoinTableReadability::Guarded { roles } => {
             notes.push(TranslationNote::MembershipTableGuarded {
                 policy: ctx.policy_name.to_string(),
-                join_table: join_table.to_string(),
+                join_table: join_table.clone(),
             });
             Some(roles)
         }
@@ -1780,10 +1905,10 @@ fn noted_membership_read_scope<DB: DatabaseLike>(
 }
 
 fn read_join_table_readability<DB: DatabaseLike>(
-    join_table: &str,
+    join_table: &TableId,
     db: &DB,
 ) -> JoinTableReadability {
-    let Some(table) = lookup_table(db, join_table) else {
+    let Some(table) = lookup_table_id(db, join_table) else {
         return JoinTableReadability::Open;
     };
     // Only a table positively known to have RLS off is open.
@@ -1866,20 +1991,10 @@ fn table_group_key<DB: DatabaseLike>(
     key
 }
 
-/// Identity that matches two table references however the policy spelled them.
-fn table_identity<T: TableLike>(table: &T) -> TableId {
-    TableId::from_stored(
-        table.stored_table_schema().map(Into::into),
-        table.stored_table_name().into(),
-    )
-}
-
 /// Final `OpenFGA` type name of every table that gets one, assigned in one pass so a
 /// parent reference resolves to the same type as the table's own policies.
 struct TypeOwner {
     identity: TableId,
-    /// Spelling used in the schema, for the collision message.
-    spelling: String,
 }
 
 #[derive(Default)]
@@ -1906,11 +2021,11 @@ impl TableTypes {
         self.owners.contains_key(type_name) || self.reserved.contains_key(type_name)
     }
 
-    /// The schema's own spelling of the table holding this type, for a note to name.
-    fn spelling<'a>(&'a self, type_name: &'a str) -> &'a str {
+    /// The schema identity of the table holding this type.
+    fn spelling(&self, type_name: &str) -> String {
         self.owners
             .get(type_name)
-            .map_or(type_name, |owner| owner.spelling.as_str())
+            .map_or_else(|| type_name.to_string(), |owner| owner.identity.to_string())
     }
 }
 
@@ -1941,44 +2056,46 @@ impl TableTypes {
             TypeScope::AndAlso(table) => lookup_table(db, table).map(table_identity),
         };
 
-        let mut names: Vec<(bool, String)> = db
+        let mut names: Vec<(bool, TableId)> = db
             .tables()
             .filter(|table| {
                 table.has_row_level_security(db) != Ok(false)
                     || forced.as_ref() == Some(&table_identity(table))
             })
             .map(|table| {
-                (
-                    !policied.contains(&table_identity(table)),
-                    qualified_table_name(table),
-                )
+                let identity = table_identity(table);
+                (!policied.contains(&identity), identity)
             })
             .collect();
         names.sort();
 
-        for (_, name) in &names {
-            let Some(table) = lookup_table(db, name) else {
-                continue;
-            };
-            let identity = table_identity(table);
-            if types.by_identity.contains_key(&identity) {
+        for (_, identity) in &names {
+            if types.by_identity.contains_key(identity) {
                 continue;
             }
 
-            let base = canonical_fga_type_name(name);
+            let spelling = identity.to_string();
+            let base = canonical_fga_type_name(&spelling);
             if let Some(setting) = types.reserved.get(&base) {
                 return Err(PlanningError::ReservedTypeName {
-                    table: name.clone(),
+                    table: spelling.clone(),
                     setting,
                     type_name: base,
                 });
             }
             let assigned = match types.owners.get(&base) {
                 Some(prior) => {
-                    let disambiguated = format!("{base}_{}", stable_hex_suffix(name));
+                    let disambiguated = format!("{base}_{}", stable_hex_suffix(&spelling));
+                    if let Some(setting) = types.reserved.get(&disambiguated) {
+                        return Err(PlanningError::ReservedTypeName {
+                            table: spelling.clone(),
+                            setting,
+                            type_name: disambiguated,
+                        });
+                    }
                     notes.push(TranslationNote::TypeNameCollision {
-                        spelling: name.clone(),
-                        prior: prior.spelling.clone(),
+                        spelling: identity.clone(),
+                        prior: prior.identity.clone(),
                         canonical: base.clone(),
                         renamed: disambiguated.clone(),
                     });
@@ -1990,33 +2107,31 @@ impl TableTypes {
                 assigned.clone(),
                 TypeOwner {
                     identity: identity.clone(),
-                    spelling: name.clone(),
                 },
             );
-            types.by_identity.insert(identity, assigned);
+            types.by_identity.insert(identity.clone(), assigned);
         }
         Ok(types)
     }
 
     /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
-    fn get<DB: DatabaseLike>(&self, db: &DB, table: &str) -> Option<&str> {
-        let identity = table_identity(lookup_table(db, table)?);
-        self.by_identity.get(&identity).map(String::as_str)
+    fn get(&self, table: &TableId) -> Option<&str> {
+        self.by_identity.get(table).map(String::as_str)
     }
 
     /// Type of `table`, deriving one when it has none: a parent without RLS still
     /// needs a type for the child to point at. The derived name steps aside when
     /// another table already owns it, so the child cannot inherit that table's
     /// permissions.
-    fn resolve<DB: DatabaseLike>(&self, db: &DB, table: &str) -> String {
-        let identity = lookup_table(db, table).map(table_identity);
-        if let Some(assigned) = identity.as_ref().and_then(|id| self.by_identity.get(id)) {
+    fn resolve(&self, table: &TableId) -> String {
+        if let Some(assigned) = self.by_identity.get(table) {
             return assigned.clone();
         }
-        let base = canonical_fga_type_name(table);
+        let spelling = table.to_string();
+        let base = canonical_fga_type_name(&spelling);
         match self.owners.get(&base) {
-            Some(owner) if Some(&owner.identity) != identity.as_ref() => {
-                format!("{base}_{}", stable_hex_suffix(table))
+            Some(owner) if owner.identity != *table => {
+                format!("{base}_{}", stable_hex_suffix(&spelling))
             }
             _ => base,
         }
@@ -2043,7 +2158,9 @@ fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         deny_relation(),
-        vec![DirectSubject::Type(table_plan.well_known.nobody.clone())],
+        vec![DirectSubject::Type(
+            table_plan.well_known.nobody.to_string(),
+        )],
     );
     UsersetExpr::Computed(deny_relation())
 }
@@ -2051,7 +2168,9 @@ fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
 fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         public_relation(),
-        vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())],
+        vec![DirectSubject::Wildcard(
+            table_plan.well_known.user.to_string(),
+        )],
     );
     UsersetExpr::Computed(public_relation())
 }
@@ -2088,6 +2207,7 @@ fn pattern_to_expr(
 ) -> UsersetExpr {
     pattern_to_expr_against(
         "CREATE TABLE projects(id UUID PRIMARY KEY);
+CREATE TABLE object_grants(grantee_id UUID, resource_id UUID, role_level INTEGER);
 CREATE TABLE test_table(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));",
         pattern,
         policy_name,
@@ -2130,16 +2250,22 @@ fn pattern_to_expr_against(
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
     let db = crate::parser::sql_parser::parse_schema(schema).expect("schema should parse");
+    let source_table = TableId::from_stored(None, "test_table".to_string());
+    let settings = GeneratorSettings::default();
+    let condition_parameters =
+        ConditionParameterAllocator::new(&settings, registry).expect("parameters should allocate");
+    let table_types = TableTypes::default();
     translate_pattern(
         pattern,
         &PatternCtx {
             policy_name,
             registry,
             db: &db,
-            table_types: &TableTypes::default(),
-            source_table: "test_table",
+            table_types: &table_types,
+            source_table: &source_table,
             membership_reads_bypass_rls: false,
-            settings: &GeneratorSettings::default(),
+            settings: &settings,
+            condition_parameters: &condition_parameters,
         },
         table_plan,
         all_types,
@@ -2164,9 +2290,10 @@ struct PatternCtx<'a, DB: DatabaseLike> {
     /// Which table each type name belongs to.
     table_types: &'a TableTypes,
     /// Table the clause guards, which a parent recursion re-targets.
-    source_table: &'a str,
+    source_table: &'a TableId,
     /// Caller-chosen names the emitted conditions have to respect.
     settings: &'a GeneratorSettings,
+    condition_parameters: &'a ConditionParameterAllocator,
     /// True inside a definer expansion whose table reads were proven to bypass
     /// those tables' policies, so membership readability is not asked.
     membership_reads_bypass_rls: bool,
@@ -2175,7 +2302,7 @@ struct PatternCtx<'a, DB: DatabaseLike> {
 impl<'a, DB: DatabaseLike> PatternCtx<'a, DB> {
     /// The same context reading a different table, which is what a parent rule is
     /// translated against.
-    fn for_table(&self, source_table: &'a str) -> Self {
+    fn for_table(&self, source_table: &'a TableId) -> Self {
         Self {
             source_table,
             ..*self
@@ -2203,7 +2330,7 @@ fn translate_pattern<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let source_table = ctx.source_table;
     match pattern {
@@ -2220,7 +2347,7 @@ fn translate_pattern<DB: DatabaseLike>(
             ctx,
             table_plan,
             |pk_cols, relation| TupleSource::DirectOwnership {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 pk_cols,
                 owner_col: column.clone(),
                 relation,
@@ -2233,7 +2360,7 @@ fn translate_pattern<DB: DatabaseLike>(
             ctx,
             table_plan,
             |pk_cols, relation| TupleSource::ArrayMembership {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 pk_cols,
                 array_col: column.clone(),
                 relation,
@@ -2247,7 +2374,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 ctx,
                 table_plan,
                 |pk_cols, relation| TupleSource::JsonbFieldOwnership {
-                    table: source_table.to_string(),
+                    table: source_table.clone(),
                     pk_cols,
                     column: column.clone(),
                     path: path.clone(),
@@ -2301,14 +2428,20 @@ fn translate_pattern<DB: DatabaseLike>(
             } else {
                 ctx.for_table(source_table)
             };
-            translate_pattern(
+            let body = translate_pattern(
                 &expanded.inner.pattern,
                 &ctx,
                 table_plan,
                 all_types,
                 notes,
                 readability,
-            )
+            );
+            if expanded.presence_columns.is_empty() {
+                body
+            } else {
+                let presence = emit_row_presence_gate(&expanded.presence_columns, &ctx, table_plan);
+                combine_intersection(vec![body, presence]).unwrap_or_else(|| deny_expr(table_plan))
+            }
         }
         PatternClass::P6BooleanFlag(boolean_flag) => {
             emit_boolean_flag(boolean_flag, ctx, table_plan)
@@ -2391,27 +2524,27 @@ fn translate_pattern<DB: DatabaseLike>(
 /// The budget covers the whole `type:id` string, so it shrinks as the type name
 /// grows and two tables of the same schema can have different numbers.
 fn row_identifier_budget<DB: DatabaseLike>(
-    source_table: &str,
+    source_table: &TableId,
     type_name: &str,
     bounds: &UnboundedColumns,
     db: &DB,
 ) -> Option<usize> {
     let key = resolve_pk_columns(source_table, db)?;
-    if !bounds.any_unbounded(source_table, &key, db) {
+    if !bounds.any_unbounded(source_table, &key) {
         return None;
     }
     MAX_OBJECT_NAME_CHARS.checked_sub(type_name.chars().count() + 1)
 }
 
 /// Explain why `source_table` has no usable `OpenFGA` object identifier.
-fn missing_object_identifier_reason<DB: DatabaseLike>(source_table: &str, db: &DB) -> String {
+fn missing_object_identifier_reason<DB: DatabaseLike>(source_table: &TableId, db: &DB) -> String {
     if let Some(columns) = composite_primary_key_columns(source_table, db) {
         return format!(
             "composite primary key ({}) leaves no single-column object identifier",
             columns.join(", ")
         );
     }
-    if table_has_column(db, source_table, "id") {
+    if table_id_has_column(db, source_table, "id") {
         return "no primary key, and 'id' is nullable or not uniquely constrained, so it does \
                 not identify a row"
             .to_string();
@@ -2425,13 +2558,13 @@ fn missing_object_identifier_reason<DB: DatabaseLike>(source_table: &str, db: &D
 /// is derived from the skips recorded here so the two cannot describe different losses.
 fn skip_source_without_row_identity<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
-    source_table: &str,
+    source_table: &TableId,
     what: &str,
     db: &DB,
 ) {
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::NoObjectIdentifier {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             what: what.to_string(),
             reason: missing_object_identifier_reason(source_table, db),
         },
@@ -2446,7 +2579,7 @@ fn skip_source_without_row_identity<DB: DatabaseLike>(
 /// the caller falls closed on `false`.
 fn bridge_is_buildable<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
-    source_table: &str,
+    source_table: &TableId,
     fk_cols: &[ColumnName],
     parent_type: &str,
     db: &DB,
@@ -2456,17 +2589,17 @@ fn bridge_is_buildable<DB: DatabaseLike>(
     }
     let missing = fk_cols
         .iter()
-        .find(|col| !table_has_column(db, source_table, col.as_str()));
+        .find(|col| !table_id_has_column(db, source_table, col.as_str()));
     let reason = match missing {
         Some(fk_col) if resolve_pk_columns(source_table, db).is_some() => {
             SkippedTuples::BridgeColumnMissing {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 parent_type: parent_type.to_string(),
                 fk_col: fk_col.clone(),
             }
         }
         _ => SkippedTuples::NoBridge {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             parent_type: parent_type.to_string(),
             reason: missing_object_identifier_reason(source_table, db),
         },
@@ -2485,7 +2618,7 @@ fn ensure_member_type(
         .or_insert_with(|| TypePlan::new_with_well_known(type_name, well_known));
     entry.ensure_direct(
         member_relation(),
-        vec![DirectSubject::Type(well_known.user.clone())],
+        vec![DirectSubject::Type(well_known.user.to_string())],
     );
 }
 
@@ -2496,11 +2629,11 @@ fn ensure_pg_role_relation(
     well_known: &WellKnownTypes,
 ) {
     all_types
-        .entry(well_known.pg_role.clone())
-        .or_insert_with(|| TypePlan::new_with_well_known(&well_known.pg_role, well_known))
+        .entry(well_known.pg_role.to_string())
+        .or_insert_with(|| TypePlan::new_with_well_known(well_known.pg_role.as_str(), well_known))
         .ensure_direct(
             relation.clone(),
-            vec![DirectSubject::Type(well_known.user.clone())],
+            vec![DirectSubject::Type(well_known.user.to_string())],
         );
 }
 
@@ -2509,19 +2642,16 @@ fn ensure_pg_role_relation(
 fn bind_row_source<DB: DatabaseLike>(
     all_types: &mut BTreeMap<String, TypePlan>,
     type_name: &str,
-    table: &str,
-    db: &DB,
+    table: &TableId,
+    _db: &DB,
 ) {
-    let Some(spelling) = lookup_table(db, table).map(qualified_table_name) else {
-        return;
-    };
     if let Some(plan) = all_types.get_mut(type_name) {
-        plan.names_rows_of(&spelling);
+        plan.names_rows_of(table);
     }
 }
 
-fn resolve_owner_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option<ColumnName> {
-    let table_info = lookup_table(db, table)?;
+fn resolve_owner_column<DB: DatabaseLike>(table: &TableId, db: &DB) -> Option<ColumnName> {
+    let table_info = lookup_table_id(db, table)?;
     for col in table_info.columns(db).into_iter().flatten() {
         let name = col.stored_column_name();
         if is_owner_like_column_name(&name) {
@@ -2550,12 +2680,12 @@ fn resolve_owner_column<DB: DatabaseLike>(table: &str, db: &DB) -> Option<Column
 
 /// Returns the name of the table that `fk_column` in `table` references, or
 /// `None` if no matching FK constraint is found in the schema.
-fn referenced_table_for_fk_col<'db, DB: DatabaseLike>(
-    db: &'db DB,
-    table: &str,
+fn referenced_table_for_fk_col<DB: DatabaseLike>(
+    db: &DB,
+    table: &TableId,
     fk_column: &ColumnName,
-) -> Option<&'db str> {
-    let table_info = lookup_table(db, table)?;
+) -> Option<TableId> {
+    let table_info = lookup_table_id(db, table)?;
     for fk in table_info.foreign_keys(db).into_iter().flatten() {
         let uses_col = fk
             .host_columns(db)
@@ -2563,7 +2693,7 @@ fn referenced_table_for_fk_col<'db, DB: DatabaseLike>(
             .flatten()
             .any(|c| *fk_column == c.stored_column_name().into_owned());
         if uses_col {
-            return fk.referenced_table(db).ok().map(TableLike::table_name);
+            return fk.referenced_table(db).ok().map(table_identity);
         }
     }
     None
@@ -2575,30 +2705,24 @@ fn resolve_principal_info<DB: DatabaseLike>(
     configured_pk_col: Option<&ColumnName>,
     fallback_candidates: &[&str],
 ) -> Option<PrincipalInfo> {
-    if let Some(table) = configured_table {
+    if let Some(table) = configured_table.and_then(|table| resolve_table_id(db, table)) {
         let pk_col = if let Some(pk_col) = configured_pk_col {
-            if !table_has_column(db, table, pk_col.as_str()) {
+            if !table_id_has_column(db, &table, pk_col.as_str()) {
                 return None;
             }
             pk_col.clone()
         } else {
-            single_pk_column(table, db)?
+            single_pk_column(&table, db)?
         };
-        return Some(PrincipalInfo {
-            table: table.to_string(),
-            pk_col,
-        });
+        return Some(PrincipalInfo { table, pk_col });
     }
 
     for &candidate in fallback_candidates {
-        if lookup_table(db, candidate).is_none() {
+        let Some(table) = resolve_table_id(db, candidate) else {
             continue;
-        }
-        if let Some(pk_col) = single_pk_column(candidate, db) {
-            return Some(PrincipalInfo {
-                table: candidate.to_string(),
-                pk_col,
-            });
+        };
+        if let Some(pk_col) = single_pk_column(&table, db) {
+            return Some(PrincipalInfo { table, pk_col });
         }
     }
 

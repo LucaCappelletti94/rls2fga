@@ -1,8 +1,8 @@
 use super::*;
 use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::SessionAttribute;
-use crate::parser::identifiers::ColumnName;
-use crate::parser::names::unquote_identifier;
+use crate::parser::names::{lookup_table_id, resolve_table_id, table_identity, unquote_identifier};
+use crate::types::{ColumnName, TableId};
 use alloc::collections::BTreeSet;
 use sqlparser::ast::{Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr};
 
@@ -101,11 +101,14 @@ pub fn recognize_p5<DB: DatabaseLike>(
         if !p5_accepts_inner(&inner_classified.pattern) {
             continue;
         }
+        let Some(parent_id) = resolve_table_id(db, &parent_table) else {
+            continue;
+        };
 
         matches.push(ClassifiedExpr {
             confidence: inner_classified.confidence,
             pattern: PatternClass::P5ParentInheritance(ParentInheritance {
-                parent_table,
+                parent_table: parent_id,
                 fk_column,
                 inner_pattern: Box::new(inner_classified),
             }),
@@ -893,7 +896,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                 },
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership(ExistsMembership {
-                join_table,
+                join_table: resolve_table_id(db, &join_table)?,
                 pairs,
                 user_column,
                 extra_predicates,
@@ -917,7 +920,7 @@ fn classify_membership_select<DB: DatabaseLike>(
             };
             Some(ClassifiedExpr {
                 pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
-                    join_table,
+                    join_table: resolve_table_id(db, &join_table)?,
                     fk_column: pair.join_column.clone(),
                     outer_column: pair.outer_column.clone(),
                     member_column: user_column,
@@ -934,7 +937,7 @@ fn classify_membership_select<DB: DatabaseLike>(
             extra_predicates,
         } => Some(ClassifiedExpr {
             pattern: PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
-                member_table,
+                member_table: resolve_table_id(db, &member_table)?,
                 user_column,
                 extra_predicates,
             }),
@@ -1029,11 +1032,25 @@ fn analyze_membership_select<DB: DatabaseLike>(
     }
     match matches.pop() {
         Some((join_table, mut columns)) => {
-            columns.pairs =
-                match resolve_membership_pairing(columns.pairs, &join_table, outer_table, db) {
-                    Ok((pairs, _)) => pairs,
-                    Err(reason) => return MembershipSelectAnalysis::UnkeyedPairing { reason },
+            let Some(join_table_id) = resolve_table_id(db, &join_table) else {
+                return MembershipSelectAnalysis::UnkeyedPairing {
+                    reason: format!("the membership table '{join_table}' does not resolve"),
                 };
+            };
+            let Some(outer_table_id) = resolve_table_id(db, outer_table) else {
+                return MembershipSelectAnalysis::UnkeyedPairing {
+                    reason: format!("the guarded table '{outer_table}' does not resolve"),
+                };
+            };
+            columns.pairs = match resolve_membership_pairing(
+                columns.pairs,
+                &join_table_id,
+                &outer_table_id,
+                db,
+            ) {
+                Ok((pairs, _)) => pairs,
+                Err(reason) => return MembershipSelectAnalysis::UnkeyedPairing { reason },
+            };
             // A membership row points at a parent. When the join column is the
             // scanned table's own identity, the rows are the entities themselves and
             // keying them by the child's identifier pairs unrelated rows.
@@ -1138,7 +1155,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         {
             return None;
         }
-        if predicate_subquery_reads_other_table(predicate, &source.table_name) {
+        if predicate_subquery_reads_other_table(predicate, Some(db), &source.table_name) {
             return None;
         }
         let mut normalized = predicate.clone();
@@ -1161,7 +1178,7 @@ pub(crate) enum MembershipPairing {
     /// table's full primary key.
     ForeignKey {
         /// The referenced table, as the schema spells it.
-        parent_table: String,
+        parent_table: TableId,
     },
     /// The outer columns are the guarded table's own full primary key, so the
     /// parent is the guarded row itself.
@@ -1178,8 +1195,8 @@ pub(crate) enum MembershipPairing {
 /// oracle-supplied pattern is validated by the same rules the recognizer applies.
 pub(crate) fn resolve_membership_pairing<DB: DatabaseLike>(
     pairs: Vec<MembershipJoinPair>,
-    join_table: &str,
-    outer_table: &str,
+    join_table: &TableId,
+    outer_table: &TableId,
     db: &DB,
 ) -> Result<(Vec<MembershipJoinPair>, MembershipPairing), String> {
     if pairs.is_empty() {
@@ -1237,7 +1254,7 @@ enum FkPairing {
     /// Exactly one covers it, and the pairs come back in its referenced key's order.
     One {
         ordered: Vec<MembershipJoinPair>,
-        parent_table: String,
+        parent_table: TableId,
     },
     /// More than one covers it, so the parent is ambiguous.
     Several,
@@ -1253,14 +1270,14 @@ enum FkPairing {
 /// spelling per object. Hosts and referenced columns pair positionally.
 fn composite_fk_pair_order<DB: DatabaseLike>(
     pairs: &[MembershipJoinPair],
-    join_table: &str,
+    join_table: &TableId,
     db: &DB,
 ) -> FkPairing {
-    let Some(table) = lookup_table(db, join_table) else {
+    let Some(table) = lookup_table_id(db, join_table) else {
         return FkPairing::None;
     };
     let join_set: BTreeSet<&str> = pairs.iter().map(|pair| pair.join_column.as_str()).collect();
-    let mut matched: Option<(Vec<MembershipJoinPair>, String)> = None;
+    let mut matched: Option<(Vec<MembershipJoinPair>, TableId)> = None;
     for fk in table.foreign_keys(db).into_iter().flatten() {
         let Ok(hosts) = fk.host_columns(db) else {
             continue;
@@ -1306,7 +1323,7 @@ fn composite_fk_pair_order<DB: DatabaseLike>(
         if matched.is_some() {
             return FkPairing::Several;
         }
-        matched = Some((ordered, referenced_table.table_name().to_string()));
+        matched = Some((ordered, table_identity(referenced_table)));
     }
     matched.map_or(FkPairing::None, |(ordered, parent_table)| FkPairing::One {
         ordered,
@@ -1319,10 +1336,10 @@ fn composite_fk_pair_order<DB: DatabaseLike>(
 /// own key names it.
 fn self_key_pair_order<DB: DatabaseLike>(
     pairs: &[MembershipJoinPair],
-    outer_table: &str,
+    outer_table: &TableId,
     db: &DB,
 ) -> Option<Vec<MembershipJoinPair>> {
-    let table = lookup_table(db, outer_table)?;
+    let table = lookup_table_id(db, outer_table)?;
     let pk: Vec<String> = table
         .primary_key_columns(db)
         .ok()?
@@ -2026,7 +2043,7 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             }
             // A subquery in an extra predicate is evaluated as the caller by
             // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
-            if predicate_subquery_reads_other_table(pred, join_table) {
+            if predicate_subquery_reads_other_table(pred, db, join_table) {
                 return None;
             }
             // Keep additional predicates for tuple filtering.
@@ -2230,36 +2247,54 @@ pub(super) fn predicate_references_other_table(
     expr.visit(&mut checker).is_break()
 }
 
-/// True when a subquery inside `expr` reads anything but the join table.
-///
-/// `PostgreSQL` evaluates the predicate as the caller, filtering every table it
-/// reads by that caller's own policies, while the tuple query precomputes it from
-/// the loader's view. Only the join table is safe, since the loading query already
-/// reads it as the loader. A source that is not a plainly named table fails closed.
-pub(super) fn predicate_subquery_reads_other_table(expr: &Expr, join_table: &str) -> bool {
+/// True when a subquery inside `expr` reads anything but the resolved join table.
+pub(super) fn predicate_subquery_reads_other_table<DB: DatabaseLike>(
+    expr: &Expr,
+    db: Option<&DB>,
+    join_table: &str,
+) -> bool {
     use core::ops::ControlFlow;
     use sqlparser::ast::{TableFactor, Visit, Visitor};
 
-    struct SubqueryTableChecker<'a> {
-        join_table: &'a str,
+    struct SubqueryTableChecker<'a, DB> {
+        db: Option<&'a DB>,
+        join_table: Option<TableId>,
     }
 
-    impl Visitor for SubqueryTableChecker<'_> {
+    impl<DB: DatabaseLike> Visitor for SubqueryTableChecker<'_, DB> {
         type Break = ();
 
         fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
-            match factor {
-                TableFactor::Table { name, .. }
-                    if same_identifier(&name.to_string(), self.join_table) =>
-                {
-                    ControlFlow::Continue(())
-                }
-                _ => ControlFlow::Break(()),
+            let (Some(db), Some(join_table)) = (self.db, self.join_table.as_ref()) else {
+                return ControlFlow::Break(());
+            };
+            let TableFactor::Table { name, .. } = factor else {
+                return ControlFlow::Break(());
+            };
+            let Some(table) = lookup_table(db, &name.to_string()) else {
+                return ControlFlow::Break(());
+            };
+            let identity = TableId::from_stored(
+                table.stored_table_schema().map(Into::into),
+                table.stored_table_name().into(),
+            );
+            if &identity == join_table {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
             }
         }
     }
+    let join_table = db.and_then(|db| {
+        lookup_table(db, join_table).map(|table| {
+            TableId::from_stored(
+                table.stored_table_schema().map(Into::into),
+                table.stored_table_name().into(),
+            )
+        })
+    });
 
-    let mut checker = SubqueryTableChecker { join_table };
+    let mut checker = SubqueryTableChecker { db, join_table };
     expr.visit(&mut checker).is_break()
 }
 

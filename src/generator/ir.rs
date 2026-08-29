@@ -7,23 +7,23 @@
 use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
-use crate::generator::relations::RequestComparison;
 use crate::generator::well_known::{member_relation, public_relation, WellKnownTypes};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::parser::identifiers::{ColumnName, RelationName, TypeName};
+use crate::types::RequestComparison;
+use crate::types::{ColumnName, RelationName, TableId, TypeName};
 
 /// Principal table (users or teams) named by a role-threshold function.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PrincipalInfo {
     /// Table that stores the principal entities.
-    pub table: String,
+    pub table: TableId,
     pub pk_col: ColumnName,
 }
 
 /// One condition-context entry a conditional membership tuple carries: the parameter
 /// name the row fills and the column its value is read from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct GateContextColumn {
     /// Condition parameter the value fills.
     pub parameter: String,
@@ -34,7 +34,7 @@ pub(crate) struct GateContextColumn {
 /// The condition a temporal membership tuple names, with every column its context
 /// carries. Present on a membership source only when a clock comparison rides its member
 /// tuple. Absent for a plain member tuple.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MembershipGate {
     /// The condition the member tuple names, declared on the parent or holder type.
     pub condition: String,
@@ -53,7 +53,7 @@ pub(crate) struct MembershipGate {
 pub(crate) enum TupleSource {
     /// P3 ownership. Produces `(type:pk, relation, user:owner_col)`.
     DirectOwnership {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         owner_col: ColumnName,
         /// One relation per column, so two ownership columns cannot union their
@@ -65,7 +65,7 @@ pub(crate) enum TupleSource {
     /// expanding `array_col`, which drops a NULL or empty array exactly as
     /// `= ANY` refuses it.
     ArrayMembership {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         array_col: ColumnName,
         relation: RelationName,
@@ -74,7 +74,7 @@ pub(crate) enum TupleSource {
     /// P12 jsonb field ownership. Produces `(type:pk, relation, user:field)` by
     /// extracting `path` as text, dropping the NULL a missing key yields.
     JsonbFieldOwnership {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         column: ColumnName,
         path: Vec<String>,
@@ -90,7 +90,7 @@ pub(crate) enum TupleSource {
     OwnerIdentity {
         /// Type the owner identities belong to.
         owner_type: String,
-        principal_table: String,
+        principal_table: TableId,
         principal_pk_col: ColumnName,
         /// `user` or `team`.
         subject_type: String,
@@ -103,7 +103,7 @@ pub(crate) enum TupleSource {
     ExplicitGrants {
         /// Type the granted owner identities belong to.
         owner_type: String,
-        grant_table: String,
+        grant_table: TableId,
         /// Column of `grant_table` holding the integer role level.
         grant_role_col: ColumnName,
         grant_grantee_col: ColumnName,
@@ -117,7 +117,7 @@ pub(crate) enum TupleSource {
 
     /// P1/P2 team membership. Produces `(team:team_col, member, user:user_col)`.
     TeamMembership {
-        membership_table: String,
+        membership_table: TableId,
         team_col: ColumnName,
         user_col: ColumnName,
     },
@@ -125,7 +125,7 @@ pub(crate) enum TupleSource {
     /// P4 membership, from `EXISTS` or an `IN` subquery.
     /// Produces `(parent_type:fk_cols, member, user:user_col)`.
     ExistsMembership {
-        join_table: String,
+        join_table: TableId,
         /// Columns of `join_table` naming the parent resource, in the parent
         /// key's order.
         fk_cols: Vec<ColumnName>,
@@ -143,7 +143,7 @@ pub(crate) enum TupleSource {
     /// The object column is resolved at render time, keeping the IR free of schema
     /// lookups.
     ParentBridge {
-        table: String,
+        table: TableId,
         /// Columns of `table` naming the parent, in the parent key's order.
         fk_cols: Vec<ColumnName>,
         parent_type: String,
@@ -154,15 +154,23 @@ pub(crate) enum TupleSource {
 
     /// P6 public flag. Produces `(type:pk, public_viewer, user:*)` where the flag holds.
     PublicFlag {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         flag_col: ColumnName,
+    },
+
+    /// A strict function's column arguments must be present before its body can grant.
+    RowPresenceGate {
+        table: TableId,
+        pk_cols: Vec<ColumnName>,
+        relation: RelationName,
+        columns: Vec<ColumnName>,
     },
 
     /// P9 attribute guard over a literal constant. Produces
     /// `(type:pk, public_viewer, user:*)` for the rows the guard admits.
     AttributeGate {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         predicate: AttributePredicate,
     },
@@ -171,7 +179,7 @@ pub(crate) enum TupleSource {
     /// `(type:pk, relation, user:*, condition, context)` where the context carries the
     /// row's own value for the parameter the request cannot supply.
     ConditionalAttributeGate {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         relation: RelationName,
         condition: String,
@@ -185,7 +193,7 @@ pub(crate) enum TupleSource {
     /// only the row or the rule knows: the row's own value, or the constant the policy
     /// named.
     SessionAttributeGate {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         relation: RelationName,
         condition: String,
@@ -208,7 +216,7 @@ pub(crate) enum TupleSource {
     /// viewers of one guarded row become two objects rather than colliding on one.
     CallerSetShareGate {
         /// Table whose rows record the grants.
-        join_table: String,
+        join_table: TableId,
         /// Primary key of `join_table`, which the share object is keyed on so each row is
         /// its own object.
         pk_cols: Vec<ColumnName>,
@@ -239,7 +247,7 @@ pub(crate) enum TupleSource {
     /// `(guarded_type:fk_col, relation, share_type:pk)` per share row, read from the join
     /// table.
     CallerSetShareBridge {
-        join_table: String,
+        join_table: TableId,
         /// Primary key of `join_table`, which the share subject is keyed on.
         pk_cols: Vec<ColumnName>,
         /// Column of `join_table` naming the guarded row the share is on.
@@ -253,7 +261,7 @@ pub(crate) enum TupleSource {
 
     /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
     ConstantTrue {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
     },
 
@@ -264,7 +272,7 @@ pub(crate) enum TupleSource {
     /// [`Self::PolicyScopeRoles`], so a policy naming several roles no longer writes one fact
     /// per row per role.
     PolicyScope {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         scope_relation: RelationName,
         /// Synthetic type the scope objects belong to.
@@ -289,7 +297,7 @@ pub(crate) enum TupleSource {
     /// Every row of `table` pointing at the one holder object, so a member of the
     /// holder reaches all of them.
     HolderBridge {
-        table: String,
+        table: TableId,
         pk_cols: Vec<ColumnName>,
         relation: RelationName,
         holder_type: String,
@@ -298,7 +306,7 @@ pub(crate) enum TupleSource {
     /// Everyone listed in `member_table`, attached to the holder object.
     HolderMembers {
         holder_type: String,
-        member_table: String,
+        member_table: TableId,
         user_col: ColumnName,
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
@@ -308,6 +316,202 @@ pub(crate) enum TupleSource {
     /// Why no tuple query stands here. Rendered as the two comment lines that take
     /// its place in the loader's script.
     Skipped { reason: SkippedTuples },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResidualSqlKey<'a> {
+    predicates: &'a ResidualPredicates,
+    include_requests: bool,
+}
+
+impl ResidualSqlKey<'_> {
+    fn all(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
+        ResidualSqlKey {
+            predicates,
+            include_requests: true,
+        }
+    }
+
+    fn excluding_requests(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
+        ResidualSqlKey {
+            predicates,
+            include_requests: false,
+        }
+    }
+
+    fn conjuncts(&self) -> impl Iterator<Item = &str> {
+        self.predicates.sql_conjuncts(self.include_requests)
+    }
+}
+
+impl PartialEq for ResidualSqlKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.conjuncts().eq(other.conjuncts())
+    }
+}
+
+impl Eq for ResidualSqlKey<'_> {}
+
+impl PartialOrd for ResidualSqlKey<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ResidualSqlKey<'_> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.conjuncts().cmp(other.conjuncts())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum TupleSourceKey<'a> {
+    DirectOwnership {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        owner_col: &'a ColumnName,
+        relation: &'a RelationName,
+    },
+    ArrayMembership {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        array_col: &'a ColumnName,
+        relation: &'a RelationName,
+    },
+    JsonbFieldOwnership {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        column: &'a ColumnName,
+        path: &'a [String],
+        relation: &'a RelationName,
+    },
+    OwnerIdentity {
+        owner_type: &'a str,
+        principal_table: &'a TableId,
+        principal_pk_col: &'a ColumnName,
+        subject_type: &'a str,
+        relation: &'a RelationName,
+    },
+    ExplicitGrants {
+        owner_type: &'a str,
+        grant_table: &'a TableId,
+        grant_role_col: &'a ColumnName,
+        grant_grantee_col: &'a ColumnName,
+        grant_resource_col: &'a ColumnName,
+        role_cases: &'a [(i32, RelationName, String)],
+        user_principal: Option<&'a PrincipalInfo>,
+        team_principal: Option<&'a PrincipalInfo>,
+    },
+    TeamMembership {
+        membership_table: &'a TableId,
+        team_col: &'a ColumnName,
+        user_col: &'a ColumnName,
+    },
+    ExistsMembership {
+        join_table: &'a TableId,
+        fk_cols: &'a [ColumnName],
+        user_col: &'a ColumnName,
+        parent_type: &'a str,
+        extra_predicates: ResidualSqlKey<'a>,
+        gate: Option<&'a MembershipGate>,
+    },
+    ParentBridge {
+        table: &'a TableId,
+        fk_cols: &'a [ColumnName],
+        parent_type: &'a str,
+        relation: &'a RelationName,
+    },
+    PublicFlag {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        flag_col: &'a ColumnName,
+    },
+    RowPresenceGate {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        columns: &'a [ColumnName],
+        relation: &'a RelationName,
+    },
+    AttributeGate {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        predicate: &'a AttributePredicate,
+    },
+    ConditionalAttributeGate {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        relation: &'a RelationName,
+        condition: &'a str,
+        row_parameter: &'a str,
+        column: &'a ColumnName,
+    },
+    SessionAttributeGate {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        relation: &'a RelationName,
+        condition: &'a str,
+        row_parameter: &'a RowParameter,
+        request_parameter: &'a str,
+        comparison: RequestComparison,
+    },
+    CallerSetShareGate {
+        share_type: &'a str,
+        join_table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        member_col: &'a ColumnName,
+        relation: &'a RelationName,
+        condition: &'a str,
+        row_parameter: &'a str,
+        request_parameter: &'a str,
+        extra_predicates: ResidualSqlKey<'a>,
+        temporal_context: &'a [GateContextColumn],
+    },
+    CallerSetShareBridge {
+        guarded_type: &'a str,
+        join_table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        fk_col: &'a ColumnName,
+        share_type: &'a str,
+        relation: &'a RelationName,
+    },
+    ConstantTrue {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+    },
+    PolicyScope {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        scope_relation: &'a RelationName,
+        scope_type: &'a str,
+        scope_object: &'a str,
+    },
+    PolicyScopeRoles {
+        scope_type: &'a str,
+        scope_object: &'a str,
+        relation: &'a RelationName,
+        pg_role: &'a str,
+    },
+    HolderBridge {
+        table: &'a TableId,
+        pk_cols: &'a [ColumnName],
+        relation: &'a RelationName,
+        holder_type: &'a str,
+    },
+    HolderMembers {
+        holder_type: &'a str,
+        member_table: &'a TableId,
+        user_col: &'a ColumnName,
+        extra_predicates: ResidualSqlKey<'a>,
+        gate: Option<&'a MembershipGate>,
+    },
+    Skipped {
+        reason: &'a SkippedTuples,
+    },
+}
+
+/// Returns `table` when it has no schema qualifier, otherwise `None`.
+fn first_unqualified(table: &TableId) -> Option<&TableId> {
+    table.schema().is_none().then_some(table)
 }
 
 impl TupleSource {
@@ -324,6 +528,7 @@ impl TupleSource {
             | Self::JsonbFieldOwnership { .. }
             | Self::ParentBridge { .. }
             | Self::PublicFlag { .. }
+            | Self::RowPresenceGate { .. }
             | Self::AttributeGate { .. }
             | Self::ConditionalAttributeGate { .. }
             | Self::SessionAttributeGate { .. }
@@ -355,6 +560,7 @@ impl TupleSource {
             | Self::ArrayMembership { relation, .. }
             | Self::JsonbFieldOwnership { relation, .. }
             | Self::ParentBridge { relation, .. }
+            | Self::RowPresenceGate { relation, .. }
             | Self::ConditionalAttributeGate { relation, .. }
             | Self::SessionAttributeGate { relation, .. }
             | Self::CallerSetShareBridge { relation, .. }
@@ -372,7 +578,9 @@ impl TupleSource {
                 .iter()
                 .map(|(_, relation, _)| (owner_type.clone(), relation.clone()))
                 .collect(),
-            Self::TeamMembership { .. } => vec![(well_known.team.clone(), member_relation())],
+            Self::TeamMembership { .. } => {
+                vec![(well_known.team.to_string(), member_relation())]
+            }
             Self::ExistsMembership { parent_type, .. } => {
                 vec![(parent_type.clone(), member_relation())]
             }
@@ -397,51 +605,57 @@ impl TupleSource {
         }
     }
 
-    /// A stable string key used to deduplicate identical tuple queries.
-    ///
-    /// Two sources with the same key produce the same SQL. Only the first is emitted.
-    pub(crate) fn dedup_key(&self) -> String {
+    /// Borrowed structural identity of the rendered tuple query.
+    pub(crate) fn dedup_key(&self) -> TupleSourceKey<'_> {
         match self {
             Self::DirectOwnership {
                 table,
                 pk_cols,
                 owner_col,
                 relation,
-            } => {
-                format!("p3:{table}:{pk_cols:?}:{owner_col}:{relation}")
-            }
+            } => TupleSourceKey::DirectOwnership {
+                table,
+                pk_cols,
+                owner_col,
+                relation,
+            },
             Self::ArrayMembership {
                 table,
                 pk_cols,
                 array_col,
                 relation,
-            } => {
-                format!("p11:{table}:{pk_cols:?}:{array_col}:{relation}")
-            }
+            } => TupleSourceKey::ArrayMembership {
+                table,
+                pk_cols,
+                array_col,
+                relation,
+            },
             Self::JsonbFieldOwnership {
                 table,
                 pk_cols,
                 column,
                 path,
                 relation,
-            } => {
-                format!(
-                    "p12:{table}:{pk_cols:?}:{column}:{}:{relation}",
-                    path.join(".")
-                )
-            }
+            } => TupleSourceKey::JsonbFieldOwnership {
+                table,
+                pk_cols,
+                column,
+                path,
+                relation,
+            },
             Self::OwnerIdentity {
                 owner_type,
                 principal_table,
                 principal_pk_col,
                 subject_type,
                 relation,
-            } => {
-                format!(
-                    "owner_identity:{owner_type}:{principal_table}:{principal_pk_col}:\
-                     {subject_type}:{relation}"
-                )
-            }
+            } => TupleSourceKey::OwnerIdentity {
+                owner_type,
+                principal_table,
+                principal_pk_col,
+                subject_type,
+                relation,
+            },
             Self::ExplicitGrants {
                 owner_type,
                 grant_table,
@@ -449,25 +663,27 @@ impl TupleSource {
                 grant_grantee_col,
                 grant_resource_col,
                 role_cases,
-                ..
-            } => {
-                let role_keys: Vec<String> = role_cases
-                    .iter()
-                    .map(|(l, rel, name)| format!("{l}:{rel}:{name}"))
-                    .collect();
-                format!(
-                    "grants:{owner_type}:{grant_table}:{grant_role_col}:\
-                     {grant_grantee_col}:{grant_resource_col}:{}",
-                    role_keys.join(",")
-                )
-            }
+                user_principal,
+                team_principal,
+            } => TupleSourceKey::ExplicitGrants {
+                owner_type,
+                grant_table,
+                grant_role_col,
+                grant_grantee_col,
+                grant_resource_col,
+                role_cases,
+                user_principal: user_principal.as_ref(),
+                team_principal: team_principal.as_ref(),
+            },
             Self::TeamMembership {
                 membership_table,
                 team_col,
                 user_col,
-            } => {
-                format!("team_membership:{membership_table}:{team_col}:{user_col}")
-            }
+            } => TupleSourceKey::TeamMembership {
+                membership_table,
+                team_col,
+                user_col,
+            },
             Self::ExistsMembership {
                 join_table,
                 fk_cols,
@@ -475,35 +691,58 @@ impl TupleSource {
                 parent_type,
                 extra_predicates,
                 gate,
-            } => {
-                let extra = extra_predicates.sql().unwrap_or_default();
-                format!("p4:{join_table}:{fk_cols:?}:{user_col}:{parent_type}:{extra}:{gate:?}")
-            }
+            } => TupleSourceKey::ExistsMembership {
+                join_table,
+                fk_cols,
+                user_col,
+                parent_type,
+                extra_predicates: if gate.is_some() {
+                    ResidualSqlKey::excluding_requests(extra_predicates)
+                } else {
+                    ResidualSqlKey::all(extra_predicates)
+                },
+                gate: gate.as_ref(),
+            },
             Self::ParentBridge {
                 table,
                 fk_cols,
                 parent_type,
                 relation,
-            } => {
-                format!("bridge:{table}:{fk_cols:?}:{parent_type}:{relation}")
-            }
+            } => TupleSourceKey::ParentBridge {
+                table,
+                fk_cols,
+                parent_type,
+                relation,
+            },
             Self::PublicFlag {
                 table,
                 pk_cols,
                 flag_col,
-            } => {
-                format!("p6:{table}:{pk_cols:?}:{flag_col}")
-            }
+            } => TupleSourceKey::PublicFlag {
+                table,
+                pk_cols,
+                flag_col,
+            },
+            Self::RowPresenceGate {
+                table,
+                pk_cols,
+                columns,
+                relation,
+            } => TupleSourceKey::RowPresenceGate {
+                table,
+                pk_cols,
+                columns,
+                relation,
+            },
             Self::AttributeGate {
                 table,
                 pk_cols,
                 predicate,
-            } => {
-                format!(
-                    "p9:{table}:{pk_cols:?}:{}:{:?}:{:?}",
-                    predicate.column, predicate.operator, predicate.value
-                )
-            }
+            } => TupleSourceKey::AttributeGate {
+                table,
+                pk_cols,
+                predicate,
+            },
             Self::ConditionalAttributeGate {
                 table,
                 pk_cols,
@@ -511,9 +750,14 @@ impl TupleSource {
                 condition,
                 row_parameter,
                 column,
-            } => {
-                format!("p9c:{table}:{pk_cols:?}:{relation}:{condition}:{row_parameter}:{column}")
-            }
+            } => TupleSourceKey::ConditionalAttributeGate {
+                table,
+                pk_cols,
+                relation,
+                condition,
+                row_parameter,
+                column,
+            },
             Self::SessionAttributeGate {
                 table,
                 pk_cols,
@@ -521,17 +765,17 @@ impl TupleSource {
                 condition,
                 row_parameter,
                 request_parameter,
-                setting_key,
-                separator,
                 comparison,
-            } => {
-                let _ = (setting_key, separator);
-                format!(
-                    "sess:{table}:{pk_cols:?}:{relation}:{condition}:{}:{}:{request_parameter}:{comparison:?}",
-                    row_parameter.parameter(),
-                    row_parameter.column().map_or("", ColumnName::as_str)
-                )
-            }
+                ..
+            } => TupleSourceKey::SessionAttributeGate {
+                table,
+                pk_cols,
+                relation,
+                condition,
+                row_parameter,
+                request_parameter,
+                comparison: *comparison,
+            },
             Self::CallerSetShareGate {
                 join_table,
                 pk_cols,
@@ -541,23 +785,25 @@ impl TupleSource {
                 condition,
                 row_parameter,
                 request_parameter,
-                setting_key,
-                separator,
                 extra_predicates,
                 temporal_context,
-            } => {
-                let _ = (setting_key, separator);
-                let temporal = temporal_context
-                    .iter()
-                    .map(|gate| format!("{}={}", gate.parameter, gate.column))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(
-                    "sharegate:{share_type}:{join_table}:{pk_cols:?}:{member_col}:{relation}:\
-                     {condition}:{row_parameter}:{request_parameter}:{}:{temporal}",
-                    extra_predicates.sql().unwrap_or_default()
-                )
-            }
+                ..
+            } => TupleSourceKey::CallerSetShareGate {
+                share_type,
+                join_table,
+                pk_cols,
+                member_col,
+                relation,
+                condition,
+                row_parameter,
+                request_parameter,
+                extra_predicates: if temporal_context.is_empty() {
+                    ResidualSqlKey::all(extra_predicates)
+                } else {
+                    ResidualSqlKey::excluding_requests(extra_predicates)
+                },
+                temporal_context,
+            },
             Self::CallerSetShareBridge {
                 join_table,
                 pk_cols,
@@ -565,13 +811,16 @@ impl TupleSource {
                 guarded_type,
                 share_type,
                 relation,
-            } => {
-                format!(
-                    "sharebridge:{guarded_type}:{join_table}:{pk_cols:?}:{fk_col}:{share_type}:{relation}"
-                )
-            }
+            } => TupleSourceKey::CallerSetShareBridge {
+                guarded_type,
+                join_table,
+                pk_cols,
+                fk_col,
+                share_type,
+                relation,
+            },
             Self::ConstantTrue { table, pk_cols } => {
-                format!("p10_true:{table}:{pk_cols:?}")
+                TupleSourceKey::ConstantTrue { table, pk_cols }
             }
             Self::PolicyScope {
                 table,
@@ -579,40 +828,98 @@ impl TupleSource {
                 scope_relation,
                 scope_type,
                 scope_object,
-            } => {
-                format!("scope:{table}:{pk_cols:?}:{scope_relation}:{scope_type}:{scope_object}")
-            }
+            } => TupleSourceKey::PolicyScope {
+                table,
+                pk_cols,
+                scope_relation,
+                scope_type,
+                scope_object,
+            },
             Self::PolicyScopeRoles {
                 scope_type,
                 scope_object,
                 relation,
                 pg_role,
-            } => {
-                format!("scoperoles:{scope_type}:{scope_object}:{relation}:{pg_role}")
-            }
+            } => TupleSourceKey::PolicyScopeRoles {
+                scope_type,
+                scope_object,
+                relation,
+                pg_role,
+            },
             Self::HolderBridge {
                 table,
                 pk_cols,
                 relation,
                 holder_type,
-            } => {
-                format!("holder:{table}:{pk_cols:?}:{relation}:{holder_type}")
-            }
+            } => TupleSourceKey::HolderBridge {
+                table,
+                pk_cols,
+                relation,
+                holder_type,
+            },
             Self::HolderMembers {
                 holder_type,
                 member_table,
                 user_col,
                 extra_predicates,
                 gate,
-            } => {
-                format!(
-                    "holdermembers:{holder_type}:{member_table}:{user_col}:{}:{gate:?}",
-                    extra_predicates.sql().unwrap_or_default()
-                )
-            }
-            Self::Skipped { reason } => {
-                format!("skipped:{}:{}", reason.comment(), reason.body())
-            }
+            } => TupleSourceKey::HolderMembers {
+                holder_type,
+                member_table,
+                user_col,
+                extra_predicates: if gate.is_some() {
+                    ResidualSqlKey::excluding_requests(extra_predicates)
+                } else {
+                    ResidualSqlKey::all(extra_predicates)
+                },
+                gate: gate.as_ref(),
+            },
+            Self::Skipped { reason } => TupleSourceKey::Skipped { reason },
+        }
+    }
+
+    /// The first source table without a schema qualifier, which makes SQL `search_path` dependent.
+    pub(crate) fn first_unqualified_table(&self) -> Option<&TableId> {
+        match self {
+            Self::DirectOwnership { table, .. }
+            | Self::ArrayMembership { table, .. }
+            | Self::JsonbFieldOwnership { table, .. }
+            | Self::HolderBridge { table, .. }
+            | Self::ParentBridge { table, .. }
+            | Self::PublicFlag { table, .. }
+            | Self::RowPresenceGate { table, .. }
+            | Self::AttributeGate { table, .. }
+            | Self::ConditionalAttributeGate { table, .. }
+            | Self::SessionAttributeGate { table, .. }
+            | Self::ConstantTrue { table, .. }
+            | Self::PolicyScope { table, .. } => first_unqualified(table),
+            Self::OwnerIdentity {
+                principal_table, ..
+            } => first_unqualified(principal_table),
+            Self::TeamMembership {
+                membership_table, ..
+            } => first_unqualified(membership_table),
+            Self::ExistsMembership { join_table, .. }
+            | Self::CallerSetShareGate { join_table, .. }
+            | Self::CallerSetShareBridge { join_table, .. } => first_unqualified(join_table),
+            Self::HolderMembers { member_table, .. } => first_unqualified(member_table),
+            Self::ExplicitGrants {
+                grant_table,
+                user_principal,
+                team_principal,
+                ..
+            } => first_unqualified(grant_table)
+                .or_else(|| {
+                    user_principal
+                        .as_ref()
+                        .and_then(|p| first_unqualified(&p.table))
+                })
+                .or_else(|| {
+                    team_principal
+                        .as_ref()
+                        .and_then(|p| first_unqualified(&p.table))
+                }),
+            Self::PolicyScopeRoles { .. } | Self::Skipped { .. } => None,
         }
     }
 }
@@ -623,16 +930,20 @@ mod tests {
     use crate::classifier::patterns::ResidualPredicate;
     use crate::generator::well_known::owner_user_relation;
 
+    fn table(name: &str) -> TableId {
+        TableId::from_stored(None, name.to_string())
+    }
+
     fn grants(owner_type: &str, grant_table: &str) -> TupleSource {
         TupleSource::ExplicitGrants {
             owner_type: owner_type.to_string(),
-            grant_table: grant_table.to_string(),
+            grant_table: table(grant_table),
             grant_role_col: ColumnName::from_stored("role"),
             grant_grantee_col: ColumnName::from_stored("grantee"),
             grant_resource_col: ColumnName::from_stored("resource_id"),
             role_cases: vec![(
                 1,
-                RelationName::from_resolved("viewer"),
+                RelationName::canonicalized("viewer"),
                 "viewer".to_string(),
             )],
             user_principal: None,
@@ -662,7 +973,7 @@ mod tests {
     fn dedup_key_separates_owner_identities_by_namespace_and_principal() {
         let identity = |owner_type: &str, principal: &str| TupleSource::OwnerIdentity {
             owner_type: owner_type.to_string(),
-            principal_table: principal.to_string(),
+            principal_table: table(principal),
             principal_pk_col: ColumnName::from_stored("id"),
             subject_type: "user".to_string(),
             relation: owner_user_relation(),
@@ -684,12 +995,12 @@ mod tests {
     #[test]
     fn dedup_key_differentiates_team_membership_by_columns() {
         let mem_a = TupleSource::TeamMembership {
-            membership_table: "team_members".to_string(),
+            membership_table: table("team_members"),
             team_col: ColumnName::from_stored("team_id"),
             user_col: ColumnName::from_stored("user_id"),
         };
         let mem_b = TupleSource::TeamMembership {
-            membership_table: "team_members".to_string(),
+            membership_table: table("team_members"),
             team_col: ColumnName::from_stored("group_id"),
             user_col: ColumnName::from_stored("member_id"),
         };
@@ -703,7 +1014,7 @@ mod tests {
     #[test]
     fn dedup_key_differentiates_exists_membership_by_user_col_and_predicate() {
         let base = TupleSource::ExistsMembership {
-            join_table: "members".to_string(),
+            join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
@@ -711,7 +1022,7 @@ mod tests {
             gate: None,
         };
         let different_user = TupleSource::ExistsMembership {
-            join_table: "members".to_string(),
+            join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("member_id"),
             parent_type: "projects".to_string(),
@@ -719,7 +1030,7 @@ mod tests {
             gate: None,
         };
         let with_predicate = TupleSource::ExistsMembership {
-            join_table: "members".to_string(),
+            join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: "projects".to_string(),
@@ -738,16 +1049,51 @@ mod tests {
     fn dedup_key_differentiates_skips_by_their_reason() {
         let attribute = TupleSource::Skipped {
             reason: SkippedTuples::AttributeRuntimeEnforcement {
-                table: "docs".to_string(),
+                table: table("docs"),
                 attribute: "status = 'active'".to_string(),
             },
         };
         let unclassified = TupleSource::Skipped {
             reason: SkippedTuples::UnclassifiedExpression {
-                table: "docs".to_string(),
+                table: table("docs"),
                 reason: "no pattern".to_string(),
             },
         };
         assert_ne!(attribute.dedup_key(), unclassified.dedup_key());
+    }
+    #[test]
+    fn dedup_key_separates_separator_text_across_identifier_fields() {
+        let separator_in_team = TupleSource::TeamMembership {
+            membership_table: table("team"),
+            team_col: ColumnName::from_stored("members:team"),
+            user_col: ColumnName::from_stored("user"),
+        };
+        let separator_in_user = TupleSource::TeamMembership {
+            membership_table: table("team"),
+            team_col: ColumnName::from_stored("members"),
+            user_col: ColumnName::from_stored("team:user"),
+        };
+
+        assert_ne!(separator_in_team.dedup_key(), separator_in_user.dedup_key());
+    }
+
+    #[test]
+    fn dedup_key_separates_explicit_grant_principal_joins() {
+        let with_principal = |principal: &str| {
+            let mut source = grants("grants_owner", "grants");
+            let TupleSource::ExplicitGrants { user_principal, .. } = &mut source else {
+                unreachable!();
+            };
+            *user_principal = Some(PrincipalInfo {
+                table: table(principal),
+                pk_col: ColumnName::from_stored("id"),
+            });
+            source
+        };
+
+        assert_ne!(
+            with_principal("users").dedup_key(),
+            with_principal("people").dedup_key()
+        );
     }
 }

@@ -3,7 +3,8 @@
 //!
 //! Clauses by which a membership subquery stops being the plain set of rows in its table.
 
-use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass, UnclassifiedExpr};
+use rls2fga::classifier::patterns::{PatternClass, UnclassifiedExpr};
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -348,7 +349,7 @@ fn refused_teams_policy_complaints(clause: &str, reason_names: &str) -> Vec<Stri
             "`{clause}` must fall closed, can_select is {can_select:?}"
         ));
     }
-    let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "\"members\"");
+    let membership_tuples = tuples_reading_from(outputs.tuple_queries(), "\"members\"");
     if !membership_tuples.is_empty() {
         complaints.push(format!(
             "`{clause}` must emit no membership tuples, got {membership_tuples:?}"
@@ -449,7 +450,7 @@ fn an_in_subquery_carrying_two_correlations_is_refused() {
                 "`{clause}` drops one of its two correlations, can_select is {can_select:?}"
             ));
         }
-        let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "\"m\"");
+        let membership_tuples = tuples_reading_from(outputs.tuple_queries(), "\"m\"");
         if !membership_tuples.is_empty() {
             complaints.push(format!(
                 "`{clause}` must emit no membership tuples, got {membership_tuples:?}"

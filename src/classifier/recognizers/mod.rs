@@ -12,13 +12,13 @@ use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrap
 use crate::parser::expr::{function_arg_expr, function_call, positional_function_arg};
 use crate::parser::function_analyzer::current_setting_literal_key;
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
     lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
     split_schema_and_relation, stored_ident_name,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableLike};
+use crate::types::ColumnName;
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
@@ -70,7 +70,7 @@ pub fn recognize_p1<DB: DatabaseLike>(
         return Some(ClassifiedExpr {
             pattern: PatternClass::P1NumericThreshold(NumericThreshold {
                 resource_column: role_threshold_resource_column(func_expr, &func_name, registry),
-                function_name: func_name,
+                function_name: registry.resolved_name(&func_name),
                 operator,
                 threshold,
                 command,
@@ -101,7 +101,7 @@ pub fn recognize_p2<DB: DatabaseLike>(
                             resource_column: role_threshold_resource_column(
                                 inner_expr, &func_name, registry,
                             ),
-                            function_name: func_name,
+                            function_name: registry.resolved_name(&func_name),
                             role_names,
                             privilege: RolePrivilege::Member,
                         }),
@@ -189,7 +189,7 @@ fn recognize_role_accessor_comparison(
     let extract_role_func_name = |e: &Expr| -> Option<String> {
         let name = extract_function_name(e)?;
         if registry.is_role_accessor(&name) {
-            Some(name)
+            Some(registry.resolved_name(&name))
         } else {
             None
         }
@@ -706,12 +706,9 @@ pub(crate) fn is_constantly_false(expr: &Expr) -> bool {
     }
 }
 
-/// Normalized name of the function `expr` calls, through casts and parentheses.
-///
-/// The call is found by [`function_call`], which is the one reader of that shape, so this
-/// is only the naming on top of it.
+/// Function name called by `expr`, preserving qualification and quoting.
 pub fn extract_function_name(expr: &Expr) -> Option<String> {
-    function_call(expr).map(normalized_function_name)
+    function_call(expr).map(|function| function.name.to_string())
 }
 
 /// Normalized names of every function `expr` calls that does not identify the caller,
@@ -943,7 +940,7 @@ fn accessor_root(expr: &Expr) -> Option<&Expr> {
 
 fn current_user_accessor_name(expr: &Expr) -> Option<String> {
     match accessor_root(expr)? {
-        Expr::Function(func) => Some(normalized_function_name(func)),
+        Expr::Function(func) => Some(func.name.to_string()),
         Expr::Identifier(ident) => ident
             .quote_style
             .is_none()
@@ -1023,10 +1020,10 @@ fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
     let Some(name) = current_user_accessor_name(expr) else {
         return false;
     };
-    let normalized = normalize_relation_name(&name);
-    registry.is_current_user_accessor(&normalized)
+    let terminal = normalize_relation_name(&name);
+    registry.is_current_user_accessor(&name)
         || reads_caller_setting_key(expr, registry)
-        || (is_current_user_keyword(&normalized) && is_sql_current_user_keyword_expr(expr))
+        || (is_current_user_keyword(&terminal) && is_sql_current_user_keyword_expr(expr))
 }
 
 #[cfg(test)]

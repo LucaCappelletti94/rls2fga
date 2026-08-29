@@ -2,7 +2,7 @@
 //!
 //! A change stream consumer registers a filter naming a relationship, then has to answer
 //! "is this row still in that subscription" for every row that changes. That is the
-//! question [`crate::generator::relations`] already answers for a policy, asked of one
+//! question [`crate::types::RelationShapes`] already answers for a policy, asked of one
 //! expression nobody wrote a policy for.
 //!
 //! The answer names both links of the chain, because the consumer follows them in the
@@ -32,14 +32,16 @@ use crate::classifier::policy_classifier::classify_expr;
 use crate::generator::model_generator::{
     build_plan_typing, GeneratorSettings, SchemaPlan, TypeScope, UsersetExpr,
 };
-use crate::generator::notes::TranslationNote;
-use crate::generator::records::{RecordDerivation, RecordTemplate, ValueSource};
-use crate::generator::relations::{relation_shapes, RelationShapes};
+use crate::generator::relations::relation_shapes;
 use crate::generator::row_naming::row_naming;
+use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, UnboundedColumns};
 use crate::generator::well_known::can_select_relation;
-use crate::parser::identifiers::RelationName;
-use crate::parser::names::{lookup_table, same_identifier};
+use crate::parser::names::{lookup_table, resolve_table_id, same_identifier};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
+use crate::types::RelationShapes;
+use crate::types::TranslationNote;
+use crate::types::{RecordDerivation, RecordTemplate, ValueSource};
+use crate::types::{RelationName, TableId};
 
 /// What one subscription filter implies, in the vocabulary a change stream consumer
 /// already evaluates.
@@ -127,16 +129,18 @@ pub fn describe_membership_term<DB: DatabaseLike>(
     }
 
     let policy = synthetic_policy(guarded_table, expr, &classified);
+    let bounds = UnboundedColumns::resolve(db);
     let plan = build_plan_typing(
         &filter_policies_for_output(&[policy], min_confidence),
         db,
         registry,
         &GeneratorSettings::default(),
+        &bounds,
         TypeScope::AndAlso(guarded_table),
     )
     .map_err(|err| refuse(err.to_string()))?;
-
-    let relations = relation_shapes(&plan, db);
+    let tuples = generate_tuple_queries_from_plan(&plan, &bounds, db);
+    let relations = relation_shapes(&plan, &tuples.descriptions, db);
     // One source for "what is this table called", shared with `Translation::row_naming`,
     // so the type this reports and the type a consumer names the row with cannot differ.
     // A table the model names no row of has no chain either, which is the same refusal.
@@ -146,9 +150,10 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         .map_or(Err(0), |entry| {
             derive_chain(
                 &relations,
+                db,
                 guarded_table,
                 &entry.type_name,
-                &plan.well_known.user,
+                plan.well_known.user.as_str(),
             )
             .map(|chain| (entry.type_name, chain))
         });
@@ -310,8 +315,9 @@ fn rule_beyond_the_chain(
 ///
 /// `Err` carries how many links were found when that is not exactly one: a filter two
 /// chains satisfy is answered by neither of them alone.
-fn derive_chain(
+fn derive_chain<DB: DatabaseLike>(
     relations: &[RelationShapes],
+    db: &DB,
     guarded_table: &str,
     object_type: &str,
     user_type: &str,
@@ -328,8 +334,7 @@ fn derive_chain(
             else {
                 continue;
             };
-            if !same_identifier(table, guarded_table) || !links_out_of_its_own_row(entry, template)
-            {
+            if !same_table(db, table, guarded_table) || !links_out_of_its_own_row(entry, template) {
                 continue;
             }
             links.push((entry.relation.clone(), template.subject_type.clone()));
@@ -352,15 +357,12 @@ fn derive_chain(
     })
 }
 
-/// Whether two names resolve to one table of `db`, falling back to comparing the
-/// spellings when neither resolves.
-fn same_table<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> bool {
-    match (lookup_table(db, left), lookup_table(db, right)) {
-        (Some(one), Some(other)) => {
-            one.table_schema() == other.table_schema() && one.table_name() == other.table_name()
-        }
-        _ => same_identifier(left, right),
-    }
+/// Whether a resolved table and a spelling identify one table of `db`.
+fn same_table<DB: DatabaseLike>(db: &DB, left: &TableId, right: &str) -> bool {
+    resolve_table_id(db, right).map_or_else(
+        || same_identifier(left.name(), right) || same_identifier(&left.to_string(), right),
+        |right| *left == right,
+    )
 }
 
 /// Whether a shape names an object of the type its relation is defined on, from a value
@@ -368,16 +370,13 @@ fn same_table<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> bool {
 ///
 /// A subject named by a fixed value rather than by the row is either the typed wildcard,
 /// which grants everyone, or the holder of a filter that admits every row. Neither is a
-/// link out of one row. Matched exhaustively on purpose: a value source added later stops
-/// this compiling until someone decides what it means here.
+/// link out of one row. An unknown value source delegates.
 fn links_out_of_its_own_row(entry: &RelationShapes, template: &RecordTemplate) -> bool {
     template.object_type == entry.type_name.as_str()
-        && match template.subject_key.part() {
-            ValueSource::Column(_)
-            | ValueSource::ListElements(_)
-            | ValueSource::JsonPath { .. } => true,
-            ValueSource::Literal(_) => false,
-        }
+        && matches!(
+            template.subject_key.part(),
+            ValueSource::Column(_) | ValueSource::ListElements(_) | ValueSource::JsonPath { .. }
+        )
 }
 
 /// The relation on `type_name` whose records name a caller, when exactly one does.
@@ -446,7 +445,7 @@ fn caller_side_table(
         .filter(|entry| entry.type_name.as_str() == type_name && entry.relation == *member)
         .flat_map(|entry| &entry.shapes)
         .find_map(|shape| match &shape.derivation {
-            RecordDerivation::FromRow { table, .. } => Some(table.clone()),
+            RecordDerivation::FromRow { table, .. } => Some(table.to_string()),
             _ => None,
         })
 }
@@ -454,24 +453,32 @@ fn caller_side_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generator::records::{ObjectKey, RecordDescription, SubjectKey};
     use crate::generator::well_known::WellKnownTypes;
-    use crate::parser::identifiers::TypeName;
+    use crate::types::TypeName;
+    use crate::types::{ObjectKey, RecordDescription, SubjectKey};
 
     fn naming_user(type_name: &str, relation: &str, table: &str) -> RelationShapes {
+        naming_user_from_table(
+            type_name,
+            relation,
+            &TableId::from_stored(None, table.to_string()),
+        )
+    }
+
+    fn naming_user_from_table(type_name: &str, relation: &str, table: &TableId) -> RelationShapes {
         RelationShapes {
-            type_name: TypeName::from_resolved(type_name),
-            relation: RelationName::from_resolved(relation),
+            type_name: TypeName::canonicalized(type_name),
+            relation: RelationName::canonicalized(relation),
             from_one_row: false,
             shapes: vec![RecordDescription {
-                tables: vec![table.to_string()],
+                tables: vec![table.clone()],
                 derivation: RecordDerivation::FromRow {
-                    table: table.to_string(),
+                    table: table.clone(),
                     template: Box::new(RecordTemplate {
                         object_type: type_name.to_string(),
                         object_key: ObjectKey::column("id"),
-                        relation: RelationName::from_resolved(relation),
-                        subject_type: WellKnownTypes::default().user,
+                        relation: RelationName::canonicalized(relation),
+                        subject_type: WellKnownTypes::default().user.to_string(),
                         subject_key: SubjectKey::column("user_id"),
                         context: None,
                     }),
@@ -492,7 +499,7 @@ mod tests {
     fn a_type_naming_the_caller_twice_has_no_single_member_relation() {
         let one = [naming_user("orders", "customer", "orders")];
         assert_eq!(
-            member_relation(&one, "orders", &WellKnownTypes::default().user)
+            member_relation(&one, "orders", WellKnownTypes::default().user().as_str())
                 .as_ref()
                 .map(RelationName::as_str),
             Some("customer")
@@ -503,8 +510,53 @@ mod tests {
             naming_user("orders", "buyer", "orders"),
         ];
         assert_eq!(
-            member_relation(&two, "orders", &WellKnownTypes::default().user),
+            member_relation(&two, "orders", WellKnownTypes::default().user().as_str()),
             None
         );
+    }
+    #[test]
+    fn a_chain_uses_the_resolved_table_identity() {
+        let db = crate::parser::sql_parser::parse_schema(
+            r#"
+CREATE TABLE public.memberships(id INT PRIMARY KEY, user_id TEXT);
+CREATE TABLE public."Memberships"(id INT PRIMARY KEY, user_id TEXT);
+"#,
+        )
+        .expect("schema should parse");
+        let stored =
+            resolve_table_id(&db, "public.memberships").expect("unquoted table should resolve");
+        let quoted =
+            resolve_table_id(&db, r#"public."Memberships""#).expect("quoted table should resolve");
+        assert_eq!(stored.name(), "memberships");
+        assert_eq!(quoted.name(), "Memberships");
+        assert!(!same_table(&db, &quoted, "memberships"));
+        assert!(!same_table(&db, &quoted, "public.memberships"));
+        let user = WellKnownTypes::default();
+        let expected = TermChain::Direct {
+            relation: RelationName::canonicalized("viewer"),
+        };
+
+        for guarded in ["memberships", "public.memberships"] {
+            assert_eq!(
+                derive_chain(
+                    &[naming_user_from_table("memberships", "viewer", &stored,)],
+                    &db,
+                    guarded,
+                    "memberships",
+                    user.user().as_str(),
+                ),
+                Ok(expected.clone())
+            );
+            assert_eq!(
+                derive_chain(
+                    &[naming_user_from_table("memberships", "viewer", &quoted,)],
+                    &db,
+                    guarded,
+                    "memberships",
+                    user.user().as_str(),
+                ),
+                Err(0)
+            );
+        }
     }
 }

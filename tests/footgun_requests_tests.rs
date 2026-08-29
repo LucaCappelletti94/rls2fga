@@ -4,15 +4,14 @@
 //! Values the request supplies rather than the row, and the guards that read them.
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use rls2fga::classifier::patterns::{
-    ConfidenceLevel, DirectOwnership, PatternClass, UnclassifiedExpr,
-};
-use rls2fga::generator::notes::TranslationNote;
-use rls2fga::generator::records::{RecordDerivation, ValueSource};
-use rls2fga::generator::relations::RelationShapes;
+use rls2fga::classifier::patterns::{DirectOwnership, PatternClass, UnclassifiedExpr};
 use rls2fga::generator::tuple_generator::format_tuples;
-use rls2fga::parser::identifiers::{ColumnName, RelationName};
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RelationShapes;
+use rls2fga::types::TranslationNote;
+use rls2fga::types::{ColumnName, RelationName};
+use rls2fga::types::{RecordDerivation, ValueSource};
 
 mod support;
 
@@ -210,6 +209,30 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
     );
 }
 
+#[test]
+fn owner_bound_accessor_quote_identity_does_not_block_other_function() {
+    let db = db_of(
+        r#"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE FUNCTION "UID"() RETURNS UUID LANGUAGE sql SECURITY DEFINER
+  AS 'SELECT current_user::uuid';
+CREATE FUNCTION uid(value UUID) RETURNS BOOLEAN LANGUAGE sql
+  AS 'SELECT true';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_sel ON docs FOR SELECT USING (uid(id));
+"#,
+    );
+    let model = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert_eq!(
+        relation_definition(&model.model(), "docs", "can_select").as_deref(),
+        Some("public_viewer")
+    );
+}
+
 /// The same body under the default `SECURITY INVOKER` does identify the caller.
 #[test]
 fn security_invoker_current_user_stays_the_caller() {
@@ -273,7 +296,7 @@ fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
         "ARRAY[current_user] && editors",
     ] {
         let db = db_of(&format!(
-            "CREATE TABLE docs(id UUID PRIMARY KEY, editors TEXT[]);
+            "CREATE TABLE public.docs(id UUID PRIMARY KEY, editors TEXT[]);
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
              CREATE POLICY docs_editors ON docs FOR SELECT USING ({clause});"
         ));
@@ -284,7 +307,7 @@ fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
             .outputs_accepting_gaps()
             .model();
         let rendered = format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -329,8 +352,8 @@ fn caller_listed_in_an_array_column_is_a_relationship_not_a_refusal() {
 #[test]
 fn any_over_a_subquery_is_never_expanded_as_an_array_column() {
     const MEMBERS: &str = "
-CREATE TABLE docs(id UUID PRIMARY KEY, editors TEXT[]);
-CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+CREATE TABLE public.docs(id UUID PRIMARY KEY, editors TEXT[]);
+CREATE TABLE public.doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ";
 
@@ -343,7 +366,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         ));
         let translator = translator(ConfidenceLevel::B);
         let rendered = format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -367,14 +390,14 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     ));
     let translator = translator(ConfidenceLevel::B);
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
             .tuple_queries(),
     );
     assert!(
-        rendered.contains(r#"FROM "doc_members""#),
+        rendered.contains(r#"FROM "public"."doc_members""#),
         "membership through the join table still produces its tuples:\n{rendered}"
     );
 }
@@ -393,7 +416,7 @@ fn caller_named_in_a_jsonb_field_is_ownership_not_a_refusal() {
         "(data ->> 'owner')::text = current_user",
     ] {
         let db = db_of(&format!(
-            "CREATE TABLE docs(id UUID PRIMARY KEY, data JSONB);
+            "CREATE TABLE public.docs(id UUID PRIMARY KEY, data JSONB);
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
              CREATE POLICY docs_json ON docs FOR SELECT USING ({clause});"
         ));
@@ -404,7 +427,7 @@ fn caller_named_in_a_jsonb_field_is_ownership_not_a_refusal() {
             .outputs_accepting_gaps()
             .model();
         let rendered = format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -440,7 +463,7 @@ CREATE POLICY docs_json ON docs FOR SELECT
     );
     let translator = translator(ConfidenceLevel::B);
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -551,7 +574,7 @@ CREATE POLICY docs_hybrid ON docs FOR SELECT
 fn an_attribute_guard_over_a_literal_grants_the_rows_it_admits() {
     let schema = |clause: &str| {
         format!(
-            "CREATE TABLE articles(id UUID PRIMARY KEY, status TEXT, priority INT, \
+            "CREATE TABLE public.articles(id UUID PRIMARY KEY, status TEXT, priority INT, \
              is_public BOOLEAN NOT NULL DEFAULT FALSE);\n\
              ALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY articles_sel ON articles FOR SELECT USING ({clause});\n"
@@ -606,7 +629,7 @@ fn only_a_literal_constant_earns_the_attribute_wildcard() {
 
     let schema = |clause: &str| {
         format!(
-            "CREATE TABLE articles(id UUID PRIMARY KEY, status TEXT, owner_id TEXT, \
+            "CREATE TABLE public.articles(id UUID PRIMARY KEY, status TEXT, owner_id TEXT, \
              expires_at TIMESTAMPTZ);\n\
              ALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY articles_sel ON articles FOR SELECT USING ({clause});\n"
@@ -690,7 +713,7 @@ fn parse_using_expr(schema: &str) -> sqlparser::ast::Expr {
 /// the value against itself.
 #[test]
 fn a_column_named_after_the_request_parameter_keeps_its_own_condition_parameter() {
-    let schema = "CREATE TABLE jobs(id UUID PRIMARY KEY, request_time TIMESTAMPTZ);\n\
+    let schema = "CREATE TABLE public.jobs(id UUID PRIMARY KEY, request_time TIMESTAMPTZ);\n\
                   ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY jobs_sel ON jobs FOR SELECT USING (request_time > now());\n";
 
@@ -758,6 +781,7 @@ fn the_request_time_parameter_name_is_configurable() {
     let configured = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_request_time_parameter("as_of")
+        .expect("as_of is a valid parameter")
         .build();
     let dsl = configured
         .translate(&db)
@@ -788,7 +812,7 @@ fn the_request_time_parameter_name_is_configurable() {
 fn only_a_zoned_timestamp_column_earns_a_condition_parameter() {
     let schema = |column_type: &str| {
         format!(
-            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at {column_type});\n\
+            "CREATE TABLE public.docs(id UUID PRIMARY KEY, expires_at {column_type});\n\
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > now());\n"
         )
@@ -829,6 +853,37 @@ fn only_a_zoned_timestamp_column_earns_a_condition_parameter() {
     }
 }
 
+#[test]
+fn case_distinct_stored_columns_keep_their_declared_types() {
+    for columns in [
+        r#"foo TEXT, "Foo" TIMESTAMPTZ"#,
+        r#""Foo" TIMESTAMPTZ, foo TEXT"#,
+    ] {
+        let schema = format!(
+            r#"
+CREATE TABLE public.docs(id UUID PRIMARY KEY, {columns});
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY text_guard ON docs FOR SELECT USING (foo = 'active');
+CREATE POLICY clock_guard ON docs FOR SELECT USING ("Foo" > now());
+"#
+        );
+        let (dsl, tuples) = translation(&schema);
+
+        assert!(
+            tuples.contains("AND \"foo\" = 'active';"),
+            "the unquoted column must keep its text guard:\n{tuples}"
+        );
+        assert!(
+            dsl.contains("condition when_") && dsl.contains("foo > request_time"),
+            "the quoted timestamp must keep its condition:\n{dsl}"
+        );
+        assert!(
+            tuples.contains("jsonb_build_object('foo', \"Foo\")"),
+            "the quoted timestamp must supply its own context:\n{tuples}"
+        );
+    }
+}
+
 /// A grace period spelled `expires_at > now() - interval '30 days'` is still the clock's
 /// to judge, not the writer's: the row keeps its own boundary and the check reads the
 /// request clock, taking the fixed offset from it as a CEL duration. Leaving the
@@ -859,7 +914,7 @@ fn a_fixed_temporal_offset_rides_the_request_clock_as_a_duration() {
         ),
     ] {
         let schema = format!(
-            "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+            "CREATE TABLE public.docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > {offset_sql});\n"
         );
@@ -1043,7 +1098,7 @@ CREATE POLICY rows_p ON rows_ USING (tenant_id = current_setting('app.tenant_id'
 
     let owner_db = db_of(owner_sql);
     let granted = row_subject_columns(
-        &translator
+        translator
             .translate(&owner_db)
             .expect("translation should plan")
             .relations(),
@@ -1060,12 +1115,12 @@ CREATE POLICY rows_p ON rows_ USING (tenant_id = current_setting('app.tenant_id'
     }
 
     let tenant_db = db_of(tenant_sql);
-    let tenant_relations = translator
+    let translation = translator
         .translate(&tenant_db)
-        .expect("translation should plan")
-        .relations();
+        .expect("translation should plan");
+    let tenant_relations = translation.relations();
     assert!(
-        row_subject_columns(&tenant_relations).is_empty(),
+        row_subject_columns(tenant_relations).is_empty(),
         "no key names the caller here, so nothing may become a user subject: {tenant_relations:#?}"
     );
 }
@@ -1140,7 +1195,7 @@ CREATE POLICY p ON docs FOR SELECT
             !queries.is_empty(),
             "{label}: a granting relation needs tuples to grant through:\n{dsl}"
         );
-        let tuples = format_tuples(&queries);
+        let tuples = format_tuples(queries);
         assert!(
             !tuples.contains("current_setting"),
             "{label}: the loader reads rows, not the caller's own session:\n{tuples}"
@@ -1178,23 +1233,23 @@ CREATE POLICY p ON docs FOR SELECT
 
     for (label, sql) in [("a read of a table", guarded), ("a row limit", emptied)] {
         let db = db_of(sql);
-        let relations = translator(ConfidenceLevel::B)
+        let translation = translator(ConfidenceLevel::B)
             .translate(&db)
-            .expect("translation should plan")
-            .relations();
+            .expect("translation should plan");
+        let relations = translation.relations();
         assert!(
-            row_subject_columns(&relations).is_empty(),
+            row_subject_columns(relations).is_empty(),
             "{label} can empty the subquery, so the column it compares is not the caller"
         );
     }
 
     let db = db_of(bare);
-    let relations = translator(ConfidenceLevel::B)
+    let translation = translator(ConfidenceLevel::B)
         .translate(&db)
-        .expect("translation should plan")
-        .relations();
+        .expect("translation should plan");
+    let relations = translation.relations();
     assert_eq!(
-        row_subject_columns(&relations)
+        row_subject_columns(relations)
             .iter()
             .map(|(_, column)| column.as_str())
             .collect::<Vec<_>>(),
@@ -1371,4 +1426,85 @@ fn a_list_source_states_no_separator_in_its_caller_contract() {
         !outputs.report().contains("string_to_array"),
         "the delimited string contract must not leak onto a shape with no delimiter"
     );
+}
+#[test]
+fn derived_condition_parameter_collisions_are_rejected_model_wide() {
+    let sql = r"
+CREATE TABLE left_docs(id UUID PRIMARY KEY, tenant_id TEXT);
+CREATE TABLE right_docs(id UUID PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE left_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE right_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON left_docs FOR SELECT
+    USING (tenant_id = current_setting('a.b'));
+CREATE POLICY p ON right_docs FOR SELECT
+    USING (tenant_id = current_setting('a_b'));
+";
+    let db = db_of(sql);
+    let result = TranslatorBuilder::new()
+        .with_session_attributes([
+            SessionAttribute::setting("a.b", SessionAttributeKind::ScalarAttribute),
+            SessionAttribute::setting("a_b", SessionAttributeKind::ScalarAttribute),
+        ])
+        .build()
+        .translate(&db);
+    assert!(
+        result.is_err(),
+        "two request sources must not share a parameter"
+    );
+}
+
+#[test]
+fn session_attribute_cannot_alias_request_time_parameter() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (tenant_id = current_setting('request.time'));
+";
+    let db = db_of(sql);
+    let result = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "request.time",
+            SessionAttributeKind::ScalarAttribute,
+        )])
+        .build()
+        .translate(&db);
+    assert!(
+        result.is_err(),
+        "a session source must not alias request time"
+    );
+}
+
+#[test]
+fn valid_custom_condition_parameter_name_is_preserved() {
+    let attribute = serde_json::from_value::<SessionAttribute>(serde_json::json!({
+        "key": "app.tenant_id",
+        "kind": "scalar_attribute",
+        "parameter": "TenantValue_2",
+    }))
+    .expect("the custom parameter should parse");
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, tenant_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (tenant_id = current_setting('app.tenant_id'));
+";
+    let db = db_of(sql);
+    let model = TranslatorBuilder::new()
+        .with_session_attributes([attribute])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .json_model();
+    let condition = model
+        .conditions
+        .as_ref()
+        .and_then(|conditions| {
+            conditions
+                .values()
+                .find(|condition| condition.parameters.contains_key("TenantValue_2"))
+        })
+        .expect("the model should keep the custom parameter");
+    assert!(condition.expression.contains("TenantValue_2"));
 }

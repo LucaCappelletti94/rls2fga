@@ -1,22 +1,21 @@
 //! Per-row description of the records a tuple query produces, and an evaluator
 //! for the descriptions that need only one row.
 //!
-//! [`crate::generator::tuple_generator`] emits whole-table SQL, which loads a
+//! The main translator emits whole-table SQL, which loads a
 //! store but cannot answer what one changed row implies. A [`RecordDescription`]
 //! says the same thing as structure, so a caller holding a row's column values
 //! reaches the same records without a database.
 
-#[cfg(not(feature = "std"))]
-use crate::no_std_prelude::*;
+use crate::prelude::*;
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 
-use crate::classifier::patterns::{AttributeLiteral, AttributeOperator, AttributePredicate};
-use crate::generator::identity::{
+use crate::identity::WILDCARD_SUBJECT_ID;
+use crate::identity::{
     encode_identity, encode_part, hex_digit, object_name_fits, subject_name_fits,
 };
-use crate::generator::well_known::WILDCARD_SUBJECT_ID;
-use crate::parser::identifiers::{ColumnName, RelationName};
+use crate::{AttributeLiteral, AttributeOperator, AttributePredicate};
+use crate::{ColumnName, RelationName, TableId};
 use serde::{Deserialize, Serialize};
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
@@ -49,6 +48,12 @@ pub struct RecordContextValue {
 }
 
 /// Column type family the row interface can render like `PostgreSQL`.
+///
+/// ```compile_fail
+/// use rls2fga_types::ColumnKind;
+///
+/// let _ = ColumnKind::from_declared("timestamp(3) with time zone");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnKind {
     /// Text types.
@@ -75,43 +80,6 @@ pub enum ColumnKind {
     Json,
     /// A type this evaluator cannot print.
     Unsupported,
-}
-
-impl ColumnKind {
-    /// Map a declared type to the supported family.
-    #[must_use]
-    pub fn from_declared(declared: &str) -> Self {
-        let lowered = declared.trim().to_ascii_lowercase();
-        if lowered.trim_end().ends_with("[]") {
-            return Self::Unsupported;
-        }
-        let base = lowered.split('(').next().unwrap_or(&lowered).trim();
-        match base {
-            "text" | "varchar" | "character varying" => Self::Text,
-            "uuid" => Self::Uuid,
-            "bool" | "boolean" => Self::Bool,
-            "smallint" | "int2" | "integer" | "int" | "int4" | "bigint" | "int8"
-            | "smallserial" | "serial" | "bigserial" => Self::Integer,
-            "numeric" | "decimal" => Self::Decimal,
-            "date" => Self::Date,
-            "time" | "time without time zone" => Self::Time,
-            "timestamp" | "timestamp without time zone" => Self::Timestamp,
-            "timestamptz" | "timestamp with time zone" => Self::TimestampTz,
-            "bytea" => Self::Bytea,
-            "json" | "jsonb" => Self::Json,
-            _ => Self::Unsupported,
-        }
-    }
-
-    /// Map an array declared type to its element family.
-    #[must_use]
-    pub fn from_array_declared(declared: &str) -> Self {
-        let lowered = declared.trim().to_ascii_lowercase();
-        let Some(element) = lowered.trim_end().strip_suffix("[]") else {
-            return Self::Unsupported;
-        };
-        Self::from_declared(element.trim_end())
-    }
 }
 
 /// One column read with the type the schema declares.
@@ -583,7 +551,7 @@ pub struct RecordContextEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundQuery {
     /// Table the change arrived on.
-    pub table: String,
+    pub table: TableId,
     /// Columns the query binds, in the order its placeholders take them.
     ///
     /// All of the columns naming the slice, since a query bound to a prefix of a
@@ -691,7 +659,7 @@ pub enum RecordDerivation {
     /// that is, so [`records_from_row`] answers with no database.
     FromRow {
         /// The table the row belongs to.
-        table: String,
+        table: TableId,
         /// How each record composes. Boxed to keep this variant near the size of the
         /// joining one, which holds only a query list.
         template: Box<RecordTemplate>,
@@ -722,7 +690,7 @@ pub enum RecordDerivation {
 pub struct RecordDescription {
     /// Every table the query reads, so a caller can refuse a table its change
     /// stream does not carry. Sorted and deduplicated.
-    pub tables: Vec<String>,
+    pub tables: Vec<TableId>,
     /// Whether one row decides the records.
     pub derivation: RecordDerivation,
 }
@@ -736,7 +704,7 @@ impl RecordDescription {
 
     /// The table a pure description reads, `None` for a joining one.
     #[must_use]
-    pub fn row_table(&self) -> Option<&str> {
+    pub fn row_table(&self) -> Option<&TableId> {
         match &self.derivation {
             RecordDerivation::FromRow { table, .. } => Some(table),
             RecordDerivation::Constant { .. } | RecordDerivation::Joined { .. } => None,
@@ -1286,8 +1254,16 @@ fn trim_leading_zeroes(digits: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generator::well_known::member_relation;
+
     use alloc::collections::BTreeMap;
+
+    fn member_relation() -> RelationName {
+        RelationName::canonicalized("member")
+    }
+
+    fn table(name: &str) -> TableId {
+        TableId::from_stored(None, name.to_string())
+    }
 
     struct Row(BTreeMap<String, String>);
 
@@ -1382,9 +1358,9 @@ mod tests {
 
     fn share_description_with_two_context_parameters() -> RecordDescription {
         RecordDescription {
-            tables: vec!["paper_shares".to_string()],
+            tables: vec![table("paper_shares")],
             derivation: RecordDerivation::FromRow {
-                table: "paper_shares".to_string(),
+                table: table("paper_shares"),
                 template: Box::new(RecordTemplate {
                     object_type: "papers".to_string(),
                     object_key: ObjectKey::column("paper_id"),
@@ -1676,9 +1652,9 @@ mod tests {
         context: Option<RecordContext>,
     ) -> RecordDescription {
         RecordDescription {
-            tables: vec!["docs".to_string()],
+            tables: vec![table("docs")],
             derivation: RecordDerivation::FromRow {
-                table: "docs".to_string(),
+                table: table("docs"),
                 template: Box::new(RecordTemplate {
                     object_type: "docs".to_string(),
                     object_key,
@@ -1703,12 +1679,6 @@ mod tests {
         assert!(<ColumnRead as PartialEq<&str>>::eq(&id, &literal));
         assert_eq!(Guard::not_null(id.clone()), Guard::NotNull(id.clone()));
         assert_eq!(Guard::is_true(id.clone()), Guard::IsTrue(id));
-        assert_eq!(ColumnKind::from_declared("inet"), ColumnKind::Unsupported);
-        assert_eq!(
-            ColumnKind::from_array_declared("text"),
-            ColumnKind::Unsupported
-        );
-        assert_eq!(ColumnKind::from_array_declared("text[]"), ColumnKind::Text);
     }
 
     #[test]

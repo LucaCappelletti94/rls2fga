@@ -4,11 +4,10 @@ use std::hint::black_box;
 
 use libfuzzer_sys::fuzz_target;
 use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
-use rls2fga::classifier::patterns::{
-    ClassifiedExpr, ConfidenceLevel, ConstantBool, PatternClass,
-};
+use rls2fga::classifier::patterns::{ClassifiedExpr, ConstantBool, PatternClass};
+use rls2fga::types::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{records_from_row, ColumnKind, RowCell, RowList, RowValues};
+use rls2fga::types::{records_from_row, ColumnKind, RowCell, RowList, RowValues};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::{PlanningError, Translation, TranslatorBuilder};
@@ -69,7 +68,11 @@ impl RowValues for FuzzRow<'_> {
         if self.mix(column).is_multiple_of(6) {
             return RowList::Absent;
         }
-        RowList::Values(vec![self.cell(column, kind), RowCell::Null, RowCell::Text("".into())])
+        RowList::Values(vec![
+            self.cell(column, kind),
+            RowCell::Null,
+            RowCell::Text("".into()),
+        ])
     }
 
     fn json_text(&self, column: &str, path: &[String]) -> RowCell<'_> {
@@ -92,7 +95,7 @@ fn exercise(translation: Translation<'_>, sql: &str) {
     );
 
     let shapes = translation.relations();
-    let outputs = translation.outputs_accepting_gaps();
+    let outputs = translation.clone().outputs_accepting_gaps();
     black_box(outputs.model());
     black_box(outputs.json_model());
     black_box(outputs.notes().len());
@@ -100,14 +103,14 @@ fn exercise(translation: Translation<'_>, sql: &str) {
 
     let queries = outputs.tuple_queries();
     let row = FuzzRow(sql);
-    for query in &queries {
+    for query in queries {
         if let Some(description) = query.description.as_ref() {
             black_box(records_from_row(description, &row).is_ok());
             black_box(description.is_pure());
             black_box(description.row_table());
         }
     }
-    for entry in &shapes {
+    for entry in shapes {
         black_box(entry.from_one_row);
         for shape in &entry.shapes {
             black_box(records_from_row(shape, &row).is_ok());
@@ -115,7 +118,7 @@ fn exercise(translation: Translation<'_>, sql: &str) {
             black_box(shape.row_table());
         }
     }
-    black_box(format_tuples(&queries));
+    black_box(format_tuples(queries));
     black_box(outputs.report());
 }
 

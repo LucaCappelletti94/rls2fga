@@ -3,6 +3,7 @@ use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser::parse_schema;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -770,7 +771,7 @@ CREATE POLICY p ON docs FOR SELECT
         matches!(
             &c.pattern,
             PatternClass::P5ParentInheritance(ParentInheritance { parent_table, inner_pattern, .. })
-                if parent_table == "orgs"
+                if parent_table.name() == "orgs"
                     && matches!(
                         inner_pattern.pattern,
                         PatternClass::P10ConstantBool(ConstantBool { value: true })

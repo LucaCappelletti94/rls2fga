@@ -3,8 +3,8 @@
 //!
 //! Policies whose reads loop, and the commands a loop denies.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::parser::sql_parser::ParserDB;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 

@@ -17,34 +17,10 @@ use crate::no_std_prelude::*;
 use alloc::collections::BTreeMap;
 
 use crate::generator::db_lookup::{column_kind, resolve_pk_columns};
-use crate::generator::model_generator::{qualified_table_name, SchemaPlan, TypePlan};
-use crate::generator::records::{ColumnRead, ObjectKey, RecordError, RowValues, ValueSource};
-use crate::parser::identifiers::ColumnName;
+use crate::generator::model_generator::{SchemaPlan, TypePlan};
+use crate::parser::names::table_identity;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
-
-/// How rows of one table are named as objects of the emitted model.
-///
-/// `#[non_exhaustive]`: a naming this learns to report adds a field.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct RowNaming {
-    /// Table as the schema spells it. For a table the model types, this is the spelling
-    /// [`RecordDerivation::FromRow::table`](crate::generator::records::RecordDerivation)
-    /// carries. A partition has no type and no derivation of its own, and carries its
-    /// own spelling with its root's type.
-    pub table: String,
-    /// The type the model assigned it, after any collision suffix.
-    pub type_name: String,
-    /// How the row's key is built.
-    pub key: ObjectKey,
-}
-
-impl RowNaming {
-    /// Render this row under the type the translation assigned it.
-    pub fn render<R: RowValues + ?Sized>(&self, row: &R) -> Result<Option<String>, RecordError> {
-        self.key.render(&self.type_name, row)
-    }
-}
+use crate::types::{ColumnName, ColumnRead, ObjectKey, RowNaming, TableId, ValueSource};
 
 /// The type a table's rows are named by, and the columns that key them.
 fn named_by<DB: DatabaseLike>(type_plan: &TypePlan, db: &DB) -> Option<(String, Vec<ColumnName>)> {
@@ -63,12 +39,12 @@ fn named_by<DB: DatabaseLike>(type_plan: &TypePlan, db: &DB) -> Option<(String, 
 /// arrive at one.
 fn planned_partition_root<'plan, DB: DatabaseLike>(
     table: &DB::Table,
-    planned: &BTreeMap<&str, &'plan TypePlan>,
+    planned: &BTreeMap<TableId, &'plan TypePlan>,
     db: &DB,
 ) -> Option<&'plan TypePlan> {
     let mut current = table.partition_root(db).ok()??;
     loop {
-        if let Some(found) = planned.get(qualified_table_name(current).as_str()) {
+        if let Some(found) = planned.get(&table_identity(current)) {
             return Some(found);
         }
         current = current.partition_root(db).ok()??;
@@ -87,40 +63,36 @@ pub(crate) fn row_naming<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<Ro
         .filter_map(|type_plan| {
             let table = type_plan.source_table.as_ref()?;
             let (type_name, columns) = named_by(type_plan, db)?;
-            Some(RowNaming {
-                table: table.clone(),
+            Some(RowNaming::new(
+                table.clone(),
                 type_name,
-                key: object_key(table, columns, db),
-            })
+                object_key(table, columns, db),
+            ))
         })
         .collect();
-    let planned: BTreeMap<&str, &TypePlan> = plan
+    let planned: BTreeMap<TableId, &TypePlan> = plan
         .types
         .iter()
-        .filter_map(|type_plan| Some((type_plan.source_table.as_deref()?, type_plan)))
+        .filter_map(|type_plan| Some((type_plan.source_table.clone()?, type_plan)))
         .collect();
     entries.extend(db.tables().filter_map(|table| {
         let root = planned_partition_root(table, &planned, db)?;
-        let named = qualified_table_name(table);
+        let named = table_identity(table);
         // A partition carrying its own policy already has a type, and one table takes one
         // name: a consumer keying on the table drops whichever entry came second, and
         // which one that is would be arbitrary.
-        if planned.contains_key(named.as_str()) {
+        if planned.contains_key(&named) {
             return None;
         }
         let (type_name, columns) = named_by(root, db)?;
-        let key = object_key(named.as_str(), columns, db);
-        Some(RowNaming {
-            table: named,
-            type_name,
-            key,
-        })
+        let key = object_key(&named, columns, db);
+        Some(RowNaming::new(named, type_name, key))
     }));
     entries.sort_by(|left, right| left.table.cmp(&right.table));
     entries
 }
 
-fn object_key<DB: DatabaseLike>(table: &str, columns: Vec<ColumnName>, db: &DB) -> ObjectKey {
+fn object_key<DB: DatabaseLike>(table: &TableId, columns: Vec<ColumnName>, db: &DB) -> ObjectKey {
     ObjectKey::new(
         columns
             .into_iter()

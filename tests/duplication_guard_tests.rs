@@ -70,6 +70,7 @@ fn src_modules() -> Vec<(String, String)> {
 
     let mut paths = Vec::new();
     walk(Path::new("src"), &mut paths);
+    walk(Path::new("types/src"), &mut paths);
 
     paths
         .into_iter()
@@ -96,7 +97,7 @@ fn count_excluding(exempt: &[&str], needle: &str) -> usize {
     for path in exempt {
         assert!(
             modules.iter().any(|(name, _)| name == path),
-            "exempt path `{path}` names no module under src"
+            "exempt path `{path}` names no production module"
         );
     }
     modules
@@ -636,14 +637,14 @@ fn generator_owned_relation_names_have_a_single_source_of_truth() {
 
 #[test]
 fn well_known_names_have_a_single_source_of_truth() {
-    // Exempt, and each for its own reason. `well_known.rs` owns the names.
-    // `db_lookup.rs` names the SQL tables a principal conventionally lives in, which are
-    // table names rather than model type names and deliberately stay out of well_known.
-    // `names.rs` matches the word `user` inside a column name such as `user_id`.
+    // `well_known.rs` owns generator names. `patterns.rs` owns the membership
+    // privilege's relation. `db_lookup.rs` names principal tables, and `names.rs`
+    // matches words inside column names.
     let exempt = [
         "src/generator/well_known.rs",
         "src/generator/db_lookup.rs",
         "src/parser/names.rs",
+        "types/src/patterns.rs",
     ];
 
     for name in [
@@ -668,7 +669,7 @@ fn well_known_names_have_a_single_source_of_truth() {
         let literals = count_excluding(&exempt, &format!("\"{name}\""));
         assert_eq!(
             literals, 0,
-            "'{name}' must come from generator::well_known, found {literals} literals"
+            "'{name}' has an extra source, found {literals} literals"
         );
     }
 }
@@ -744,7 +745,7 @@ fn quoting_an_identifier_for_sql_has_a_single_source_of_truth() {
     let hand_quoted = count_excluding(
         &[
             "src/generator/tuple_generator.rs",
-            "src/parser/identifiers.rs",
+            "types/src/identifiers.rs",
         ],
         r#"\"{"#,
     );
@@ -858,19 +859,32 @@ fn reading_a_string_literal_has_a_single_source_of_truth() {
     );
 }
 
-/// The evaluator answers from one row, so it must not be able to reach a database.
-///
-/// This is structural on purpose. Calling the function can never show a handle to be
-/// absent, only that this particular call did not use one, so the property is stated as
-/// the module never naming a database type and never importing its way to one. The
-/// `no_std` gate row covers it transitively, since a handle needs the standard library,
-/// but that build says nothing about which module broke the rule.
-///
-/// Scoped to one file, and the only guard here that is: it is a statement about one
-/// module's imports rather than about a rule the crate keeps in one place.
+#[test]
+fn sql_type_families_have_one_source_of_truth() {
+    let local_kind_tables =
+        fns_whose_body(|body| body.contains("ColumnKind::Text") && body.contains("\"TEXT\""));
+    assert!(
+        local_kind_tables.is_empty(),
+        "column kinds must map from sql-traits, found {local_kind_tables:?}"
+    );
+
+    let string_classifiers = fns_whose_body(|body| {
+        body.contains("to_lowercase()")
+            && (body.contains(".data_type(") || body.contains("declared_column_type("))
+    });
+    assert!(
+        string_classifiers.is_empty(),
+        "column type families must come from sql-traits, found {string_classifiers:?}"
+    );
+}
+
 #[test]
 fn the_row_evaluator_holds_no_database_handle() {
-    let source = read_module("src/generator/records.rs");
+    let source = [
+        read_module("types/src/records.rs"),
+        read_module("types/src/identity.rs"),
+    ]
+    .join("\n");
 
     for forbidden in [
         "ParserDB",
@@ -886,38 +900,26 @@ fn the_row_evaluator_holds_no_database_handle() {
             "the row evaluator must not name `{forbidden}`"
         );
     }
+}
 
-    // Its imports stay inside a cone that cannot reach a database. Listing the paths
-    // rather than whole lines keeps this robust to formatting, and widening the cone
-    // has to be a deliberate edit here.
-    // `generator::identity` is the encoding choke point. It reads no schema and takes
-    // no database, and the evaluator has to spell a name exactly as the SQL does, so
-    // sharing that one module is what keeps the two from drifting. `well_known` is the
-    // single source for the names both sides spell, the typed wildcard among them.
-    // `parser::identifiers` holds the name kinds. It reads no schema and takes no
-    // database either, and a record's relation is a relation name, so sharing it is what
-    // stops a column name being written into a fact.
-    let allowed = [
-        "crate::no_std_prelude",
-        "crate::classifier::patterns",
-        "crate::generator::identity",
-        "crate::generator::well_known",
-        "crate::parser::identifiers",
-    ];
-    for line in source
+#[test]
+fn the_lightweight_contract_has_only_contract_dependencies() {
+    let manifest = read_module("types/Cargo.toml");
+    let dependencies = manifest
+        .split_once("[dependencies]")
+        .expect("the contract crate has dependencies")
+        .1
+        .split("\n[")
+        .next()
+        .expect("the dependency section ends");
+    let mut names: Vec<&str> = dependencies
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("use crate::"))
-    {
-        let path = line
-            .trim_start_matches("use ")
-            .trim_end_matches(';')
-            .to_string();
-        assert!(
-            allowed.iter().any(|prefix| path.starts_with(prefix)),
-            "the row evaluator imports `{path}`, which is outside its pure cone"
-        );
-    }
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name.trim()))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["serde", "thiserror"]);
 }
 
 /// The first fenced block of `language` in `text`, without the fence lines.
@@ -941,7 +943,7 @@ fn fenced_block(text: &str, language: &str) -> String {
 #[test]
 fn the_readme_example_blocks_match_the_output() {
     let schema = "
-    CREATE TABLE documents (
+    CREATE TABLE public.documents (
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
     );
@@ -961,7 +963,7 @@ fn the_readme_example_blocks_match_the_output() {
 
     let db = rls2fga::parser::sql_parser::parse_schema(schema).expect("the schema parses");
     let outputs = rls2fga::translator::TranslatorBuilder::new()
-        .with_min_confidence(rls2fga::classifier::patterns::ConfidenceLevel::B)
+        .with_min_confidence(rls2fga::types::ConfidenceLevel::B)
         .build()
         .translate(&db)
         .expect("the schema plans")
@@ -973,10 +975,37 @@ fn the_readme_example_blocks_match_the_output() {
         fenced_block(&readme, "fga").trim_end(),
         "the README model block drifted from the output"
     );
-    let rendered = rls2fga::generator::tuple_generator::format_tuples(&outputs.tuple_queries());
+    let rendered = rls2fga::generator::tuple_generator::format_tuples(outputs.tuple_queries());
     assert_eq!(
         rendered.trim_end(),
         fenced_block(&readme, "sql").trim_end(),
         "the README tuple block drifted from the output"
+    );
+}
+
+/// `normalized_function_name` extracts the terminal identifier via `last_str`, not by rendering the full `ObjectName` to a string.
+#[test]
+fn terminal_function_name_does_not_render_object_name_to_string() {
+    let offenders = fns_whose_body(|body| {
+        body.contains("fn normalized_function_name(") && body.contains(".name.to_string()")
+    });
+    assert_eq!(
+        offenders.len(),
+        0,
+        "normalized_function_name serializes ObjectName before extracting the terminal \
+         identifier, route through sql_traits::utils::last_str instead: {offenders:?}"
+    );
+}
+
+/// A raw argument-name arity walk must be paired with the stored-name walk used for substitution.
+#[test]
+fn function_argument_names_route_through_stored_argument_names() {
+    let offenders = fns_whose_body(|body| {
+        body.matches(".argument_names(").count() > body.matches(".stored_argument_names(").count()
+    });
+    assert_eq!(
+        offenders.len(),
+        0,
+        "found unpaired direct argument_names call(s): {offenders:?}"
     );
 }

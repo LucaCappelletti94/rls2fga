@@ -1,0 +1,6 @@
+{
+  "auth.uid": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}

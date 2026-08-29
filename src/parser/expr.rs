@@ -2,8 +2,8 @@
 use crate::no_std_prelude::*;
 use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
 
-use crate::parser::identifiers::ColumnName;
 use crate::parser::names::stored_ident_name;
+use crate::types::ColumnName;
 
 /// Peel the wrappers that carry no meaning for what an expression *is*: a cast and a
 /// parenthesis.

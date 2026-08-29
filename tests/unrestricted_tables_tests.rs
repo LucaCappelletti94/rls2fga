@@ -5,10 +5,10 @@
 //! covered, and the only safe reading of the second is to refuse.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translation, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{ActionAnswer, ActionStatement};
 
 /// The finding's own reproduction, which is also the `wasm-smoke` fixture downstream.
 const NO_ROW_LEVEL_SECURITY: &str =
@@ -110,7 +110,7 @@ fn unrestricted(sql: &str) -> Vec<String> {
     translate(&db)
         .unrestricted_tables()
         .into_iter()
-        .map(|entry| entry.table)
+        .map(|entry| entry.table.to_string())
         .collect()
 }
 
@@ -176,7 +176,7 @@ fn every_type_answered_unrestricted_names_a_table_the_list_carries() {
         let listed: Vec<String> = translation
             .unrestricted_tables()
             .into_iter()
-            .map(|entry| entry.table)
+            .map(|entry| entry.table.to_string())
             .collect();
         let naming = translation.row_naming();
         for entry in translation.action_relations() {
@@ -188,7 +188,7 @@ fn every_type_answered_unrestricted_names_a_table_the_list_carries() {
                 .find(|row| row.type_name == entry.type_name.as_str())
                 .expect("an answered type names its rows");
             assert!(
-                listed.contains(&named.table),
+                listed.contains(&named.table.to_string()),
                 "{label}: {} answers unrestricted and is not listed: {listed:?}",
                 named.table
             );
@@ -223,7 +223,7 @@ fn a_table_no_key_names_rows_of_is_reported_unrestricted() {
         translation
             .unrestricted_tables()
             .into_iter()
-            .map(|entry| entry.table)
+            .map(|entry| entry.table.to_string())
             .collect::<Vec<String>>(),
         vec!["audit"]
     );

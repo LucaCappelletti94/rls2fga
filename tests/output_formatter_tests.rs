@@ -1,10 +1,10 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -33,7 +33,7 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     )
     .expect("translation should plan")
     .outputs_accepting_gaps();
-    let expected = tuple_generator::format_tuples(&outputs.tuple_queries());
+    let expected = tuple_generator::format_tuples(outputs.tuple_queries());
 
     let out_dir = unique_temp_dir("rls2fga_formatter");
     outputs.write(&out_dir, "emi").unwrap();

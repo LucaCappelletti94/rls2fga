@@ -20,10 +20,10 @@ use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -77,7 +77,7 @@ fn artifacts(db: &ParserDB, fixture: &str) -> (String, Vec<TupleQuery>) {
         .translate(db)
         .expect("translation should plan")
         .outputs_accepting_gaps();
-    let tuples = outputs.tuple_queries();
+    let tuples = outputs.tuple_queries().to_vec();
     (outputs.model(), tuples)
 }
 
@@ -234,7 +234,10 @@ async fn every_fixture_round_trips_through_pg_dump() {
             continue;
         }
 
-        let dump = strip_meta_commands(&dump_schema(&postgres, &database).await);
+        let dump = format!(
+            "CREATE ROLE {PG_USER};\n{}",
+            strip_meta_commands(&dump_schema(&postgres, &database).await)
+        );
         let parsed = parse_schema(&dump);
         let verdict = if let Some((_, reason)) = DUMP_BLOCKED_ON_SQLPARSER
             .iter()
@@ -251,8 +254,8 @@ async fn every_fixture_round_trips_through_pg_dump() {
             match parsed {
                 Err(error) => Some(format!("{fixture}: its dump does not parse: {error}")),
                 Ok(dumped_db) => {
-                    let (fixture_model, fixture_tuples) =
-                        artifacts(&support::parse_fixture_db(fixture), fixture);
+                    let fixture_db = support::parse_qualified_fixture_db(fixture);
+                    let (fixture_model, fixture_tuples) = artifacts(&fixture_db, fixture);
                     let (dump_model, dump_tuples) = artifacts(&dumped_db, fixture);
                     if fixture_model != dump_model {
                         Some(format!(

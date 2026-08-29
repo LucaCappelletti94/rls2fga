@@ -1,17 +1,17 @@
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::patterns::{DirectOwnership, ParentInheritance};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
 #[test]
 fn p4_membership_uses_actual_fk_column_from_subquery() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE projects (id UUID PRIMARY KEY);
-CREATE TABLE project_members (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.projects (id UUID PRIMARY KEY);
+CREATE TABLE public.project_members (
   project_id UUID NOT NULL REFERENCES projects(id),
   user_id UUID NOT NULL REFERENCES users(id),
   role TEXT NOT NULL
@@ -45,7 +45,7 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
     .expect("translation should plan")
     .outputs_accepting_gaps();
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -81,9 +81,9 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
 #[test]
 fn p4_membership_generates_resource_bridge_tuples() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE projects (id UUID PRIMARY KEY);
-CREATE TABLE project_members (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.projects (id UUID PRIMARY KEY);
+CREATE TABLE public.project_members (
   project_id UUID NOT NULL REFERENCES projects(id),
   user_id UUID NOT NULL REFERENCES users(id)
 );
@@ -105,7 +105,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -126,7 +126,7 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
         "expected resource bridge tuples for tuple-to-userset relation, got:\n{tuples}"
     );
     assert!(
-        tuples.contains("FROM \"projects\""),
+        tuples.contains("FROM \"public\".\"projects\""),
         "expected bridge tuples sourced from resource table, got:\n{tuples}"
     );
 }
@@ -134,10 +134,10 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
 #[test]
 fn p4_membership_queries_are_not_deduped_only_by_join_table() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE docs (id UUID PRIMARY KEY);
-CREATE TABLE tasks (id UUID PRIMARY KEY);
-CREATE TABLE memberships (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.docs (id UUID PRIMARY KEY);
+CREATE TABLE public.tasks (id UUID PRIMARY KEY);
+CREATE TABLE public.memberships (
   doc_id UUID REFERENCES docs(id),
   task_id UUID REFERENCES tasks(id),
   user_id UUID NOT NULL REFERENCES users(id),
@@ -171,7 +171,7 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -196,12 +196,12 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
 #[test]
 fn p5_parent_inheritance_classifies_and_translates_end_to_end() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE projects (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.projects (
   id UUID PRIMARY KEY,
   owner_id UUID REFERENCES users(id)
 );
-CREATE TABLE tasks (
+CREATE TABLE public.tasks (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id)
 );
@@ -236,7 +236,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
                 parent_table,
                 fk_column,
                 ..
-            }) if parent_table == "projects" && fk_column == "project_id"
+            }) if parent_table.name() == "projects" && fk_column == "project_id"
         ),
         "expected tasks policy to classify as P5, got: {:?}",
         using.pattern
@@ -266,7 +266,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
     );
 
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -286,8 +286,8 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
 #[test]
 fn a_literal_guard_beside_ownership_emits_gate_tuples() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE docs (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.docs (
   id UUID PRIMARY KEY,
   owner_id UUID REFERENCES users(id),
   status TEXT NOT NULL
@@ -305,7 +305,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -349,7 +349,7 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,

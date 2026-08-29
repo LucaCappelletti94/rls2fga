@@ -3,9 +3,9 @@
 //!
 //! Structural invariants every emitted model keeps.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::parser::sql_parser::ParserDB;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -301,7 +301,7 @@ fn subtractions(
 /// of the table regardless of its values.
 #[test]
 fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
-    use rls2fga::generator::records::{Guard, RecordDerivation, ValueSource};
+    use rls2fga::types::{Guard, RecordDerivation, ValueSource};
 
     let mut checked = 0;
     for schema in exclusion_emitting_schemas() {
@@ -312,15 +312,15 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
             .expect("translation should plan")
             .outputs_accepting_gaps()
             .json_model();
-        let queries = translator
+        let outputs = translator
             .translate(&db)
             .expect("translation should plan")
-            .outputs_accepting_gaps()
-            .tuple_queries();
+            .outputs_accepting_gaps();
+        let queries = outputs.tuple_queries();
 
         for (type_name, relation) in subtractions(&json) {
             checked += 1;
-            for query in &queries {
+            for query in queries {
                 let Some(description) = &query.description else {
                     continue;
                 };
@@ -344,7 +344,7 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
                 assert!(
                     matches!(template.subject_key.part(), &ValueSource::Literal(_)),
                     "{type_name}#{relation} is subtracted, so its subject may not come \
-                     from the row: {:?} in {}",
+                 from the row: {:?} in {}",
                     template.subject_key,
                     query.comment
                 );
@@ -354,9 +354,9 @@ fn no_exclusion_subtracts_anything_derived_from_the_object_row() {
                 };
                 for guard in guards {
                     assert!(
-                        matches!(guard, Guard::NotNull(column) if *column == identity),
+                        matches!(guard, Guard::NotNull(column) if column == &identity),
                         "{type_name}#{relation} is subtracted, so no row value may decide \
-                         whether its tuple exists: {guard:?} in {}",
+                     whether its tuple exists: {guard:?} in {}",
                         query.comment
                     );
                 }
@@ -454,7 +454,7 @@ fn expansion_leaves_the_row(
 /// its records from a table other than the one keying the object.
 #[test]
 fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
-    use rls2fga::generator::records::{RecordDerivation, ValueSource};
+    use rls2fga::types::{RecordDerivation, ValueSource};
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#;
@@ -476,7 +476,8 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
         .expect("translation should plan");
         let shapes = planned.relations();
         let json = planned.clone().outputs_accepting_gaps().json_model();
-        let queries = planned.outputs_accepting_gaps().tuple_queries();
+        let outputs = planned.clone().outputs_accepting_gaps();
+        let queries = outputs.tuple_queries();
 
         for row in shapes {
             if !row.from_one_row {
@@ -504,7 +505,7 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
             // by a foreign column describes a different object, which a change to
             // this row does not own.
             let mut tables = std::collections::BTreeSet::new();
-            for query in &queries {
+            for query in queries {
                 let Some(description) = &query.description else {
                     continue;
                 };
@@ -530,9 +531,9 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
                 };
                 assert_eq!(
                     Some(object_column.as_str()),
-                    primary_key_of(&db, table).as_deref(),
+                    primary_key_of(&db, &table.to_string()).as_deref(),
                     "{}#{} is flagged decidable yet its object is keyed by a column that \
-                     is not {table}'s primary key: {}",
+                 is not {table}'s primary key: {}",
                     row.type_name,
                     row.relation,
                     query.comment
@@ -558,10 +559,10 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
 
 /// The single-column primary key of `table`, through the public schema accessors.
 fn primary_key_of(db: &ParserDB, table: &str) -> Option<String> {
-    use rls2fga::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
+    use rls2fga::parser::names::lookup_table;
+    use rls2fga::parser::sql_parser::{ColumnLike, TableLike};
 
-    db.tables()
-        .find(|candidate| candidate.table_name() == table)?
+    lookup_table(db, table)?
         .primary_key_column(db)
         .ok()
         .flatten()

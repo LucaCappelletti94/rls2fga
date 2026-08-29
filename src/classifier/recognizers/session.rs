@@ -10,7 +10,7 @@
 //! never copied into tuples. The row supplies its own value as tuple context, the request
 //! supplies what only it knows, and a condition relates them.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem};
@@ -24,8 +24,8 @@ use crate::classifier::patterns::{
 };
 use crate::parser::expr::{function_arg_expr, unwrap_cast_or_nested};
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::identifiers::ColumnName;
 use crate::parser::names::normalized_function_name;
+use crate::types::ColumnName;
 
 use super::{
     accessor_root_and_path, accessor_root_and_value_path, current_setting_literal_key,
@@ -233,7 +233,7 @@ pub(crate) fn row_valued_set(expr: &Expr, registry: &FunctionRegistry) -> Option
     let Expr::Function(function) = unwrap_cast_or_nested(expr) else {
         return None;
     };
-    let name = normalized_function_name(function);
+    let name = function.name.to_string();
     // A wrapper whose whole body reads a declared setting is a spelling of that setting,
     // which is the one route a function reaches a source by.
     if let Some(FunctionSemantic::SetReader {
@@ -343,7 +343,7 @@ fn setting_key_read_by(root: &Expr, registry: &FunctionRegistry) -> Option<Strin
     let Expr::Function(function) = root else {
         return None;
     };
-    match registry.get(&normalized_function_name(function))? {
+    match registry.get(&function.name.to_string())? {
         FunctionSemantic::SettingReader { key } => Some(key.clone()),
         _ => None,
     }

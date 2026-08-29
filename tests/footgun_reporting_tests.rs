@@ -3,8 +3,8 @@
 //!
 //! What the report says, and which denial it attributes to whom.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 
 mod support;
 
@@ -24,14 +24,14 @@ fn generated_comments_cannot_escape_into_executable_sql() {
            SELECT 1 FROM \"doc_mem\nSELECT 1; --\" m\n\
            WHERE m.doc_id = docs.id AND m.user_id = current_user));\n",
     );
-    let tuples = translator(ConfidenceLevel::A)
+    let outputs = translator(ConfidenceLevel::A)
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
 
     assert!(!tuples.is_empty(), "expected membership tuple queries");
-    for query in &tuples {
+    for query in tuples {
         assert!(
             query.comment.starts_with("--"),
             "a query comment must be a comment: {:?}",
@@ -365,7 +365,7 @@ fn a_redundant_select_gate_is_left_out() {
 /// Per relation, not per table: a table denying reads can still grant inserts.
 #[test]
 fn a_relation_reached_only_by_insert_keeps_its_tuples() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id INTEGER PRIMARY KEY, parent_id INTEGER, editor_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -373,7 +373,9 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.editor_id = current_user));
 CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 ",
+        &["docs"],
     );
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::B);
     let dsl = translator
         .translate(&db)
@@ -404,7 +406,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 /// A model that grants normally keeps every query it needs.
 #[test]
 fn a_granting_model_keeps_its_tuple_queries() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
@@ -414,13 +416,15 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
   EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
 ",
+        &["projects", "tasks"],
     );
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::B);
-    let queries = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
     assert!(
         queries
             .iter()
@@ -718,14 +722,14 @@ CREATE POLICY docs_opaque ON docs FOR SELECT USING (opaque_gate(id));
     };
     assert_eq!(
         (
-            table.as_str(),
+            table.to_string(),
             policy.as_str(),
             mode.as_str(),
             clause.as_str(),
             *confidence
         ),
         (
-            "docs",
+            "docs".to_string(),
             "docs_opaque",
             "PERMISSIVE",
             "USING",
@@ -859,8 +863,8 @@ CREATE POLICY shares_read ON shares FOR SELECT USING (viewer = current_user);
             unreachable!("filtered above")
         };
         assert_eq!(
-            (table.as_str(), sources.as_slice()),
-            ("shares", &["ownership tuples".to_string()][..])
+            (table.to_string(), sources.as_slice()),
+            ("shares".to_string(), &["ownership tuples".to_string()][..])
         );
         assert_eq!(
             reason, expected_reason,
@@ -907,9 +911,9 @@ CREATE POLICY docs_barrier ON docs AS RESTRICTIVE USING (owner_id = current_user
         unreachable!("filtered above")
     };
     assert_eq!(
-        (table.as_str(), commands.as_slice()),
+        (table.to_string(), commands.as_slice()),
         (
-            "docs",
+            "docs".to_string(),
             &[
                 "SELECT".to_string(),
                 "INSERT".to_string(),

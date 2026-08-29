@@ -17,8 +17,9 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     declared: RequestSide<'_>,
     carried: RowParameterSource<'_>,
     policy_name: &str,
-    source_table: &str,
+    source_table: &TableId,
     table_plan: &mut TypePlan,
+    condition_parameters: &ConditionParameterAllocator,
     db: &DB,
 ) -> Option<UsersetExpr> {
     let RequestSide {
@@ -28,23 +29,16 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     } = declared;
     let pk_cols = resolve_pk_columns(source_table, db)?;
 
-    let request_parameter = source.request_parameter().to_string();
-    // Two parameters cannot share one name, and the caller's is the one a deployment
-    // chose, so the tuple's yields.
-    let mut row_parameter = normalize_relation_name(carried.parameter_base());
-    if row_parameter == request_parameter {
-        row_parameter = format!(
-            "{row_parameter}_{}",
-            stable_hex_suffix(carried.parameter_base())
-        );
-    }
+    let request_parameter = source.condition_parameter().clone();
+    let mut namespace = condition_parameters.namespace([&request_parameter]);
+    let row_parameter = namespace.allocate_row(carried.parameter_base());
     let row_parameter = match carried {
         RowParameterSource::Column(column) => RowParameter::Column {
-            parameter: row_parameter,
+            parameter: row_parameter.to_string(),
             column: column.clone(),
         },
         RowParameterSource::Constant(value) => RowParameter::Literal {
-            parameter: row_parameter,
+            parameter: row_parameter.to_string(),
             value: value.to_string(),
         },
     };
@@ -56,6 +50,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         RequestComparison::CallerValueEquals => {
             (ConditionParameter::Scalar(STRING_PARAMETER_TYPE), "==")
         }
+        _ => return None,
     };
     let expression = format!(
         "{} {operator} {request_parameter}",
@@ -68,7 +63,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
                 row_parameter.parameter().to_string(),
                 ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
             ),
-            (request_parameter.clone(), request_type),
+            (request_parameter.to_string(), request_type),
         ]
         .into_iter()
         .collect(),
@@ -79,17 +74,17 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.clone(),
+            type_name: table_plan.well_known.user.to_string(),
             condition: condition.clone(),
         }],
     );
     table_plan.add_source(TupleSource::SessionAttributeGate {
-        table: source_table.to_string(),
+        table: source_table.clone(),
         pk_cols,
         relation: relation.clone(),
         condition,
         row_parameter,
-        request_parameter,
+        request_parameter: request_parameter.to_string(),
         setting_key: source.setting_key().to_string(),
         separator: separator.map(str::to_string),
         comparison,
@@ -162,25 +157,19 @@ pub(crate) fn declare_condition(
 pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     request: &AttributeRequestPredicate,
     policy_name: &str,
-    source_table: &str,
+    source_table: &TableId,
     table_plan: &mut TypePlan,
+    condition_parameters: &ConditionParameterAllocator,
     db: &DB,
-    request_time_parameter: &str,
+    request_time_parameter: &ConditionParameterName,
 ) -> Option<UsersetExpr> {
     let pk_cols = resolve_pk_columns(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, request.column.as_str(), db)?;
 
-    // A column named like the request's parameter yields, since two parameters cannot
-    // share one name.
-    let request_parameter = request_time_parameter.to_string();
-    let mut row_parameter = normalize_relation_name(request.column.as_str());
-    if row_parameter == request_parameter {
-        row_parameter = format!(
-            "{row_parameter}_{}",
-            stable_hex_suffix(request.column.as_str())
-        );
-    }
-    let operator = condition_operator(request.operator);
+    let request_parameter = request_time_parameter.clone();
+    let mut namespace = condition_parameters.namespace([&request_parameter]);
+    let row_parameter = namespace.allocate_row(request.column.as_str());
+    let operator = condition_operator(request.operator)?;
 
     let condition = declare_condition(
         table_plan,
@@ -188,22 +177,22 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
         ConditionSpec {
             expression: format!(
                 "{row_parameter} {operator} {}",
-                clock_expr(&request_parameter, request.offset.as_ref())
+                clock_expr(request_parameter.as_str(), request.offset.as_ref())
             ),
             parameters: [
                 (
-                    row_parameter.clone(),
+                    row_parameter.to_string(),
                     ConditionParameter::Scalar(parameter_type),
                 ),
                 (
-                    request_parameter,
+                    request_parameter.to_string(),
                     ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
                 ),
             ]
             .into_iter()
             .collect(),
             row_parameter: RowParameter::Column {
-                parameter: row_parameter.clone(),
+                parameter: row_parameter.to_string(),
                 column: request.column.clone(),
             },
         },
@@ -212,30 +201,31 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.clone(),
+            type_name: table_plan.well_known.user.to_string(),
             condition: condition.clone(),
         }],
     );
     table_plan.add_source(TupleSource::ConditionalAttributeGate {
-        table: source_table.to_string(),
+        table: source_table.clone(),
         pk_cols,
         relation: relation.clone(),
         condition,
-        row_parameter,
+        row_parameter: row_parameter.to_string(),
         column: request.column.clone(),
     });
     Some(UsersetExpr::Computed(relation))
 }
 
 /// `CEL` spelling of the comparison, which matches SQL for the operators reaching here.
-pub(crate) fn condition_operator(operator: AttributeOperator) -> &'static str {
+pub(crate) fn condition_operator(operator: AttributeOperator) -> Option<&'static str> {
     match operator {
-        AttributeOperator::Eq => "==",
-        AttributeOperator::NotEq => "!=",
-        AttributeOperator::Gt => ">",
-        AttributeOperator::GtEq => ">=",
-        AttributeOperator::Lt => "<",
-        AttributeOperator::LtEq => "<=",
+        AttributeOperator::Eq => Some("=="),
+        AttributeOperator::NotEq => Some("!="),
+        AttributeOperator::Gt => Some(">"),
+        AttributeOperator::GtEq => Some(">="),
+        AttributeOperator::Lt => Some("<"),
+        AttributeOperator::LtEq => Some("<="),
+        _ => None,
     }
 }
 
@@ -256,46 +246,32 @@ pub(crate) fn clock_expr(request_time_parameter: &str, offset: Option<&TemporalO
 /// The condition parameter type for a column, or `None` when the schema does not say
 /// or the type has no `OpenFGA` counterpart.
 pub(crate) fn condition_parameter_type<DB: DatabaseLike>(
-    table: &str,
+    table: &TableId,
     column: &str,
     db: &DB,
 ) -> Option<&'static str> {
-    let meta = lookup_table(db, table)?;
-    let declared = meta
-        .columns(db)
-        .into_iter()
-        .flatten()
-        .find(|candidate| same_identifier(&candidate.stored_column_name(), column))?;
-    let data_type = declared.data_type(db).to_lowercase();
-    // A tuple's context must be RFC 3339, which only a zoned column renders: a date
-    // carries no time part and a zoneless timestamp no offset, and `OpenFGA` v1.11.6
-    // refuses both at load while accepting the model that named them.
-    matches!(
-        data_type.as_str(),
-        "timestamptz" | "timestamp with time zone"
-    )
-    .then_some(TIMESTAMP_PARAMETER_TYPE)
+    (column_kind(table, column, db) == ColumnKind::TimestampTz).then_some(TIMESTAMP_PARAMETER_TYPE)
 }
 
 /// One temporal comparison lifted into a condition: the parameter the row fills, the
 /// column it reads, and the CEL fragment comparing it against the request clock.
 pub(crate) struct TemporalGate {
-    pub(crate) parameter: String,
+    pub(crate) parameter: ConditionParameterName,
     pub(crate) column: ColumnName,
     pub(crate) fragment: String,
 }
 
 /// Turn a residual's temporal comparisons (`col > now()`) into condition fragments
-/// against the clock the request supplies, minting each row parameter free of `used`.
+/// against the clock the request supplies.
 ///
 /// [`None`] when the residual is not decidable off the row and the clock, or a temporal
 /// column has no timestamp parameter type: the caller then leaves the residual in SQL and
 /// the shape stays joined, exactly as it did before the clock could be a condition.
 pub(crate) fn temporal_gates<DB: DatabaseLike>(
     residual: &ResidualPredicates,
-    table: &str,
-    request_time_parameter: &str,
-    used: &mut Vec<String>,
+    table: &TableId,
+    request_time_parameter: &ConditionParameterName,
+    namespace: &mut ConditionParameterNamespace,
     db: &DB,
 ) -> Option<Vec<TemporalGate>> {
     let decision = residual.decidable()?;
@@ -304,28 +280,18 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
         // A zoned column has a timestamp parameter. Anything else cannot be a faithful
         // condition, so the whole residual stays in SQL.
         condition_parameter_type(table, request.column.as_str(), db)?;
-        let parameter = unique_condition_parameter(request.column.as_str(), used);
+        let parameter = namespace.allocate_row(request.column.as_str());
         gates.push(TemporalGate {
             fragment: format!(
                 "{parameter} {} {}",
-                condition_operator(request.operator),
-                clock_expr(request_time_parameter, request.offset.as_ref())
+                condition_operator(request.operator)?,
+                clock_expr(request_time_parameter.as_str(), request.offset.as_ref())
             ),
             column: request.column.clone(),
             parameter,
         });
     }
     Some(gates)
-}
-
-/// A condition parameter name free of `used`, derived from a column and recorded in it.
-fn unique_condition_parameter(column: &str, used: &mut Vec<String>) -> String {
-    let mut name = normalize_relation_name(column);
-    if used.iter().any(|taken| taken == &name) {
-        name = format!("{name}_{}", stable_hex_suffix(column));
-    }
-    used.push(name.clone());
-    name
 }
 
 /// Declare a condition comparing one or more row columns against the request clock, and
@@ -335,14 +301,15 @@ fn unique_condition_parameter(column: &str, used: &mut Vec<String>) -> String {
 /// clock at all: the caller then keeps the residual in SQL and the shape stays joined.
 pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
     residual: &ResidualPredicates,
-    table: &str,
+    table: &TableId,
     policy_name: &str,
     table_plan: &mut TypePlan,
-    request_time_parameter: &str,
+    request_time_parameter: &ConditionParameterName,
+    condition_parameters: &ConditionParameterAllocator,
     db: &DB,
 ) -> Option<(String, Vec<GateContextColumn>)> {
-    let mut used = vec![request_time_parameter.to_string()];
-    let gates = temporal_gates(residual, table, request_time_parameter, &mut used, db)?;
+    let mut namespace = condition_parameters.namespace([request_time_parameter]);
+    let gates = temporal_gates(residual, table, request_time_parameter, &mut namespace, db)?;
     let [first, ..] = gates.as_slice() else {
         return None;
     };
@@ -355,7 +322,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
         .iter()
         .map(|gate| {
             (
-                gate.parameter.clone(),
+                gate.parameter.to_string(),
                 ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
             )
         })
@@ -365,7 +332,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
         ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
     );
     let row_parameter = RowParameter::Column {
-        parameter: first.parameter.clone(),
+        parameter: first.parameter.to_string(),
         column: first.column.clone(),
     };
     let condition = declare_condition(
@@ -380,7 +347,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
     let context = gates
         .into_iter()
         .map(|gate| GateContextColumn {
-            parameter: gate.parameter,
+            parameter: gate.parameter.to_string(),
             column: gate.column,
         })
         .collect();
@@ -404,6 +371,7 @@ pub(crate) fn emit_request_gate<DB: DatabaseLike>(
         ctx.policy_name,
         ctx.source_table,
         table_plan,
+        ctx.condition_parameters,
         ctx.db,
     )
     .unwrap_or_else(|| {
@@ -424,7 +392,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let MembershipInCallerSet {
         join_table,
@@ -485,27 +453,25 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         return deny_expr(table_plan);
     };
 
-    let request_parameter = source.request_parameter().to_string();
-    let mut row_parameter = normalize_relation_name(member_column.as_str());
-    if row_parameter == request_parameter {
-        row_parameter = format!(
-            "{row_parameter}_{}",
-            stable_hex_suffix(member_column.as_str())
-        );
-    }
+    let request_parameter = source.condition_parameter().clone();
+    let request_time = ctx.settings.request_time_parameter.clone();
+    let mut namespace = ctx
+        .condition_parameters
+        .namespace([&request_parameter, &request_time]);
+    let row_parameter = namespace.allocate_row(member_column.as_str());
 
     // A temporal comparison such as `expires_at > now()` is completed by the request, not
     // the row, so it joins the viewer set inside the condition rather than filtering the
     // query. Everything else stays in the residual: a row guard the query keeps, or an
     // inexpressible conjunct that keeps the shape joined.
-    let request_time = ctx.settings.request_time_parameter.clone();
-    let mut used = vec![
-        row_parameter.clone(),
-        request_parameter.clone(),
-        request_time.clone(),
-    ];
-    let temporal = temporal_gates(extra_predicates, join_table, &request_time, &mut used, db)
-        .unwrap_or_default();
+    let temporal = temporal_gates(
+        extra_predicates,
+        join_table,
+        &request_time,
+        &mut namespace,
+        db,
+    )
+    .unwrap_or_default();
 
     let announced = if temporal.is_empty() {
         extra_predicates.sql()
@@ -522,24 +488,24 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let mut expression = format!("{row_parameter} in {request_parameter}");
     let mut parameters = vec![
         (
-            row_parameter.clone(),
+            row_parameter.to_string(),
             ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
         ),
         (
-            request_parameter.clone(),
+            request_parameter.to_string(),
             ConditionParameter::ListOf(STRING_PARAMETER_TYPE),
         ),
     ];
     for gate in &temporal {
         expression = format!("{expression} && {}", gate.fragment);
         parameters.push((
-            gate.parameter.clone(),
+            gate.parameter.to_string(),
             ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
         ));
     }
     if !temporal.is_empty() {
         parameters.push((
-            request_time.clone(),
+            request_time.to_string(),
             ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
         ));
     }
@@ -547,14 +513,14 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         expression,
         parameters: parameters.into_iter().collect(),
         row_parameter: RowParameter::Column {
-            parameter: row_parameter.clone(),
+            parameter: row_parameter.to_string(),
             column: member_column.clone(),
         },
     };
 
     // The gate rides the share type, keyed on the share row. The guarded type links to it
     // and reaches the gate by tuple-to-userset, so two viewers union rather than collide.
-    let share_type = share_type_name(join_table, ctx.table_types, ctx.db);
+    let share_type = share_type_name(join_table, ctx.table_types);
     let (gate_relation, condition) = {
         let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
             TypePlan::new_with_well_known(&share_type, &ctx.settings.well_known)
@@ -563,7 +529,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         let gate_relation = share_plan.ensure_direct(
             conditional_gate_relation_name(policy_name),
             vec![DirectSubject::ConditionalWildcard {
-                type_name: ctx.settings.well_known.user.clone(),
+                type_name: ctx.settings.well_known.user.to_string(),
                 condition: condition.clone(),
             }],
         );
@@ -573,7 +539,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let temporal_context: Vec<GateContextColumn> = temporal
         .into_iter()
         .map(|gate| GateContextColumn {
-            parameter: gate.parameter,
+            parameter: gate.parameter.to_string(),
             column: gate.column,
         })
         .collect();
@@ -583,9 +549,9 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         share_type: share_type.clone(),
         relation: gate_relation.clone(),
         condition,
-        row_parameter,
+        row_parameter: row_parameter.to_string(),
         member_col: member_column.clone(),
-        request_parameter,
+        request_parameter: request_parameter.to_string(),
         setting_key: source.setting_key().to_string(),
         separator: separator.clone(),
         extra_predicates: extra_predicates.clone(),

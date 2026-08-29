@@ -30,22 +30,6 @@ pub(crate) const MAX_OBJECT_NAME_CHARS: usize = 256;
 /// this is not the object rule with a different number.
 pub(crate) const MAX_SUBJECT_NAME_BYTES: usize = 512;
 
-/// Whether the target accepts `name` as an object.
-///
-/// Characters, mirroring the service's own regex. The unit is inert today, since
-/// [`encode_part`] renders ASCII either way, and it is spelled correctly so that
-/// widening [`SAFE_PUNCTUATION`] past ASCII cannot quietly change the answer.
-pub(crate) fn object_name_fits(name: &str) -> bool {
-    name.chars().count() <= MAX_OBJECT_NAME_CHARS
-}
-
-/// Whether the target accepts `name` as a subject.
-///
-/// Bytes, mirroring the service's own check, and inert for the same reason.
-pub(crate) fn subject_name_fits(name: &str) -> bool {
-    name.len() <= MAX_SUBJECT_NAME_BYTES
-}
-
 /// Characters a verbatim identifier may hold beside ASCII alphanumerics.
 ///
 /// One source for the Rust predicate and the SQL regex, so the two cannot
@@ -94,6 +78,7 @@ pub(crate) fn encode_part(value: &str) -> Cow<'_, str> {
 }
 
 /// Render an ordered list of values as one identifier.
+#[cfg(test)]
 pub(crate) fn encode_identity<'a, I>(parts: I) -> String
 where
     I: IntoIterator<Item = &'a str>,

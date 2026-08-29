@@ -3,6 +3,7 @@ use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 

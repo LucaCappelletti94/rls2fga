@@ -5,6 +5,10 @@ use super::*;
 use crate::generator::well_known::{WellKnownTypes, TEAM_TYPE, USER_TYPE};
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
 
+fn table_id(name: &str) -> TableId {
+    TableId::from_stored(None, name.to_string())
+}
+
 fn role_registry(role_levels: &str, include_team: bool) -> FunctionRegistry {
     let mut registry = FunctionRegistry::new();
     let team_fields = if include_team {
@@ -69,14 +73,14 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     let mut plan = TypePlan::new("docs");
     let bucket = ModeBuckets {
         permissive: Vec::new(),
-        restrictive: vec![UsersetExpr::Computed(RelationName::from_resolved("owner"))],
+        restrictive: vec![UsersetExpr::Computed(RelationName::canonicalized("owner"))],
         role_limited: Vec::new(),
     };
 
     let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
     assert_eq!(
         expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert!(
         plan.direct_relations.contains_key("no_access"),
@@ -92,15 +96,15 @@ fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
         restrictive: Vec::new(),
         role_limited: vec![RoleLimitedRule {
             policy: "docs_review".to_string(),
-            rule: UsersetExpr::Computed(RelationName::from_resolved("reviewer")),
-            scope_relation: RelationName::from_resolved("scope_docs_review"),
+            rule: UsersetExpr::Computed(RelationName::canonicalized("reviewer")),
+            scope_relation: RelationName::canonicalized("scope_docs_review"),
         }],
     };
 
     let expr = compose_action(&mut plan, Some(&bucket)).expect("expected expression");
     assert_eq!(
         expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
 }
 
@@ -117,7 +121,7 @@ fn grants_nothing_reads_only_the_base_of_an_exclusion() {
 
     let from_nothing = UsersetExpr::Exclusion {
         base: Box::new(UsersetExpr::Computed(deny_relation())),
-        subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved("owner"))),
+        subtract: Box::new(UsersetExpr::Computed(RelationName::canonicalized("owner"))),
     };
     assert!(
         grants_nothing(&from_nothing, &plan, &mut BTreeSet::new()),
@@ -125,7 +129,7 @@ fn grants_nothing_reads_only_the_base_of_an_exclusion() {
     );
 
     let from_owner = UsersetExpr::Exclusion {
-        base: Box::new(UsersetExpr::Computed(RelationName::from_resolved("owner"))),
+        base: Box::new(UsersetExpr::Computed(RelationName::canonicalized("owner"))),
         subtract: Box::new(UsersetExpr::Computed(deny_relation())),
     };
     assert!(
@@ -139,8 +143,8 @@ fn grants_nothing_reads_only_the_base_of_an_exclusion() {
 #[test]
 fn userset_key_separates_exclusions_by_both_sides() {
     let exclusion = |base: &str, subtract: &str| UsersetExpr::Exclusion {
-        base: Box::new(UsersetExpr::Computed(RelationName::from_resolved(base))),
-        subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved(subtract))),
+        base: Box::new(UsersetExpr::Computed(RelationName::canonicalized(base))),
+        subtract: Box::new(UsersetExpr::Computed(RelationName::canonicalized(subtract))),
     };
 
     let key = userset_key(&exclusion("owner", "blocked"));
@@ -150,8 +154,8 @@ fn userset_key_separates_exclusions_by_both_sides() {
     assert_ne!(
         key,
         userset_key(&UsersetExpr::Intersection(vec![
-            UsersetExpr::Computed(RelationName::from_resolved("owner")),
-            UsersetExpr::Computed(RelationName::from_resolved("blocked")),
+            UsersetExpr::Computed(RelationName::canonicalized("owner")),
+            UsersetExpr::Computed(RelationName::canonicalized("blocked")),
         ]))
     );
 }
@@ -196,7 +200,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
 
     assert_eq!(
         p1_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     // P2 with missing metadata falls through to `handle_p2_role_gate`, which walks a
     // scope relation rather than denying.
@@ -256,11 +260,11 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
 
     assert_eq!(
         first,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert_eq!(
         second,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
 }
 
@@ -310,7 +314,7 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     });
     let p10_false = PatternClass::P10ConstantBool(ConstantBool { value: false });
     let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
-        parent_table: "projects".to_string(),
+        parent_table: table_id("projects"),
         fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(relationship),
     });
@@ -386,23 +390,23 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
 
     assert_eq!(
         p7_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("owner"))
+        UsersetExpr::Computed(RelationName::canonicalized("owner"))
     );
     assert_eq!(
         p8_or_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert_eq!(
         p8_and_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert_eq!(
         p10_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert_eq!(
         p9_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert!(
             matches!(
@@ -422,13 +426,13 @@ fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     assert_eq!(
         p5_expr,
         UsersetExpr::TupleToUserset {
-            tupleset: RelationName::from_resolved("projects"),
-            computed: RelationName::from_resolved("owner"),
+            tupleset: RelationName::canonicalized("projects"),
+            computed: RelationName::canonicalized("owner"),
         }
     );
     assert_eq!(
         unknown_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert!(table_plan.direct_relations.contains_key("projects"));
     assert!(notes
@@ -720,12 +724,12 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
 #[test]
 fn expr_to_dsl_parenthesizes_a_child_of_another_kind() {
     let union = UsersetExpr::Union(vec![
-        UsersetExpr::Computed(RelationName::from_resolved("a")),
-        UsersetExpr::Computed(RelationName::from_resolved("b")),
+        UsersetExpr::Computed(RelationName::canonicalized("a")),
+        UsersetExpr::Computed(RelationName::canonicalized("b")),
     ]);
     let intersection = UsersetExpr::Intersection(vec![
-        UsersetExpr::Computed(RelationName::from_resolved("x")),
-        UsersetExpr::Computed(RelationName::from_resolved("y")),
+        UsersetExpr::Computed(RelationName::canonicalized("x")),
+        UsersetExpr::Computed(RelationName::canonicalized("y")),
     ]);
 
     assert_eq!(expr_to_dsl(&union, Some("and")), "(a or b)");
@@ -736,8 +740,8 @@ fn expr_to_dsl_parenthesizes_a_child_of_another_kind() {
     let mixed = UsersetExpr::Union(vec![
         intersection.clone(),
         UsersetExpr::Exclusion {
-            base: Box::new(UsersetExpr::Computed(RelationName::from_resolved("a"))),
-            subtract: Box::new(UsersetExpr::Computed(RelationName::from_resolved("b"))),
+            base: Box::new(UsersetExpr::Computed(RelationName::canonicalized("a"))),
+            subtract: Box::new(UsersetExpr::Computed(RelationName::canonicalized("b"))),
         },
     ]);
     assert_eq!(expr_to_dsl(&mixed, None), "(x and y) or (a but not b)");
@@ -755,8 +759,8 @@ fn combine_helpers_cover_empty_and_multi_intersection() {
     assert!(combine_intersection(Vec::new()).is_none());
 
     let inter = combine_intersection(vec![
-        UsersetExpr::Computed(RelationName::from_resolved("a")),
-        UsersetExpr::Computed(RelationName::from_resolved("b")),
+        UsersetExpr::Computed(RelationName::canonicalized("a")),
+        UsersetExpr::Computed(RelationName::canonicalized("b")),
     ])
     .expect("intersection should exist");
     assert!(matches!(inter, UsersetExpr::Intersection(children) if children.len() == 2));
@@ -831,7 +835,7 @@ fn build_schema_plan_denies_every_action_when_no_clause_translates() {
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
             docs.computed_relations.get(relation),
-            Some(&UsersetExpr::Computed(RelationName::from_resolved(
+            Some(&UsersetExpr::Computed(RelationName::canonicalized(
                 "no_access"
             ))),
             "{relation} should deny when nothing translated"
@@ -986,7 +990,7 @@ fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_name
 
     assert_eq!(
         p1_expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert!(
         matches!(
@@ -1091,7 +1095,7 @@ fn confidence_filter_prevents_with_check_mirror_when_with_check_was_filtered() {
     );
     assert_ne!(
         docs.computed_relations.get("can_update"),
-        Some(&UsersetExpr::Computed(RelationName::from_resolved("owner"))),
+        Some(&UsersetExpr::Computed(RelationName::canonicalized("owner"))),
         "and the update must not be granted by the resurrected USING"
     );
     // Now verify that when WITH CHECK is genuinely absent (not filtered), the mirror DOES apply.
@@ -1124,7 +1128,7 @@ CREATE TABLE items(id UUID PRIMARY KEY, creator_id UUID REFERENCES users(id));
     )
     .unwrap();
     // No owner_id column, but FK to users -> should return creator_id
-    let result = resolve_owner_column("items", &db);
+    let result = resolve_owner_column(&table_id("items"), &db);
     assert_eq!(result, Some(ColumnName::from_stored("creator_id")));
 }
 
@@ -1144,7 +1148,7 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY, email TEXT);
     );
     assert!(result.is_some());
     let pi = result.unwrap();
-    assert_eq!(pi.table, "accounts");
+    assert_eq!(pi.table.to_string(), "accounts");
     assert_eq!(pi.pk_col, "account_id");
 }
 
@@ -1184,7 +1188,7 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
         confidence: ConfidenceLevel::D,
     };
     let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
-        parent_table: "projects".to_string(),
+        parent_table: table_id("projects"),
         fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(unknown_inner),
     });
@@ -1202,7 +1206,7 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
     assert_eq!(
         expr,
         UsersetExpr::TupleToUserset {
-            tupleset: RelationName::from_resolved("projects"),
+            tupleset: RelationName::canonicalized("projects"),
             computed: deny_relation(),
         }
     );
@@ -1243,7 +1247,7 @@ fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
 
     assert_eq!(
         expr,
-        UsersetExpr::Computed(RelationName::from_resolved("no_access"))
+        UsersetExpr::Computed(RelationName::canonicalized("no_access"))
     );
     assert!(
         table_plan.table_tuple_sources.iter().any(|source| matches!(
@@ -1274,12 +1278,16 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 
     populate_role_threshold_sources(
         "role_level",
-        "docs",
+        &RoleThresholdTables {
+            source: &table_id("docs"),
+            grant: &table_id("object_grants"),
+            team_membership: None,
+        },
         &db,
         &registry,
         &OwnerScope {
             type_name: "object_grants_owner",
-            pointer: &RelationName::from_resolved("owner_id"),
+            pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
         &mut table_plan,
@@ -1303,7 +1311,7 @@ fn resolve_principal_info_auto_resolves_pk_for_configured_table() {
     let result = resolve_principal_info(&db, Some("accounts"), None, &[]);
     assert!(result.is_some());
     let pi = result.unwrap();
-    assert_eq!(pi.table, "accounts");
+    assert_eq!(pi.table.to_string(), "accounts");
     assert_eq!(pi.pk_col, "id");
 }
 
@@ -1326,12 +1334,16 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
 
     populate_role_threshold_sources(
         "role_level",
-        "docs",
+        &RoleThresholdTables {
+            source: &table_id("docs"),
+            grant: &table_id("object_grants"),
+            team_membership: Some(&table_id("team_memberships")),
+        },
         &db,
         &registry,
         &OwnerScope {
             type_name: "object_grants_owner",
-            pointer: &RelationName::from_resolved("owner_id"),
+            pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
         &mut table_plan,
@@ -1379,7 +1391,7 @@ CREATE TABLE widgets(name TEXT, value INT);
 ",
     )
     .unwrap();
-    let result = resolve_owner_column("widgets", &db);
+    let result = resolve_owner_column(&table_id("widgets"), &db);
     assert!(
         result.is_none(),
         "Table with no owner-like column and no FK to users should return None"
@@ -1405,12 +1417,16 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 
     populate_role_threshold_sources(
         "role_level",
-        "things",
+        &RoleThresholdTables {
+            source: &table_id("things"),
+            grant: &table_id("object_grants"),
+            team_membership: None,
+        },
         &db,
         &registry,
         &OwnerScope {
             type_name: "object_grants_owner",
-            pointer: &RelationName::from_resolved("owner_id"),
+            pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
         &mut table_plan,
@@ -1434,7 +1450,7 @@ fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
     let mut plan = TypePlan::new("test");
     plan.ensure_computed(
         "rel",
-        UsersetExpr::Computed(RelationName::from_resolved("x")),
+        UsersetExpr::Computed(RelationName::canonicalized("x")),
     );
     let name = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
     assert_ne!(name, "rel", "the computed relation still holds 'rel'");
@@ -1481,7 +1497,7 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
     // `owner` is held by a rule, so a direct `owner` has to yield.
     plan.ensure_computed(
         "owner",
-        UsersetExpr::Computed(RelationName::from_resolved("a")),
+        UsersetExpr::Computed(RelationName::canonicalized("a")),
     );
     // Occupy exactly where that yield lands, with something else.
     let taken = clamp_relation_name(format!(
@@ -1490,7 +1506,7 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
     ));
     plan.ensure_computed(
         taken.clone(),
-        UsersetExpr::Computed(RelationName::from_resolved("b")),
+        UsersetExpr::Computed(RelationName::canonicalized("b")),
     );
 
     let got = plan.ensure_direct("owner", subjects.clone());
@@ -1513,7 +1529,7 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
 #[test]
 fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
     let mut plan = TypePlan::new("docs");
-    let rule = UsersetExpr::Computed(RelationName::from_resolved("wanted"));
+    let rule = UsersetExpr::Computed(RelationName::canonicalized("wanted"));
 
     plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
     let taken = clamp_relation_name(format!("owner_{}", stable_hex_suffix(&userset_key(&rule))));
@@ -1543,27 +1559,27 @@ fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
     let mut plan = TypePlan::new("test");
     let first = plan.ensure_computed(
         "rel",
-        UsersetExpr::Computed(RelationName::from_resolved("a")),
+        UsersetExpr::Computed(RelationName::canonicalized("a")),
     );
     let second = plan.ensure_computed(
         "rel",
-        UsersetExpr::Computed(RelationName::from_resolved("b")),
+        UsersetExpr::Computed(RelationName::canonicalized("b")),
     );
     assert_eq!(first, "rel");
     assert_ne!(second, first, "a different rule cannot reuse the name");
     assert_eq!(
         plan.computed_relations.get(&first),
-        Some(&UsersetExpr::Computed(RelationName::from_resolved("a")))
+        Some(&UsersetExpr::Computed(RelationName::canonicalized("a")))
     );
     assert_eq!(
         plan.computed_relations.get(&second),
-        Some(&UsersetExpr::Computed(RelationName::from_resolved("b")))
+        Some(&UsersetExpr::Computed(RelationName::canonicalized("b")))
     );
     // The same rule keeps sharing the one relation.
     assert_eq!(
         plan.ensure_computed(
             "rel",
-            UsersetExpr::Computed(RelationName::from_resolved("a"))
+            UsersetExpr::Computed(RelationName::canonicalized("a"))
         ),
         first
     );
@@ -1579,7 +1595,7 @@ fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
 
     let name = plan.set_computed(
         "rel",
-        UsersetExpr::Computed(RelationName::from_resolved("x")),
+        UsersetExpr::Computed(RelationName::canonicalized("x")),
     );
 
     assert_ne!(name, "rel", "the direct relation still holds 'rel'");
@@ -1595,16 +1611,16 @@ fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
     // Overwriting an existing computed rule is still what the function is for.
     let first = plan.set_computed(
         "other",
-        UsersetExpr::Computed(RelationName::from_resolved("a")),
+        UsersetExpr::Computed(RelationName::canonicalized("a")),
     );
     let second = plan.set_computed(
         "other",
-        UsersetExpr::Computed(RelationName::from_resolved("b")),
+        UsersetExpr::Computed(RelationName::canonicalized("b")),
     );
     assert_eq!(first, second, "a computed name is overwritten, not yielded");
     assert_eq!(
         plan.computed_relations.get(&second),
-        Some(&UsersetExpr::Computed(RelationName::from_resolved("b"))),
+        Some(&UsersetExpr::Computed(RelationName::canonicalized("b"))),
         "the later rule wins"
     );
 }
@@ -1741,7 +1757,7 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
     assert!(
         plan.notes.iter().any(
             |note| matches!(note, TranslationNote::RowsCannotBeNamed { table, .. }
-                if table == "things")
+                if table.to_string() == "things")
         ),
         "and the model says the grant cannot be filled: {:?}",
         plan.notes
@@ -1767,7 +1783,7 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
         confidence: ConfidenceLevel::C,
     };
     let p5 = PatternClass::P5ParentInheritance(ParentInheritance {
-        parent_table: "projects".to_string(),
+        parent_table: table_id("projects"),
         fk_column: ColumnName::from_stored("project_id"),
         inner_pattern: Box::new(inner),
     });
@@ -1812,7 +1828,7 @@ fn rule_implies_consults_conditional_tupleset_subjects() {
     let mut teams = TypePlan::new("teams");
     teams.set_computed(
         "viewer",
-        UsersetExpr::Union(vec![UsersetExpr::Computed(RelationName::from_resolved(
+        UsersetExpr::Union(vec![UsersetExpr::Computed(RelationName::canonicalized(
             "editor",
         ))]),
     );
@@ -1827,12 +1843,12 @@ fn rule_implies_consults_conditional_tupleset_subjects() {
         .map(|plan| (plan.type_name.as_str(), plan))
         .collect();
     let rule = UsersetExpr::TupleToUserset {
-        tupleset: RelationName::from_resolved("grants"),
-        computed: RelationName::from_resolved("editor"),
+        tupleset: RelationName::canonicalized("grants"),
+        computed: RelationName::canonicalized("editor"),
     };
     let visible = UsersetExpr::TupleToUserset {
-        tupleset: RelationName::from_resolved("grants"),
-        computed: RelationName::from_resolved("viewer"),
+        tupleset: RelationName::canonicalized("grants"),
+        computed: RelationName::canonicalized("viewer"),
     };
 
     assert!(
@@ -1849,8 +1865,8 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
     docs.set_computed(
         can_select_relation(),
         UsersetExpr::TupleToUserset {
-            tupleset: RelationName::from_resolved("parent"),
-            computed: RelationName::from_resolved("granted"),
+            tupleset: RelationName::canonicalized("parent"),
+            computed: RelationName::canonicalized("granted"),
         },
     );
     docs.ensure_direct(
@@ -1870,7 +1886,7 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
     assert!(
         all_types["groups"]
             .direct_relations
-            .contains_key(&RelationName::from_resolved("granted")),
+            .contains_key(&RelationName::canonicalized("granted")),
         "the model references groups#granted through the conditional subject, so \
          pruning it leaves a reference to something the model does not define"
     );
@@ -1880,12 +1896,12 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
 /// reached through a plain subject, or the walk dangles on the dropped name.
 #[test]
 fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
-    let alias = RelationName::from_resolved("inherited_x");
+    let alias = RelationName::canonicalized("inherited_x");
     let mut docs = TypePlan::new("docs");
     docs.set_computed(
         can_select_relation(),
         UsersetExpr::TupleToUserset {
-            tupleset: RelationName::from_resolved("parent"),
+            tupleset: RelationName::canonicalized("parent"),
             computed: alias.clone(),
         },
     );
@@ -1900,7 +1916,7 @@ fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
     groups.ensure_direct("granted", vec![DirectSubject::Type(USER_TYPE.to_string())]);
     groups.set_computed(
         alias.clone(),
-        UsersetExpr::Computed(RelationName::from_resolved("granted")),
+        UsersetExpr::Computed(RelationName::canonicalized("granted")),
     );
 
     let mut all_types =

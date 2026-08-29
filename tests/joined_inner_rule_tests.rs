@@ -5,10 +5,12 @@
 //! condition making the two equal is required, and each one alone has a case here,
 //! because a rewrite that holds only usually is a grant `PostgreSQL` refuses.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+
+mod support;
 
 const CALLER: &str = "current_setting('app.user_id', true)";
 
@@ -25,13 +27,25 @@ fn schema(customer_fk: &str) -> String {
 
 const WITH_FK: &str = "REFERENCES customers(id)";
 
-/// The model and the tuple SQL for a policy on `line_items`.
 fn translate(customer_fk: &str, using: &str) -> (String, String) {
+    translate_sql(&format!(
+        "{}\nCREATE POLICY p ON line_items FOR SELECT USING ({using});",
+        schema(customer_fk)
+    ))
+}
+
+fn translate_qualified(customer_fk: &str, using: &str) -> (String, String) {
     let sql = format!(
         "{}\nCREATE POLICY p ON line_items FOR SELECT USING ({using});",
         schema(customer_fk)
     );
-    let db: ParserDB = parse_schema(&sql).expect("the schema should parse");
+    let sql =
+        support::qualify_table_declarations(&sql, &["orgs", "customers", "orders", "line_items"]);
+    translate_sql(&sql)
+}
+
+fn translate_sql(sql: &str) -> (String, String) {
+    let db: ParserDB = parse_schema(sql).expect("the schema should parse");
     let outputs = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_current_user_setting_keys(["app.user_id"])
@@ -39,7 +53,7 @@ fn translate(customer_fk: &str, using: &str) -> (String, String) {
         .translate(&db)
         .expect("translation should plan")
         .outputs_accepting_gaps();
-    (outputs.model(), format_tuples(&outputs.tuple_queries()))
+    (outputs.model(), format_tuples(outputs.tuple_queries()))
 }
 
 fn refused(model: &str) -> bool {
@@ -50,18 +64,18 @@ fn refused(model: &str) -> bool {
 /// on how the policy was typed rather than on what it means.
 #[test]
 fn every_spelling_of_one_join_yields_one_model() {
-    let (unjoined, unjoined_sql) = translate(
+    let (unjoined, unjoined_sql) = translate_qualified(
         WITH_FK,
         &format!("order_id IN (SELECT id FROM orders WHERE customer_id = {CALLER})"),
     );
-    let (explicit, explicit_sql) = translate(
+    let (explicit, explicit_sql) = translate_qualified(
         WITH_FK,
         &format!(
             "order_id IN (SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id \
              WHERE c.id = {CALLER})"
         ),
     );
-    let (comma, comma_sql) = translate(
+    let (comma, comma_sql) = translate_qualified(
         WITH_FK,
         &format!(
             "order_id IN (SELECT o.id FROM orders o, customers c \

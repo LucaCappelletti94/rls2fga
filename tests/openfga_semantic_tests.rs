@@ -8,9 +8,9 @@ use testcontainers::{
     GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 

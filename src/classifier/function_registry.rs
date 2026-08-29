@@ -9,10 +9,10 @@ use crate::parser::function_analyzer::{
     body_setting_key, body_single_projection, normalize_setting_key, AccessorInferenceSettings,
     FunctionSemantic,
 };
-use crate::parser::names::{
-    normalize_identifier, normalize_relation_name, split_schema_and_relation,
-};
+use crate::parser::names::normalize_identifier;
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
+use crate::types::{ConditionParameterName, ConditionParameterNameError};
+use sql_traits::structs::TargetName;
 use sqlparser::ast::FunctionSecurity;
 
 /// What a declared request-scoped source holds.
@@ -37,12 +37,12 @@ pub enum SessionAttributeKind {
 /// value at that key. A function whose body reads the key resolves to the same source, so
 /// the two spellings are one declaration and cannot disagree.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(from = "SessionAttributeSpec")]
+#[serde(try_from = "SessionAttributeSpec")]
 pub struct SessionAttribute {
     key: String,
     path: Vec<String>,
     kind: SessionAttributeKind,
-    parameter: String,
+    parameter: ConditionParameterName,
 }
 
 /// The written form of a declaration, so a deployment can ship its list as data.
@@ -64,12 +64,14 @@ pub struct SessionAttributeSpec {
     pub parameter: Option<String>,
 }
 
-impl From<SessionAttributeSpec> for SessionAttribute {
-    fn from(spec: SessionAttributeSpec) -> Self {
+impl TryFrom<SessionAttributeSpec> for SessionAttribute {
+    type Error = ConditionParameterNameError;
+
+    fn try_from(spec: SessionAttributeSpec) -> Result<Self, Self::Error> {
         let attribute = SessionAttribute::build(&spec.key, spec.path, spec.kind);
         match spec.parameter {
             Some(name) => attribute.with_parameter(name),
-            None => attribute,
+            None => Ok(attribute),
         }
     }
 }
@@ -111,10 +113,16 @@ impl SessionAttribute {
 
     /// Name the condition parameter the caller supplies for this value, which every
     /// check context then has to use. Defaults to the source spelled as an identifier.
-    #[must_use]
-    pub fn with_parameter(mut self, name: impl Into<String>) -> Self {
-        self.parameter = name.into();
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` is not a usable `CEL` identifier.
+    pub fn with_parameter(
+        mut self,
+        name: impl Into<String>,
+    ) -> Result<Self, ConditionParameterNameError> {
+        self.parameter = ConditionParameterName::try_from(name.into())?;
+        Ok(self)
     }
 
     /// The `current_setting` key this source reads.
@@ -138,27 +146,25 @@ impl SessionAttribute {
     /// The condition parameter name the caller supplies.
     #[must_use]
     pub fn request_parameter(&self) -> &str {
+        self.parameter.as_str()
+    }
+
+    pub(crate) fn condition_parameter(&self) -> &ConditionParameterName {
         &self.parameter
     }
 }
 
 /// A source spelled as an identifier, since a condition parameter name shares a namespace
 /// with `CEL` identifiers and a setting key carries dots.
-fn default_parameter_name(key: &str, path: &[String]) -> String {
-    let mut name = String::with_capacity(key.len());
+fn default_parameter_name(key: &str, path: &[String]) -> ConditionParameterName {
+    let mut source = String::with_capacity(key.len());
     for segment in core::iter::once(key).chain(path.iter().map(String::as_str)) {
-        if !name.is_empty() {
-            name.push('_');
+        if !source.is_empty() {
+            source.push('_');
         }
-        for ch in segment.chars() {
-            name.push(if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            });
-        }
+        source.push_str(segment);
     }
-    name
+    ConditionParameterName::derived(&source)
 }
 
 /// Why a function registry JSON payload was refused.
@@ -170,49 +176,184 @@ pub enum RegistryLoadError {
     InvalidJson(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FunctionKey(String);
+
+impl FunctionKey {
+    fn parse(name: &str) -> Self {
+        let name = name.trim();
+        let mut previous_dot = None;
+        let mut last_dot = None;
+        let mut quoted = false;
+        let mut chars = name.char_indices().peekable();
+        while let Some((index, ch)) = chars.next() {
+            match ch {
+                '"' if quoted && chars.peek().is_some_and(|(_, next)| *next == '"') => {
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                '.' if !quoted => {
+                    previous_dot = last_dot;
+                    last_dot = Some(index);
+                }
+                _ => {}
+            }
+        }
+
+        let mut key = String::with_capacity(name.len() + 3);
+        if let Some(dot) = last_dot {
+            key.push('q');
+            key.push('\0');
+            let schema_start = previous_dot.map_or(0, |previous| previous + 1);
+            Self::push_identifier(&mut key, &name[schema_start..dot]);
+            key.push('\0');
+            Self::push_identifier(&mut key, &name[dot + 1..]);
+        } else {
+            key.push('u');
+            key.push('\0');
+            Self::push_identifier(&mut key, name);
+        }
+        Self(key)
+    }
+
+    fn from_target(target: TargetName<'_>) -> Self {
+        match target.schema() {
+            Some(schema) => Self::qualified(
+                schema,
+                target.schema_is_quoted(),
+                target.name(),
+                target.name_is_quoted(),
+            ),
+            None => Self::unqualified(target.name(), target.name_is_quoted()),
+        }
+    }
+
+    fn qualified(schema: &str, schema_quoted: bool, name: &str, name_quoted: bool) -> Self {
+        let mut key = String::with_capacity(schema.len() + name.len() + 3);
+        key.push('q');
+        key.push('\0');
+        Self::push_stored_identifier(&mut key, schema, schema_quoted);
+        key.push('\0');
+        Self::push_stored_identifier(&mut key, name, name_quoted);
+        Self(key)
+    }
+
+    fn unqualified(name: &str, quoted: bool) -> Self {
+        let mut key = String::with_capacity(name.len() + 2);
+        key.push('u');
+        key.push('\0');
+        Self::push_stored_identifier(&mut key, name, quoted);
+        Self(key)
+    }
+
+    fn push_stored_identifier(key: &mut String, identifier: &str, quoted: bool) {
+        if quoted {
+            key.push_str(identifier);
+        } else {
+            key.extend(identifier.chars().map(|ch| ch.to_ascii_lowercase()));
+        }
+    }
+
+    fn schema(&self) -> Option<&str> {
+        self.0
+            .strip_prefix("q\0")?
+            .split_once('\0')
+            .map(|(schema, _)| schema)
+    }
+
+    fn name(&self) -> &str {
+        self.0
+            .rsplit_once('\0')
+            .map_or(self.0.as_str(), |(_, name)| name)
+    }
+
+    fn display(&self) -> String {
+        let mut display = String::new();
+        if let Some(schema) = self.schema() {
+            Self::push_display_identifier(&mut display, schema);
+            display.push('.');
+        }
+        Self::push_display_identifier(&mut display, self.name());
+        display
+    }
+
+    fn push_display_identifier(display: &mut String, identifier: &str) {
+        let mut chars = identifier.chars();
+        let unquoted = chars
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
+            && chars.all(|ch| {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '$')
+            });
+        if unquoted {
+            display.push_str(identifier);
+            return;
+        }
+        display.push('"');
+        for ch in identifier.chars() {
+            if ch == '"' {
+                display.push('"');
+            }
+            display.push(ch);
+        }
+        display.push('"');
+    }
+
+    fn push_identifier(key: &mut String, identifier: &str) {
+        let identifier = identifier.trim();
+        if let Some(inner) = identifier
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        {
+            let mut chars = inner.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '"' && chars.peek() == Some(&'"') {
+                    chars.next();
+                }
+                key.push(ch);
+            }
+        } else {
+            key.extend(identifier.chars().map(|ch| ch.to_ascii_lowercase()));
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::borrow::Borrow<str> for FunctionKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Registry of known function semantics, loaded from JSON or analyzed from bodies.
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
-    pub(crate) functions: BTreeMap<String, FunctionSemantic>,
+    pub(crate) functions: BTreeMap<FunctionKey, FunctionSemantic>,
+    function_names: BTreeMap<FunctionKey, String>,
+    function_resolution: BTreeMap<FunctionKey, FunctionKey>,
     /// Columns confirmed as public flags. Only these reach confidence A, so an
     /// implicit wildcard grant always surfaces for review.
     pub(crate) public_flag_columns: BTreeSet<String>,
     /// Functions whose body describes a caller accessor their security mode
     /// invalidates, kept so the report can name the cause.
-    owner_bound_accessors: BTreeSet<String>,
+    owner_bound_accessors: BTreeMap<FunctionKey, String>,
     /// Request-scoped sources a deployment declared readable, keyed on the setting key
     /// and the field path taken out of it.
     session_attributes: BTreeMap<(String, Vec<String>), SessionAttribute>,
 }
 
 impl FunctionRegistry {
-    fn normalized_function_keys(name: &str) -> Vec<String> {
-        let mut keys = vec![normalize_identifier(
-            &crate::parser::names::unquote_identifier(name),
-        )];
-
-        if let Some((schema, relation)) = split_schema_and_relation(name) {
-            keys.push(format!(
-                "{}.{}",
-                normalize_identifier(&schema),
-                normalize_identifier(&relation)
-            ));
-            keys.push(normalize_relation_name(&relation));
-        } else {
-            keys.push(normalize_relation_name(name));
-        }
-
-        keys.sort();
-        keys.dedup();
-        keys
-    }
-
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             functions: BTreeMap::new(),
+            function_names: BTreeMap::new(),
+            function_resolution: BTreeMap::new(),
             public_flag_columns: BTreeSet::new(),
-            owner_bound_accessors: BTreeSet::new(),
+            owner_bound_accessors: BTreeMap::new(),
             session_attributes: BTreeMap::new(),
         }
     }
@@ -220,7 +361,13 @@ impl FunctionRegistry {
     /// Functions that would identify the caller but run as their owner, so
     /// `current_user` inside them is the owner's for every caller.
     pub fn owner_bound_accessors(&self) -> impl Iterator<Item = &str> {
-        self.owner_bound_accessors.iter().map(String::as_str)
+        self.owner_bound_accessors.values().map(String::as_str)
+    }
+
+    pub(crate) fn is_owner_bound_accessor(&self, name: &str) -> bool {
+        let key = FunctionKey::parse(name);
+        let resolved = self.function_resolution.get(&key).unwrap_or(&key);
+        self.owner_bound_accessors.contains_key(resolved.as_str())
     }
 
     /// Confirm a column as a public flag, lifting its `P6BooleanFlag` to confidence A.
@@ -293,26 +440,124 @@ impl FunctionRegistry {
             .map_err(|e| RegistryLoadError::InvalidJson(e.to_string()))?;
         // Registry takes precedence over analyzed functions
         for (name, semantic) in parsed {
-            for key in Self::normalized_function_keys(&name) {
-                self.functions.insert(key, semantic.clone());
-            }
+            let key = FunctionKey::parse(&name);
+            self.function_names.insert(key.clone(), name);
+            self.functions.insert(key, semantic);
         }
         Ok(())
     }
 
     /// Get the semantic for a function by name.
     pub fn get(&self, name: &str) -> Option<&FunctionSemantic> {
-        Self::normalized_function_keys(name)
-            .into_iter()
-            .find_map(|key| self.functions.get(&key))
+        let key = FunctionKey::parse(name);
+        self.get_by_key(&key)
+    }
+
+    pub(crate) fn resolved_name(&self, name: &str) -> String {
+        let key = FunctionKey::parse(name);
+        let resolved = self.function_resolution.get(&key).unwrap_or(&key);
+        self.function_names
+            .get(resolved)
+            .cloned()
+            .unwrap_or_else(|| resolved.display())
+    }
+
+    fn get_by_key(&self, key: &FunctionKey) -> Option<&FunctionSemantic> {
+        let resolved = self.function_resolution.get(key).unwrap_or(key);
+        self.functions.get(resolved.as_str())
+    }
+
+    fn target_key(&self, target: TargetName<'_>) -> FunctionKey {
+        let key = FunctionKey::from_target(target);
+        self.function_resolution.get(&key).cloned().unwrap_or(key)
+    }
+
+    fn get_target(&self, target: TargetName<'_>) -> Option<&FunctionSemantic> {
+        let key = self.target_key(target);
+        self.functions.get(key.as_str())
     }
 
     /// Register a function semantic (analyzed results, won't overwrite registry entries).
     pub fn register_if_absent(&mut self, name: &str, semantic: &FunctionSemantic) {
-        for key in Self::normalized_function_keys(name) {
-            self.functions
-                .entry(key)
-                .or_insert_with(|| semantic.clone());
+        let key = FunctionKey::parse(name);
+        self.function_names
+            .entry(key.clone())
+            .or_insert_with(|| name.to_string());
+        self.functions
+            .entry(key)
+            .or_insert_with(|| semantic.clone());
+    }
+
+    fn register_target_if_absent(&mut self, target: TargetName<'_>, semantic: &FunctionSemantic) {
+        let key = self.target_key(target);
+        self.function_names
+            .entry(key.clone())
+            .or_insert_with(|| key.display());
+        self.functions
+            .entry(key)
+            .or_insert_with(|| semantic.clone());
+    }
+
+    fn prepare_function_resolution<DB: DatabaseLike>(&mut self, db: &DB) {
+        self.function_resolution.clear();
+        let mut unqualified = BTreeMap::<FunctionKey, (usize, FunctionKey)>::new();
+        for function in db.functions() {
+            let target = function.target_name();
+            let raw = FunctionKey::from_target(target);
+            let canonical = match target.schema() {
+                Some(_) => raw.clone(),
+                None => db.search_path().next().map_or_else(
+                    || raw.clone(),
+                    |(schema, quoted)| {
+                        FunctionKey::qualified(
+                            schema,
+                            quoted,
+                            target.name(),
+                            target.name_is_quoted(),
+                        )
+                    },
+                ),
+            };
+            self.function_resolution.insert(raw, canonical.clone());
+            self.function_resolution
+                .insert(canonical.clone(), canonical.clone());
+
+            let call = FunctionKey::unqualified(target.name(), target.name_is_quoted());
+            let rank = db.search_path().position(|(schema, quoted)| {
+                FunctionKey::qualified(schema, quoted, target.name(), target.name_is_quoted())
+                    == canonical
+            });
+            if let Some(rank) = rank {
+                match unqualified.entry(call) {
+                    alloc::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert((rank, canonical));
+                    }
+                    alloc::collections::btree_map::Entry::Occupied(mut entry)
+                        if rank < entry.get().0 =>
+                    {
+                        entry.insert((rank, canonical));
+                    }
+                    alloc::collections::btree_map::Entry::Occupied(_) => {}
+                }
+            }
+        }
+        self.function_resolution.extend(
+            unqualified
+                .into_iter()
+                .map(|(call, (_, target))| (call, target)),
+        );
+
+        let configured = core::mem::take(&mut self.functions);
+        let mut names = core::mem::take(&mut self.function_names);
+        for (key, semantic) in configured {
+            let resolved = self
+                .function_resolution
+                .get(&key)
+                .cloned()
+                .unwrap_or(key.clone());
+            let name = names.remove(&key).unwrap_or_else(|| key.display());
+            self.function_names.entry(resolved.clone()).or_insert(name);
+            self.functions.entry(resolved).or_insert(semantic);
         }
     }
 
@@ -348,10 +593,15 @@ impl FunctionRegistry {
         db: &DB,
         settings: &AccessorInferenceSettings,
     ) {
+        self.prepare_function_resolution(db);
         for function in db.functions() {
             let Some(body) = function.body() else {
                 continue;
             };
+            let Some(language) = function.stored_language() else {
+                continue;
+            };
+            let target = function.target_name();
             // A set of identities is not one identity, so a set returning function is
             // never an accessor. It is the only thing that can be a set reader, which
             // the pass below mints once every wrapper it might read is registered.
@@ -366,16 +616,16 @@ impl FunctionRegistry {
             if let Some(semantic) = FunctionSemantic::analyze_body_with_settings(
                 body,
                 &return_type,
-                "sql",
+                &language,
                 &security,
                 settings,
             ) {
-                self.register_if_absent(function.name(), &semantic);
-            } else if self.get(function.name()).is_none()
+                self.register_target_if_absent(target, &semantic);
+            } else if self.get_target(target).is_none()
                 && FunctionSemantic::analyze_body_with_settings(
                     body,
                     &return_type,
-                    "sql",
+                    &language,
                     &FunctionSecurity::Invoker,
                     settings,
                 )
@@ -383,17 +633,19 @@ impl FunctionRegistry {
             {
                 // The same body as `SECURITY INVOKER` is an accessor, so the security
                 // mode is what stops it identifying the caller.
+                let target_key = self.target_key(target);
                 self.owner_bound_accessors
-                    .insert(function.name().to_string());
-            } else if self.get(function.name()).is_none() {
+                    .entry(target_key)
+                    .or_insert_with(|| target.to_string());
+            } else if self.get_target(target).is_none() {
                 // A wrapper around a declared source is that source, so the inline and
                 // the wrapped spelling reach one declaration and cannot disagree.
                 if let Some(key) = body_setting_key(body)
                     .map(|key| normalize_setting_key(&key))
                     .filter(|key| settings.declares_setting_key(key))
                 {
-                    self.register_if_absent(
-                        function.name(),
+                    self.register_target_if_absent(
+                        target,
                         &FunctionSemantic::SettingReader { key },
                     );
                 }
@@ -405,7 +657,8 @@ impl FunctionRegistry {
         // another declared wrapper resolves rather than falling closed on ordering.
         let mut set_readers = Vec::new();
         for function in db.functions() {
-            if !function.returns_set() || self.get(function.name()).is_some() {
+            let target = function.target_name();
+            if !function.returns_set() || self.get_target(target).is_some() {
                 continue;
             }
             let Some(source) = function
@@ -416,11 +669,11 @@ impl FunctionRegistry {
             else {
                 continue;
             };
-            set_readers.push((function.name().to_string(), source));
+            set_readers.push((target, source));
         }
-        for (name, source) in set_readers {
-            self.register_if_absent(
-                &name,
+        for (target, source) in set_readers {
+            self.register_target_if_absent(
+                target,
                 &FunctionSemantic::SetReader {
                     key: normalize_setting_key(&source.key),
                     path: source.path,
@@ -505,18 +758,61 @@ CREATE FUNCTION current_tenant_id() RETURNS UUID
     }
 
     #[test]
-    fn function_lookup_normalizes_schema_and_quotes() {
+    fn function_lookup_preserves_schema_and_quote_identity() {
         let mut registry = FunctionRegistry::new();
-        registry.register_if_absent(
-            r#""auth"."uid""#,
-            &FunctionSemantic::CurrentUserAccessor {
-                returns: "uuid".to_string(),
-            },
-        );
+        let accessor = FunctionSemantic::CurrentUserAccessor {
+            returns: "uuid".to_string(),
+        };
+        registry.register_if_absent("auth.uid", &accessor);
+        let is_accessor = |registry: &FunctionRegistry, name: &str| {
+            matches!(
+                registry.get(name),
+                Some(FunctionSemantic::CurrentUserAccessor { returns }) if returns == "uuid"
+            )
+        };
 
-        assert!(registry.is_current_user_accessor("auth.uid"));
-        assert!(registry.is_current_user_accessor(r#""auth"."uid""#));
-        assert!(registry.is_current_user_accessor("UID"));
+        assert!(is_accessor(&registry, "auth.uid"));
+        assert!(is_accessor(&registry, r#""auth"."uid""#));
+        assert!(is_accessor(&registry, "AUTH.UID"));
+        assert!(registry.get("other.uid").is_none());
+        assert!(registry.get("uid").is_none());
+        assert!(registry.get(r#""UID""#).is_none());
+
+        registry.register_if_absent("uid", &accessor);
+        assert!(is_accessor(&registry, "uid"));
+        assert!(is_accessor(&registry, "UID"));
+        assert!(registry.get(r#""UID""#).is_none());
+    }
+
+    #[test]
+    fn declared_function_identity_resolves_equivalent_spellings() {
+        let db = parse_schema(
+            r"
+CREATE SCHEMA auth;
+CREATE SCHEMA other;
+SET search_path TO auth, other;
+CREATE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql AS 'SELECT NULL::uuid';
+CREATE FUNCTION other.uid() RETURNS UUID LANGUAGE sql AS 'SELECT NULL::uuid';
+",
+        )
+        .expect("schema should parse");
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(r#"{"uid":{"kind":"current_user_accessor","returns":"uuid"}}"#)
+            .expect("registry should parse");
+        registry.enrich_from_schema(&db);
+
+        assert!(matches!(
+            registry.get("uid"),
+            Some(FunctionSemantic::CurrentUserAccessor { .. })
+        ));
+        assert!(matches!(
+            registry.get(r#""auth"."uid""#),
+            Some(FunctionSemantic::CurrentUserAccessor { .. })
+        ));
+        assert!(registry.get("other.uid").is_none());
+        assert_eq!(registry.resolved_name("uid"), "uid");
+        assert_eq!(registry.resolved_name(r#""auth"."uid""#), "uid");
     }
 
     #[test]
@@ -626,5 +922,23 @@ CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
                 "`RETURNS {declaration}` must not be inferred as a scalar current-user accessor"
             );
         }
+    }
+
+    #[test]
+    fn enrich_from_schema_does_not_register_non_sql_language_as_accessor() {
+        let sql = r"
+CREATE FUNCTION plpgsql_user_id() RETURNS UUID
+  LANGUAGE plpgsql STABLE SECURITY INVOKER
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(
+            !registry.is_current_user_accessor("plpgsql_user_id"),
+            "a plpgsql function must not be inferred as a current-user accessor"
+        );
     }
 }

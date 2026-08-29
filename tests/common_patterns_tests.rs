@@ -10,6 +10,7 @@ use rls2fga::parser::sql_parser;
 /// Each test verifies that the translator correctly classifies and generates
 /// output for patterns commonly found in production `PostgreSQL` deployments.
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -128,7 +129,7 @@ fn compound_or_owner_or_public() {
     );
 
     // Verify tuple generation
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -136,8 +137,8 @@ fn compound_or_owner_or_public() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
 
@@ -194,7 +195,7 @@ fn in_subquery_membership() {
 
     match &classification.pattern {
         PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. }) => {
-            assert_eq!(join_table, "team_members");
+            assert_eq!(join_table.to_string(), "team_members");
             assert_eq!(classification.confidence, ConfidenceLevel::A);
         }
         other => {
@@ -205,8 +206,13 @@ fn in_subquery_membership() {
 
 #[test]
 fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
-    let (classified, db, registry) =
-        classify_fixture("membership_wrapped_function_safe", |_reg| {});
+    let sql = support::qualify_table_declarations(
+        &support::read_fixture_sql("membership_wrapped_function_safe"),
+        &["docs", "doc_members"],
+    );
+    let db = sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
+    let registry = FunctionRegistry::new();
+    let classified = policy_classifier::classify_policies(&db, &registry);
 
     assert_eq!(
         classified.len(),
@@ -226,7 +232,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
                 pairs,
                 user_column,
                 ..
-            }) if join_table == "doc_members"
+            }) if join_table.to_string() == "public.doc_members"
                 && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
                 && user_column == "user_id"
         ),
@@ -235,7 +241,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
     );
 
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -453,7 +459,7 @@ fn pipeline_summary_all_common_patterns() {
         )
         .expect("translation should plan")
         .outputs_accepting_gaps();
-        let tuples = Translation::plan(
+        let outputs = Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -461,8 +467,8 @@ fn pipeline_summary_all_common_patterns() {
             &GeneratorSettings::default(),
         )
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+        let tuples = outputs.tuple_queries();
 
         let all_a = classified.iter().all(|cp| {
             cp.using_classification

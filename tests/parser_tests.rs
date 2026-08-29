@@ -385,7 +385,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT
     )
     .expect("the dumped constraint spelling should parse and apply");
     let translation = rls2fga::translator::TranslatorBuilder::new()
-        .with_min_confidence(rls2fga::classifier::patterns::ConfidenceLevel::B)
+        .with_min_confidence(rls2fga::types::ConfidenceLevel::B)
         .build()
         .translate(&db)
         .expect("translation should plan");

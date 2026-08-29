@@ -3,8 +3,8 @@
 //!
 //! Role scopes, restrictive barriers, and the principals a policy binds.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 
 mod support;
 
@@ -98,7 +98,8 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
 /// bound role keeps the access it forbids.
 #[test]
 fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
-    let db = db_of(ROLE_SCOPED_BARRIER);
+    let sql = support::qualify_table_declarations(ROLE_SCOPED_BARRIER, &["docs"]);
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)
@@ -111,13 +112,13 @@ fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
         )
     });
 
-    let tuples = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     assert!(
-        scope_admits_role(&tuples, "docs:", &scope, "contractor"),
+        scope_admits_role(tuples, "docs:", &scope, "contractor"),
         "the subtracted role needs its tuples, got: {:#?}",
         tuples.iter().map(|query| &query.sql).collect::<Vec<_>>()
     );
@@ -287,7 +288,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT
 /// Permissive read policies are an OR, so being in either role is enough.
 #[test]
 fn membership_readable_by_two_roles_admits_either_role() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
@@ -298,7 +299,9 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
+        &["docs", "doc_members"],
     );
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)
@@ -310,14 +313,14 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
             model.model()
         )
     });
-    let tuples = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     for role in ["auditor", "support"] {
         assert!(
-            scope_admits_role(&tuples, "docs:", &scope, role),
+            scope_admits_role(tuples, "docs:", &scope, role),
             "either role can read the membership rows, so {role} needs scope tuples, got: {:#?}",
             tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
         );
@@ -924,8 +927,8 @@ fn two_tables_with_a_same_named_policy_do_not_pool_their_role_scopes() {
         r"
 CREATE ROLE auditor;
 CREATE ROLE support;
-CREATE TABLE docs(id TEXT PRIMARY KEY);
-CREATE TABLE memos(id TEXT PRIMARY KEY);
+CREATE TABLE public.docs(id TEXT PRIMARY KEY);
+CREATE TABLE public.memos(id TEXT PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT TO auditor USING (TRUE);
@@ -953,22 +956,56 @@ CREATE POLICY p ON memos FOR SELECT TO support USING (TRUE);
 
     // The companion halves, so pooling cannot be hidden by admitting nothing at all.
     assert!(
-        scope_admits_role(&tuples, "docs:", &docs_scope, "auditor"),
+        scope_admits_role(tuples, "docs:", &docs_scope, "auditor"),
         "docs is scoped TO auditor:\n{dsl}"
     );
     assert!(
-        scope_admits_role(&tuples, "memos:", &memos_scope, "support"),
+        scope_admits_role(tuples, "memos:", &memos_scope, "support"),
         "memos is scoped TO support:\n{dsl}"
     );
 
     assert!(
-        !scope_admits_role(&tuples, "docs:", &docs_scope, "support"),
+        !scope_admits_role(tuples, "docs:", &docs_scope, "support"),
         "docs is scoped TO auditor alone, so support must not reach its rows"
     );
     assert!(
-        !scope_admits_role(&tuples, "memos:", &memos_scope, "auditor"),
+        !scope_admits_role(tuples, "memos:", &memos_scope, "auditor"),
         "memos is scoped TO support alone, so auditor must not reach its rows"
     );
+}
+
+#[test]
+fn quoted_and_unquoted_roles_keep_distinct_scope_identities() {
+    let db = db_of(
+        r#"
+CREATE ROLE admin;
+CREATE ROLE "Admin";
+CREATE TABLE public.docs(id TEXT PRIMARY KEY);
+CREATE TABLE public.memos(id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO admin USING (TRUE);
+CREATE POLICY p ON memos FOR SELECT TO "Admin" USING (TRUE);
+"#,
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    let tuples = outputs.tuple_queries();
+    let docs_scope = pg_role_relation(&dsl, "docs").expect("docs should have a role scope");
+    let memos_scope = pg_role_relation(&dsl, "memos").expect("memos should have a role scope");
+
+    assert_ne!(docs_scope, memos_scope);
+    assert!(scope_admits_role(tuples, "docs:", &docs_scope, "admin"));
+    assert!(scope_admits_role(tuples, "memos:", &memos_scope, "Admin"));
+    assert!(!scope_admits_role(tuples, "docs:", &docs_scope, "Admin"));
+    assert!(!scope_admits_role(tuples, "memos:", &memos_scope, "admin"));
+    assert!(outputs
+        .notes()
+        .iter()
+        .all(|note| !note.message().contains("role") || !note.message().contains("rewritten")));
 }
 
 /// Every scope relation a type declares, in declaration order.
@@ -995,7 +1032,7 @@ fn a_to_list_and_a_role_gate_in_one_policy_do_not_share_a_scope() {
     let db = db_of(
         r"
 CREATE ROLE editor;
-CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE public.docs(id TEXT PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT TO editor USING (pg_has_role('editor', 'member'));
 ",
@@ -1030,7 +1067,7 @@ CREATE POLICY p ON docs FOR SELECT TO editor USING (pg_has_role('editor', 'membe
         // The companion half: each scope really does carry the role, so declaring two
         // relations and filling neither would not pass.
         assert!(
-            scope_admits_role(&tuples, "docs:", scope, "editor"),
+            scope_admits_role(tuples, "docs:", scope, "editor"),
             "{scope} stands for a test on editor, so its object carries editor"
         );
     }
@@ -1048,7 +1085,7 @@ fn two_role_gates_joined_by_and_do_not_share_a_scope() {
         r"
 CREATE ROLE alpha;
 CREATE ROLE beta;
-CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE public.docs(id TEXT PRIMARY KEY);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
   USING (pg_has_role('alpha', 'member') AND pg_has_role('beta', 'member'));
@@ -1070,7 +1107,7 @@ CREATE POLICY p ON docs FOR SELECT
     for scope in &scopes {
         let roles: Vec<&str> = ["alpha", "beta"]
             .into_iter()
-            .filter(|role| scope_admits_role(&tuples, "docs:", scope, role))
+            .filter(|role| scope_admits_role(tuples, "docs:", scope, role))
             .collect();
         assert_eq!(
             roles.len(),

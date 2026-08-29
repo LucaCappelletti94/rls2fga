@@ -1,8 +1,8 @@
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -11,7 +11,12 @@ mod support;
 #[test]
 fn end_to_end_earth_metabolome() {
     // Stage 1-2: Parse
-    let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
+    let sql = support::qualify_table_declarations(
+        &support::read_fixture_sql("earth_metabolome"),
+        &["users", "teams", "team_members", "ownables", "owner_grants"],
+    );
+    let db = rls2fga::parser::sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
+    let registry = support::load_fixture_registry("earth_metabolome");
 
     // Stage 4: Classify
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -30,7 +35,7 @@ fn end_to_end_earth_metabolome() {
     insta::assert_snapshot!("emi_model", model.model().trim());
 
     // Stage 6: Generate tuples
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -38,14 +43,14 @@ fn end_to_end_earth_metabolome() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(&tuples));
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    insta::assert_snapshot!("emi_tuples", tuple_generator::format_tuples(tuples));
 
     // Nothing about the translation itself falls short at Level A/B. Every RLS table
     // still carries the owner-bypass note, which is a fact about the database rather
     // than a shortfall, so it is excluded here by severity rather than by wording.
-    let shortfalls: Vec<&rls2fga::generator::notes::TranslationNote> = model
+    let shortfalls: Vec<&rls2fga::types::TranslationNote> = model
         .notes()
         .iter()
         .filter(|note| note.severity().diverges_from_database())

@@ -20,99 +20,13 @@ use crate::generator::well_known::{
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
 };
-use crate::parser::identifiers::{RelationName, TypeName};
-use crate::parser::names::lookup_table;
+use crate::parser::names::lookup_table_id;
 use crate::parser::sql_parser::DatabaseLike;
+use crate::types::{
+    ActionAnswer, ActionJudgement, ActionRelations, ActionStatement, RelationName, RowVersion,
+    TableId,
+};
 
-/// Which version of the row a relation judges.
-///
-/// `#[non_exhaustive]`: a version this learns to report adds a variant, and a caller
-/// matching this outside the crate keeps a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
-pub enum RowVersion {
-    /// The row as it is, which a `USING` clause reads.
-    Existing,
-    /// The row as it will be, which a `WITH CHECK` clause reads.
-    Resulting,
-}
-
-/// One relation that must grant, and the version it judges.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ActionJudgement {
-    /// Relation to ask, always defined on the entry's type.
-    pub relation: RelationName,
-    /// Version to ask it about.
-    pub version: RowVersion,
-}
-
-/// How one action on one type is answered.
-///
-/// `#[non_exhaustive]`: an answer this learns to give adds a variant, and a caller
-/// matching this outside the crate keeps a wildcard arm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ActionAnswer {
-    /// Every judgement must grant. All of them, never any of them.
-    Judged(Vec<ActionJudgement>),
-    /// The table carries no row-level security, so the database restricts nothing here
-    /// and there is nothing to ask.
-    Unrestricted,
-    /// The model refuses this statement for every row of the table, so nothing has to be
-    /// named or asked.
-    ///
-    /// Per statement, so a table refusing writes while granting reads carries both. The
-    /// model refusing is not the database refusing: a policy the classifier could not read
-    /// falls closed to this and says so through a `BelowThreshold` note.
-    Denied,
-}
-
-/// A statement shape the model answers for.
-///
-/// `#[non_exhaustive]`: a shape this learns to answer adds a variant, and a caller
-/// matching this outside the crate keeps a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
-pub enum ActionStatement {
-    /// `SELECT`.
-    Select,
-    /// `INSERT`.
-    Insert,
-    /// `UPDATE` naming the rows it changes.
-    Update,
-    /// `DELETE`.
-    Delete,
-    /// A locking read, `SELECT ... FOR UPDATE` and its three siblings, which
-    /// `PostgreSQL` filters by the `UPDATE` policies as well.
-    SelectForUpdate,
-    /// `INSERT ... ON CONFLICT ... DO UPDATE`, which changes the conflicting row.
-    InsertOnConflictUpdate,
-    /// `INSERT ... RETURNING`, which reads the row it wrote.
-    InsertReturning,
-    /// `UPDATE` with no `WHERE`, which reads nothing to choose rows, so the `SELECT`
-    /// policies do not apply.
-    UpdateWithoutWhere,
-}
-
-impl ActionStatement {
-    /// The SQL command this answers for.
-    ///
-    /// Not a key into the notes: `SelectForUpdate` is a `SELECT` that the `UPDATE` policies
-    /// filter as well, so a note naming the commands it refuses can leave it out while the
-    /// model still refuses it. [`ActionAnswer::Denied`] is the answer to that question.
-    #[must_use]
-    pub fn command(&self) -> &'static str {
-        match self {
-            Self::Select | Self::SelectForUpdate => "SELECT",
-            Self::Insert | Self::InsertOnConflictUpdate | Self::InsertReturning => "INSERT",
-            Self::Update | Self::UpdateWithoutWhere => "UPDATE",
-            Self::Delete => "DELETE",
-        }
-    }
-}
-
-/// Every statement an entry is reported for, in the order the entries come.
 const EVERY_STATEMENT: [ActionStatement; 8] = [
     ActionStatement::Select,
     ActionStatement::Insert,
@@ -124,21 +38,8 @@ const EVERY_STATEMENT: [ActionStatement; 8] = [
     ActionStatement::UpdateWithoutWhere,
 ];
 
-/// How one statement on one type is answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ActionRelations {
-    /// Type the action is asked on, as [`RelationShapes`](crate::generator::relations::RelationShapes)
-    /// spells it.
-    pub type_name: TypeName,
-    /// Statement it answers for.
-    pub statement: ActionStatement,
-    /// What has to grant.
-    pub answer: ActionAnswer,
-}
-
 fn judge(relation: RelationName, version: RowVersion) -> ActionJudgement {
-    ActionJudgement { relation, version }
+    ActionJudgement::new(relation, version)
 }
 
 /// The relation the type defines, or the one the model falls back to where it does not.
@@ -232,12 +133,13 @@ fn answer(plan: &TypePlan, statement: ActionStatement) -> ActionAnswer {
             RowVersion::Resulting,
         )]),
         ActionStatement::UpdateWithoutWhere => blind_update_answer(plan),
+        _ => ActionAnswer::Denied,
     }
 }
 
 /// Whether the database filters none of this table's rows, by any route.
-fn restricts_nothing<DB: DatabaseLike>(table: &str, db: &DB) -> bool {
-    lookup_table(db, table)
+fn restricts_nothing<DB: DatabaseLike>(table: &TableId, db: &DB) -> bool {
+    lookup_table_id(db, table)
         .is_some_and(|table| unrestricted::restricts_nothing_by_any_route(table, db))
 }
 
@@ -283,14 +185,13 @@ pub(crate) fn action_relations<DB: DatabaseLike>(
             EVERY_STATEMENT
                 .into_iter()
                 .zip(answers)
-                .map(|(statement, answer)| ActionRelations {
-                    type_name: type_plan.type_name.clone(),
-                    statement,
-                    answer: if answer_grants_nobody(type_plan, &answer) {
+                .map(|(statement, answer)| {
+                    let answer = if answer_grants_nobody(type_plan, &answer) {
                         ActionAnswer::Denied
                     } else {
                         answer
-                    },
+                    };
+                    ActionRelations::new(type_plan.type_name.clone(), statement, answer)
                 }),
         );
     }

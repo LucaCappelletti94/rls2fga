@@ -8,20 +8,19 @@
 //! the surface fails to build.
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::{
-    ConfidenceLevel, DirectOwnership, PatternClass, PolicyCommand,
-};
+use rls2fga::classifier::patterns::{DirectOwnership, PatternClass, PolicyCommand};
 use rls2fga::classifier::policy_classifier::{classify_expr, classify_policies};
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::relations::RelationShapes;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::function_analyzer::AccessorInferenceSettings;
 use rls2fga::parser::sql_parser::{parse_schema, DatabaseLike, PolicyLike};
 use rls2fga::translator::{Translation, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RelationShapes;
 
 const SCHEMA: &str = "
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE docs (id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.docs (id UUID PRIMARY KEY, owner_id UUID);
 CREATE FUNCTION auth_current_user_id() RETURNS UUID LANGUAGE sql STABLE
     AS 'SELECT current_setting(''app.current_user_id'')::uuid';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -100,7 +99,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     let translation = translator.translate(db).expect("translation should plan");
     let notes = translation.notes().len();
     let unhandled = translation.unhandled().count();
-    let relations = translation.relations();
+    let relations = translation.relations().to_vec();
     let outputs = translation.outputs().expect("nothing goes unhandled");
 
     let model = outputs.model();
@@ -110,7 +109,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
         .iter()
         .map(|definition| definition.type_name.clone())
         .collect();
-    let tuples = format_tuples(&outputs.tuple_queries());
+    let tuples = format_tuples(outputs.tuple_queries());
     let report = outputs.report();
     assert_eq!(outputs.notes().len(), notes);
     let confidence = outputs.confidence_summary().to_vec();

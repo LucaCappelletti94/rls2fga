@@ -3,9 +3,10 @@
 //! translates from the dump alone. Every guard refuses by falling closed.
 
 use rls2fga::classifier::patterns::{
-    ConfidenceLevel, ExistsMembership, ExpandedFunction, PatternClass, UnclassifiedExpr,
+    ExistsMembership, ExpandedFunction, PatternClass, UnclassifiedExpr,
 };
-use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 
 mod support;
 
@@ -17,7 +18,7 @@ fn docs_using_pattern(sql: &str) -> PatternClass {
     let classified = translator(ConfidenceLevel::B).classify(&db);
     let policy = classified
         .iter()
-        .find(|policy| policy.table == "docs")
+        .find(|policy| matches!(policy.table.as_str(), "docs" | "public.docs"))
         .expect("docs policy should classify");
     policy
         .using_classification
@@ -35,13 +36,39 @@ fn docs_refusal_reason(sql: &str) -> String {
     }
 }
 
+fn docs_tuple_sql(sql: &str) -> String {
+    let db = db_of(sql);
+    translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .tuple_queries()
+        .iter()
+        .map(|query| query.sql.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strict_true_schema(policy_expr: &str) -> String {
+    format!(
+        "
+CREATE TABLE public.docs(id TEXT PRIMARY KEY, gate TEXT, status TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION strict_true(value TEXT) RETURNS BOOLEAN LANGUAGE sql STRICT AS
+'SELECT true';
+CREATE POLICY docs_sel ON docs FOR SELECT USING ({policy_expr});
+"
+    )
+}
+
 /// Probe A's idiom: a definer wrapper around a membership EXISTS, owner unmoved.
 const DEFINER_MEMBERSHIP: &str = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 ";
@@ -52,6 +79,7 @@ fn a_definer_wrapped_membership_expands_to_the_body_membership() {
     let PatternClass::ExpandedFunction(ExpandedFunction {
         function,
         reads_bypass_rls,
+        presence_columns,
         inner,
     }) = pattern
     else {
@@ -62,11 +90,12 @@ fn a_definer_wrapped_membership_expands_to_the_body_membership() {
         reads_bypass_rls,
         "the one schema principal owns both the function and the read table"
     );
+    assert!(presence_columns.is_empty());
     assert!(
         matches!(
             &inner.pattern,
             PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
-                if join_table == "doc_members"
+                if join_table.schema().is_none() && join_table.name() == "doc_members"
                     && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
         ),
         "the body should classify as the membership it wraps, got {:?}",
@@ -121,7 +150,7 @@ fn a_definer_bypass_grants_through_an_unreadable_membership_table() {
 /// table's own emptiness of read grants denies, exactly as an inline EXISTS.
 #[test]
 fn an_invoker_wrapper_keeps_the_caller_side_readability_question() {
-    let sql = DEFINER_MEMBERSHIP.replace(" SECURITY DEFINER ", " ");
+    let sql = DEFINER_MEMBERSHIP.replace("SECURITY DEFINER", "SECURITY INVOKER");
     let db = db_of(&sql);
     let translation = translator(ConfidenceLevel::B)
         .translate(&db)
@@ -165,6 +194,40 @@ fn a_split_function_owner_refuses() {
 }
 
 #[test]
+fn quoted_and_unquoted_definer_owners_are_distinct() {
+    let split = format!(
+        "CREATE ROLE actor;\nCREATE ROLE \"Actor\";\n{DEFINER_MEMBERSHIP}\
+         ALTER TABLE doc_members OWNER TO actor;\
+         ALTER FUNCTION is_member(UUID) OWNER TO \"Actor\";"
+    );
+    assert!(docs_refusal_reason(&split).contains("Actor"));
+
+    let exact = format!(
+        "CREATE ROLE actor;\n{DEFINER_MEMBERSHIP}\
+         ALTER TABLE doc_members OWNER TO actor;\
+         ALTER FUNCTION is_member(UUID) OWNER TO actor;"
+    );
+    assert!(matches!(
+        docs_using_pattern(&exact),
+        PatternClass::ExpandedFunction(ExpandedFunction {
+            reads_bypass_rls: true,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn bypassrls_lookup_uses_exact_role_identity() {
+    let sql = format!(
+        "CREATE ROLE \"Actor\" BYPASSRLS;\nCREATE ROLE actor;\nCREATE ROLE table_owner;\
+         \n{DEFINER_MEMBERSHIP}\
+         ALTER TABLE doc_members OWNER TO table_owner;\
+         ALTER FUNCTION is_member(UUID) OWNER TO actor;"
+    );
+    assert!(docs_refusal_reason(&sql).contains("actor"));
+}
+
+#[test]
 fn a_bypassrls_function_owner_expands() {
     let sql = format!(
         "CREATE ROLE svc BYPASSRLS;\n{DEFINER_MEMBERSHIP}\
@@ -189,7 +252,8 @@ fn current_user_in_a_definer_body_stays_refused() {
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id::text = current_user)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 ";
@@ -213,6 +277,22 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
     assert!(
         reason.contains("plpgsql"),
         "a second parser of record was rejected, so the language refuses: {reason}"
+    );
+}
+
+#[test]
+fn a_quoted_uppercase_language_name_refuses() {
+    let sql = r#"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE "SQL" SECURITY DEFINER AS
+'SELECT TRUE';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+"#;
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("SQL"),
+        "quoted uppercase LANGUAGE \"SQL\" is not the built-in sql identifier: {reason}"
     );
 }
 
@@ -241,7 +321,8 @@ fn a_shadowed_argument_refuses_naming_the_function_and_the_argument() {
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(doc_id UUID) RETURNS BOOLEAN LANGUAGE sql AS
+CREATE FUNCTION is_member(doc_id UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = doc_id AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 ";
@@ -261,7 +342,8 @@ fn a_quoted_shadowed_argument_refuses_too() {
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member("doc_id" UUID) RETURNS BOOLEAN LANGUAGE sql AS
+CREATE FUNCTION is_member("doc_id" UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = "doc_id" AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 "#;
@@ -287,7 +369,8 @@ fn positional_named_and_qualified_substitution_agree() {
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS {body};
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS {body};
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 "
         );
@@ -299,7 +382,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
             matches!(
                 &inner.pattern,
                 PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
-                    if join_table == "doc_members"
+                    if join_table.schema().is_none() && join_table.name() == "doc_members"
                         && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
             ),
             "body {body} should reach the same membership, got {:?}",
@@ -320,7 +403,8 @@ CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
@@ -351,7 +435,7 @@ CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
                 if matches!(
                     &inner.pattern,
                     PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, .. })
-                        if join_table == "doc_members"
+                        if join_table.schema().is_none() && join_table.name() == "doc_members"
                             && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
                 )
         ),
@@ -366,7 +450,8 @@ fn an_unaliased_scan_of_the_arguments_table_refuses_the_capture() {
     let sql = r"
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = d AND doc_members.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
 ";
@@ -396,7 +481,8 @@ CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
@@ -488,7 +574,8 @@ fn a_registry_declared_function_is_not_expanded() {
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql AS
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
 'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true)::uuid)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 ";
@@ -534,5 +621,261 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
     assert!(
         matches!(&pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("argument")),
         "one argument against a two-argument declaration is no expansion: {pattern:?}"
+    );
+}
+
+#[test]
+fn a_strict_expansion_guards_its_column_argument() {
+    let tuples = docs_tuple_sql(&strict_true_schema("strict_true(gate)"));
+    assert!(tuples.contains("\"gate\" IS NOT NULL"), "{tuples}");
+}
+
+#[test]
+fn a_strict_expansion_keeps_its_guard_under_and() {
+    let tuples = docs_tuple_sql(&strict_true_schema(
+        "strict_true(gate) AND status = 'active'",
+    ));
+    assert!(tuples.contains("\"gate\" IS NOT NULL"), "{tuples}");
+    assert!(tuples.contains("\"status\" = 'active'"), "{tuples}");
+}
+
+#[test]
+fn a_strict_expansion_keeps_its_guard_under_or() {
+    let tuples = docs_tuple_sql(&strict_true_schema(
+        "strict_true(gate) OR status = 'active'",
+    ));
+    assert!(tuples.contains("\"gate\" IS NOT NULL"), "{tuples}");
+    assert!(tuples.contains("\"status\" = 'active'"), "{tuples}");
+}
+
+#[test]
+fn is_true_keeps_a_strict_expansion_guard() {
+    let tuples = docs_tuple_sql(&strict_true_schema("strict_true(gate) IS TRUE"));
+    assert!(tuples.contains("\"gate\" IS NOT NULL"), "{tuples}");
+}
+
+#[test]
+fn a_non_strict_expansion_does_not_gain_a_presence_guard() {
+    let sql =
+        strict_true_schema("strict_true(gate)").replace(" LANGUAGE sql STRICT ", " LANGUAGE sql ");
+    let tuples = docs_tuple_sql(&sql);
+    assert!(!tuples.contains("\"gate\" IS NOT NULL"), "{tuples}");
+}
+
+#[test]
+fn a_strict_expansion_refuses_an_unrepresentable_argument() {
+    let reason = docs_refusal_reason(&strict_true_schema("strict_true(lower(gate))"));
+    assert!(reason.contains("null input"), "{reason}");
+}
+
+#[test]
+fn negating_a_strict_expansion_stays_refused() {
+    let reason = docs_refusal_reason(&strict_true_schema("NOT strict_true(gate)"));
+    assert!(reason.contains("NOT"), "{reason}");
+}
+
+#[test]
+fn a_string_body_uses_its_function_local_search_path() {
+    let sql = r"
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE a.doc_members(doc_id TEXT, user_id TEXT);
+CREATE TABLE b.doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO b, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+SET search_path TO a, public;
+";
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. })
+                        if join_table.to_string() == "b.doc_members"
+                )
+        ),
+        "the function-local path must select b.doc_members, got {pattern:?}"
+    );
+}
+
+#[test]
+fn a_string_body_without_a_fixed_search_path_refuses() {
+    let sql = r"
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE a.doc_members(doc_id TEXT, user_id TEXT);
+CREATE TABLE b.doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+SET search_path TO a, public;
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(reason.contains("search_path"), "{reason}");
+}
+
+#[test]
+fn unresolved_function_search_paths_refuse() {
+    for setting in [
+        "SET search_path TO DEFAULT",
+        "SET search_path FROM CURRENT",
+        "SET search_path TO 1",
+    ] {
+        let sql = format!(
+            r"
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+{setting} AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+"
+        );
+        let reason = docs_refusal_reason(&sql);
+        assert!(reason.contains("search_path"), "{setting}: {reason}");
+    }
+}
+
+#[test]
+fn a_function_search_path_keeps_quoted_schema_identity() {
+    let sql = r#"
+CREATE SCHEMA b;
+CREATE SCHEMA "B";
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE b.doc_members(doc_id TEXT, user_id TEXT);
+CREATE TABLE "B".doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO '"B"', 'pg_catalog', 'pg_temp' AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+"#;
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. })
+                        if join_table.to_string() == r#""B".doc_members"#
+                )
+        ),
+        "the quoted path must select \"B\".doc_members, got {pattern:?}"
+    );
+}
+
+#[test]
+fn a_temp_schema_before_the_declared_table_refuses() {
+    let sql = r"
+CREATE SCHEMA b;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE b.doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO pg_temp, b, pg_catalog AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(reason.contains("pg_temp"), "{reason}");
+}
+
+#[test]
+fn implicit_pg_catalog_before_user_schema_refuses_b_pg_temp() {
+    let make_sql = |path: &str| {
+        format!(
+            r"
+CREATE SCHEMA b;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE b.doc_members(doc_id TEXT, user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO {path} AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+"
+        )
+    };
+
+    let reason = docs_refusal_reason(&make_sql("b, pg_temp"));
+    assert!(
+        reason.contains("pg_catalog"),
+        "implicit pg_catalog was ignored: {reason}"
+    );
+
+    let pattern = docs_using_pattern(&make_sql("b, pg_catalog, pg_temp"));
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. })
+                        if join_table.to_string() == "b.doc_members"
+                )
+        ),
+        "explicit pg_catalog order was ignored: {pattern:?}"
+    );
+}
+
+#[test]
+fn matching_alter_owner_without_create_role_expands() {
+    let sql = format!(
+        "{DEFINER_MEMBERSHIP}\
+         ALTER TABLE doc_members OWNER TO app_owner;\
+         ALTER FUNCTION is_member(UUID) OWNER TO app_owner;"
+    );
+    let pattern = docs_using_pattern(&sql);
+    assert!(
+        matches!(
+            pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction {
+                reads_bypass_rls: true,
+                ..
+            })
+        ),
+        "matching undeclared owners refused: {pattern:?}"
+    );
+}
+
+#[test]
+fn schema_qualified_call_does_not_collide_with_differently_cased_schema() {
+    let sql = r#"
+CREATE SCHEMA auth;
+CREATE SCHEMA "Auth";
+CREATE TABLE docs(id TEXT PRIMARY KEY, gate TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION auth.strict_true(value TEXT) RETURNS BOOLEAN LANGUAGE sql STRICT AS
+'SELECT true';
+CREATE FUNCTION "Auth".strict_true(value TEXT) RETURNS BOOLEAN LANGUAGE sql STRICT AS
+'SELECT false';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (auth.strict_true(gate));
+SET search_path TO public;
+"#;
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction {
+                function,
+                inner,
+                ..
+            }) if function == "strict_true"
+                && matches!(
+                    &inner.pattern,
+                    PatternClass::P10ConstantBool(value) if value.value
+                )
+        ),
+        "quoted schema identity was lost: {pattern:?}"
     );
 }

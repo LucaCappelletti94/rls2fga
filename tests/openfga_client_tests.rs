@@ -12,8 +12,8 @@ use testcontainers::{
     GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 

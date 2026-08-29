@@ -8,7 +8,7 @@ use crate::generator::model_generator::{
     ConditionParameter, DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
 use crate::generator::well_known::LIST_PARAMETER_TYPE;
-use crate::parser::identifiers::RelationName;
+use crate::types::RelationName;
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -339,9 +339,9 @@ mod tests {
     #[test]
     fn expr_to_userset_supports_intersection_nodes() {
         let expr = UsersetExpr::Intersection(vec![
-            UsersetExpr::Computed(RelationName::from_resolved("owner")),
+            UsersetExpr::Computed(RelationName::canonicalized("owner")),
             UsersetExpr::TupleToUserset {
-                tupleset: RelationName::from_resolved(TEAM_TYPE),
+                tupleset: RelationName::canonicalized(TEAM_TYPE),
                 computed: member_relation(),
             },
         ]);

@@ -1,7 +1,7 @@
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -67,7 +67,8 @@ fn model_generation_respects_min_confidence_threshold() {
 
 #[test]
 fn tuple_generation_respects_min_confidence_threshold() {
-    let sql = r"
+    let sql = support::qualify_table_declarations(
+        r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (
   id UUID PRIMARY KEY,
@@ -80,14 +81,16 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
   USING (status = 'published' AND owner_id = auth_current_user_id());
-";
+",
+        &["users", "docs"],
+    );
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
 
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
     let tuples_a = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -105,7 +108,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
     );
 
     let tuples_d = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,
@@ -132,7 +135,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,

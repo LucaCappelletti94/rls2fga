@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::records::{ColumnKind, RowCell, RowList, RowValues};
-use rls2fga::parser::sql_parser::{self, ParserDB};
+use rls2fga::parser::names::unquote_identifier;
+use rls2fga::parser::sql_parser::{self, DatabaseLike, ParserDB, TableLike};
+use rls2fga::types::{ColumnKind, RowCell, RowList, RowValues};
 
 /// `serde_json` view of one row, adapting it to the crate's row interface.
 pub(crate) struct JsonRowValues<'a>(pub(crate) &'a serde_json::Value);
@@ -132,8 +133,115 @@ pub(crate) fn read_fixture_sql(fixture: &str) -> String {
     std::fs::read_to_string(path).expect("fixture SQL should be readable")
 }
 
+pub(crate) fn qualify_table_declarations(sql: &str, tables: &[&str]) -> String {
+    let mut qualified = sql.to_string();
+    for table in tables {
+        let spaced = format!("CREATE TABLE {table} (");
+        let compact = format!("CREATE TABLE {table}(");
+        assert_eq!(
+            qualified.matches(&spaced).count() + qualified.matches(&compact).count(),
+            1,
+            "expected one declaration for {table}"
+        );
+        let (declaration, replacement) = if qualified.contains(&spaced) {
+            (spaced, format!("CREATE TABLE public.{table} ("))
+        } else {
+            (compact, format!("CREATE TABLE public.{table}("))
+        };
+        qualified = qualified.replacen(&declaration, &replacement, 1);
+    }
+    qualified
+}
+
+fn qualify_all_table_declarations(sql: &str) -> String {
+    let db = sql_parser::parse_schema(sql).expect("fixture SQL should parse");
+    let tables = sql
+        .lines()
+        .filter_map(|line| {
+            let declaration = line.trim_start().strip_prefix("CREATE TABLE ")?;
+            let target_end = declaration
+                .find(|character: char| character.is_whitespace() || character == '(')
+                .unwrap_or(declaration.len());
+            declaration[target_end..]
+                .trim_start()
+                .starts_with('(')
+                .then_some(&declaration[..target_end])
+        })
+        .filter(|table| !has_unquoted_dot(table))
+        .filter(|table| {
+            let stored_name = if table.starts_with('"') {
+                unquote_identifier(table)
+            } else {
+                Cow::Owned(table.to_ascii_lowercase())
+            };
+            db.tables().any(|declared| {
+                declared.stored_table_schema().is_none()
+                    && declared.stored_table_name() == stored_name
+            })
+        })
+        .collect::<Vec<_>>();
+    qualify_table_declarations(sql, &tables)
+}
+
+fn has_unquoted_dot(name: &str) -> bool {
+    let mut characters = name.chars().peekable();
+    let mut quoted = false;
+    while let Some(character) = characters.next() {
+        if character == '"' {
+            if quoted && characters.peek() == Some(&'"') {
+                characters.next();
+            } else {
+                quoted = !quoted;
+            }
+        } else if character == '.' && !quoted {
+            return true;
+        }
+    }
+    assert!(!quoted, "the table name must close its quote");
+    false
+}
+
+pub(crate) fn classify_qualified_sql(
+    sql: &str,
+    registry_json: Option<&str>,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    classify_sql(&qualify_all_table_declarations(sql), registry_json)
+}
+
+pub(crate) fn classify_qualified_sql_with_session_attributes(
+    sql: &str,
+    attributes_json: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    classify_sql_with_session_attributes(&qualify_all_table_declarations(sql), attributes_json)
+}
+
+pub(crate) fn load_qualified_fixture_classified(
+    fixture: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let sql = qualify_all_table_declarations(&read_fixture_sql(fixture));
+    let db = sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
+    let registry = load_fixture_registry(fixture);
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}
+
+pub(crate) fn try_load_qualified_fixture_classified(
+    fixture: &str,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let sql = qualify_all_table_declarations(&read_fixture_sql(fixture));
+    let db = sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
+    let registry = try_load_fixture_registry(fixture);
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}
+
 pub(crate) fn parse_fixture_db(fixture: &str) -> ParserDB {
     sql_parser::parse_schema(&read_fixture_sql(fixture)).expect("fixture SQL should parse")
+}
+
+pub(crate) fn parse_qualified_fixture_db(fixture: &str) -> ParserDB {
+    sql_parser::parse_schema(&qualify_all_table_declarations(&read_fixture_sql(fixture)))
+        .expect("fixture SQL should parse")
 }
 
 pub(crate) fn read_fixture_registry_json(fixture: &str) -> String {
