@@ -19,13 +19,13 @@ Each `USING` and `WITH CHECK` expression is classified against the patterns belo
 Parse a schema, plan a translation, then ask it for each output. The plan is built once and every output is rendered from it.
 
 ```rust
-use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::types::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
 let sql = "
-    CREATE TABLE documents (
+    CREATE TABLE public.documents (
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
     );
@@ -89,7 +89,7 @@ SET bytea_output = 'hex';
 
 -- User ownership (owner_id references users)
 SELECT 'documents:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner' AS relation, 'user:' || CASE WHEN "owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner_id"::text ELSE '~' || encode(convert_to("owner_id"::text, 'UTF8'), 'hex') END AS subject
-FROM "documents"
+FROM "public"."documents"
 WHERE "owner_id" IS NOT NULL
 AND "id" IS NOT NULL;
 ```
