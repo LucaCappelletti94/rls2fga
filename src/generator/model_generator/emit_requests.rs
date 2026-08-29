@@ -250,15 +250,7 @@ pub(crate) fn condition_parameter_type<DB: DatabaseLike>(
     column: &str,
     db: &DB,
 ) -> Option<&'static str> {
-    let data_type = declared_column_type(table, column, db)?.to_lowercase();
-    // A tuple's context must be RFC 3339, which only a zoned column renders: a date
-    // carries no time part and a zoneless timestamp no offset, and `OpenFGA` v1.11.6
-    // refuses both at load while accepting the model that named them.
-    matches!(
-        data_type.as_str(),
-        "timestamptz" | "timestamp with time zone"
-    )
-    .then_some(TIMESTAMP_PARAMETER_TYPE)
+    (column_kind(table, column, db) == ColumnKind::TimestampTz).then_some(TIMESTAMP_PARAMETER_TYPE)
 }
 
 /// One temporal comparison lifted into a condition: the parameter the row fills, the

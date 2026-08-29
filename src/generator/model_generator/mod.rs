@@ -7,7 +7,7 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    composite_primary_key_columns, declared_column_type, resolve_pk_columns, row_uniquely_keys,
+    column_kind, composite_primary_key_columns, resolve_pk_columns, row_uniquely_keys,
     single_pk_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
@@ -36,8 +36,8 @@ use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
 };
 use crate::types::{
-    ColumnName, ConditionParameterName, RelationName, RequestComparison, TableId, TranslationNote,
-    TypeName,
+    ColumnKind, ColumnName, ConditionParameterName, RelationName, RequestComparison, TableId,
+    TranslationNote, TypeName,
 };
 
 /// Which relation a command reads, and how a policy's clauses reach it.

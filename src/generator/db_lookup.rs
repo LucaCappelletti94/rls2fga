@@ -4,6 +4,7 @@ use crate::parser::names::lookup_table_id;
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, IndexLike, TableLike};
 use crate::types::ColumnKind;
 use crate::types::{ColumnName, TableId};
+use sql_traits::utils::scalar_family::{scalar_family, ScalarFamily};
 
 /// SQL tables a user principal conventionally lives in, most specific first.
 pub(crate) const USER_PRINCIPAL_TABLES: &[&str] = &["users", "user"];
@@ -93,49 +94,40 @@ pub(crate) fn uniquely_constrained<DB: DatabaseLike>(
         })
 }
 
-pub(crate) fn declared_column_type<DB: DatabaseLike>(
+fn declared_column<'db, DB: DatabaseLike>(
     table: &TableId,
     column: &str,
-    db: &DB,
-) -> Option<String> {
-    let table = lookup_table_id(db, table)?;
-    let column = table
+    db: &'db DB,
+) -> Option<&'db DB::Column> {
+    lookup_table_id(db, table)?
         .columns(db)
         .into_iter()
         .flatten()
-        .find(|candidate| candidate.stored_column_name() == column)?;
-    Some(column.data_type(db).to_string())
+        .find(|candidate| candidate.stored_column_name() == column)
 }
 
-fn column_kind_from_normalized(normalized: &str) -> ColumnKind {
-    match normalized {
-        "TEXT" | "VARCHAR" => ColumnKind::Text,
-        "UUID" => ColumnKind::Uuid,
-        "BOOL" | "BOOLEAN" => ColumnKind::Bool,
-        "SMALLINT" | "INT2" | "INTEGER" | "INT" | "INT4" | "BIGINT" | "INT8" | "SMALLSERIAL"
-        | "SERIAL" | "BIGSERIAL" => ColumnKind::Integer,
-        "NUMERIC" | "DECIMAL" => ColumnKind::Decimal,
-        "DATE" => ColumnKind::Date,
-        "TIME" | "TIME WITHOUT TIME ZONE" => ColumnKind::Time,
-        "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => ColumnKind::Timestamp,
-        "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => ColumnKind::TimestampTz,
-        "BYTEA" => ColumnKind::Bytea,
-        "JSON" | "JSONB" => ColumnKind::Json,
-        _ => ColumnKind::Unsupported,
+const fn column_kind_from_scalar_family(family: Option<ScalarFamily>) -> ColumnKind {
+    match family {
+        Some(ScalarFamily::Bool) => ColumnKind::Bool,
+        Some(ScalarFamily::Int) => ColumnKind::Integer,
+        Some(ScalarFamily::Decimal) => ColumnKind::Decimal,
+        Some(ScalarFamily::String) => ColumnKind::Text,
+        Some(ScalarFamily::Bytes) => ColumnKind::Bytea,
+        Some(ScalarFamily::Uuid) => ColumnKind::Uuid,
+        Some(ScalarFamily::Date) => ColumnKind::Date,
+        Some(ScalarFamily::Time) => ColumnKind::Time,
+        Some(ScalarFamily::Timestamp) => ColumnKind::Timestamp,
+        Some(ScalarFamily::TimestampTz) => ColumnKind::TimestampTz,
+        Some(ScalarFamily::Json | ScalarFamily::Jsonb) => ColumnKind::Json,
+        Some(ScalarFamily::Float) | None => ColumnKind::Unsupported,
     }
-}
-
-fn list_element_kind_from_normalized(normalized: &str) -> ColumnKind {
-    normalized
-        .strip_suffix("[]")
-        .map_or(ColumnKind::Unsupported, column_kind_from_normalized)
 }
 
 /// The modelled kind of one stored scalar column.
 pub(crate) fn column_kind<DB: DatabaseLike>(table: &TableId, column: &str, db: &DB) -> ColumnKind {
-    declared_column_type(table, column, db).map_or(ColumnKind::Unsupported, |declared| {
-        column_kind_from_normalized(&declared)
-    })
+    column_kind_from_scalar_family(
+        declared_column(table, column, db).and_then(|column| column.scalar_family(db)),
+    )
 }
 
 /// The modelled element kind of one stored list column.
@@ -144,9 +136,11 @@ pub(crate) fn list_element_kind<DB: DatabaseLike>(
     column: &str,
     db: &DB,
 ) -> ColumnKind {
-    declared_column_type(table, column, db).map_or(ColumnKind::Unsupported, |declared| {
-        list_element_kind_from_normalized(&declared)
-    })
+    let family = declared_column(table, column, db).and_then(|column| {
+        let declared = column.data_type(db);
+        declared.strip_suffix("[]").and_then(scalar_family)
+    });
+    column_kind_from_scalar_family(family)
 }
 
 /// Column names of `table`'s primary key when it spans more than one column.
@@ -267,5 +261,26 @@ CREATE TABLE temporal (
             list_element_kind(&temporal, "zoned_list", &db),
             ColumnKind::TimestampTz
         );
+    }
+
+    #[test]
+    fn sql_traits_scalar_families_decide_column_kinds() {
+        let db = parse_schema(
+            r"
+CREATE TABLE family_columns (
+    label CHAR(8),
+    balance MONEY,
+    clock TIMETZ,
+    labels CHAR(8)[]
+);
+",
+        )
+        .expect("schema parses");
+        let columns = table("family_columns");
+
+        assert_eq!(column_kind(&columns, "label", &db), ColumnKind::Text);
+        assert_eq!(column_kind(&columns, "balance", &db), ColumnKind::Decimal);
+        assert_eq!(column_kind(&columns, "clock", &db), ColumnKind::Time);
+        assert_eq!(list_element_kind(&columns, "labels", &db), ColumnKind::Text);
     }
 }

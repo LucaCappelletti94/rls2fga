@@ -21,6 +21,7 @@ use crate::types::{ColumnName, RelationName, TableId};
 use crate::types::{Record, RecordContextValue, RecordDescription};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
+use sql_traits::utils::scalar_family::ScalarFamily;
 
 #[cfg(test)]
 std::thread_local! {
@@ -557,7 +558,7 @@ impl UnboundedColumns {
                 .columns(db)
                 .into_iter()
                 .flatten()
-                .filter(|c| !is_bounded_short_type(&c.data_type(db).to_lowercase()))
+                .filter(|c| !is_bounded_short_family(c.scalar_family(db)))
                 .map(|c| c.stored_column_name().into_owned())
                 .collect();
             by_table.insert(table_identity(table), unbounded);
@@ -580,24 +581,17 @@ impl UnboundedColumns {
 }
 
 /// Types whose text form is short enough that no encoding of them can overrun.
-fn is_bounded_short_type(data_type: &str) -> bool {
+fn is_bounded_short_family(family: Option<ScalarFamily>) -> bool {
     matches!(
-        data_type,
-        "uuid"
-            | "boolean"
-            | "bool"
-            | "smallint"
-            | "int2"
-            | "integer"
-            | "int"
-            | "int4"
-            | "bigint"
-            | "int8"
-            | "date"
-            | "timestamp"
-            | "timestamptz"
-            | "timestamp with time zone"
-            | "timestamp without time zone"
+        family,
+        Some(
+            ScalarFamily::Bool
+                | ScalarFamily::Int
+                | ScalarFamily::Uuid
+                | ScalarFamily::Date
+                | ScalarFamily::Timestamp
+                | ScalarFamily::TimestampTz
+        )
     )
 }
 

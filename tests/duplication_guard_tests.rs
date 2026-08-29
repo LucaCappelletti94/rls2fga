@@ -860,6 +860,25 @@ fn reading_a_string_literal_has_a_single_source_of_truth() {
 }
 
 #[test]
+fn sql_type_families_have_one_source_of_truth() {
+    let local_kind_tables =
+        fns_whose_body(|body| body.contains("ColumnKind::Text") && body.contains("\"TEXT\""));
+    assert!(
+        local_kind_tables.is_empty(),
+        "column kinds must map from sql-traits, found {local_kind_tables:?}"
+    );
+
+    let string_classifiers = fns_whose_body(|body| {
+        body.contains("to_lowercase()")
+            && (body.contains(".data_type(") || body.contains("declared_column_type("))
+    });
+    assert!(
+        string_classifiers.is_empty(),
+        "column type families must come from sql-traits, found {string_classifiers:?}"
+    );
+}
+
+#[test]
 fn the_row_evaluator_holds_no_database_handle() {
     let source = [
         read_module("types/src/records.rs"),
