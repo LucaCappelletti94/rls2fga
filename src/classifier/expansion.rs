@@ -12,17 +12,19 @@ use core::cell::{Cell, RefCell};
 use core::ops::ControlFlow;
 
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, FunctionSecurity, Ident, TableFactor,
-    Value, Visit, VisitMut, Visitor, VisitorMut,
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, FunctionCalledOnNull, FunctionSecurity,
+    FunctionSetValue, Ident, ObjectName, ObjectNamePart, TableFactor, Value, Visit, VisitMut,
+    Visitor, VisitorMut,
 };
 
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::parser::function_analyzer::{body_reads_effective_user, body_single_projection};
 use crate::parser::names::{
-    lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
-    split_schema_and_relation, stored_ident_name, stored_identifier, table_has_column,
+    lookup_table, normalize_relation_name, normalized_function_name, stored_ident_name,
+    stored_identifier, table_has_column, unquote_identifier,
 };
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike, RoleLike, TableLike};
+use crate::types::ColumnName;
 
 /// Expansions one classification may perform, bounding the work a schema can
 /// demand: a body that doubles its calls per level is cut here rather than
@@ -106,6 +108,8 @@ pub(crate) enum Expansion {
         /// The body's table reads run as an owner `PostgreSQL` lets past those
         /// tables' policies.
         reads_bypass_rls: bool,
+        /// Row columns that must be non-null before the body can return true.
+        presence_columns: Vec<ColumnName>,
         /// The body with the call-site arguments substituted.
         expr: Box<Expr>,
     },
@@ -163,16 +167,13 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
         return None;
     }
     let terminal = normalized_function_name(func);
-    if registry
-        .owner_bound_accessors()
-        .any(|bound| normalize_relation_name(bound) == terminal)
-    {
+    if registry.is_owner_bound_accessor(&call_name) {
         return None;
     }
 
     let named: Vec<&DB::Function> = db
         .functions()
-        .filter(|declared| call_matches_declared(&call_name, declared.name()))
+        .filter(|declared| call_matches_declared(&func.name, *declared))
         .collect();
     let first_named = named.first()?;
     let function_name = first_named.name().to_string();
@@ -226,10 +227,10 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
         }
     }
 
-    let body = match (function.body_expression(), function.body()) {
-        (Some(parsed), _) => parsed.clone(),
+    let (mut body, string_body) = match (function.body_expression(), function.body()) {
+        (Some(parsed), _) => (parsed.clone(), false),
         (None, Some(text)) => match body_single_projection(text) {
-            Some(projected) => projected,
+            Some(projected) => (projected, true),
             None => {
                 return Some(refused(format!(
                     "Function '{function_name}' has no single-expression SELECT body, \
@@ -244,6 +245,20 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
             )))
         }
     };
+    if string_body {
+        let search_path = function_search_path(function);
+        let mut qualify = QualifyStringBodyTables {
+            db,
+            search_path: &search_path,
+            failed: None,
+        };
+        let _ = VisitMut::visit(&mut body, &mut qualify);
+        if let Some(reason) = qualify.failed {
+            return Some(refused(format!(
+                "The body of '{function_name}' {reason}, so the call is not expanded"
+            )));
+        }
+    }
 
     let security = function.security_mode();
     if matches!(security, FunctionSecurity::Definer)
@@ -334,11 +349,7 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
                      '{function_name}' reads it unfiltered cannot be known"
                 )));
             };
-            let owners_match = match (function_owner, table_owner) {
-                (None, None) => true,
-                (Some(of_function), Some(of_table)) => same_identifier(of_function, of_table),
-                _ => false,
-            };
+            let owners_match = owners_share_identity(db, function_owner, table_owner);
             if owners_match || owner_bypasses_rls(db, function_owner) {
                 continue;
             }
@@ -388,6 +399,35 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
         })
         .collect();
 
+    let null_short_circuits = !matches!(
+        function.null_input_behavior(),
+        FunctionCalledOnNull::CalledOnNullInput
+    );
+    let mut presence_columns = Vec::new();
+    let mut has_null_literal = false;
+    if null_short_circuits {
+        for arg in &call_args {
+            if let Some(column) = call_argument_column(arg, table) {
+                if !presence_columns.contains(&column) {
+                    presence_columns.push(column);
+                }
+                continue;
+            }
+            match arg {
+                Expr::Value(value) if matches!(value.value, Value::Null) => {
+                    has_null_literal = true;
+                }
+                Expr::Value(value) if !matches!(value.value, Value::Placeholder(_)) => {}
+                _ => {
+                    return Some(refused(format!(
+                        "Function '{function_name}' has a null input contract, but argument \
+                         '{arg}' is not a column or literal whose nullability can be preserved"
+                    )))
+                }
+            }
+        }
+    }
+
     let mut substituted = body;
     let mut rewrite = Substitute {
         replacements: &replacements,
@@ -402,10 +442,15 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
             "The body of '{function_name}' {reason}, so the call is not expanded"
         )));
     }
+    if has_null_literal {
+        substituted = Expr::Value(Value::Boolean(false).into());
+        presence_columns.clear();
+    }
 
     Some(Expansion::Body {
         function: function_name,
         reads_bypass_rls,
+        presence_columns,
         expr: Box::new(substituted),
     })
 }
@@ -414,13 +459,198 @@ fn refused(reason: String) -> Expansion {
     Expansion::Refused { reason }
 }
 
+enum FunctionSearchPath {
+    Missing,
+    Static(Vec<String>),
+    Invalid(&'static str),
+}
+
+fn object_name_part_ident(part: &ObjectNamePart) -> &Ident {
+    match part {
+        ObjectNamePart::Identifier(ident) => ident,
+        ObjectNamePart::Function(function) => &function.name,
+    }
+}
+
+fn static_search_path_entry(value: &Expr) -> Option<String> {
+    match value {
+        Expr::Identifier(ident) => {
+            Some(stored_identifier(&ident.value, ident.quote_style.is_some()).into_owned())
+        }
+        Expr::Value(value) => {
+            let Value::SingleQuotedString(value) = &value.value else {
+                return None;
+            };
+            let value = value.trim();
+            if value.contains(',') {
+                return None;
+            }
+            let quoted = value.len() >= 2 && value.starts_with('"') && value.ends_with('"');
+            let unquoted = unquote_identifier(value);
+            let stored = stored_identifier(unquoted.as_ref(), quoted);
+            (stored != "$user").then(|| stored.into_owned())
+        }
+        _ => None,
+    }
+}
+
+fn function_search_path<F: FunctionLike>(function: &F) -> FunctionSearchPath {
+    let Some(parameter) = function
+        .configuration_parameters()
+        .iter()
+        .rev()
+        .find(|parameter| {
+            matches!(
+                parameter.name.0.as_slice(),
+                [part]
+                    if stored_identifier(
+                        object_name_part_ident(part).value.as_str(),
+                        object_name_part_ident(part).quote_style.is_some(),
+                    ) == "search_path"
+            )
+        })
+    else {
+        return FunctionSearchPath::Missing;
+    };
+    match &parameter.value {
+        FunctionSetValue::Default => FunctionSearchPath::Invalid("uses DEFAULT"),
+        FunctionSetValue::FromCurrent => FunctionSearchPath::Invalid("uses FROM CURRENT"),
+        FunctionSetValue::Values(values) => {
+            let mut path = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(schema) = static_search_path_entry(value) else {
+                    return FunctionSearchPath::Invalid(
+                        "contains a value that is not a static schema identifier",
+                    );
+                };
+                path.push(schema);
+            }
+            FunctionSearchPath::Static(path)
+        }
+    }
+}
+
+fn resolve_body_table<'db, DB: DatabaseLike>(
+    db: &'db DB,
+    name: &ObjectName,
+    search_path: &[String],
+) -> Result<Option<&'db DB::Table>, &'static str> {
+    for implicit in ["pg_temp", "pg_catalog"] {
+        if !search_path.iter().any(|schema| schema == implicit) {
+            return Err(implicit);
+        }
+    }
+    let [part] = name.0.as_slice() else {
+        return Ok(None);
+    };
+    let ident = object_name_part_ident(part);
+    let target = stored_identifier(&ident.value, ident.quote_style.is_some());
+    for schema in search_path {
+        if matches!(schema.as_str(), "pg_temp" | "pg_catalog") {
+            return Err(if schema == "pg_temp" {
+                "pg_temp"
+            } else {
+                "pg_catalog"
+            });
+        }
+        let mut found = None;
+        for table in db.tables() {
+            let table_schema = table.stored_table_schema();
+            if table.stored_table_name() != target
+                || table_schema.as_deref().unwrap_or("public") != schema
+            {
+                continue;
+            }
+            if found.replace(table).is_some() {
+                return Ok(None);
+            }
+        }
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+fn declared_ident(value: &str, quoted: bool) -> Ident {
+    if quoted {
+        Ident::with_quote('"', value)
+    } else {
+        Ident::new(value)
+    }
+}
+
+fn qualified_table_name<T: TableLike>(table: &T) -> ObjectName {
+    let schema = declared_ident(
+        table.table_schema().unwrap_or("public"),
+        table.table_schema_is_quoted(),
+    );
+    let table = declared_ident(table.table_name(), table.table_name_is_quoted());
+    ObjectName(vec![
+        ObjectNamePart::Identifier(schema),
+        ObjectNamePart::Identifier(table),
+    ])
+}
+
+struct QualifyStringBodyTables<'db, 'path, DB: DatabaseLike> {
+    db: &'db DB,
+    search_path: &'path FunctionSearchPath,
+    failed: Option<String>,
+}
+
+impl<DB: DatabaseLike> VisitorMut for QualifyStringBodyTables<'_, '_, DB> {
+    type Break = ();
+
+    fn pre_visit_table_factor(&mut self, table_factor: &mut TableFactor) -> ControlFlow<()> {
+        let TableFactor::Table { name, .. } = table_factor else {
+            return ControlFlow::Continue(());
+        };
+        if name.0.len() != 1 {
+            return ControlFlow::Continue(());
+        }
+        let spelling = name.to_string();
+        let table = match self.search_path {
+            FunctionSearchPath::Missing => {
+                self.failed = Some(format!(
+                    "reads unqualified table '{spelling}' without a fixed search_path"
+                ));
+                return ControlFlow::Break(());
+            }
+            FunctionSearchPath::Invalid(reason) => {
+                self.failed = Some(format!(
+                    "reads unqualified table '{spelling}', but its search_path {reason}"
+                ));
+                return ControlFlow::Break(());
+            }
+            FunctionSearchPath::Static(path) => match resolve_body_table(self.db, name, path) {
+                Ok(table) => table,
+                Err(schema) => {
+                    self.failed = Some(format!(
+                        "reads unqualified table '{spelling}', which {schema} may shadow before \
+                         its fixed search_path resolves it"
+                    ));
+                    return ControlFlow::Break(());
+                }
+            },
+        };
+        let Some(table) = table else {
+            self.failed = Some(format!(
+                "reads unqualified table '{spelling}', which its fixed search_path does not \
+                 resolve to a declared table"
+            ));
+            return ControlFlow::Break(());
+        };
+        *name = qualified_table_name(table);
+        ControlFlow::Continue(())
+    }
+}
+
 /// The policy table's spelling as identifier parts, quoting preserved.
 fn qualifier_idents(table: &str) -> Vec<Ident> {
     crate::parser::names::split_qualified_identifier_parts(table)
         .into_iter()
         .map(|part| {
             if part.starts_with('"') {
-                Ident::with_quote('"', crate::parser::names::unquote_identifier(&part))
+                Ident::with_quote('"', unquote_identifier(&part))
             } else {
                 Ident::new(part)
             }
@@ -428,30 +658,81 @@ fn qualifier_idents(table: &str) -> Vec<Ident> {
         .collect()
 }
 
-/// Whether the call's spelling names the declared function, through quoting,
-/// case folding and schema qualification, with an unqualified spelling matching
-/// the way [`lookup_table`] lets the sole bearer of a name match.
-fn call_matches_declared(call: &str, declared: &str) -> bool {
-    if normalize_relation_name(call) != normalize_relation_name(declared) {
+fn call_argument_column(arg: &Expr, table: &str) -> Option<ColumnName> {
+    let column = match arg {
+        Expr::Identifier(column) => column,
+        Expr::CompoundIdentifier(parts) => {
+            let (column, qualifiers) = parts.split_last()?;
+            let expected = qualifier_idents(table);
+            let exact = qualifiers.len() == expected.len()
+                && qualifiers
+                    .iter()
+                    .zip(&expected)
+                    .all(|(left, right)| stored_ident_name(left) == stored_ident_name(right));
+            let terminal = qualifiers
+                .first()
+                .zip(expected.last())
+                .is_some_and(|(left, right)| {
+                    qualifiers.len() == 1 && stored_ident_name(left) == stored_ident_name(right)
+                });
+            if !exact && !terminal {
+                return None;
+            }
+            column
+        }
+        _ => return None,
+    };
+    Some(ColumnName::from_stored(
+        stored_ident_name(column).into_owned(),
+    ))
+}
+
+fn call_matches_declared<F: FunctionLike>(call: &ObjectName, declared: &F) -> bool {
+    let mut call_parts = call.0.iter().rev().map(object_name_part_ident);
+    let Some(call_name) = call_parts.next() else {
+        return false;
+    };
+    if stored_ident_name(call_name) != declared.stored_name() {
         return false;
     }
-    match (
-        split_schema_and_relation(call),
-        split_schema_and_relation(declared),
-    ) {
-        (Some((call_schema, _)), Some((declared_schema, _))) => {
-            same_identifier(&call_schema, &declared_schema)
+    let Some(call_schema) = call_parts.next() else {
+        return true;
+    };
+    let target = declared.target_name();
+    let Some(declared_schema) = target.schema() else {
+        return false;
+    };
+    stored_ident_name(call_schema) == stored_identifier(declared_schema, target.schema_is_quoted())
+}
+
+fn owner_identity<DB: DatabaseLike>(db: &DB, owner: &str) -> String {
+    db.role(owner).map_or_else(
+        || {
+            let owner = owner.trim();
+            let quoted = owner.len() >= 2 && owner.starts_with('"') && owner.ends_with('"');
+            stored_identifier(unquote_identifier(owner).as_ref(), quoted).into_owned()
+        },
+        |role| role.stored_name().into_owned(),
+    )
+}
+
+fn owners_share_identity<DB: DatabaseLike>(
+    db: &DB,
+    function_owner: Option<&str>,
+    table_owner: Option<&str>,
+) -> bool {
+    match (function_owner, table_owner) {
+        (None, None) => true,
+        (Some(function_owner), Some(table_owner)) => {
+            owner_identity(db, function_owner) == owner_identity(db, table_owner)
         }
-        _ => true,
+        _ => false,
     }
 }
 
 fn owner_bypasses_rls<DB: DatabaseLike>(db: &DB, owner: Option<&str>) -> bool {
-    let Some(owner) = owner else {
-        return false;
-    };
-    db.roles()
-        .find(|role| same_identifier(role.name(), owner))
+    owner
+        .and_then(|owner| db.role(owner))
         .is_some_and(RoleLike::can_bypass_rls)
 }
 

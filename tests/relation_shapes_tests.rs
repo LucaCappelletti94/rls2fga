@@ -8,23 +8,26 @@
 use std::collections::BTreeSet;
 
 use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
-use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::notes::TranslationNote;
-use rls2fga::generator::records::{
-    BoundQuery, Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
-};
-use rls2fga::generator::relations::{RelationShapes, RowDecision};
+use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::generator::well_known::{
     can_select_relation, member_relation, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE, USER_TYPE,
 };
-use rls2fga::parser::identifiers::{ColumnName, RelationName};
 use rls2fga::parser::names::lookup_table;
 use rls2fga::parser::sql_parser::{
     parse_schema, ColumnLike, DatabaseLike, ParserDB, PolicyLike, TableLike,
 };
 use rls2fga::translator::Translation;
+use rls2fga::types::ConditionParameterName;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
+use rls2fga::types::{
+    BoundQuery, Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
+};
+use rls2fga::types::{ColumnName, RelationName, TableId};
+use rls2fga::types::{RelationShapes, RowDecision};
 
 mod support;
 
@@ -119,7 +122,9 @@ fn translation<'a>(
 
 fn shapes_of(sql: &str, registry_json: &str) -> Vec<RelationShapes> {
     let (db, registry) = parsed(sql, registry_json);
-    translation(&db, &registry, &GeneratorSettings::default()).relations()
+    translation(&db, &registry, &GeneratorSettings::default())
+        .relations()
+        .to_vec()
 }
 
 fn shapes_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> Vec<RelationShapes> {
@@ -133,6 +138,7 @@ fn shapes_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> Vec<Rela
     )
     .expect("translation should plan")
     .relations()
+    .to_vec()
 }
 
 fn model_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> String {
@@ -170,6 +176,17 @@ fn fixture_names() -> Vec<String> {
     names.sort();
     assert!(names.len() > 20, "the corpus should not have shrunk");
     names
+}
+
+fn qualified_fixture_classified(
+    fixture: &str,
+    tables: &[&str],
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let sql = support::qualify_table_declarations(&support::read_fixture_sql(fixture), tables);
+    let db = parse_schema(&sql).expect("qualified fixture SQL should parse");
+    let registry = support::try_load_fixture_registry(fixture);
+    let classified = classify_policies(&db, &registry);
+    (classified, db, registry)
 }
 
 fn declared_relations(
@@ -310,7 +327,7 @@ fn a_direct_ownership_relation_carries_one_shape_from_its_own_row() {
     else {
         panic!("ownership resolves from the row: {:#?}", owned.shapes[0]);
     };
-    assert_eq!(table, "docs");
+    assert_eq!(table.to_string(), "docs");
     assert_eq!(template.object_type, owned.type_name);
     assert_eq!(template.relation, owned.relation);
     assert_eq!(template.object_key.parts(), [ValueSource::column("id")]);
@@ -355,7 +372,7 @@ fn a_compound_key_ownership_relation_is_decided_by_its_own_row() {
     else {
         panic!("ownership resolves from the row: {:#?}", owned.shapes[0]);
     };
-    assert_eq!(table, "shares");
+    assert_eq!(table.to_string(), "shares");
     assert_eq!(
         template.object_key.parts(),
         [
@@ -432,8 +449,8 @@ fn every_relation_the_model_declares_is_reported() {
         .expect("translation should plan");
         let reported: BTreeSet<(String, RelationName)> = planned
             .relations()
-            .into_iter()
-            .map(|entry| (entry.type_name.to_string(), entry.relation))
+            .iter()
+            .map(|entry| (entry.type_name.to_string(), entry.relation.clone()))
             .collect();
 
         let outputs = planned.clone().outputs_accepting_gaps();
@@ -517,8 +534,8 @@ fn no_tuple_query_names_an_undeclared_relation() {
 fn every_conditional_tuple_filters_its_context_columns() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+    for (fixture, db, registry) in tuple_contract_cases() {
+        let classified = classify_policies(&db, &registry);
         let outputs = Translation::plan(
             classified,
             &db,
@@ -635,7 +652,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
         .expect("translation should plan");
         // Keyed by type, not by table: the same table is the object's own in one shape
         // and the join table of another type's shape in the next.
-        let keys: Vec<(String, String, Vec<ColumnName>)> = planned
+        let keys: Vec<(TableId, String, Vec<ColumnName>)> = planned
             .row_naming()
             .into_iter()
             .map(|naming| {
@@ -777,7 +794,7 @@ fn a_constant_fact_is_reported_without_claiming_a_row_decides_it() {
     .expect("translation should plan");
     let shapes = planned.relations();
 
-    let roles = entry(&shapes, PG_ROLE_SCOPE_TYPE, "roles");
+    let roles = entry(shapes, PG_ROLE_SCOPE_TYPE, "roles");
     let [shape] = roles.shapes.as_slice() else {
         panic!(
             "one shape carries the roles a scope admits, got {:?}",
@@ -823,7 +840,7 @@ fn a_constant_fact_is_reported_without_claiming_a_row_decides_it() {
             pointer_shape.derivation
         );
     };
-    assert_eq!(table, "docs");
+    assert_eq!(table.to_string(), "docs");
     assert!(
         template
             .object_key
@@ -879,8 +896,8 @@ fn is_that_query_plus_one_line(whole: &str, bound: &str) -> bool {
 fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+    for (fixture, db, registry) in tuple_contract_cases() {
+        let classified = classify_policies(&db, &registry);
         let planned = Translation::plan(
             classified,
             &db,
@@ -891,13 +908,14 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
         .expect("translation should plan");
         let shapes = planned.relations();
         let whole_table: Vec<String> = planned
+            .clone()
             .outputs_accepting_gaps()
             .tuple_queries()
-            .into_iter()
-            .map(|query| query.sql)
+            .iter()
+            .map(|query| query.sql.clone())
             .collect();
 
-        for entry in &shapes {
+        for entry in shapes {
             for shape in &entry.shapes {
                 let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
                     continue;
@@ -931,19 +949,19 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
 fn every_replay_slice_names_the_relation_its_shape_fills() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let shapes = Translation::plan(
+    for (fixture, db, registry) in tuple_contract_cases() {
+        let classified = classify_policies(&db, &registry);
+        let planned = Translation::plan(
             classified,
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
-        .expect("translation should plan")
-        .relations();
+        .expect("translation should plan");
+        let shapes = planned.relations();
 
-        for entry in &shapes {
+        for entry in shapes {
             for shape in &entry.shapes {
                 let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
                     continue;
@@ -980,11 +998,11 @@ fn every_replay_slice_names_the_relation_its_shape_fills() {
 /// A column whose stored name carries a double quote, which `PostgreSQL` accepts and a
 /// dump reproduces as `"us""er_id"`.
 const QUOTED_MEMBERSHIP: &str = "
-CREATE TABLE users (id TEXT PRIMARY KEY);
-CREATE TABLE staff (\"us\"\"er_id\" TEXT, active BOOLEAN);
-CREATE TABLE doc_members (\"do\"\"c_id\" TEXT, \"us\"\"er_id\" TEXT, role TEXT);
-CREATE TABLE docs (id TEXT PRIMARY KEY);
-CREATE TABLE memos (id TEXT PRIMARY KEY);
+CREATE TABLE public.users (id TEXT PRIMARY KEY);
+CREATE TABLE public.staff (\"us\"\"er_id\" TEXT, active BOOLEAN);
+CREATE TABLE public.doc_members (\"do\"\"c_id\" TEXT, \"us\"\"er_id\" TEXT, role TEXT);
+CREATE TABLE public.docs (id TEXT PRIMARY KEY);
+CREATE TABLE public.memos (id TEXT PRIMARY KEY);
 CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
     AS 'SELECT current_setting(''app.current_user_id'')';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -1035,15 +1053,16 @@ fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
     .expect("translation should plan");
     let shapes = planned.relations();
     let whole_table: Vec<String> = planned
+        .clone()
         .outputs_accepting_gaps()
         .tuple_queries()
-        .into_iter()
-        .map(|query| query.sql)
+        .iter()
+        .map(|query| query.sql.clone())
         .collect();
 
     let mut checked = 0usize;
     let mut escaped = 0usize;
-    for entry in &shapes {
+    for entry in shapes {
         for shape in &entry.shapes {
             let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
                 continue;
@@ -1084,18 +1103,20 @@ CREATE POLICY jobs_sel ON jobs FOR SELECT USING (as_of > now());
 ";
     let (db, registry) = parsed(schema, "{}");
     let settings = GeneratorSettings {
-        request_time_parameter: "as_of".to_string(),
+        request_time_parameter: ConditionParameterName::try_from("as_of")
+            .expect("as_of is a valid parameter"),
         ..GeneratorSettings::default()
     };
 
     let context_keys: Vec<String> = translation(&db, &registry, &settings)
         .relations()
-        .into_iter()
-        .flat_map(|entry| entry.shapes)
-        .filter_map(|shape| match shape.derivation {
+        .iter()
+        .flat_map(|entry| entry.shapes.iter())
+        .filter_map(|shape| match &shape.derivation {
             RecordDerivation::FromRow { template, .. } => template
                 .context
-                .and_then(|context| context.entries.into_iter().next().map(|entry| entry.key)),
+                .as_ref()
+                .and_then(|context| context.entries.first().map(|entry| entry.key.clone())),
             _ => None,
         })
         .collect();
@@ -1171,7 +1192,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     else {
         unreachable!("checked above");
     };
-    assert_eq!(table, "docs");
+    assert_eq!(table.to_string(), "docs");
     assert_eq!(template.object_type, bridge.type_name);
     assert_eq!(template.relation, bridge.relation);
     assert_eq!(template.object_key.parts(), [ValueSource::column("id")]);
@@ -1196,7 +1217,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     else {
         panic!("a member list with no residual predicate follows from its own row");
     };
-    assert_eq!(table, "staff");
+    assert_eq!(table.to_string(), "staff");
     assert_eq!(template.object_type, members.type_name);
     assert_eq!(template.relation, member_relation());
     assert_eq!(
@@ -1217,7 +1238,8 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
 /// so the latest deadline is read by querying rather than settled from one row.
 #[test]
 fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
-    let shapes = shapes_of(HOLDER, ACCESSOR_REGISTRY);
+    let schema = support::qualify_table_declarations(HOLDER, &["reviewers"]);
+    let shapes = shapes_of(&schema, ACCESSOR_REGISTRY);
     let holder = shapes
         .iter()
         .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
@@ -1229,7 +1251,7 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
         );
     };
     assert_eq!(queries.len(), 1, "one table carries the change");
-    assert_eq!(queries[0].table, "reviewers");
+    assert_eq!(queries[0].table.to_string(), "public.reviewers");
     assert_eq!(queries[0].key_columns, ["user_id"]);
     assert_eq!(
         queries[0].scope,
@@ -1295,7 +1317,7 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM r
     else {
         panic!("the row decides the residual: {holder:?}");
     };
-    assert_eq!(table, "reviewers");
+    assert_eq!(table.to_string(), "reviewers");
     assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
     assert!(
         matches!(
@@ -1310,7 +1332,7 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM r
 #[test]
 fn a_text_ordering_attribute_gate_stays_joined() {
     let schema = "
-CREATE TABLE docs (id TEXT PRIMARY KEY, status TEXT);
+CREATE TABLE public.docs (id TEXT PRIMARY KEY, status TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_status ON docs FOR SELECT USING (status > 'draft');
 ";
@@ -1324,7 +1346,7 @@ CREATE POLICY docs_status ON docs FOR SELECT USING (status > 'draft');
     };
     assert!(reason.contains("row comparison on status needs SQL"));
     assert_eq!(queries.len(), 1);
-    assert_eq!(queries[0].table, "docs");
+    assert_eq!(queries[0].table.to_string(), "public.docs");
     assert_eq!(queries[0].key_columns.len(), 1);
     assert_eq!(queries[0].key_columns[0].as_str(), "id");
 }
@@ -1356,7 +1378,7 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM r
     else {
         panic!("one unique member row decides the holder member: {holder:?}");
     };
-    assert_eq!(table, "reviewers");
+    assert_eq!(table.to_string(), "reviewers");
     assert_eq!(template.subject_key.part(), &ValueSource::column("user_id"));
     let context = template
         .context
@@ -1395,7 +1417,7 @@ CREATE POLICY memos_reviewers ON memos FOR SELECT USING (EXISTS (SELECT 1 FROM r
 #[test]
 fn a_holder_relation_is_never_decidable_from_one_row() {
     let shapes = shapes_of(HOLDER, ACCESSOR_REGISTRY);
-    for entry in &shapes {
+    for entry in shapes {
         if entry.type_name.as_str().contains("_holder")
             || entry.relation.as_str().contains("_holder")
         {
@@ -1584,8 +1606,9 @@ fn no_condition_is_shared_by_two_types() {
 #[test]
 fn every_condition_parameter_is_supplied_by_its_own_tuples() {
     let mut checked = 0usize;
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+    let residual = parsed_with_session_attributes(SQL_RESIDUAL_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    for (fixture, db, registry) in [("sql-residual share".to_string(), residual.0, residual.1)] {
+        let classified = classify_policies(&db, &registry);
         let outputs = Translation::plan(
             classified,
             &db,
@@ -1784,7 +1807,7 @@ fn a_recipe_is_reported_exactly_when_the_flag_says_one_row_decides() {
             &GeneratorSettings::default(),
         )
         .expect("translation should plan");
-        check(&fixture, &planned.relations());
+        check(&fixture, planned.relations());
     }
     for (label, sql) in [
         ("or_columns", OR_COLUMNS),
@@ -1846,7 +1869,7 @@ fn either_spelling_of_two_ownership_columns_composes_into_any() {
         let planned = translation(&db, &registry, &GeneratorSettings::default());
         let reported = planned.relations();
         let named: Vec<&str> = recipe_leaves(
-            entry(&reported, "docs", "can_select")
+            entry(reported, "docs", "can_select")
                 .decision
                 .as_ref()
                 .expect("an ownership read decides from the row"),
@@ -1856,7 +1879,10 @@ fn either_spelling_of_two_ownership_columns_composes_into_any() {
         .collect();
         assert_eq!(
             named,
-            rendered_operands(&planned.outputs_accepting_gaps().model(), "can_select"),
+            rendered_operands(
+                &planned.clone().outputs_accepting_gaps().model(),
+                "can_select",
+            ),
             "{label}: the recipe reaches the operands the model names, in that order"
         );
     }
@@ -2045,8 +2071,8 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
 /// Every column the crate identifies rows by, in declared order: the declared primary
 /// key whatever its arity, or the `id` column it falls back to when a table declares
 /// none. This is what an object key holds.
-fn primary_key_of(table: &str, db: &ParserDB) -> Vec<String> {
-    let columns: Vec<String> = lookup_table(db, table)
+fn primary_key_of(table: &TableId, db: &ParserDB) -> Vec<String> {
+    let columns: Vec<String> = lookup_table(db, &table.to_string())
         .and_then(|found| found.primary_key_columns(db).ok())
         .map(|columns| {
             columns
@@ -2264,19 +2290,19 @@ CREATE POLICY a_team ON a.docs FOR SELECT USING (team_id = auth_current_user_id(
             cp.table = "docs".to_string();
         }
     }
-    let shapes = Translation::plan(
+    let planned = Translation::plan(
         classified,
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
-    .relations();
+    .expect("translation should plan");
+    let shapes = planned.relations();
 
     for type_name in ["docs", "docs_09be04be"] {
         assert!(
-            !entry(&shapes, type_name, "can_select").from_one_row,
+            !entry(shapes, type_name, "can_select").from_one_row,
             "{type_name} may be the table the unresolved policy granted, so it \
              cannot claim one row decides its reads"
         );
@@ -2328,21 +2354,21 @@ fn every_declared_clause_reaches_the_summary_or_a_note_that_names_it() {
         .expect("translation should plan")
         .outputs_accepting_gaps();
 
-        let surviving: BTreeSet<&str> = outputs
+        let surviving: BTreeSet<String> = outputs
             .confidence_summary()
             .iter()
-            .map(|(name, _)| name.as_str())
+            .map(|(name, _)| name.clone())
             .collect();
-        let named: BTreeSet<&str> = outputs
+        let named: BTreeSet<String> = outputs
             .notes()
             .iter()
-            .map(TranslationNote::subject)
+            .map(|note| note.subject().into_owned())
             .collect();
-        let looping: BTreeSet<&str> = outputs
+        let looping: BTreeSet<String> = outputs
             .notes()
             .iter()
             .filter_map(|note| match note {
-                TranslationNote::PolicyReadRecursion { table, .. } => Some(table.as_str()),
+                TranslationNote::PolicyReadRecursion { table, .. } => Some(table.to_string()),
                 _ => None,
             })
             .collect();
@@ -2595,7 +2621,11 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
         );
     };
     assert_eq!(
-        shape.tables,
+        shape
+            .tables
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["paper_shares".to_string()],
         "the deciding rows live on the sharing table"
     );
@@ -2610,7 +2640,7 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
             shape.derivation
         );
     };
-    assert_eq!(table, "paper_shares");
+    assert_eq!(table.to_string(), "paper_shares");
     assert_eq!(template.object_type, "paper_shares_share");
     assert_eq!(
         template.object_key.parts(),
@@ -2646,7 +2676,7 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
         "the object key guards the share's own key, leaving the member NULL guard: {guards:?}"
     );
 
-    let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
+    let json = serde_json::to_string(&planned.clone().outputs_accepting_gaps().json_model())
         .expect("the model serializes");
     let declared: Vec<String> = conditional_wildcards(&json)
         .into_iter()
@@ -2668,7 +2698,8 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
 /// reached through a tuple-to-userset, so two viewers are two objects that union.
 #[test]
 fn a_caller_set_share_gets_its_own_object_reached_by_userset() {
-    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let (classified, db, registry) =
+        qualified_fixture_classified("connetto_capability", &["papers", "paper_shares"]);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -2761,7 +2792,7 @@ fn a_clock_gated_record_names_the_condition_its_context_carries() {
             shape.derivation
         );
     };
-    assert_eq!(table, "readings");
+    assert_eq!(table.to_string(), "readings");
     assert_eq!(
         template.object_key.parts(),
         [
@@ -2788,7 +2819,7 @@ fn a_clock_gated_record_names_the_condition_its_context_carries() {
     );
     assert_eq!(context.entries[0].value, ValueSource::column("starts_at"));
 
-    let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
+    let json = serde_json::to_string(&planned.clone().outputs_accepting_gaps().json_model())
         .expect("the model serializes");
     let declared: Vec<String> = conditional_wildcards(&json)
         .into_iter()
@@ -2808,8 +2839,8 @@ fn a_clock_gated_record_names_the_condition_its_context_carries() {
 /// request's and the clock the request's too, so both comparisons move into the
 /// condition and the share row alone decides the record.
 const EXPIRING_SHARE: &str = "
-CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
-CREATE TABLE paper_shares (
+CREATE TABLE public.papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE public.paper_shares (
     paper_id INT,
     viewer TEXT,
     expires_at TIMESTAMPTZ,
@@ -2838,8 +2869,8 @@ const EXPIRING_SHARE_ATTRIBUTES: &str = r#"[
 /// the viewer-set condition. Keeps the conditional-join projection covered now that an
 /// expiring share settles from its row.
 const SQL_RESIDUAL_SHARE: &str = "
-CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
-CREATE TABLE paper_shares (
+CREATE TABLE public.papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE public.paper_shares (
     paper_id INT,
     viewer TEXT,
     granted_at TIMESTAMPTZ,
@@ -2857,6 +2888,20 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     )
 );
 ";
+
+fn tuple_contract_cases() -> Vec<(String, ParserDB, FunctionRegistry)> {
+    let residual = parsed_with_session_attributes(SQL_RESIDUAL_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    let plain = parsed(QUOTED_MEMBERSHIP, ACCESSOR_REGISTRY);
+    let mut cases = vec![
+        ("sql-residual share".to_string(), residual.0, residual.1),
+        ("quoted membership".to_string(), plain.0, plain.1),
+    ];
+    for fixture in fixture_names() {
+        let (_, db, registry) = support::try_load_fixture_classified(&fixture);
+        cases.push((fixture, db, registry));
+    }
+    cases
+}
 
 /// An expiring share settles from the share row: the clock comparison joins the viewer
 /// set inside the condition, so the row alone decides the record and its context carries
@@ -2888,7 +2933,7 @@ fn an_expiring_share_settles_from_its_row_with_the_clock_in_its_condition() {
             shape.derivation
         );
     };
-    assert_eq!(table, "paper_shares");
+    assert_eq!(table.to_string(), "public.paper_shares");
     assert_eq!(template.object_type, "paper_shares_share");
     assert_eq!(
         template.object_key.parts(),
@@ -2972,8 +3017,8 @@ fn an_expiring_share_settles_from_its_row_with_the_clock_in_its_condition() {
 /// beside the viewer set rather than filtering the query. The single-table door's tests
 /// cover the offset. This pins the shared path reaching the membership arm too.
 const GRACE_SHARE: &str = "
-CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
-CREATE TABLE paper_shares (
+CREATE TABLE public.papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE public.paper_shares (
     paper_id INT,
     viewer TEXT,
     expires_at TIMESTAMPTZ,
@@ -3026,8 +3071,8 @@ fn a_membership_grace_window_rides_the_clock_as_a_duration() {
 /// An EXISTS membership with an expiry: the member tuple names a real user, so the clock
 /// rides that tuple as a condition and the member relation admits a conditioned user.
 const EXPIRING_EXISTS: &str = "
-CREATE TABLE docs (id UUID PRIMARY KEY);
-CREATE TABLE doc_shares (
+CREATE TABLE public.docs (id UUID PRIMARY KEY);
+CREATE TABLE public.doc_shares (
     doc_id UUID,
     user_id UUID,
     expires_at TIMESTAMPTZ,
@@ -3062,7 +3107,7 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
             member.shapes[0].derivation
         );
     };
-    assert_eq!(table, "doc_shares");
+    assert_eq!(table.to_string(), "public.doc_shares");
     assert!(
         matches!(template.subject_key.part(), ValueSource::Column(column) if column == "user_id"),
         "the member tuple still names the user the row supplies: {:?}",
@@ -3130,18 +3175,18 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
 #[test]
 fn every_replay_declares_the_slice_its_result_determines() {
     let mut swept = 0usize;
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let reported = Translation::plan(
+    for (fixture, db, registry) in tuple_contract_cases() {
+        let classified = classify_policies(&db, &registry);
+        let planned = Translation::plan(
             classified,
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
-        .expect("translation should plan")
-        .relations();
-        for entry in &reported {
+        .expect("translation should plan");
+        let reported = planned.relations();
+        for entry in reported {
             for shape in &entry.shapes {
                 let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
                     continue;
@@ -3182,16 +3227,19 @@ fn every_replay_declares_the_slice_its_result_determines() {
     }
     assert!(swept > 0, "the corpus produces joining shapes");
 
-    let (classified, db, registry) = support::try_load_fixture_classified("earth_metabolome");
-    let reported = Translation::plan(
+    let (classified, db, registry) = qualified_fixture_classified(
+        "earth_metabolome",
+        &["users", "teams", "team_members", "ownables", "owner_grants"],
+    );
+    let planned = Translation::plan(
         classified,
         &db,
         &registry,
         ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
-    .relations();
+    .expect("translation should plan");
+    let reported = planned.relations();
     let joined: Vec<&BoundQuery> = reported
         .iter()
         .flat_map(|entry| &entry.shapes)
@@ -3209,7 +3257,8 @@ fn every_replay_declares_the_slice_its_result_determines() {
     // only thing left to replay, and it reads no guarded table at all.
     for query in &joined {
         assert_eq!(
-            query.table, "owner_grants",
+            query.table.to_string(),
+            "public.owner_grants",
             "only the grant table needs a replay here: {query:?}"
         );
         assert_eq!(
@@ -3241,6 +3290,67 @@ fn every_replay_declares_the_slice_its_result_determines() {
     }
 }
 
+const RESOLVED_MEMBERSHIP: &str = "
+CREATE SCHEMA app;
+CREATE TABLE public.docs (id TEXT PRIMARY KEY);
+CREATE TABLE app.memberships (doc_id TEXT, user_id TEXT, role TEXT);
+CREATE FUNCTION public.auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+SET search_path TO app, public;
+ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON public.docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m
+        WHERE m.doc_id = docs.id
+          AND m.user_id = public.auth_current_user_id()
+          AND lower(m.role) = 'editor'));
+";
+
+fn resolved_membership_query() -> TupleQuery {
+    let (db, registry) = parsed(RESOLVED_MEMBERSHIP, ACCESSOR_REGISTRY);
+    Translation::plan(
+        classify_policies(&db, &registry),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+    .tuple_queries()
+    .iter()
+    .find(|query| query.sql.contains("lower("))
+    .cloned()
+    .expect("the residual membership should emit a query")
+}
+
+#[test]
+fn unqualified_membership_sql_uses_the_resolved_table() {
+    let query = resolved_membership_query();
+    assert!(
+        query.sql.contains(r#"FROM "app"."memberships""#),
+        "{}",
+        query.sql
+    );
+}
+#[test]
+fn membership_records_carry_the_resolved_table_identity() {
+    let description = resolved_membership_query()
+        .description
+        .expect("the query should be described");
+    let [table] = description.tables.as_slice() else {
+        panic!("expected one table, got {:?}", description.tables);
+    };
+    assert_eq!(table.schema(), Some("app"));
+    assert_eq!(table.name(), "memberships");
+    let RecordDerivation::Joined { queries, .. } = &description.derivation else {
+        panic!("expected a joined description");
+    };
+    let [bound] = queries.as_slice() else {
+        panic!("expected one bound query, got {queries:?}");
+    };
+    assert_eq!(&bound.table, table);
+}
+
 /// The named shapes above pin two cases, and a bound query reaches a consumer wherever
 /// one is emitted. A field disagreeing with its own SQL is a wrong decode either way: too
 /// few columns raises on the read, too many silently drop the condition. The corpus no
@@ -3249,25 +3359,18 @@ fn every_replay_declares_the_slice_its_result_determines() {
 #[test]
 fn every_bound_query_agrees_with_its_own_projection() {
     let (mut conditional, mut plain) = (0usize, 0usize);
-    let residual = parsed_with_session_attributes(SQL_RESIDUAL_SHARE, EXPIRING_SHARE_ATTRIBUTES);
-    let mut cases: Vec<(String, ParserDB, FunctionRegistry)> =
-        vec![("sql-residual share".to_string(), residual.0, residual.1)];
-    for fixture in fixture_names() {
-        let (_, db, registry) = support::try_load_fixture_classified(&fixture);
-        cases.push((fixture, db, registry));
-    }
-    for (fixture, db, registry) in cases {
+    for (fixture, db, registry) in tuple_contract_cases() {
         let classified = classify_policies(&db, &registry);
-        let reported = Translation::plan(
+        let planned = Translation::plan(
             classified,
             &db,
             &registry,
             ConfidenceLevel::B,
             &GeneratorSettings::default(),
         )
-        .expect("translation should plan")
-        .relations();
-        for entry in &reported {
+        .expect("translation should plan");
+        let reported = planned.relations();
+        for entry in reported {
             for shape in &entry.shapes {
                 let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
                     continue;
@@ -3279,7 +3382,7 @@ fn every_bound_query_agrees_with_its_own_projection() {
                         assert!(
                             query.sql.contains(&format!("'{condition}' AS condition")),
                             "{named} names condition '{condition}' for a replay that does \
-                             not project it:\n{}",
+                         not project it:\n{}",
                             query.sql
                         );
                     } else {
@@ -3316,8 +3419,11 @@ fn every_bound_query_agrees_with_its_own_projection() {
 fn every_tuple_query_states_the_shape_of_its_own_rows() {
     let (mut conditional, mut plain) = (0usize, 0usize);
     let (mut carried, mut bare) = (0usize, 0usize);
-    for fixture in fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
+    let expiring = parsed_with_session_attributes(EXPIRING_SHARE, EXPIRING_SHARE_ATTRIBUTES);
+    let mut cases = tuple_contract_cases();
+    cases.push(("expiring share".to_string(), expiring.0, expiring.1));
+    for (fixture, db, registry) in cases {
+        let classified = classify_policies(&db, &registry);
         let outputs = Translation::plan(
             classified,
             &db,
@@ -3566,6 +3672,39 @@ fn every_relation_reported_as_granting_nobody_denies_in_the_emitted_model() {
         assert!(
             refused > 0,
             "{label}: the corpus has to carry a refusal, or the check above proves nothing"
+        );
+    }
+}
+
+const UNQUALIFIED_MEMBERSHIPS: &str = "
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE memberships (doc_id TEXT, user_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m
+        WHERE m.doc_id = docs.id
+          AND m.user_id = auth_current_user_id()));
+";
+
+#[test]
+fn unqualified_table_declaration_does_not_produce_search_path_dependent_sql() {
+    let (db, registry) = parsed(UNQUALIFIED_MEMBERSHIPS, ACCESSOR_REGISTRY);
+    let outputs = Translation::plan(
+        classify_policies(&db, &registry),
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    for query in outputs.tuple_queries() {
+        assert!(
+            !query.sql.contains(r#"FROM "memberships""#),
+            "unqualified tuple source: {}",
+            query.sql
         );
     }
 }

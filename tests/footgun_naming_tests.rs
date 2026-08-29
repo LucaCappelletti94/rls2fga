@@ -3,10 +3,13 @@
 //!
 //! The names the model assigns, and the collisions it has to survive.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
-use rls2fga::generator::well_known::WellKnownTypes;
+use rls2fga::generator::well_known::{
+    WellKnownTypes, WellKnownTypesError, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
+    USER_TYPE,
+};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -43,11 +46,11 @@ fn disambiguated_type_receives_tuples_under_its_own_type_name() {
         .find(|name| name != "docs" && name.starts_with("docs"))
         .expect("collision should produce a renamed second type");
 
-    let tuples = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     assert_eq!(
         tuples.len(),
         2,
@@ -58,7 +61,7 @@ fn disambiguated_type_receives_tuples_under_its_own_type_name() {
         (r#"FROM "app"."docs""#, "docs"),
         (r#"FROM "public"."docs""#, renamed.as_str()),
     ] {
-        let matching = tuples_reading_from(&tuples, from_clause);
+        let matching = tuples_reading_from(tuples, from_clause);
         let [sql] = matching.as_slice() else {
             panic!("expected exactly one query reading {from_clause}, got: {matching:#?}");
         };
@@ -79,12 +82,12 @@ fn disambiguated_type_is_not_left_without_tuples() {
         .expect("translation should plan")
         .outputs_accepting_gaps()
         .model();
-    let tuples = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
-    let rendered = format_tuples(&tuples);
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let rendered = format_tuples(tuples);
 
     for type_name in type_names(&dsl) {
         if is_structural_type(&type_name) {
@@ -249,7 +252,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
     assert!(
         !tuples_reading_from(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -684,16 +687,34 @@ CREATE POLICY {table}_sel ON {table} FOR SELECT USING (TRUE);
 }
 
 fn custom_well_known_types(setting: &str, replacement: &str) -> WellKnownTypes {
-    let mut names = WellKnownTypes::default();
-    match setting {
-        "user" => names.user = replacement.to_string(),
-        "team" => names.team = replacement.to_string(),
-        "pg_role" => names.pg_role = replacement.to_string(),
-        "pg_role_scope" => names.pg_role_scope = replacement.to_string(),
-        "nobody" => names.nobody = replacement.to_string(),
-        other => panic!("unknown well-known type setting {other}"),
-    }
-    names
+    WellKnownTypes::new(
+        if setting == "user" {
+            replacement
+        } else {
+            USER_TYPE
+        },
+        if setting == "team" {
+            replacement
+        } else {
+            TEAM_TYPE
+        },
+        if setting == "pg_role" {
+            replacement
+        } else {
+            PG_ROLE_TYPE
+        },
+        if setting == "pg_role_scope" {
+            replacement
+        } else {
+            PG_ROLE_SCOPE_TYPE
+        },
+        if setting == "nobody" {
+            replacement
+        } else {
+            NOBODY_TYPE
+        },
+    )
+    .expect("the custom type name should be valid")
 }
 
 fn translator_with_types(names: WellKnownTypes) -> Translator {
@@ -701,6 +722,52 @@ fn translator_with_types(names: WellKnownTypes) -> Translator {
         .with_min_confidence(ConfidenceLevel::A)
         .with_well_known_types(names)
         .build()
+}
+
+#[test]
+fn invalid_configured_well_known_type_names_are_rejected_at_construction() {
+    for name in [
+        "",
+        "self",
+        "this",
+        "1principal",
+        "principal name",
+        "principal..name",
+        "principal-",
+        "principal#name",
+        "princ\u{ed}pal",
+    ] {
+        let result = WellKnownTypes::new(
+            name,
+            TEAM_TYPE,
+            PG_ROLE_TYPE,
+            PG_ROLE_SCOPE_TYPE,
+            NOBODY_TYPE,
+        );
+        assert!(
+            matches!(result, Err(WellKnownTypesError::InvalidTypeName { .. })),
+            "{name:?} must be rejected as an invalid type name"
+        );
+    }
+}
+
+#[test]
+fn duplicate_configured_well_known_type_names_are_rejected_at_construction() {
+    let result = WellKnownTypes::new(
+        "principal",
+        "principal",
+        PG_ROLE_TYPE,
+        PG_ROLE_SCOPE_TYPE,
+        NOBODY_TYPE,
+    );
+    assert!(matches!(
+        result,
+        Err(WellKnownTypesError::DuplicateTypeName {
+            first_setting: "user",
+            second_setting: "team",
+            name,
+        }) if name.as_str() == "principal"
+    ));
 }
 
 #[test]
@@ -751,17 +818,27 @@ fn a_schema_without_well_known_type_collisions_still_translates() {
 
 #[test]
 fn well_known_names_have_a_single_source_of_truth() {
-    let names = WellKnownTypes {
-        user: "principal".to_string(),
-        team: "principal_group".to_string(),
-        pg_role: "database_role".to_string(),
-        pg_role_scope: "database_role_scope".to_string(),
-        nobody: "empty_principal".to_string(),
-    };
+    let names = WellKnownTypes::new(
+        "principal",
+        "principal_group",
+        "database_role",
+        "database_role_scope",
+        "empty_principal",
+    )
+    .expect("custom type names should be valid");
     let mut rendered = String::new();
-    for fixture in ["abac_status", "pg_role_gate", "role_threshold_compound_key"] {
-        let sql = std::fs::read_to_string(format!("tests/fixtures/{fixture}/input.sql"))
-            .expect("fixture SQL should be readable");
+    for (fixture, tables) in [
+        (
+            "abac_status",
+            &["users", "teams", "team_members", "ownables", "owner_grants"][..],
+        ),
+        ("pg_role_gate", &["docs"][..]),
+        (
+            "role_threshold_compound_key",
+            &["users", "teams", "team_members", "ownables", "owner_grants"][..],
+        ),
+    ] {
+        let sql = support::qualify_table_declarations(&support::read_fixture_sql(fixture), tables);
         let registry =
             std::fs::read_to_string(format!("tests/fixtures/{fixture}/function_registry.json"))
                 .ok();
@@ -783,7 +860,7 @@ fn well_known_names_have_a_single_source_of_truth() {
             assert!(
                 relations
                     .iter()
-                    .any(|entry| entry.type_name.as_str() == names.team
+                    .any(|entry| entry.type_name.as_str() == names.team().as_str()
                         && entry.relation.as_str() == "member"
                         && !entry.shapes.is_empty()),
                 "the configured team type should carry the team membership source"
@@ -791,17 +868,17 @@ fn well_known_names_have_a_single_source_of_truth() {
         }
         let outputs = translation.outputs_accepting_gaps();
         rendered.push_str(&outputs.model());
-        rendered.push_str(&format_tuples(&outputs.tuple_queries()));
+        rendered.push_str(&format_tuples(outputs.tuple_queries()));
     }
     for expected in [
-        names.user,
-        names.team,
-        names.pg_role,
-        names.pg_role_scope,
-        names.nobody,
+        names.user().as_str(),
+        names.team().as_str(),
+        names.pg_role().as_str(),
+        names.pg_role_scope().as_str(),
+        names.nobody().as_str(),
     ] {
         assert!(
-            rendered.contains(&expected),
+            rendered.contains(expected),
             "custom type name {expected} should reach every output:\n{rendered}"
         );
     }
@@ -812,4 +889,108 @@ fn well_known_names_have_a_single_source_of_truth() {
             "default type name {default} leaked into custom output:\n{rendered}"
         );
     }
+}
+
+#[test]
+fn valid_extended_well_known_type_name_keeps_its_exact_spelling() {
+    let user = "Principal-Team/V2.member";
+    let names = WellKnownTypes::new(
+        user,
+        TEAM_TYPE,
+        PG_ROLE_TYPE,
+        PG_ROLE_SCOPE_TYPE,
+        NOBODY_TYPE,
+    )
+    .expect("the extended identifier should be valid");
+    assert_eq!(names.user().as_str(), user);
+
+    let schema =
+        support::qualify_table_declarations(&reserved_type_collision_schema("docs"), &["docs"]);
+    let db = db_of(&schema);
+    let outputs = translator_with_types(names)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    assert!(outputs.model().contains(&format!("type {user}\n")));
+    assert!(format_tuples(outputs.tuple_queries()).contains(&format!("'{user}:*'")));
+}
+
+#[test]
+fn collision_suffixed_table_type_cannot_alias_a_configured_principal_type() {
+    let db = db_of(COLLIDING_SCHEMAS);
+    let names = custom_well_known_types("team", "docs_83297e85");
+    let error = translator_with_types(names)
+        .translate(&db)
+        .expect_err("reserved suffixed type must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("docs_83297e85") && message.contains("well-known type"),
+        "reserved collision not reported: {message}"
+    );
+}
+
+#[test]
+fn exhausted_ownership_relation_candidates_stay_distinct_across_commands() {
+    let db = db_of(
+        r#"
+CREATE TABLE public.widgets(
+    id UUID PRIMARY KEY,
+    foo UUID,
+    "owner_foo_iD" UUID,
+    owner_foo_id_52ed0fe5 UUID,
+    foo_id UUID
+);
+ALTER TABLE widgets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sel_foo    ON widgets FOR SELECT USING (foo                    = current_user);
+CREATE POLICY sel_owner  ON widgets FOR SELECT USING ("owner_foo_iD"         = current_user);
+CREATE POLICY sel_hash   ON widgets FOR SELECT USING (owner_foo_id_52ed0fe5  = current_user);
+CREATE POLICY upd_foo_id ON widgets FOR UPDATE USING (foo_id                 = current_user);
+"#,
+    );
+
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+
+    let select_body =
+        relation_definition(&dsl, "widgets", "can_select").expect("widgets must define can_select");
+    let update_body =
+        relation_definition(&dsl, "widgets", "can_update").expect("widgets must define can_update");
+
+    let leading = |body: &str| -> String {
+        body.split(" and ")
+            .next()
+            .unwrap_or(body)
+            .trim()
+            .to_string()
+    };
+    let update_relation = leading(&update_body);
+
+    assert!(
+        !select_body
+            .split_whitespace()
+            .any(|token| token == update_relation.as_str()),
+        "update relation aliases select: {dsl}"
+    );
+
+    let outputs = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+
+    let query = tuples
+        .iter()
+        .find(|query| query.sql.contains(r#""foo_id"::text"#))
+        .expect("foo_id tuple source");
+    assert!(
+        query
+            .sql
+            .contains(&format!("'{update_relation}' AS relation")),
+        "foo_id populated the wrong relation: {}",
+        query.sql
+    );
 }

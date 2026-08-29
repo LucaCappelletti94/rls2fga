@@ -3,8 +3,8 @@
 //!
 //! Which clause a command needs, and what an absent one grants.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::TranslationNote;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
 

@@ -34,6 +34,41 @@ pub(crate) mod no_std_prelude {
     };
 }
 
+/// Reusable output contracts and row evaluation without parser dependencies.
+///
+/// ```compile_fail
+/// use rls2fga::generator::records::Record;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::generator::relations::RelationShapes;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::generator::action_relations::ActionRelations;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::generator::row_naming::RowNaming;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::generator::notes::TranslationNote;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::generator::unrestricted::UnrestrictedTable;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::parser::identifiers::TableId;
+/// ```
+///
+/// ```compile_fail
+/// use rls2fga::classifier::patterns::ConfidenceLevel;
+/// ```
+pub use rls2fga_types as types;
+
 /// RLS expression classification: pattern matching, function registry, and confidence scoring.
 pub mod classifier;
 /// Writing a generated model to a running `OpenFGA` server. Needs the `client` feature.

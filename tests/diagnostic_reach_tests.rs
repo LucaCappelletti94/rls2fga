@@ -14,10 +14,10 @@
 //! census that greps variant names misses that test, because it asserts the message text,
 //! which is how this one came to look unreached.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::notes::TranslationNote;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
 
@@ -38,7 +38,7 @@ fn reported(
     let skips = planned
         .outputs_accepting_gaps()
         .tuple_queries()
-        .into_iter()
+        .iter()
         .filter(|query| query.sql.trim_start().starts_with("--"))
         .map(|query| query.comment.clone())
         .collect();
@@ -105,25 +105,6 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);",
         "bypassing role",
         &notes,
         "has BYPASSRLS, so every policy is skipped",
-    );
-}
-
-/// A role whose name is not a valid identifier is rewritten, and two roles could rewrite
-/// onto one name, so the operator has to be told which name theirs became.
-#[test]
-fn a_rewritten_role_name_is_reported() {
-    let (notes, _) = reported(
-        r#"CREATE ROLE "Audit Team";
-CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON docs FOR SELECT TO "Audit Team" USING (TRUE);"#,
-        None,
-        ConfidenceLevel::B,
-    );
-    assert_reports(
-        "rewritten role",
-        &notes,
-        "was rewritten to 'pg_role:audit_team'",
     );
 }
 
@@ -250,16 +231,16 @@ CREATE POLICY p ON docs FOR SELECT USING (get_owner_role(current_user, lower(tit
 /// expansion cannot name a subject type either.
 #[test]
 fn a_grant_without_a_principal_table_is_skipped_twice() {
-    let (_, skips) = reported(
+    let sql = support::qualify_table_declarations(
         &format!(
             "{GRANT_TABLE}
 CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (get_owner_role(current_user, owner_id) >= 2);"
         ),
-        Some(GRANTS),
-        ConfidenceLevel::B,
+        &["owner_grants", "docs"],
     );
+    let (_, skips) = reported(&sql, Some(GRANTS), ConfidenceLevel::B);
     assert_reports(
         "no user principal",
         &skips,
@@ -324,7 +305,7 @@ CREATE POLICY ownables_update ON ownables FOR UPDATE
     let skips: Vec<String> = planned
         .outputs_accepting_gaps()
         .tuple_queries()
-        .into_iter()
+        .iter()
         .filter(|query| query.sql.trim_start().starts_with("--"))
         .map(|query| query.comment.clone())
         .collect();

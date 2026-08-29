@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{normalize_relation_name, table_has_column};
+use crate::types::ColumnName;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::expansion::{self, ExpansionState};
@@ -403,6 +403,10 @@ fn classify_expr_inner<DB: DatabaseLike>(
         }
     }
 
+    if let Expr::IsTrue(inner) = expr {
+        return classify_expr_depth(inner, db, registry, table, command, depth + 1, state);
+    }
+
     // Handle NOT unary operator.
     if let Expr::UnaryOp {
         op: UnaryOperator::Not,
@@ -583,6 +587,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
             expansion::Expansion::Body {
                 function,
                 reads_bypass_rls,
+                presence_columns,
                 expr: body,
             } => {
                 state.enter(normalize_relation_name(&function));
@@ -606,6 +611,7 @@ fn classify_expr_inner<DB: DatabaseLike>(
                         pattern: PatternClass::ExpandedFunction(ExpandedFunction {
                             function,
                             reads_bypass_rls,
+                            presence_columns,
                             inner: Box::new(inner),
                         }),
                         confidence,
@@ -770,8 +776,8 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
 mod tests {
     use super::*;
     use crate::parser::expr::parse_expr_for_tests as parse_expr;
-    use crate::parser::identifiers::ColumnName;
     use crate::parser::sql_parser::{parse_schema, ParserDB};
+    use crate::types::{ColumnName, TableId};
 
     fn docs_db() -> ParserDB {
         parse_schema(
@@ -1749,7 +1755,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             ),
             (
                 PatternClass::P4ExistsMembership(ExistsMembership {
-                    join_table: "t".into(),
+                    join_table: TableId::from_stored(None, "t".to_string()),
                     pairs: vec![MembershipJoinPair {
                         join_column: ColumnName::from_stored("c"),
                         outer_column: ColumnName::from_stored("o"),
@@ -1761,7 +1767,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             ),
             (
                 PatternClass::P5ParentInheritance(ParentInheritance {
-                    parent_table: "p".into(),
+                    parent_table: TableId::from_stored(None, "p".to_string()),
                     fk_column: ColumnName::from_stored("c"),
                     inner_pattern: Box::new(ClassifiedExpr {
                         pattern: PatternClass::P3DirectOwnership(DirectOwnership {
@@ -1858,7 +1864,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         assert!(is_relationship_pattern_for_p7(&p3));
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P4ExistsMembership(ExistsMembership {
-                join_table: "t".into(),
+                join_table: TableId::from_stored(None, "t".to_string()),
                 pairs: vec![MembershipJoinPair {
                     join_column: ColumnName::from_stored("c"),
                     outer_column: ColumnName::from_stored("o"),
@@ -1869,7 +1875,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         ));
         assert!(is_relationship_pattern_for_p7(
             &PatternClass::P5ParentInheritance(ParentInheritance {
-                parent_table: "p".into(),
+                parent_table: TableId::from_stored(None, "p".to_string()),
                 fk_column: ColumnName::from_stored("c"),
                 inner_pattern: Box::new(p3_expr.clone()),
             })
@@ -1913,7 +1919,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                     p3_expr.clone(),
                     ClassifiedExpr {
                         pattern: PatternClass::P4ExistsMembership(ExistsMembership {
-                            join_table: "t".into(),
+                            join_table: TableId::from_stored(None, "t".to_string()),
                             pairs: vec![MembershipJoinPair {
                                 join_column: ColumnName::from_stored("c"),
                                 outer_column: ColumnName::from_stored("o"),

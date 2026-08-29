@@ -228,16 +228,13 @@ fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
 fn recognize_p2_role_accessor_equality_and_in_list() {
     let db = db_with_docs_and_members();
     let mut registry = FunctionRegistry::new();
-    // Register `role` (normalized form of `auth.role`, schema stripped) as a RoleAccessor.
     registry.register_if_absent(
-        "role",
+        "auth.role",
         &FunctionSemantic::RoleAccessor {
             returns: "text".to_string(),
         },
     );
 
-    // Equality form: auth.role() = 'authenticated'
-    // `auth.role` normalizes to `role` (schema prefix is stripped by normalize_relation_name).
     let eq_expr = parse_expr("auth.role() = 'authenticated'");
     let c_eq =
         recognize_p2(&eq_expr, &db, &registry).expect("expected P2 for role_accessor = literal");
@@ -245,7 +242,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
         matches!(
             &c_eq.pattern,
             PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
-                if function_name == "role" && role_names == &["authenticated"]
+                if function_name == "auth.role" && role_names == &["authenticated"]
         ),
         "auth.role() = 'authenticated' should produce P2, got: {:?}",
         c_eq.pattern
@@ -260,7 +257,7 @@ fn recognize_p2_role_accessor_equality_and_in_list() {
         matches!(
             &c_in.pattern,
             PatternClass::P2RoleNameInList(RoleNameInList { function_name, role_names, .. })
-                if function_name == "role"
+                if function_name == "auth.role"
                     && role_names == &["authenticated", "service_role"]
         ),
         "auth.role() IN (...) should produce P2, got: {:?}",
@@ -624,7 +621,7 @@ fn recognize_p4_exists_supports_extra_predicates_and_negation() {
             pairs,
             user_column,
             extra_predicates,
-        }) if join_table == "doc_members"
+        }) if join_table.to_string() == "doc_members"
             && matches!(pairs.as_slice(), [pair]
                 if pair.join_column == "doc_id" && pair.outer_column == "id")
             && user_column == "user_id"
@@ -681,7 +678,7 @@ fn recognize_p4_with_alias_and_current_user_keyword_strips_correlated_predicates
             pairs,
             user_column,
             extra_predicates,
-        }) if join_table == "doc_members"
+        }) if join_table.to_string() == "doc_members"
             && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
             && user_column == "user_id"
             && extra_predicates
@@ -1603,7 +1600,10 @@ fn extractor_helpers_and_attribute_detection_work_for_edge_cases() {
         Some("auth_current_user_id")
     );
     let schema_fun = parse_expr(r#""auth"."uid"()"#);
-    assert_eq!(extract_function_name(&schema_fun).as_deref(), Some("uid"));
+    assert_eq!(
+        extract_function_name(&schema_fun).as_deref(),
+        Some(r#""auth"."uid""#)
+    );
 
     let id_expr = parse_expr("owner_id");
     assert!(extract_function_name(&id_expr).is_none());
@@ -2040,7 +2040,7 @@ fn recognize_p4_multi_from_requires_user_predicate() {
         Some(ClassifiedExpr {
             pattern: PatternClass::P4ExistsMembership(ExistsMembership { ref join_table, .. }),
             ..
-        }) if join_table == "doc_members"
+        }) if join_table.to_string() == "doc_members"
     ));
 }
 
@@ -2217,7 +2217,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(proj
     assert!(matches!(
         classified.pattern,
         PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, ref fk_column, .. })
-            if parent_table == "projects" && fk_column == "project_id"
+            if parent_table.to_string() == "projects" && fk_column == "project_id"
     ));
 }
 
@@ -3202,7 +3202,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
         matches!(
             &classified.pattern,
             PatternClass::P5ParentInheritance(ParentInheritance { parent_table, fk_column, inner_pattern })
-                if parent_table == "projects"
+                if parent_table.to_string() == "projects"
                     && fk_column == "project_id"
                     && matches!(
                         inner_pattern.pattern,
@@ -3248,7 +3248,7 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
             )
             .map(|classified| classified.pattern),
             Some(PatternClass::P5ParentInheritance(ParentInheritance { ref parent_table, .. }))
-                if parent_table == "projects"
+                if parent_table.to_string() == "projects"
         ),
         "the policy states the join, so it is the evidence"
     );

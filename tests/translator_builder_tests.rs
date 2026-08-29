@@ -2,13 +2,14 @@ use rls2fga::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
 };
 use rls2fga::classifier::patterns::{
-    CallerScalarEqualsConstant, ConfidenceLevel, ConstantInCallerSet, DirectOwnership,
-    ExistsMembership, MembershipInCallerSet, PatternClass, RowValueEqualsCallerScalar,
-    RowValueInCallerSet, UnclassifiedExpr,
+    CallerScalarEqualsConstant, ConstantInCallerSet, DirectOwnership, ExistsMembership,
+    MembershipInCallerSet, PatternClass, RowValueEqualsCallerScalar, RowValueInCallerSet,
+    UnclassifiedExpr,
 };
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
 
 #[test]
 fn translator_builder_default_settings_reject_timezone_accessor_inference() {
@@ -358,7 +359,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
         matches!(
             &using.pattern,
             PatternClass::P4ExistsMembership(ExistsMembership { join_table, user_column, .. })
-                if join_table == "doc_members" && user_column == "user_id"
+                if join_table.name() == "doc_members" && user_column == "user_id"
         ),
         "a named key read inline should carry the membership too, got: {:?}",
         using.pattern
@@ -797,18 +798,17 @@ CREATE POLICY p ON audit_log FOR SELECT USING (
     );
 }
 
-/// Inventory row 7: a declared field of the caller's token against a constant, reached
-/// through the helper function whose body reads the setting the declaration names.
+/// A declared field of the caller's token reached through its helper function.
 #[test]
 fn a_declared_claim_field_equals_a_constant_through_its_wrapper() {
     let sql = r"
 CREATE TABLE users(id UUID PRIMARY KEY);
 CREATE TABLE documents(id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id));
-CREATE FUNCTION auth.jwt() RETURNS JSONB LANGUAGE sql STABLE
+CREATE FUNCTION jwt() RETURNS JSONB LANGUAGE sql STABLE
     AS 'SELECT current_setting(''request.jwt.claims'')::jsonb';
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON documents AS RESTRICTIVE FOR SELECT
-    USING ((SELECT auth.jwt() ->> 'aal') = 'aal2');
+    USING ((SELECT jwt() ->> 'aal') = 'aal2');
 ";
     let classified = declared(
         sql,
@@ -911,7 +911,7 @@ CREATE POLICY p ON papers FOR SELECT USING (
                 member_column,
                 source,
                 ..
-            }) if join_table == "paper_shares"
+            }) if join_table.name() == "paper_shares"
                 && fk_column == "paper_id"
                 && member_column == "viewer"
                 && source.request_parameter() == "app_subjects"
@@ -991,10 +991,10 @@ fn a_redundant_caller_is_known_check_leaves_the_ownership_half() {
     let sql = r"
 CREATE TABLE users(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id));
-CREATE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE
+CREATE FUNCTION uid() RETURNS UUID LANGUAGE sql STABLE
     AS 'SELECT current_setting(''request.jwt.claim.sub'')::uuid';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON docs FOR SELECT USING (auth.uid() IS NOT NULL AND auth.uid() = user_id);
+CREATE POLICY p ON docs FOR SELECT USING (uid() IS NOT NULL AND uid() = user_id);
 ";
     let classified = declared(sql, Vec::new());
     assert!(
@@ -1052,7 +1052,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
         .build()
         .translate(&db)
         .expect("translation should plan");
-    let relations_before = translation.relations();
+    let relations_before = translation.relations().to_vec();
     let outputs = translation.outputs().expect("nothing goes unhandled");
     assert_eq!(outputs.translation().relations(), relations_before);
     assert!(!outputs.translation().action_relations().is_empty());
@@ -1078,18 +1078,49 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
 
     let notes = translation.notes().to_vec();
     let json = serde_json::to_string(&notes).expect("notes serialize");
-    let reloaded: Vec<rls2fga::generator::notes::TranslationNote> =
+    let reloaded: Vec<rls2fga::types::TranslationNote> =
         serde_json::from_str(&json).expect("notes deserialize");
     assert_eq!(reloaded, notes);
 
     let outputs = translation.outputs().expect("nothing goes unhandled");
     let description = outputs
         .tuple_queries()
-        .into_iter()
-        .find_map(|query| query.description)
+        .iter()
+        .find_map(|query| query.description.as_ref())
         .expect("a query describes its records");
     let json = serde_json::to_string(&description).expect("description serializes");
-    let reloaded: rls2fga::generator::records::RecordDescription =
+    let reloaded: rls2fga::types::RecordDescription =
         serde_json::from_str(&json).expect("description deserializes");
-    assert_eq!(reloaded, description);
+    assert_eq!(&reloaded, description);
+}
+
+#[test]
+fn invalid_custom_condition_parameter_names_are_rejected_by_json() {
+    for name in ["", "tenant-id", "1tenant"] {
+        let json = serde_json::json!({
+            "key": "app.tenant_id",
+            "kind": "scalar_attribute",
+            "parameter": name,
+        });
+        let parsed = serde_json::from_value::<SessionAttribute>(json);
+        assert!(parsed.is_err(), "{name:?} is not a CEL identifier");
+    }
+}
+
+#[test]
+fn custom_condition_parameter_builders_reject_invalid_names() {
+    for name in ["", "tenant-id", "1tenant", "in"] {
+        assert!(
+            TranslatorBuilder::new()
+                .with_request_time_parameter(name)
+                .is_err(),
+            "{name:?} must be rejected for request time"
+        );
+        assert!(
+            SessionAttribute::setting("app.tenant_id", SessionAttributeKind::ScalarAttribute)
+                .with_parameter(name)
+                .is_err(),
+            "{name:?} must be rejected for session attributes"
+        );
+    }
 }

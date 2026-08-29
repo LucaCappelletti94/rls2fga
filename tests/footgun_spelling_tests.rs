@@ -3,9 +3,9 @@
 //!
 //! How an identifier is spelled, and the name `PostgreSQL` stores it under.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::tuple_generator::format_tuples;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
 
@@ -77,13 +77,13 @@ fn a_quoted_parent_reference_still_inherits() {
 fn generated_sql_names_identifiers_the_way_postgres_stores_them() {
     let db = db_of(
         r"
-CREATE TABLE Docs(ID UUID PRIMARY KEY, Owner_Id TEXT);
+CREATE TABLE public.Docs(ID UUID PRIMARY KEY, Owner_Id TEXT);
 ALTER TABLE Docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let rendered = format_tuples(
-        &translator(ConfidenceLevel::B)
+        translator(ConfidenceLevel::B)
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -91,7 +91,7 @@ CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
     );
 
     assert!(
-        rendered.contains(r#"FROM "docs""#),
+        rendered.contains(r#"FROM "public"."docs""#),
         "the stored relation name is docs:\n{rendered}"
     );
     assert!(
@@ -110,13 +110,13 @@ CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
 fn a_quoted_column_keeps_the_case_postgres_stores_it_under() {
     let db = db_of(
         r#"
-CREATE TABLE docs(id UUID PRIMARY KEY, "Owner_Id" TEXT);
+CREATE TABLE public.docs(id UUID PRIMARY KEY, "Owner_Id" TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING ("Owner_Id" = current_user);
 "#,
     );
     let rendered = format_tuples(
-        &translator(ConfidenceLevel::B)
+        translator(ConfidenceLevel::B)
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -135,7 +135,7 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING ("Owner_Id" = current_user);
 fn a_policy_reaches_a_column_the_declaration_spells_in_another_case() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE TABLE public.docs(id UUID PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING (Owner_Id = current_user);
 ",
@@ -147,7 +147,7 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (Owner_Id = current_user);
         .outputs_accepting_gaps()
         .model();
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -220,10 +220,10 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 fn a_mixed_case_foreign_key_still_inherits_the_parent_rule() {
     let db = db_of(
         r"
-CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE public.projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
-CREATE TABLE tasks(id UUID PRIMARY KEY, Project_Id UUID REFERENCES projects(id));
+CREATE TABLE public.tasks(id UUID PRIMARY KEY, Project_Id UUID REFERENCES projects(id));
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
   EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
@@ -243,7 +243,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     );
     assert!(
         format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -287,13 +287,13 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
 fn a_mixed_case_unique_id_column_identifies_a_row() {
     let db = db_of(
         r"
-CREATE TABLE docs(ID UUID UNIQUE NOT NULL, owner_id TEXT);
+CREATE TABLE public.docs(ID UUID UNIQUE NOT NULL, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let rendered = format_tuples(
-        &translator(ConfidenceLevel::B)
+        translator(ConfidenceLevel::B)
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -584,6 +584,8 @@ fn a_parenthesized_attribute_conjunct_classifies_as_the_bare_one() {
     let schema = |using: &str| {
         format!(
             "CREATE TABLE ownables(id UUID PRIMARY KEY, owner_id UUID, status TEXT);\n\
+             CREATE TABLE owner_grants(grantee_owner_id UUID, granted_owner_id UUID, role_id INTEGER);\n\
+             CREATE TABLE team_members(user_id UUID, team_id UUID);\n\
              ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY ownables_update ON ownables FOR UPDATE USING ({using});\n"
         )
@@ -620,6 +622,8 @@ fn a_parenthesized_opaque_attribute_conjunct_classifies_as_the_bare_one() {
     let schema = |using: &str| {
         format!(
             "CREATE TABLE ownables(id UUID PRIMARY KEY, owner_id UUID, status TEXT);\n\
+             CREATE TABLE owner_grants(grantee_owner_id UUID, granted_owner_id UUID, role_id INTEGER);\n\
+             CREATE TABLE team_members(user_id UUID, team_id UUID);\n\
              ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY ownables_update ON ownables FOR UPDATE USING ({using});\n"
         )

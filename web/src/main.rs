@@ -17,8 +17,8 @@ use dioxus_free_icons::icons::fa_solid_icons::{
 };
 use dioxus_free_icons::Icon;
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
@@ -114,7 +114,7 @@ fn translate(sql: &str, level: ConfidenceLevel) -> Result<Rendered> {
     let outputs = translation.outputs_accepting_gaps();
     Ok(Rendered {
         dsl: outputs.model(),
-        tuple_sql: format_tuples(&outputs.tuple_queries()),
+        tuple_sql: format_tuples(outputs.tuple_queries()),
         json: serde_json::to_string_pretty(&outputs.json_model())
             .context("serializing the JSON authorization model")?,
         notes: outputs.notes().to_vec(),

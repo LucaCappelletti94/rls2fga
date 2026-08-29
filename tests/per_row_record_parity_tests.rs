@@ -23,19 +23,19 @@ use testcontainers::{
 
 use openfga_client::client::OpenFgaClient;
 use openfga_client::tonic::transport::Channel;
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::action_relations::{ActionAnswer, ActionStatement};
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{
+use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
+use rls2fga::parser::sql_parser::ParserDB;
+use rls2fga::translator::{Outputs, Translation};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RowDecision;
+use rls2fga::types::{
     records_from_row, BoundQuery, ColumnKind, Record, RecordDerivation, RecordDescription,
     ReplayScope, RowCell, RowList, RowValues, ValueSource,
 };
-use rls2fga::generator::relations::RowDecision;
-use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
-use rls2fga::parser::identifiers::ColumnName;
-use rls2fga::parser::sql_parser::ParserDB;
-use rls2fga::translator::{Outputs, Translation};
+use rls2fga::types::{ActionAnswer, ActionStatement};
+use rls2fga::types::{ColumnName, TableId};
 
 mod support;
 
@@ -288,15 +288,10 @@ fn records_of_sql(
 }
 
 /// Every row of `table`, as JSON.
-fn rows_of(conn: &mut PgConnection, table: &str) -> Vec<serde_json::Value> {
+fn rows_of(conn: &mut PgConnection, table: &TableId) -> Vec<serde_json::Value> {
     // The table is discovered from the description at runtime, so the typed DSL
     // cannot name it. `to_jsonb` keeps every column without a per-table struct.
-    let quoted = table
-        .split('.')
-        .map(|part| format!("\"{part}\""))
-        .collect::<Vec<_>>()
-        .join(".");
-    let sql = format!("SELECT to_jsonb(t) AS row FROM {quoted} t");
+    let sql = format!("SELECT to_jsonb(t) AS row FROM {} t", table.sql_name());
     let rows: Vec<JsonRow> = diesel::sql_query(&sql)
         .load(conn)
         .unwrap_or_else(|error| panic!("failed to read rows of {table}: {error}"));
@@ -326,7 +321,11 @@ fn records_from_descriptions(
 /// are discovered from the description at runtime, so no `table!` can name them. The
 /// values come back as a JSON array of the same `::text` renderings a single-column read
 /// produced, so a compound key is one row here rather than a cross product.
-fn distinct_keys(conn: &mut PgConnection, table: &str, columns: &[ColumnName]) -> Vec<Vec<String>> {
+fn distinct_keys(
+    conn: &mut PgConnection,
+    table: &TableId,
+    columns: &[ColumnName],
+) -> Vec<Vec<String>> {
     let rendered: Vec<String> = columns
         .iter()
         .map(|column| format!("\"{}\"::text", column.as_str()))
@@ -336,9 +335,10 @@ fn distinct_keys(conn: &mut PgConnection, table: &str, columns: &[ColumnName]) -
         .map(|column| format!("\"{}\" IS NOT NULL", column.as_str()))
         .collect();
     let sql = format!(
-        "SELECT DISTINCT json_build_array({})::text AS value FROM \"{table}\" \
+        "SELECT DISTINCT json_build_array({})::text AS value FROM {} \
          WHERE {} ORDER BY value",
         rendered.join(", "),
+        table.sql_name(),
         not_null.join(" AND ")
     );
     let rows: Vec<KeyRow> = diesel::sql_query(&sql)
@@ -415,7 +415,7 @@ fn assert_bound_queries_account_for_every_record(
         query.comment
     );
 
-    let mut by_table: BTreeMap<&str, BTreeSet<Record>> = BTreeMap::new();
+    let mut by_table: BTreeMap<String, BTreeSet<Record>> = BTreeMap::new();
     for bound in bound_queries {
         assert_eq!(
             bound.condition, query.condition,
@@ -447,7 +447,7 @@ fn assert_bound_queries_account_for_every_record(
             assert_records_lie_in_the_declared_slice(bound, key, &bound_records, label);
             narrowed |= bound_records.len() < whole.len();
             by_table
-                .entry(bound.table.as_str())
+                .entry(bound.table.to_string())
                 .or_default()
                 .extend(bound_records);
         }
@@ -739,7 +739,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
 
     // Without the accessor the ownership, list, field and membership policies fall
     // below the threshold and the schema exercises only three shapes.
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         ROW_SHAPES_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -755,7 +755,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "row shapes");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "row shapes");
 
     // Non-vacuous: the schema really does exercise the fast path, and the rows
     // really do produce records on both sides.
@@ -805,7 +805,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
         conn.batch_execute(REQUEST_GATE_SEED)
             .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
 
-        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let (classified, db, registry) = support::try_load_qualified_fixture_classified(fixture);
         let outputs = Translation::plan(
             classified,
             &db,
@@ -829,7 +829,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
         );
 
         let (pure, joined, records) =
-            assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, fixture);
+            assert_descriptions_match_their_sql(&outputs, &mut conn, queries, fixture);
         assert_eq!(
             joined, 0,
             "{fixture}: a request gate is decided by the row alone"
@@ -884,7 +884,7 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
     conn.batch_execute(CLOCK_GATE_SEED)
         .expect("failed to seed the clock-gate schema");
 
-    let (classified, db, registry) = support::classify_sql(CLOCK_GATE_SCHEMA, None);
+    let (classified, db, registry) = support::classify_qualified_sql(CLOCK_GATE_SCHEMA, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -905,7 +905,7 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
     };
 
     let (pure, joined, _) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "clock gate");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "clock gate");
     assert_eq!(pure, 1, "the clock guard settles from the row");
     assert_eq!(joined, 0, "nothing here is left to replay, got {joined}");
 
@@ -977,12 +977,12 @@ async fn an_expiring_share_settles_and_matches_its_own_sql() {
     conn.batch_execute(EXPIRING_SHARE_SEED)
         .expect("failed to seed the expiring shares");
 
-    let (classified, db, registry) = support::classify_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
         EXPIRING_SHARE_SCHEMA,
         r#"[
-  { "key": "app.user_id", "kind": "caller_id" },
-  { "key": "app.subjects", "kind": "set_attribute" }
-]"#,
+      { "key": "app.user_id", "kind": "caller_id" },
+      { "key": "app.subjects", "kind": "set_attribute" }
+    ]"#,
     );
     let outputs = Translation::plan(
         classified,
@@ -1013,7 +1013,7 @@ async fn an_expiring_share_settles_and_matches_its_own_sql() {
     );
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "expiring share");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "expiring share");
     assert_eq!(
         joined, 0,
         "the clock in the condition lets every arm settle from its own row"
@@ -1044,7 +1044,8 @@ async fn a_settled_share_arm_matches_its_own_sql() {
     )
     .expect("failed to seed the papers and shares");
 
-    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
+    let (classified, db, registry) =
+        support::try_load_qualified_fixture_classified("connetto_capability");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1057,7 +1058,7 @@ async fn a_settled_share_arm_matches_its_own_sql() {
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "settled share arm");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "settled share arm");
     assert_eq!(joined, 0, "the share row decides its record, saw {joined}");
     assert!(
         pure >= 3,
@@ -1104,7 +1105,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .expect("failed to seed the compound-key grant schema");
 
     let (classified, db, registry) =
-        support::load_fixture_classified("role_threshold_compound_key");
+        support::load_qualified_fixture_classified("role_threshold_compound_key");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1119,7 +1120,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     // Non-vacuous: the pointer and both identity facts follow from one row and are
     // evaluated against their own SQL, and the grant replay runs for every owner.
     let (pure, joined, _) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "compound key grants");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "compound key grants");
     assert_eq!(
         joined, 1,
         "only the grant table is answered by querying, saw {joined}"
@@ -1134,7 +1135,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         .filter_map(|query| match &query.description.as_ref()?.derivation {
             RecordDerivation::FromRow {
                 table, template, ..
-            } if table == "ownables" => Some(template),
+            } if table.name() == "ownables" => Some(template),
             _ => None,
         })
         .find(|template| template.subject_type == "owner_grants_owner")
@@ -1196,7 +1197,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     )
     .expect("failed to seed the earth_metabolome schema");
 
-    let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
+    let (classified, db, registry) = support::load_qualified_fixture_classified("earth_metabolome");
     let outputs = Translation::plan(
         classified.clone(),
         &db,
@@ -1209,7 +1210,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     let queries = outputs.tuple_queries();
 
     let (pure, joined, _) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "earth_metabolome");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "earth_metabolome");
 
     // The pointer, both owner identities and the membership all follow from one row, and
     // only the grant table, whose grantee kind the row does not carry, needs a query.
@@ -1293,7 +1294,7 @@ async fn holder_shapes_match_their_own_sql() {
     conn.batch_execute(HOLDER_SEED)
         .expect("failed to seed the holder schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         HOLDER_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1309,7 +1310,7 @@ async fn holder_shapes_match_their_own_sql() {
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "holder shapes");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "holder shapes");
 
     // Three bridges and the two member lists the row decides, with the residual
     // travelling as a guard, and the clock-gated list left to its query.
@@ -1364,7 +1365,7 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
     .expect("failed to seed the wrapped-membership schema");
 
     let (classified, db, registry) =
-        support::try_load_fixture_classified("membership_wrapped_function_safe");
+        support::try_load_qualified_fixture_classified("membership_wrapped_function_safe");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1377,7 +1378,7 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "wrapped membership");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "wrapped membership");
     assert_eq!(
         joined, 1,
         "the residual only SQL can evaluate keeps the member list on its query, saw {joined}"
@@ -1474,7 +1475,7 @@ async fn a_composite_key_membership_matches_its_own_sql() {
     conn.batch_execute(COMPOSITE_KEY_MEMBERSHIP_SEED)
         .expect("failed to seed the composite-key membership schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         COMPOSITE_KEY_MEMBERSHIP_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1492,7 +1493,7 @@ async fn a_composite_key_membership_matches_its_own_sql() {
     let (pure, joined, records) = assert_descriptions_match_their_sql(
         &outputs,
         &mut conn,
-        &queries,
+        queries,
         "composite-key membership",
     );
 
@@ -1540,7 +1541,7 @@ INSERT INTO docs (id, title) VALUES
     )
     .expect("failed to seed the rows the scope judges");
 
-    let (classified, db, registry) = support::classify_sql(schema, None);
+    let (classified, db, registry) = support::classify_qualified_sql(schema, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1661,7 +1662,7 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
     conn.batch_execute(COMPOUND_IDENTITY_SEED)
         .expect("failed to seed the compound identity schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1677,7 +1678,7 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "compound identity");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "compound identity");
 
     assert_eq!(
         pure, 1,
@@ -1701,7 +1702,7 @@ async fn a_timestamptz_identity_matches_between_the_sql_and_the_evaluator() {
     conn.batch_execute(TIMESTAMPTZ_IDENTITY_SEED)
         .expect("failed to seed the timestamp identity schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         TIMESTAMPTZ_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1717,7 +1718,7 @@ async fn a_timestamptz_identity_matches_between_the_sql_and_the_evaluator() {
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
-        assert_descriptions_match_their_sql(&outputs, &mut conn, &queries, "timestamp identity");
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "timestamp identity");
 
     assert_eq!(pure, 1, "the ownership shape follows from one row");
     assert_eq!(joined, 0, "nothing here reads a second table");
@@ -1919,7 +1920,7 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     conn.batch_execute(RECIPE_SEED)
         .expect("failed to seed the recipe schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         RECIPE_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1932,10 +1933,10 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     )
     .expect("translation should plan");
     let reported = planned.relations();
-    let outputs = planned.outputs_accepting_gaps();
+    let outputs = planned.clone().outputs_accepting_gaps();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
-    for query in &outputs.tuple_queries() {
+    for query in outputs.tuple_queries() {
         tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     assert!(
@@ -1960,17 +1961,16 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     let mut narrowed_by_composition = 0usize;
     let mut failures = Vec::new();
 
-    for entry in &reported {
+    for entry in reported {
         let Some(decision) = entry.decision.as_ref() else {
             continue;
         };
         kinds.insert(recipe_kind(decision));
         let table = first_shape(decision)
             .row_table()
-            .expect("a leaf resolves from a row of one table")
-            .to_string();
+            .expect("a leaf resolves from a row of one table");
 
-        for row in rows_of(&mut conn, &table) {
+        for row in rows_of(&mut conn, table) {
             let Some(object) = recipe_object(decision, &row) else {
                 continue;
             };
@@ -2054,7 +2054,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     conn.batch_execute(COMPOUND_IDENTITY_SEED)
         .expect("failed to seed the compound identity schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2069,7 +2069,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     .outputs_accepting_gaps();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
-    for query in &outputs.tuple_queries() {
+    for query in outputs.tuple_queries() {
         tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     assert_eq!(
@@ -2158,7 +2158,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     conn.batch_execute(NAMING_SEED)
         .expect("failed to seed the naming schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         NAMING_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2180,7 +2180,8 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     assert!(
         naming
             .iter()
-            .any(|entry| entry.type_name != entry.table && entry.type_name.contains('_')),
+            .any(|entry| entry.type_name.as_str() != entry.table.name()
+                && entry.type_name.contains('_')),
         "one table has to take a collision suffix: {naming:?}"
     );
     assert!(
@@ -2274,7 +2275,7 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
     conn.batch_execute(PARTITION_SEED)
         .expect("failed to seed the partitions");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         PARTITION_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2301,13 +2302,13 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
     for partition in ["events_2026", "events_2027"] {
         let entry = naming
             .iter()
-            .find(|entry| entry.table == partition)
+            .find(|entry| entry.table.name() == partition)
             .unwrap_or_else(|| panic!("no entry for {partition}, got {naming:?}"));
         assert_eq!(
             entry.type_name, "events",
             "a partition's rows are objects of its root"
         );
-        let rows = rows_of(&mut conn, partition);
+        let rows = rows_of(&mut conn, &entry.table);
         assert_eq!(rows.len(), 1, "each partition holds one seeded row");
         for row in &rows {
             let object = entry
@@ -2369,7 +2370,7 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
     conn.batch_execute(REPLACEMENT_SEED)
         .expect("failed to seed the replacement schema");
 
-    let (classified, db, registry) = support::classify_sql(
+    let (classified, db, registry) = support::classify_qualified_sql(
         REPLACEMENT_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2385,7 +2386,7 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
     let outputs = planned.outputs_accepting_gaps();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
-    for query in &outputs.tuple_queries() {
+    for query in outputs.tuple_queries() {
         tuples.extend(records_from_sql(&outputs, &mut conn, query));
     }
     let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
@@ -2486,7 +2487,7 @@ INSERT INTO docs (id, title) VALUES
     )
     .expect("failed to seed the rows the scope judges");
 
-    let (classified, db, registry) = support::classify_sql(schema, None);
+    let (classified, db, registry) = support::classify_qualified_sql(schema, None);
     let outputs = Translation::plan(
         classified,
         &db,

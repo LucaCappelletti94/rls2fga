@@ -9,7 +9,7 @@ use crate::classifier::patterns::{
     MembershipInCallerSet, NumericThreshold, ParentInheritance, RoleNameInList,
     RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
 };
-use crate::generator::notes::TranslationNote;
+use crate::types::TranslationNote;
 
 /// Escape a user-controlled string for safe embedding in a Markdown table cell.
 ///
@@ -282,8 +282,8 @@ fn notes_for_policy(notes: &[TranslationNote], policy_name: &str) -> String {
 mod tests {
     use super::*;
     use crate::classifier::patterns::*;
-    use crate::parser::identifiers::ColumnName;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
+    use crate::types::{ColumnName, TableId};
 
     fn classified_policy(
         name: &str,
@@ -347,7 +347,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
             ),
             (
                 PatternClass::P4ExistsMembership(ExistsMembership {
-                    join_table: "doc_members".to_string(),
+                    join_table: TableId::from_stored(None, "doc_members".to_string()),
                     pairs: vec![MembershipJoinPair {
                         join_column: ColumnName::from_stored("doc_id"),
                         outer_column: ColumnName::from_stored("id"),
@@ -359,7 +359,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
             ),
             (
                 PatternClass::P5ParentInheritance(ParentInheritance {
-                    parent_table: "projects".to_string(),
+                    parent_table: TableId::from_stored(None, "projects".to_string()),
                     fk_column: ColumnName::from_stored("project_id"),
                     inner_pattern: Box::new(p3.clone()),
                 }),

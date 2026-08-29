@@ -1,10 +1,10 @@
 //! Reaching the outputs, and what stops it.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 
 fn db_of(sql: &str) -> ParserDB {
     parse_schema(sql).expect("schema should parse")
@@ -203,11 +203,66 @@ fn every_output_renders_from_one_plan() {
 
     assert_eq!(outputs.model(), outputs.model());
     assert_eq!(
-        format_tuples(&outputs.tuple_queries()),
-        format_tuples(&outputs.tuple_queries())
+        format_tuples(outputs.tuple_queries()),
+        format_tuples(outputs.tuple_queries())
     );
     assert_eq!(
         serde_json::to_string(&outputs.json_model()).expect("serializes"),
         serde_json::to_string(&outputs.json_model()).expect("serializes")
+    );
+}
+
+#[test]
+fn translation_note_table_serializes_as_string() {
+    use rls2fga::types::TableId;
+    let note = TranslationNote::NoPermissivePolicy {
+        table: TableId::from_stored(Some("public".to_string()), "docs".to_string()),
+        commands: vec!["SELECT".to_string()],
+    };
+    let json = serde_json::to_string(&note).expect("note serializes");
+    assert_eq!(
+        json,
+        r#"{"NoPermissivePolicy":{"table":"public.docs","commands":["SELECT"]}}"#
+    );
+}
+
+#[test]
+fn translation_note_roundtrips_from_baseline_string_table_json() {
+    use rls2fga::types::TranslationNote;
+    let baseline = r#"{"NoPermissivePolicy":{"table":"public.docs","commands":["SELECT"]}}"#;
+    let result: Result<TranslationNote, _> = serde_json::from_str(baseline);
+    assert!(result.is_ok(), "baseline note JSON refused: {result:?}");
+    let TranslationNote::NoPermissivePolicy { table, commands } = result.unwrap() else {
+        panic!("wrong variant");
+    };
+    assert_eq!(table.schema(), Some("public"));
+    assert_eq!(table.name(), "docs");
+    assert_eq!(commands, vec!["SELECT".to_string()]);
+}
+
+#[test]
+fn translation_note_roundtrips_quoted_table_parts() {
+    use rls2fga::types::TranslationNote;
+    let baseline =
+        r#"{"NoPermissivePolicy":{"table":"\"my.schema\".\"ta\"\"ble\"","commands":["SELECT"]}}"#;
+    let note: TranslationNote = serde_json::from_str(baseline).expect("note deserializes");
+    let TranslationNote::NoPermissivePolicy { table, .. } = &note else {
+        panic!("wrong variant");
+    };
+    assert_eq!(table.schema(), Some("my.schema"));
+    assert_eq!(table.name(), "ta\"ble");
+    assert_eq!(
+        serde_json::to_string(&note).expect("note serializes"),
+        baseline
+    );
+}
+
+#[test]
+fn relation_name_deserialization_rejects_invalid_strings() {
+    use rls2fga::types::RelationName;
+    let result: Result<RelationName, _> = serde_json::from_str(r#""not valid""#);
+    assert!(
+        result.is_err(),
+        "invalid relation name accepted: {result:?}"
     );
 }

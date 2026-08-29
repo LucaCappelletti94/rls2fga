@@ -3,14 +3,14 @@
 //! The assertions come from the request recorded in `plans/row-naming.md`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::records::{
+use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
+use rls2fga::translator::{Translation, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RowNaming;
+use rls2fga::types::{
     records_from_row, ColumnKind, RecordDerivation, RecordError, RowCell, RowList, RowValues,
     ValueSource,
 };
-use rls2fga::generator::row_naming::RowNaming;
-use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
-use rls2fga::translator::{Translation, TranslatorBuilder};
 
 const CALLER: &str = "current_setting('app.user_id', true)";
 
@@ -26,20 +26,20 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
 fn naming(sql: &str) -> Vec<RowNaming> {
     let db: ParserDB = parse_schema(sql).expect("the schema should parse");
     let mut entries = translate(&db).row_naming();
-    entries.sort_by(|left, right| left.table.cmp(&right.table));
+    entries.sort_by_key(|entry| entry.table.clone());
     entries
 }
 
 fn entry<'a>(entries: &'a [RowNaming], table: &str) -> &'a RowNaming {
     entries
         .iter()
-        .find(|entry| entry.table == table)
+        .find(|entry| entry.table.to_string() == table)
         .unwrap_or_else(|| {
             panic!(
                 "no entry for {table}, got {:?}",
                 entries
                     .iter()
-                    .map(|entry| entry.table.clone())
+                    .map(|entry| entry.table.to_string())
                     .collect::<Vec<_>>()
             )
         })
@@ -100,7 +100,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     );
 
     let docs = &entries[0];
-    assert_eq!(docs.table, "docs");
+    assert_eq!(docs.table.to_string(), "docs");
     assert_eq!(docs.key.parts(), [ValueSource::column("id")].as_slice());
     assert!(
         planned
@@ -133,17 +133,17 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
 
     let shape = planned
         .relations()
-        .into_iter()
-        .flat_map(|entry| entry.shapes)
+        .iter()
+        .flat_map(|entry| entry.shapes.iter())
         .find(|shape| {
             matches!(
                 &shape.derivation,
                 RecordDerivation::FromRow { table, template, .. }
-                    if table == "docs" && template.object_type == docs.type_name
+                    if table.to_string() == "docs" && template.object_type == docs.type_name
             )
         })
         .expect("the ownership shape names a docs object from a docs row");
-    let records = records_from_row(&shape, &subject).expect("the row names itself");
+    let records = records_from_row(shape, &subject).expect("the row names itself");
     assert!(
         records.iter().any(|record| record.object == rendered),
         "the entry renders the object the records carry, got {rendered} against {records:?}"
@@ -281,7 +281,9 @@ CREATE POLICY p ON docs FOR SELECT USING (
     ));
     assert_eq!(entry(&entries, "projects").type_name, "projects");
     assert!(
-        entries.iter().all(|entry| entry.table != "project_members"),
+        entries
+            .iter()
+            .all(|entry| entry.table.to_string() != "project_members"),
         "the membership table carries no type of its own here, got {entries:?}"
     );
 }
@@ -302,7 +304,8 @@ CREATE POLICY p ON docs FOR SELECT USING (
     assert!(
         entries
             .iter()
-            .all(|entry| entry.table != "doc_members" && entry.type_name.as_str() != "doc"),
+            .all(|entry| entry.table.to_string() != "doc_members"
+                && entry.type_name.as_str() != "doc"),
         "a type named after a column names no table's rows, got {entries:?}"
     );
 }
@@ -372,7 +375,7 @@ CREATE POLICY p ON events_eu FOR SELECT USING (tenant = {CALLER});
     ));
     let named: Vec<&str> = entries
         .iter()
-        .filter(|entry| entry.table == "events_eu")
+        .filter(|entry| entry.table.to_string() == "events_eu")
         .map(|entry| entry.type_name.as_str())
         .collect();
     assert_eq!(named, ["events_eu"], "one entry, its own");
@@ -391,7 +394,9 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = {CALLER});
     ));
     assert_eq!(entry(&entries, "docs").type_name, "docs");
     assert!(
-        entries.iter().all(|entry| entry.table != "secret_docs"),
+        entries
+            .iter()
+            .all(|entry| entry.table.to_string() != "secret_docs"),
         "a child of an inheritance parent carries no name, got {entries:?}"
     );
 }

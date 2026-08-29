@@ -19,10 +19,10 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source: impl FnOnce(Vec<ColumnName>, RelationName) -> TupleSource,
 ) -> UsersetExpr {
-    let relation = table_plan.ownership_relation(memo_key, name_source);
-    table_plan.ensure_direct(
-        relation.clone(),
-        vec![DirectSubject::Type(table_plan.well_known.user.clone())],
+    let ownership = table_plan.ownership_relation(memo_key, name_source);
+    let relation = table_plan.ensure_direct(
+        ownership,
+        vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
     );
     let Some(pk_cols) = resolve_pk_columns(ctx.source_table, ctx.db) else {
         skip_source_without_row_identity(table_plan, ctx.source_table, missing_what, ctx.db);
@@ -43,7 +43,7 @@ pub(crate) fn emit_boolean_flag<DB: DatabaseLike>(
     let source_table = ctx.source_table;
     if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
         table_plan.add_source(TupleSource::PublicFlag {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             pk_cols,
             flag_col: column.clone(),
         });
@@ -52,6 +52,37 @@ pub(crate) fn emit_boolean_flag<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
     public_expr(table_plan)
+}
+
+/// Emit the wildcard only for rows whose strict-function arguments are present.
+pub(crate) fn emit_row_presence_gate<DB: DatabaseLike>(
+    columns: &[ColumnName],
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+) -> UsersetExpr {
+    let source_table = ctx.source_table;
+    let Some(pk_cols) = resolve_pk_columns(source_table, ctx.db) else {
+        skip_source_without_row_identity(
+            table_plan,
+            source_table,
+            "strict-function presence tuples",
+            ctx.db,
+        );
+        return deny_expr(table_plan);
+    };
+    let relation = table_plan.ensure_direct(
+        row_presence_relation_name(columns),
+        vec![DirectSubject::Wildcard(
+            table_plan.well_known.user.to_string(),
+        )],
+    );
+    table_plan.add_source(TupleSource::RowPresenceGate {
+        table: source_table.clone(),
+        pk_cols,
+        relation: relation.clone(),
+        columns: columns.to_vec(),
+    });
+    UsersetExpr::Computed(relation)
 }
 
 /// An attribute guard, as a wildcard the row decides or a condition the request completes.
@@ -80,6 +111,7 @@ pub(crate) fn emit_attribute_condition<DB: DatabaseLike>(
             policy_name,
             source_table,
             table_plan,
+            ctx.condition_parameters,
             db,
             &settings.request_time_parameter,
         ) {
@@ -94,7 +126,7 @@ pub(crate) fn emit_attribute_condition<DB: DatabaseLike>(
     if let Some(predicate) = predicate {
         if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
             table_plan.add_source(TupleSource::AttributeGate {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 pk_cols,
                 predicate: predicate.clone(),
             });
@@ -110,7 +142,7 @@ pub(crate) fn emit_attribute_condition<DB: DatabaseLike>(
     });
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::StandaloneAttribute {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             column: column.clone(),
         },
     });
@@ -129,7 +161,7 @@ pub(crate) fn emit_constant_bool<DB: DatabaseLike>(
     if *value {
         if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
             table_plan.add_source(TupleSource::ConstantTrue {
-                table: source_table.to_string(),
+                table: source_table.clone(),
                 pk_cols,
             });
         } else {
@@ -158,7 +190,7 @@ pub(crate) fn emit_unclassified<DB: DatabaseLike>(
     });
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::UnclassifiedExpression {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             reason: reason.clone(),
         },
     });

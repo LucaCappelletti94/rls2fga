@@ -6,9 +6,14 @@ use testcontainers::{
     GenericImage, ImageExt,
 };
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::generator::well_known::{
+    WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
+};
 use rls2fga::translator::Translation;
+use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -111,4 +116,60 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
         "Authorization check failures:\n{}",
         failures.join("\n")
     );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and OpenFGA container"]
+async fn openfga_accepts_generated_condition_parameter_names() {
+    let container = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("OpenFGA should start");
+    let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
+    let mut client = support::openfga::connect(grpc_port).await;
+    let store_id = support::openfga::create_store(&mut client, "condition-parameter-test").await;
+
+    let schema = r#"
+CREATE TABLE tenant_docs(id UUID PRIMARY KEY, "tenant-id" TEXT);
+CREATE TABLE timed_docs(id UUID PRIMARY KEY, "in" TIMESTAMPTZ);
+ALTER TABLE tenant_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE timed_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON tenant_docs FOR SELECT
+    USING ("tenant-id" = current_setting('app.tenant'));
+CREATE POLICY p ON timed_docs FOR SELECT USING ("in" > now());
+"#;
+    let attribute = SessionAttribute::setting("app.tenant", SessionAttributeKind::ScalarAttribute)
+        .with_parameter("TenantValue_2")
+        .expect("TenantValue_2 is a valid parameter");
+    let well_known = WellKnownTypes::new(
+        "Principal-Team/V2.member",
+        TEAM_TYPE,
+        PG_ROLE_TYPE,
+        PG_ROLE_SCOPE_TYPE,
+        NOBODY_TYPE,
+    )
+    .expect("the extended type name should be valid");
+    let db = support::footgun::db_of(schema);
+    let model = TranslatorBuilder::new()
+        .with_request_time_parameter("as_of_2")
+        .expect("as_of_2 is a valid parameter")
+        .with_well_known_types(well_known)
+        .with_session_attributes([attribute])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .json_model();
+
+    let conditions = model.conditions.as_ref().expect("conditions should exist");
+    assert!(conditions
+        .values()
+        .any(|condition| condition.parameters.contains_key("TenantValue_2")));
+    assert!(conditions
+        .values()
+        .any(|condition| condition.parameters.contains_key("_in")));
+    support::openfga::write_authorization_model(&mut client, &store_id, &model).await;
 }

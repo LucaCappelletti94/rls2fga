@@ -8,12 +8,10 @@ use std::collections::BTreeSet;
 mod support;
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::action_relations::{
-    ActionAnswer, ActionRelations, ActionStatement, RowVersion,
-};
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translation, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{ActionAnswer, ActionRelations, ActionStatement, RowVersion};
 use support::footgun::{relation_definition, relation_denies};
 
 /// One permissive policy giving one condition, which is what every connetto table
@@ -149,8 +147,8 @@ fn every_statement() -> Vec<ActionStatement> {
 
 /// The variant names `ActionStatement` declares, from the declaration itself.
 fn declared_statements() -> BTreeSet<String> {
-    let source = std::fs::read_to_string("src/generator/action_relations.rs")
-        .expect("the module is readable");
+    let source =
+        std::fs::read_to_string("types/src/action_relations.rs").expect("the module is readable");
     source
         .split_once("pub enum ActionStatement {")
         .expect("ActionStatement is declared")

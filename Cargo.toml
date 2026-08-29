@@ -1,3 +1,8 @@
+[workspace]
+members = ["types"]
+exclude = ["fuzz", "web"]
+resolver = "2"
+
 [package]
 name = "rls2fga"
 version = "0.1.0"
@@ -11,13 +16,14 @@ default = ["std"]
 # `output::formatter`). Also forwards `std`/stack-overflow
 # protection to the parser dependencies. Disable for a `no_std` + `alloc`
 # build of the parse/classify/generate pipeline.
-std = ["sqlparser/std", "sqlparser/recursive-protection", "sql-traits/std", "serde/std", "serde_json/std"]
+std = ["rls2fga-types/std", "sqlparser/std", "sqlparser/recursive-protection", "sql-traits/std", "serde/std", "serde_json/std"]
 # Writes a generated model to a running `OpenFGA` server, over a client the caller
 # built. Off by default: everything else here needs no server, no async runtime and
 # no gRPC stack.
 client = ["std", "dep:openfga-client"]
 
 [dependencies]
+rls2fga-types = { path = "types", default-features = false }
 sqlparser = { version = "0.62", default-features = false, features = ["serde", "visitor"] }
 sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", branch = "main", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

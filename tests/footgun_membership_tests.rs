@@ -4,14 +4,15 @@
 //! Membership through a join table, and the holder a row-independent grant gets.
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use rls2fga::classifier::patterns::{ConfidenceLevel, ExistsMembership, PatternClass};
+use rls2fga::classifier::patterns::{ExistsMembership, PatternClass};
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::notes::TranslationNote;
-use rls2fga::generator::records::{RecordDerivation, ValueSource};
-use rls2fga::generator::relations::RelationShapes;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RelationShapes;
+use rls2fga::types::TranslationNote;
+use rls2fga::types::{RecordDerivation, ValueSource};
 
 mod support;
 
@@ -45,7 +46,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT
         matches!(
             &using.pattern,
             PatternClass::P4ExistsMembership(ExistsMembership { join_table, pairs, user_column, .. })
-                if join_table == "doc_members"
+                if join_table.name() == "doc_members"
                     && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
                     && user_column == "user_id"
         ),
@@ -164,7 +165,7 @@ CREATE POLICY projects_sel ON projects FOR SELECT USING (
 /// It is still a membership table, so refusing it denies access the policy grants.
 #[test]
 fn membership_table_whose_primary_key_is_its_foreign_key_still_translates() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_owner(doc_id UUID PRIMARY KEY REFERENCES docs(id), user_id UUID);
@@ -172,7 +173,9 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_owner o WHERE o.doc_id = docs.id AND o.user_id = current_user));
 ",
+        &["docs", "doc_owner"],
     );
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::A);
     let model = translator
         .translate(&db)
@@ -189,13 +192,13 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (
     );
     assert!(
         format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
                 .tuple_queries()
         )
-        .contains(r#"FROM "doc_owner""#),
+        .contains(r#"FROM "public"."doc_owner""#),
         "membership rows must be collected from doc_owner"
     );
 }
@@ -234,6 +237,42 @@ CREATE POLICY orders_sel ON orders FOR SELECT USING (
         "the operator must be told the subquery was refused, got: {:#?}",
         model.notes()
     );
+}
+
+#[test]
+fn a_nested_quoted_table_is_not_precomputed_as_a_membership_residual() {
+    let db = db_of(
+        r#"
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE memberships(doc_id TEXT REFERENCES docs(id), user_id TEXT);
+CREATE TABLE "Memberships"(doc_id TEXT REFERENCES docs(id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Memberships" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM memberships m
+    WHERE m.doc_id = docs.id
+      AND m.user_id = current_user
+      AND EXISTS (
+        SELECT 1 FROM "Memberships"
+      )
+  )
+);
+"#,
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert_eq!(
+        relation_definition(&outputs.model(), "docs", "can_select").as_deref(),
+        Some("no_access")
+    );
+    assert!(!outputs
+        .tuple_queries()
+        .iter()
+        .any(|query| query.sql.contains(r#"FROM "memberships""#)));
 }
 
 /// A membership subquery joining back to its own table must still expose the `member`
@@ -375,7 +414,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 /// user outside that role, so the grant it feeds requires that role too.
 #[test]
 fn membership_readable_only_by_a_role_requires_that_role() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
@@ -385,7 +424,9 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 ",
+        &["docs", "doc_members"],
     );
+    let db = db_of(&sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)
@@ -405,13 +446,13 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
         model.model()
     );
 
-    let tuples = translator
+    let outputs = translator
         .translate(&db)
         .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries();
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     assert!(
-        scope_admits_role(&tuples, "docs:", &scope, "auditor"),
+        scope_admits_role(tuples, "docs:", &scope, "auditor"),
         "the scope relation needs auditor tuples on docs, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
@@ -563,7 +604,8 @@ fn an_uncorrelated_membership_check_translates_through_a_holder() {
                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY docs_sel ON docs FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
-    let (dsl, tuples) = translation(schema);
+    let schema = support::qualify_table_declarations(schema, &["staff", "docs"]);
+    let (dsl, tuples) = translation(&schema);
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -598,7 +640,8 @@ fn a_clocked_holder_does_not_admit_an_unconditioned_member_tuple() {
                   CREATE POLICY memos_reviewers ON memos FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM reviewers WHERE reviewers.user_id = current_user \
                     AND reviewers.vetted_at > now()));\n";
-    let (dsl, tuples) = translation(schema);
+    let schema = support::qualify_table_declarations(schema, &["reviewers", "memos"]);
+    let (dsl, tuples) = translation(&schema);
 
     let member = relation_definition(&dsl, "reviewers_holder", "member")
         .unwrap_or_else(|| panic!("reviewers_holder must define member:\n{dsl}"));
@@ -658,7 +701,9 @@ fn a_holder_is_shared_per_member_source_and_never_across_them() {
                     EXISTS (SELECT 1 FROM auditors WHERE auditors.user_id = current_user));\n\
                   CREATE POLICY notes_staff ON notes FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
-    let (dsl, tuples) = translation(schema);
+    let schema =
+        support::qualify_table_declarations(schema, &["staff", "auditors", "docs", "notes"]);
+    let (dsl, tuples) = translation(&schema);
 
     assert_eq!(
         dsl.matches("type staff_holder").count(),
@@ -790,7 +835,7 @@ CREATE POLICY docs_members ON docs FOR SELECT
 /// `docs.can_select` and whether any query loads the membership table, for a schema whose
 /// membership table carries `policies`.
 fn membership_readability(policies: &str) -> (String, bool, Vec<String>) {
-    let db = db_of(&format!(
+    let sql = format!(
         r"
 CREATE TABLE docs(id INTEGER PRIMARY KEY, title TEXT);
 CREATE TABLE m(id INTEGER PRIMARY KEY, doc_id INTEGER REFERENCES docs(id), user_id UUID);
@@ -800,7 +845,9 @@ ALTER TABLE m ENABLE ROW LEVEL SECURITY;
 CREATE POLICY pd ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 "
-    ));
+    );
+    let sql = support::qualify_table_declarations(&sql, &["docs", "m"]);
+    let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -811,7 +858,7 @@ CREATE POLICY pd ON docs FOR SELECT USING (
     let loads_m = outputs
         .tuple_queries()
         .iter()
-        .any(|query| query.sql.contains("FROM \"m\""));
+        .any(|query| query.sql.contains("FROM \"public\".\"m\""));
     let notes = outputs
         .notes()
         .iter()
@@ -852,7 +899,7 @@ fn a_membership_read_policy_that_cannot_admit_a_row_denies_the_guarded_table() {
         }
         if !notes
             .iter()
-            .any(|note| note.contains("'m' grants no reads"))
+            .any(|note| note.contains("'public.m' grants no reads"))
         {
             complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
         }
@@ -884,7 +931,7 @@ fn a_restrictive_kill_switch_on_a_membership_table_denies_the_guarded_table() {
         }
         if !notes
             .iter()
-            .any(|note| note.contains("'m' grants no reads"))
+            .any(|note| note.contains("'public.m' grants no reads"))
         {
             complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
         }
@@ -941,7 +988,7 @@ fn a_membership_read_policy_that_may_admit_a_row_keeps_its_grant() {
 /// mints objects from, never to the rows a foreign table contributes.
 #[test]
 fn a_membership_tables_child_rows_still_grant() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE press_docs(embargo TEXT) INHERITS (docs);
@@ -952,7 +999,9 @@ CREATE POLICY p ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user)
 );
 ",
+        &["docs", "press_docs", "doc_members", "super_members"],
     );
+    let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -960,24 +1009,24 @@ CREATE POLICY p ON docs FOR SELECT USING (
 
     let tuples = outputs.tuple_queries();
     assert!(
-        !tuples_reading_from(&tuples, "FROM \"doc_members\"").is_empty(),
+        !tuples_reading_from(tuples, "FROM \"public\".\"doc_members\"").is_empty(),
         "membership tuples mirror the policy's inheritance-inclusive read, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
     assert!(
-        tuples_reading_from(&tuples, "ONLY \"doc_members\"").is_empty(),
+        tuples_reading_from(tuples, "ONLY \"public\".\"doc_members\"").is_empty(),
         "ONLY on the membership read would deny rows PostgreSQL grants, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
     assert!(
-        !tuples_reading_from(&tuples, "FROM ONLY \"docs\"").is_empty(),
+        !tuples_reading_from(tuples, "FROM ONLY \"public\".\"docs\"").is_empty(),
         "the guarded table has a child, so its own bridge reads ONLY, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
     assert!(
         outputs.notes().iter().any(|note| matches!(
             note,
-            TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. } if table == "docs"
+            TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. } if table.name() == "docs"
         )),
         "the guarded table narrows and says so, got: {:#?}",
         outputs.notes()
@@ -986,7 +1035,7 @@ CREATE POLICY p ON docs FOR SELECT USING (
         !outputs.notes().iter().any(|note| matches!(
             note,
             TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. }
-                if table == "doc_members"
+                if table.name() == "doc_members"
         )),
         "doc_members has no type, so no note names it, got: {:#?}",
         outputs.notes()
@@ -1047,7 +1096,7 @@ CREATE POLICY papers_shared ON papers FOR SELECT USING (
         outputs.notes().iter().any(|note| matches!(
             note,
             TranslationNote::MembershipTableGrantsNoReads { join_table, .. }
-                if join_table == "paper_shares"
+                if join_table.name() == "paper_shares"
         )),
         "the reason the grant vanished is named: {:?}",
         outputs.notes()
@@ -1122,7 +1171,7 @@ fn bridge_subject_column(relations: &[RelationShapes], table: &str) -> Option<St
                 table: from,
                 template,
                 ..
-            } if from == table => match template.subject_key.part() {
+            } if from.name() == table => match template.subject_key.part() {
                 ValueSource::Column(name) => Some(name.to_string()),
                 _ => None,
             },
@@ -1144,6 +1193,7 @@ CREATE POLICY p ON line_items FOR SELECT USING ({using});
         .translate(&db)
         .expect("translation should plan")
         .relations()
+        .to_vec()
 }
 
 /// The membership bridge used to be keyed on the membership table's own column name,

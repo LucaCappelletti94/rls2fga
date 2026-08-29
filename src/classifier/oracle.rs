@@ -20,9 +20,8 @@
 //!
 //! ```
 //! use rls2fga::classifier::oracle::{consult_oracle, OracleAnswer, PolicyOracle, RefusedExpr};
-//! use rls2fga::classifier::patterns::{
-//!     ClassifiedExpr, ConfidenceLevel, ConstantBool, PatternClass,
-//! };
+//! use rls2fga::classifier::patterns::{ClassifiedExpr, ConstantBool, PatternClass};
+//! use rls2fga::types::ConfidenceLevel;
 //! use rls2fga::parser::sql_parser::parse_schema;
 //! use rls2fga::translator::TranslatorBuilder;
 //!

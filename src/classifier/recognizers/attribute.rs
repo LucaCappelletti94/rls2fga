@@ -260,6 +260,7 @@ fn mirrored(operator: AttributeOperator) -> AttributeOperator {
         AttributeOperator::GtEq => AttributeOperator::LtEq,
         AttributeOperator::Lt => AttributeOperator::Gt,
         AttributeOperator::LtEq => AttributeOperator::GtEq,
+        _ => operator,
     }
 }
 

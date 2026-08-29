@@ -6,8 +6,8 @@
 //! the emitted model breaks this crate's own tests rather than a consumer's.
 //!
 //! Writing tuples is deliberately absent. A tuple is a
-//! [`Record`](crate::generator::records::Record), which
-//! [`records_from_row`](crate::generator::records::records_from_row) and
+//! [`Record`](crate::types::Record), which
+//! [`records_from_row`](crate::types::records_from_row) and
 //! [`record_from_tuple_row`](crate::translator::Outputs::record_from_tuple_row)
 //! already produce, and batching, deletion and retry are the caller's policy.
 

@@ -1,7 +1,7 @@
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::translator::Translation;
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -147,12 +147,12 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
 #[test]
 fn tuples_include_using_and_with_check_patterns_for_update() {
     let sql = r"
-CREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE docs (
+CREATE TABLE public.users (id UUID PRIMARY KEY);
+CREATE TABLE public.docs (
   id UUID PRIMARY KEY,
   owner_id UUID REFERENCES users(id)
 );
-CREATE TABLE memberships (
+CREATE TABLE public.memberships (
   doc_id UUID NOT NULL REFERENCES docs(id),
   user_id UUID NOT NULL REFERENCES users(id)
 );
@@ -177,7 +177,7 @@ CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples = tuple_generator::format_tuples(
-        &Translation::plan(
+        Translation::plan(
             classified.clone(),
             &db,
             &registry,

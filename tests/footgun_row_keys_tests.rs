@@ -3,10 +3,10 @@
 //!
 //! What names a row, and what happens when nothing does.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::notes::TranslationNote;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
 
@@ -40,14 +40,14 @@ fn types_declaring_no_relation(dsl: &str) -> Vec<String> {
 fn a_composite_primary_key_names_a_row_by_every_key_column() {
     let db = db_of(
         r"
-CREATE TABLE docs(tenant_id UUID, id UUID, owner_id UUID, PRIMARY KEY (tenant_id, id));
+CREATE TABLE public.docs(tenant_id UUID, id UUID, owner_id UUID, PRIMARY KEY (tenant_id, id));
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -91,7 +91,7 @@ CREATE POLICY p ON {table} FOR SELECT USING (owner_id = current_user);
             .notes()
             .iter()
             .find_map(|note| match note {
-                TranslationNote::RowIdentifierBudget { table: t, budget } if t == table => {
+                TranslationNote::RowIdentifierBudget { table: t, budget } if t.name() == table => {
                     Some(*budget)
                 }
                 _ => None,
@@ -161,13 +161,13 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 fn the_generated_query_guards_the_subject_length_too() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE TABLE public.docs(id UUID PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let rendered = format_tuples(
-        &translator(ConfidenceLevel::B)
+        translator(ConfidenceLevel::B)
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -201,7 +201,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
     );
     let translator = translator(ConfidenceLevel::A);
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -224,14 +224,14 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 fn not_null_unique_column_identifies_objects_without_a_primary_key() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID NOT NULL UNIQUE, owner_id UUID);
+CREATE TABLE public.docs(id UUID NOT NULL UNIQUE, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 ",
     );
     let translator = translator(ConfidenceLevel::A);
     let rendered = format_tuples(
-        &translator
+        translator
             .translate(&db)
             .expect("translation should plan")
             .outputs_accepting_gaps()
@@ -251,8 +251,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = current_user);
 fn a_primary_key_declared_by_alter_table_identifies_rows() {
     let schema = |key: &str, constraint: &str| {
         format!(
-            "CREATE TABLE users (id UUID PRIMARY KEY);\n\
-             CREATE TABLE docs (id UUID {key}, owner_id UUID NOT NULL REFERENCES users(id));\n\
+            "CREATE TABLE public.users (id UUID PRIMARY KEY);\n\
+             CREATE TABLE public.docs (id UUID {key}, owner_id UUID NOT NULL REFERENCES users(id));\n\
              {constraint}\
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = current_user);\n"
@@ -260,7 +260,7 @@ fn a_primary_key_declared_by_alter_table_identifies_rows() {
     };
     let (inline_dsl, inline_tuples) = translation(&schema("PRIMARY KEY", ""));
     assert!(
-        inline_tuples.contains("FROM \"docs\""),
+        inline_tuples.contains("FROM \"public\".\"docs\""),
         "guard precondition: the inline spelling must emit an ownership query:\n{inline_tuples}"
     );
 
@@ -284,8 +284,8 @@ fn a_primary_key_declared_by_alter_table_identifies_rows() {
 fn a_unique_constraint_declared_by_alter_table_identifies_rows() {
     let schema = |unique: &str, constraint: &str| {
         format!(
-            "CREATE TABLE users (id UUID PRIMARY KEY);\n\
-             CREATE TABLE docs (id UUID NOT NULL {unique}, \
+            "CREATE TABLE public.users (id UUID PRIMARY KEY);\n\
+             CREATE TABLE public.docs (id UUID NOT NULL {unique}, \
              owner_id UUID NOT NULL REFERENCES users(id));\n\
              {constraint}\
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
@@ -294,7 +294,7 @@ fn a_unique_constraint_declared_by_alter_table_identifies_rows() {
     };
     let (inline_dsl, inline_tuples) = translation(&schema("UNIQUE", ""));
     assert!(
-        inline_tuples.contains("FROM \"docs\""),
+        inline_tuples.contains("FROM \"public\".\"docs\""),
         "guard precondition: the inline spelling must emit an ownership query:\n{inline_tuples}"
     );
 
@@ -419,7 +419,9 @@ CREATE POLICY shares_read ON shares FOR SELECT {policy_tail};
             .notes()
             .iter()
             .filter_map(|note| match note {
-                TranslationNote::RowsCannotBeNamed { table, sources, .. } if table == "shares" => {
+                TranslationNote::RowsCannotBeNamed { table, sources, .. }
+                    if table.name() == "shares" =>
+                {
                     Some(sources.clone())
                 }
                 _ => None,
@@ -525,7 +527,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
 
     let reported = outputs.notes().iter().any(|note| {
         matches!(note, TranslationNote::BridgeColumnMissing { table, column, .. }
-            if table == "docs" && column == "nonexistent")
+            if table.name() == "docs" && column == "nonexistent")
     });
     assert!(
         reported,
@@ -544,8 +546,8 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
 #[test]
 fn a_bridge_names_a_row_by_its_whole_key() {
     let db = db_of(
-        "CREATE TABLE papers(id INT PRIMARY KEY);
-CREATE TABLE paper_shares(paper_id INT REFERENCES papers(id), viewer TEXT, PRIMARY KEY (paper_id, viewer));
+        "CREATE TABLE public.papers(id INT PRIMARY KEY);
+CREATE TABLE public.paper_shares(paper_id INT REFERENCES papers(id), viewer TEXT, PRIMARY KEY (paper_id, viewer));
 ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON paper_shares FOR SELECT USING (
   EXISTS (SELECT 1 FROM papers p WHERE p.id = paper_id));
@@ -558,7 +560,7 @@ CREATE POLICY p ON paper_shares FOR SELECT USING (
 
     let bridge = outputs
         .tuple_queries()
-        .into_iter()
+        .iter()
         .find(|query| query.comment.contains("bridge"))
         .expect("the delegation to the parent needs a bridge");
     assert!(
@@ -595,7 +597,7 @@ CREATE POLICY p ON projects FOR SELECT USING (EXISTS (
     assert!(
         outputs.notes().iter().any(|note| {
             matches!(note, TranslationNote::BridgeColumnMissing { table, column, .. }
-                if table == "projects" && column == "project_id")
+                if table.name() == "projects" && column == "project_id")
         }),
         "the missing bridge column has to be a note: {:?}",
         outputs.notes()

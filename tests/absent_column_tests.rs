@@ -5,12 +5,13 @@
 //! grant `PostgreSQL` refuses. Both read exactly like a correct translation.
 
 use rls2fga::classifier::function_registry::FunctionRegistry;
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::records::{RecordDerivation, ValueSource};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ColumnLike, ParserDB, TableLike};
 use rls2fga::term::describe_membership_term;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TableId;
+use rls2fga::types::{RecordDerivation, ValueSource};
 use sqlparser::ast::Expr;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -39,7 +40,7 @@ fn outputs_for(schema: &str, using: &str) -> (String, String, String) {
         .outputs_accepting_gaps();
     (
         outputs.model(),
-        format_tuples(&outputs.tuple_queries()),
+        format_tuples(outputs.tuple_queries()),
         outputs.report(),
     )
 }
@@ -160,7 +161,7 @@ fn a_column_borrowed_from_a_joined_relation_is_refused() {
         .translate(&db)
         .expect("translation should plan")
         .outputs_accepting_gaps();
-    let tuples = format_tuples(&outputs.tuple_queries());
+    let tuples = format_tuples(outputs.tuple_queries());
 
     assert!(
         !tuples.contains("'id' AS relation"),
@@ -194,7 +195,10 @@ fn no_generated_query_reads_a_column_its_table_does_not_declare() {
             // every table it reads, and the parts of those tables' own names.
             let mut spellable: Vec<String> = Vec::new();
             for table in &description.tables {
-                spellable.extend(table.split('.').map(ToString::to_string));
+                if let Some(schema) = table.schema() {
+                    spellable.push(schema.to_string());
+                }
+                spellable.push(table.name().to_string());
                 spellable.extend(declared_columns(&db, table).unwrap_or_default());
             }
             for quoted in quoted_identifiers(&query.sql) {
@@ -229,8 +233,8 @@ fn fixture_names() -> Vec<String> {
     names
 }
 
-fn declared_columns(db: &ParserDB, table: &str) -> Option<Vec<String>> {
-    let table = rls2fga::parser::names::lookup_table(db, table)?;
+fn declared_columns(db: &ParserDB, table_id: &TableId) -> Option<Vec<String>> {
+    let table = rls2fga::parser::names::lookup_table(db, &table_id.to_string())?;
     Some(
         table
             .columns(db)

@@ -18,6 +18,7 @@ CREATE TABLE doc_members (
 
 CREATE FUNCTION is_doc_member(d TEXT) RETURNS BOOLEAN
     LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO public, pg_catalog, pg_temp
     AS 'SELECT EXISTS (
         SELECT 1 FROM doc_members m
         WHERE m.doc_id = d

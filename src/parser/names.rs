@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::parser::identifiers::RelationName;
+use crate::types::{ColumnName, RelationName, TableId};
 
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
@@ -215,32 +215,34 @@ pub(crate) fn yielded_relation_name(base: &str, key: &str, attempt: usize) -> Re
     } else {
         format!("{base}_{suffix}_{}", attempt + 1)
     };
-    RelationName::from_resolved(clamp_relation_name(candidate))
+    RelationName::canonicalized(clamp_relation_name(candidate))
 }
 
-/// Derive the name of the scope a privilege and a set of `PostgreSQL` roles stand for.
-///
-/// A scope **is** those roles under that privilege, so naming it after them is what keeps
-/// two scopes apart. Keyed on the policy instead, three shapes pooled their roles onto one
-/// object: two tables whose policies share a name, one policy whose `TO` list is read as
-/// usage beside a gate read as membership, and two gates of one privilege joined by `AND`,
-/// where the pooled object turned the conjunction into a disjunction.
-///
-/// Roles are canonicalized, sorted and deduplicated, since the order a policy lists them
-/// in says nothing and one role has one identity however it is spelled. The base joins on
-/// an underscore to read as a name and the hash on a dot, which a canonical name never
-/// carries, so `(usage, [a_b])` and `(usage_a, [b])` cannot collide.
+/// Derive a scope name from a privilege and an exact stored role set.
 #[must_use]
 pub fn role_scope_name(privilege: &str, roles: &[String]) -> RelationName {
-    let mut canonical: Vec<String> = roles
+    let mut exact = roles.to_vec();
+    exact.sort_unstable();
+    exact.dedup();
+    let canonical: Vec<String> = exact
         .iter()
         .map(|role| canonical_fga_type_name(role))
         .collect();
-    canonical.sort_unstable();
-    canonical.dedup();
     let base = canonical_fga_type_name(&format!("{privilege}_{}", canonical.join("_")));
-    let suffix = stable_hex_suffix(&format!("{privilege}.{}", canonical.join(".")));
-    RelationName::from_resolved(clamp_relation_name(format!("scope_{base}_{suffix}")))
+    let key = if exact == canonical {
+        format!("{privilege}.{}", exact.join("."))
+    } else {
+        let mut key = format!("{}:{privilege}", privilege.len());
+        for role in &exact {
+            key.push('.');
+            key.push_str(&role.len().to_string());
+            key.push(':');
+            key.push_str(role);
+        }
+        key
+    };
+    let suffix = stable_hex_suffix(&key);
+    RelationName::canonicalized(clamp_relation_name(format!("scope_{base}_{suffix}")))
 }
 
 /// Derive a stable relation name used to scope reads of a membership table by
@@ -264,6 +266,25 @@ pub fn conditional_gate_relation_name(policy_name: &str) -> RelationName {
     scope_relation_name("gate", policy_name)
 }
 
+/// Derive the relation containing rows whose strict-function arguments are present.
+#[must_use]
+pub fn row_presence_relation_name(columns: &[ColumnName]) -> RelationName {
+    let base = columns
+        .iter()
+        .map(ColumnName::as_str)
+        .collect::<Vec<_>>()
+        .join("_");
+    let mut key = String::new();
+    for column in columns {
+        key.push_str(&column.as_str().len().to_string());
+        key.push(':');
+        key.push_str(column.as_str());
+        key.push('.');
+    }
+    let suffix = stable_hex_suffix(&key);
+    RelationName::canonicalized(clamp_relation_name(format!("present_{base}_{suffix}")))
+}
+
 /// Derive the condition name that guard's relation reference points at.
 ///
 /// Keyed on the type as well as the policy: a condition name is global to the model while
@@ -281,7 +302,7 @@ pub fn gate_condition_name(type_name: &str, policy_name: &str) -> String {
 fn scope_relation_name(prefix: &str, key: &str) -> RelationName {
     let base = canonical_fga_type_name(key);
     let suffix = stable_hex_suffix(key);
-    RelationName::from_resolved(clamp_relation_name(format!("{prefix}_{base}_{suffix}")))
+    RelationName::canonicalized(clamp_relation_name(format!("{prefix}_{base}_{suffix}")))
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.
@@ -371,6 +392,51 @@ where
         None => target,
     };
     db.resolve_target_table(target).ok().flatten()
+}
+
+pub(crate) fn table_identity<T>(table: &T) -> TableId
+where
+    T: sql_traits::prelude::TableLike,
+{
+    TableId::from_stored(
+        table.stored_table_schema().map(Into::into),
+        table.stored_table_name().into(),
+    )
+}
+
+pub(crate) fn resolve_table_id<DB>(db: &DB, name: &str) -> Option<TableId>
+where
+    DB: sql_traits::prelude::DatabaseLike,
+{
+    lookup_table(db, name).map(table_identity)
+}
+
+pub(crate) fn lookup_table_id<'db, DB>(
+    db: &'db DB,
+    identity: &TableId,
+) -> Option<&'db <DB as sql_traits::prelude::DatabaseLike>::Table>
+where
+    DB: sql_traits::prelude::DatabaseLike,
+{
+    use sql_traits::prelude::TableLike;
+    db.tables().find(|table| {
+        table.stored_table_schema().as_deref() == identity.schema()
+            && table.stored_table_name() == identity.name()
+    })
+}
+
+pub(crate) fn table_id_has_column<DB>(db: &DB, table: &TableId, column: &str) -> bool
+where
+    DB: sql_traits::prelude::DatabaseLike,
+{
+    lookup_table_id(db, table).is_some_and(|table| {
+        use sql_traits::prelude::{ColumnLike, TableLike};
+        table
+            .columns(db)
+            .into_iter()
+            .flatten()
+            .any(|declared| declared.stored_column_name() == column)
+    })
 }
 
 /// Whether `table` declares a column named `column`.
@@ -658,13 +724,12 @@ mod tests {
         );
         assert!(first.as_str().starts_with("scope_"));
 
-        // The order a policy lists its roles in says nothing, and one role has one
-        // identity however it is spelled.
+        // Listing order and exact duplicates do not change a stored role set.
         assert_eq!(
             first,
             role_scope_name("usage", &roles(&["support", "auditor"]))
         );
-        assert_eq!(
+        assert_ne!(
             first,
             role_scope_name("usage", &roles(&["Support", "auditor"]))
         );
@@ -688,6 +753,10 @@ mod tests {
         assert_ne!(
             role_scope_name("usage", &roles(&["a_b"])),
             role_scope_name("usage_a", &roles(&["b"]))
+        );
+        assert_ne!(
+            role_scope_name("usage", &roles(&["a.b"])),
+            role_scope_name("usage", &roles(&["a", "b"]))
         );
         assert!(
             role_scope_name("usage", &["r".repeat(80)]).as_str().len() <= MAX_RELATION_NAME_LEN

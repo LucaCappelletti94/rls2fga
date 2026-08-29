@@ -7,6 +7,7 @@ use rls2fga::output::formatter::WriteError;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
+use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
@@ -161,7 +162,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -169,9 +170,9 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(
         formatted.contains("team_memberships"),
@@ -189,7 +190,7 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -197,9 +198,9 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(
         formatted.to_lowercase().contains("todo")
@@ -224,7 +225,7 @@ CREATE POLICY p ON tasks FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -232,9 +233,9 @@ CREATE POLICY p ON tasks FOR SELECT
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(!formatted.is_empty(), "Should produce some tuple queries");
 }
@@ -270,7 +271,7 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -278,8 +279,8 @@ CREATE POLICY p ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -322,7 +323,7 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -330,8 +331,8 @@ CREATE POLICY p ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
         lower.contains("from \"doc_members\"") && lower.contains("is_public = true")
@@ -394,7 +395,7 @@ fn multi_policy_table_generates_combined_model() {
         !model.model().is_empty(),
         "Multi-policy table should produce DSL output"
     );
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -402,9 +403,9 @@ fn multi_policy_table_generates_combined_model() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
     assert!(
         !formatted.is_empty(),
         "Multi-policy table should produce tuple queries"
@@ -463,7 +464,7 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -471,9 +472,9 @@ CREATE POLICY p ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
 
     let _ = formatted;
 }
@@ -502,7 +503,7 @@ CREATE POLICY p ON docs FOR SELECT
     )
     .expect("translation should plan")
     .outputs_accepting_gaps();
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -510,8 +511,8 @@ CREATE POLICY p ON docs FOR SELECT
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
     let _ = model;
     let _ = tuples;
 }
@@ -547,7 +548,7 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let tuples = Translation::plan(
+    let outputs = Translation::plan(
         classified.clone(),
         &db,
         &registry,
@@ -555,9 +556,9 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         &GeneratorSettings::default(),
     )
     .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .tuple_queries();
-    let formatted = tuple_generator::format_tuples(&tuples);
+    .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+    let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(
         formatted.to_lowercase().contains("todo")

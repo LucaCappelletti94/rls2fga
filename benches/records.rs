@@ -10,13 +10,13 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
-use rls2fga::generator::records::{
+use rls2fga::parser::sql_parser::parse_schema;
+use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{
     records_from_row, ColumnKind, RecordDerivation, RecordDescription, RowCell, RowList, RowValues,
     ValueSource,
 };
-use rls2fga::parser::sql_parser::parse_schema;
-use rls2fga::translator::TranslatorBuilder;
 
 /// A row held as plain values, which is the cheapest thing a caller can pass.
 /// Anything slower than this is the caller's cost, not the evaluator's.
@@ -69,8 +69,8 @@ fn descriptions(schema: &str) -> Vec<RecordDescription> {
         .expect("benchmark schema should plan")
         .outputs_accepting_gaps()
         .tuple_queries()
-        .into_iter()
-        .filter_map(|query| query.description)
+        .iter()
+        .filter_map(|query| query.description.clone())
         .collect()
 }
 

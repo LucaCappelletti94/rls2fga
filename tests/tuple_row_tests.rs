@@ -4,15 +4,18 @@
 //! inventing it wrong loads tuples that are silently wrong in whichever direction
 //! the guess fell. Everything here drives the public surface a second crate uses.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
+use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::patterns::ClassifiedPolicy;
+use rls2fga::classifier::policy_classifier;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::records::{
-    records_from_row, ColumnKind, Record, RecordDerivation, RowCell, RowList, RowValues,
-};
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleRow, TupleRowError};
 use rls2fga::generator::well_known::deny_relation;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Outputs, Translation, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{
+    records_from_row, ColumnKind, Record, RecordDerivation, RowCell, RowList, RowValues,
+};
 
 mod support;
 
@@ -78,6 +81,17 @@ fn ownership_outputs(db: &ParserDB) -> Outputs<'_, ParserDB> {
         .translate(db)
         .expect("translation should plan")
         .outputs_accepting_gaps()
+}
+
+fn qualified_tenant_setting() -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let sql = support::qualify_table_declarations(
+        &support::read_fixture_sql("tenant_setting"),
+        &["tenants", "documents"],
+    );
+    let db = parse_schema(&sql).expect("the schema should parse");
+    let registry = support::try_load_fixture_registry("tenant_setting");
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
 }
 
 #[test]
@@ -235,7 +249,7 @@ fn a_condition_on_a_relation_that_names_none_is_refused() {
 
 #[test]
 fn a_gated_record_names_the_condition_its_tuple_has_to_carry() {
-    let (classified, db, registry) = support::try_load_fixture_classified("tenant_setting");
+    let (classified, db, registry) = qualified_tenant_setting();
     let outputs = Translation::plan(
         classified,
         &db,
@@ -352,7 +366,7 @@ fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
 
 #[test]
 fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
-    let (classified, db, registry) = support::try_load_fixture_classified("tenant_setting");
+    let (classified, db, registry) = qualified_tenant_setting();
     let outputs = Translation::plan(
         classified,
         &db,

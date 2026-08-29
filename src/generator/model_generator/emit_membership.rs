@@ -14,7 +14,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let UncorrelatedMembership {
         member_table,
@@ -47,6 +47,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
+        ctx.condition_parameters,
         db,
     )
     .map(|(condition, context)| MembershipGate {
@@ -70,13 +71,13 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // One holder per member source, never per table and never per policy: two
     // policies reading the same table may share, and two reading different
     // ones must not pool their members.
-    let holder_type = holder_type_name(member_table, table_types, ctx.db);
+    let holder_type = holder_type_name(member_table, table_types);
     ensure_member_type(all_types, &holder_type, &table_plan.well_known);
     if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
         holder_plan.add_direct_subject(
             &member_relation(),
             DirectSubject::ConditionalType {
-                type_name: table_plan.well_known.user.clone(),
+                type_name: table_plan.well_known.user.to_string(),
                 condition: gate.condition.clone(),
             },
         );
@@ -103,7 +104,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         });
     }
     table_plan.add_source(TupleSource::HolderBridge {
-        table: source_table.to_string(),
+        table: source_table.clone(),
         pk_cols,
         relation: holder_relation.clone(),
         holder_type,
@@ -121,7 +122,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let ExistsMembership {
         join_table,
@@ -163,15 +164,13 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         (MembershipPairing::Single, [pair]) => {
             referenced_table_for_fk_col(db, join_table, &pair.join_column).map_or_else(
                 || parent_type_from_fk_column(pair.join_column.as_str()),
-                |referenced| table_types.resolve(db, referenced),
+                |referenced| table_types.resolve(&referenced),
             )
         }
         // The resolver never yields `Single` with any other width, so this arm
         // exists only to fall closed rather than panic.
         (MembershipPairing::Single, _) => return deny_expr(table_plan),
-        (MembershipPairing::ForeignKey { parent_table }, _) => {
-            table_types.resolve(db, parent_table)
-        }
+        (MembershipPairing::ForeignKey { parent_table }, _) => table_types.resolve(parent_table),
         // The outer columns are the guarded key, so the parent is the row itself.
         (MembershipPairing::SelfKeyed, _) => table_plan.type_name.to_string(),
     };
@@ -193,12 +192,13 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
+        ctx.condition_parameters,
         db,
     );
     let conditional_member = gate
         .as_ref()
         .map(|(condition, _)| DirectSubject::ConditionalType {
-            type_name: table_plan.well_known.user.clone(),
+            type_name: table_plan.well_known.user.to_string(),
             condition: condition.clone(),
         });
 
@@ -213,7 +213,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     if parent_type == table_plan.type_name.as_str() {
         table_plan.ensure_direct(
             member_relation(),
-            vec![DirectSubject::Type(table_plan.well_known.user.clone())],
+            vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
         );
         if let Some(subject) = &conditional_member {
             table_plan.add_direct_subject(&member_relation(), subject.clone());
@@ -235,7 +235,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                     .first()
                     .and_then(|pair| referenced_table_for_fk_col(db, join_table, &pair.join_column))
                 {
-                    bind_row_source(all_types, &parent_type, referenced, db);
+                    bind_row_source(all_types, &parent_type, &referenced, db);
                 }
             }
             MembershipPairing::ForeignKey { parent_table } => {
@@ -286,7 +286,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     // the policy compares. The pk columns are resolved again at render time by
     // `resolve_bridge_columns`.
     table_plan.add_source(TupleSource::ParentBridge {
-        table: source_table.to_string(),
+        table: source_table.clone(),
         fk_cols: outer_cols,
         parent_type: parent_type.clone(),
         relation: parent_relation.clone(),
@@ -302,14 +302,12 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
 
     // Only those roles can read the membership rows, so only they inherit
     // the grant.
-    let scope_relation =
-        membership_read_scope_relation_name(&ctx.table_types.resolve(ctx.db, join_table));
+    let scope_relation = membership_read_scope_relation_name(&ctx.table_types.resolve(join_table));
     register_pg_role_scope(
         table_plan,
         all_types,
         notes,
         source_table,
-        policy_name,
         db,
         RoleScopeSpec {
             scope_relation: &scope_relation,
@@ -334,7 +332,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let ParentInheritance {
         parent_table,
@@ -346,7 +344,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     let source_table = ctx.source_table;
     let table_types = ctx.table_types;
 
-    let parent_type = table_types.resolve(db, parent_table);
+    let parent_type = table_types.resolve(parent_table);
 
     // The relation is named after the parent type, but relation names have a
     // tighter length limit, so use the name the plan actually registered.
@@ -410,7 +408,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     // Gating narrows the rule, so an unreadable RLS state gates.
     let gate_on_parent = !rule_is_denial
         && !bare_delegation
-        && lookup_table(db, parent_table)
+        && lookup_table_id(db, parent_table)
             .is_some_and(|table| table.has_row_level_security(db) != Ok(false));
     let rule_expr = if gate_on_parent {
         UsersetExpr::Intersection(vec![
@@ -459,7 +457,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
         return deny_expr(table_plan);
     }
     table_plan.add_source(TupleSource::ParentBridge {
-        table: source_table.to_string(),
+        table: source_table.clone(),
         fk_cols: vec![fk_column.clone()],
         parent_type: parent_type.clone(),
         relation: parent_relation.clone(),
@@ -478,7 +476,7 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let AbacAnd {
         relationship_part,
@@ -502,7 +500,7 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
     );
     table_plan.add_source(TupleSource::Skipped {
         reason: SkippedTuples::AttributeRuntimeEnforcement {
-            table: source_table.to_string(),
+            table: source_table.clone(),
             attribute: attribute_part.clone(),
         },
     });
@@ -516,7 +514,7 @@ pub(crate) fn emit_composite<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<String, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<String, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let Composite { op, parts } = composite;
     let mut child_exprs = Vec::new();

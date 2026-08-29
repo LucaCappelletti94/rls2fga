@@ -10,10 +10,10 @@ use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKin
 use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::unwrap_cast_or_nested;
-use crate::parser::identifiers::ColumnName;
 use crate::parser::names::{
     is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
 };
+use crate::types::ColumnName;
 
 /// Semantic classification of a SQL function body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -685,7 +685,7 @@ pub(crate) fn body_reads_effective_user(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{AccessorInferenceSettings, FunctionSecurity, FunctionSemantic};
-    use crate::parser::identifiers::ColumnName;
+    use crate::types::ColumnName;
     use alloc::collections::BTreeMap;
 
     #[test]

@@ -17,19 +17,9 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeSet;
 
-use crate::generator::model_generator::qualified_table_name;
+use crate::parser::names::table_identity;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
-
-/// A table the database is positively known to restrict nothing on.
-///
-/// `#[non_exhaustive]`: a fact this learns to report adds a field.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct UnrestrictedTable {
-    /// Table as the schema stores it, the spelling
-    /// [`RowNaming::table`](crate::generator::row_naming::RowNaming) carries.
-    pub table: String,
-}
+use crate::types::{TableId, UnrestrictedTable};
 
 /// Whether row-level security is positively known to be off on this table.
 ///
@@ -44,7 +34,7 @@ fn row_level_security_is_off<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> bo
 /// Whether the database filters none of this table's rows, by any route a reader can take.
 ///
 /// The one predicate both this report and
-/// [`action_relations`](crate::generator::action_relations::ActionRelations) read, since
+/// [`action_relations`](crate::types::ActionRelations) read, since
 /// deciding openness twice lets one surface call a table open while the other does not.
 pub(crate) fn restricts_nothing_by_any_route<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> bool {
     row_level_security_is_off(table, db) && !restricted_through_an_ancestor(table, db)
@@ -59,7 +49,7 @@ pub(crate) fn restricts_nothing_by_any_route<DB: DatabaseLike>(table: &DB::Table
 /// unreadable ancestor counts as restricting, since a claim that nothing is enforced has
 /// to be positive.
 fn restricted_through_an_ancestor<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> bool {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut seen: BTreeSet<TableId> = BTreeSet::new();
     let mut pending: Vec<&DB::Table> = Vec::new();
     let mut current = table;
     loop {
@@ -73,7 +63,7 @@ fn restricted_through_an_ancestor<DB: DatabaseLike>(table: &DB::Table, db: &DB) 
             }
             // Termination only: `PostgreSQL` allows no cycle here, and a catalog claiming
             // one must not spin.
-            if seen.insert(qualified_table_name(ancestor)) {
+            if seen.insert(table_identity(ancestor)) {
                 pending.push(ancestor);
             }
         }
@@ -92,9 +82,7 @@ pub(crate) fn unrestricted_tables<DB: DatabaseLike>(db: &DB) -> Vec<Unrestricted
     let mut entries: Vec<UnrestrictedTable> = db
         .tables()
         .filter(|table| restricts_nothing_by_any_route(*table, db))
-        .map(|table| UnrestrictedTable {
-            table: qualified_table_name(table),
-        })
+        .map(|table| UnrestrictedTable::new(table_identity(table)))
         .collect();
     entries.sort_by(|left, right| left.table.cmp(&right.table));
     entries

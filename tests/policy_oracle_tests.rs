@@ -4,13 +4,13 @@ use rls2fga::classifier::oracle::{
     consult_oracle, OracleAnswer, PolicyClause, PolicyOracle, RefusedExpr,
 };
 use rls2fga::classifier::patterns::{
-    ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, ConstantBool, ParentInheritance,
-    PatternClass,
+    ClassifiedExpr, ClassifiedPolicy, ConstantBool, ParentInheritance, PatternClass,
 };
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
 
 /// Answers the bit test this crate has no translation for, claiming every marked row is
 /// readable by anyone.
@@ -68,7 +68,7 @@ fn dsl_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
 
 fn tuples_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
     format_tuples(
-        &rls2fga::translator::Translation::plan(
+        rls2fga::translator::Translation::plan(
             classified.to_vec(),
             db,
             translator().registry(),

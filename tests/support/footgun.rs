@@ -3,14 +3,15 @@
 //! Split out of one 9441-line file so each family runs on its own. A helper only one
 //! family uses lives with that family instead.
 
-use rls2fga::classifier::patterns::{ConfidenceLevel, PatternClass, UnclassifiedExpr};
-use rls2fga::generator::notes::TranslationNote;
-use rls2fga::generator::records::RecordDerivation;
+use rls2fga::classifier::patterns::{PatternClass, UnclassifiedExpr};
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
 use rls2fga::generator::well_known::{NOBODY_TYPE, USER_TYPE};
-use rls2fga::parser::identifiers::RelationName;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::RecordDerivation;
+use rls2fga::types::RelationName;
+use rls2fga::types::TranslationNote;
 
 pub(crate) fn db_of(sql: &str) -> ParserDB {
     parse_schema(sql).expect("schema should parse")
@@ -312,7 +313,7 @@ pub(crate) fn membership_translation(clause: &str) -> (String, String) {
             .outputs_accepting_gaps()
             .model(),
         format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -368,7 +369,7 @@ pub(crate) fn shaped_membership_subquery_complaints(clause: &str, shaping: &str)
             "`{clause}` must fall closed, can_select is {can_select:?}"
         ));
     }
-    let membership_tuples = tuples_reading_from(&outputs.tuple_queries(), "doc_members");
+    let membership_tuples = tuples_reading_from(outputs.tuple_queries(), "doc_members");
     if !membership_tuples.is_empty() {
         complaints.push(format!(
             "`{clause}` must emit no membership tuples, got {membership_tuples:?}"
@@ -403,7 +404,7 @@ pub(crate) fn translation(sql: &str) -> (String, String) {
             .outputs_accepting_gaps()
             .model(),
         format_tuples(
-            &translator
+            translator
                 .translate(&db)
                 .expect("translation should plan")
                 .outputs_accepting_gaps()
@@ -448,7 +449,7 @@ pub(crate) fn subtracted_relations_on_the_object(
 
 /// True when `description` populates `relation` on `type_name`.
 pub(crate) fn feeds(
-    description: &rls2fga::generator::records::RecordDescription,
+    description: &rls2fga::types::RecordDescription,
     type_name: &str,
     relation: &str,
 ) -> bool {

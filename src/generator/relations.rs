@@ -12,101 +12,28 @@
 
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::parser::identifiers::{RelationName, TypeName};
+use crate::types::{
+    RecordDerivation, RecordDescription, RelationName, RelationShapes, RequestComparison,
+    RowDecision, ValueSource,
+};
 use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::generator::db_lookup::resolve_pk_columns;
-use crate::generator::describe::describe_tuple_source;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{
     relation_grants_nothing, SchemaPlan, TypePlan, UsersetExpr,
 };
-use crate::generator::records::{RecordDerivation, RecordDescription, ValueSource};
+use crate::generator::tuple_generator::{rendered_source_key, RenderedSourceKey};
 use crate::generator::well_known::WellKnownTypes;
 use crate::parser::sql_parser::DatabaseLike;
 
-/// One relation's shapes and answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationShapes {
-    /// `OpenFGA` type the relation is defined on.
-    pub type_name: TypeName,
-    /// Relation name.
-    pub relation: RelationName,
-    /// True only when every leaf resolves from the object's own row to a named
-    /// user. False whenever the analysis cannot establish that, including every
-    /// case it does not understand.
-    pub from_one_row: bool,
-    /// The shapes whose records fill this relation, one per query the loader runs
-    /// for it. Empty for a relation the model computes from others, and for one
-    /// nothing populates.
-    pub shapes: Vec<RecordDescription>,
-    /// How the subjects this relation grants compose from one row, `Some` exactly
-    /// when `from_one_row` is true.
-    pub decision: Option<RowDecision>,
-    /// Whether the model refuses this relation for every row, so no record fills it and
-    /// no round trip is needed to be told no. False for a direct relation, which grants
-    /// whatever is written into it.
-    pub grants_nobody: bool,
-}
-
-/// How the subjects a relation grants compose from one row's records.
-///
-/// The whole evaluation: [`Self::Leaf`] is the union of the subjects
-/// [`crate::generator::records::records_from_row`] yields over its shapes,
-/// [`Self::Any`] is the union of its children and [`Self::All`] their intersection.
-///
-/// `#[non_exhaustive]`: a shape the analysis learns to decide adds a variant, and a
-/// caller matching this outside the crate keeps a wildcard arm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RowDecision {
-    /// The subjects are the records these shapes produce for this row.
-    Leaf {
-        /// The direct relation whose records answer. Always on the same type.
-        relation: RelationName,
-        /// The shapes filling it, identical to that relation's own entry. Never empty.
-        shapes: Vec<RecordDescription>,
-    },
-    /// A subject any child grants.
-    Any(Vec<RowDecision>),
-    /// A subject every child grants.
-    All(Vec<RowDecision>),
-    /// The row settles one side of a comparison the caller's own request value
-    /// completes, so a consumer holding that value decides with no round trip.
-    ///
-    /// Taking the subjects at face value is a wrong allow: the shapes here yield
-    /// `user:*`, which grants everyone until the comparison is applied.
-    RequestGated {
-        /// The direct relation whose records carry the row's side. Always on the same
-        /// type.
-        relation: RelationName,
-        /// The shapes filling it, identical to that relation's own entry. Never empty.
-        shapes: Vec<RecordDescription>,
-        /// Context key each record carries the row's side under.
-        context_key: String,
-        /// Parameter the caller supplies its own value as, in every check context.
-        request_parameter: String,
-        /// How the two sides are compared.
-        comparison: RequestComparison,
-    },
-}
-
-/// How a request-gated relation compares the row's side against the caller's.
-///
-/// `#[non_exhaustive]`: a comparison the analysis learns adds a variant, and a caller
-/// matching this outside the crate keeps a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RequestComparison {
-    /// The caller's set has to hold the row's value.
-    CallerSetHolds,
-    /// The caller's single value has to equal the row's.
-    CallerValueEquals,
-}
-
 /// Report every relation of the emitted model.
-pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> Vec<RelationShapes> {
-    let sources = index_sources(plan);
+pub(crate) fn relation_shapes<'plan, DB: DatabaseLike>(
+    plan: &'plan SchemaPlan,
+    descriptions: &BTreeMap<RenderedSourceKey<'plan>, Option<RecordDescription>>,
+    db: &DB,
+) -> Vec<RelationShapes> {
+    let sources = index_sources(plan, descriptions);
 
     let mut out = Vec::new();
     for type_plan in &plan.types {
@@ -127,13 +54,7 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
                 type_name: type_plan.type_name.clone(),
                 relation: relation.clone(),
                 from_one_row: decision.is_some(),
-                shapes: shapes_filling(
-                    type_plan.type_name.as_str(),
-                    relation,
-                    &sources,
-                    &plan.well_known,
-                    db,
-                ),
+                shapes: shapes_filling(type_plan.type_name.as_str(), relation, &sources),
                 decision,
                 grants_nobody: relation_grants_nothing(type_plan, relation),
             });
@@ -142,52 +63,61 @@ pub(crate) fn relation_shapes<DB: DatabaseLike>(plan: &SchemaPlan, db: &DB) -> V
     out
 }
 
-/// Tuple sources by the `(type, relation)` pair each one populates.
-fn index_sources(plan: &SchemaPlan) -> SourceIndex<'_> {
-    let mut index: SourceIndex<'_> = BTreeMap::new();
+fn index_sources<'plan, 'description>(
+    plan: &'plan SchemaPlan,
+    descriptions: &'description BTreeMap<RenderedSourceKey<'plan>, Option<RecordDescription>>,
+) -> SourceIndex<'plan, 'description> {
+    let mut index: SourceIndex<'plan, 'description> = BTreeMap::new();
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
+            let key = rendered_source_key(
+                source,
+                type_plan.type_name.as_str(),
+                type_plan.reads_only_its_own_rows,
+            );
+            let description = descriptions.get(&key).and_then(Option::as_ref);
             for target in source.feeds(&type_plan.type_name, &plan.well_known) {
-                index.entry(target).or_default().push((
+                index.entry(target).or_default().push(IndexedSource {
                     source,
-                    type_plan.type_name.as_str(),
-                    type_plan.reads_only_its_own_rows,
-                ));
+                    description,
+                });
             }
         }
     }
     index
 }
 
-type SourceIndex<'plan> =
-    BTreeMap<(String, RelationName), Vec<(&'plan TupleSource, &'plan str, bool)>>;
+#[derive(Clone, Copy)]
+struct IndexedSource<'plan, 'description> {
+    source: &'plan TupleSource,
+    description: Option<&'description RecordDescription>,
+}
+
+type SourceIndex<'plan, 'description> =
+    BTreeMap<(String, RelationName), Vec<IndexedSource<'plan, 'description>>>;
 
 /// One shape per source. A source feeding the same relation from two type plans
 /// describes it twice, and the key the renderer deduplicates queries on is what
 /// says the two are the same. Scoping it by owner type would add nothing: a source
 /// keying its objects on the owning type only ever reaches the bucket named after
 /// that type.
-fn shapes_filling<DB: DatabaseLike>(
+fn shapes_filling(
     type_name: &str,
     relation: &RelationName,
-    sources: &SourceIndex<'_>,
-    well_known: &WellKnownTypes,
-    db: &DB,
+    sources: &SourceIndex<'_, '_>,
 ) -> Vec<RecordDescription> {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for (source, owner_type, only_own_rows) in sources
+    for indexed in sources
         .get(&(type_name.to_string(), relation.clone()))
         .into_iter()
         .flatten()
     {
-        if !seen.insert(source.dedup_key()) {
+        if !seen.insert(indexed.source.dedup_key()) {
             continue;
         }
-        if let Some(description) =
-            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)
-        {
-            out.push(description);
+        if let Some(description) = indexed.description {
+            out.push(description.clone());
         }
     }
     out
@@ -203,7 +133,7 @@ fn relation_decision<DB: DatabaseLike>(
     type_name: &str,
     relation: &RelationName,
     plan: &SchemaPlan,
-    sources: &SourceIndex<'_>,
+    sources: &SourceIndex<'_, '_>,
     db: &DB,
     visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<RowDecision> {
@@ -231,7 +161,7 @@ fn expr_decision<DB: DatabaseLike>(
     type_name: &str,
     expr: &UsersetExpr,
     plan: &SchemaPlan,
-    sources: &SourceIndex<'_>,
+    sources: &SourceIndex<'_, '_>,
     db: &DB,
     visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<RowDecision> {
@@ -259,7 +189,7 @@ fn child_decisions<DB: DatabaseLike>(
     type_name: &str,
     children: &[UsersetExpr],
     plan: &SchemaPlan,
-    sources: &SourceIndex<'_>,
+    sources: &SourceIndex<'_, '_>,
     db: &DB,
     visiting: &mut BTreeSet<(String, RelationName)>,
 ) -> Option<Vec<RowDecision>> {
@@ -275,46 +205,38 @@ fn child_decisions<DB: DatabaseLike>(
 fn leaf_decision<DB: DatabaseLike>(
     type_name: &str,
     relation: &RelationName,
-    sources: &SourceIndex<'_>,
+    sources: &SourceIndex<'_, '_>,
     well_known: &WellKnownTypes,
     db: &DB,
 ) -> Option<RowDecision> {
-    // Nothing the generator emits populates it, so its tuples come from somewhere
-    // this analysis cannot see, `pg_role` memberships among them.
     let feeding = sources.get(&(type_name.to_string(), relation.clone()))?;
     if feeding.is_empty() {
         return None;
     }
 
-    // A gate the request completes is decidable in a different way: the row settles one
-    // side and the consumer's own value settles the other, so the recipe carries the
-    // comparison rather than a subject set. One policy covering several commands records
-    // its gate once per command, so the distinct sources are what decides.
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let distinct: Vec<_> = feeding
         .iter()
-        .filter(|(source, ..)| seen.insert(source.dedup_key()))
+        .copied()
+        .filter(|indexed| seen.insert(indexed.source.dedup_key()))
         .collect();
     if distinct
         .iter()
-        .any(|(source, ..)| matches!(source, TupleSource::SessionAttributeGate { .. }))
+        .any(|indexed| matches!(indexed.source, TupleSource::SessionAttributeGate { .. }))
     {
-        // A second source beside it would be a composition this cannot describe.
-        let [(
-            source @ TupleSource::SessionAttributeGate {
-                row_parameter,
-                request_parameter,
-                comparison,
-                ..
-            },
-            owner_type,
-            only_own_rows,
-        )] = distinct.as_slice()
+        let [indexed] = distinct.as_slice() else {
+            return None;
+        };
+        let TupleSource::SessionAttributeGate {
+            row_parameter,
+            request_parameter,
+            comparison,
+            ..
+        } = indexed.source
         else {
             return None;
         };
-        let description =
-            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
+        let description = indexed.description?.clone();
         return Some(RowDecision::RequestGated {
             relation: relation.clone(),
             shapes: vec![description],
@@ -324,31 +246,26 @@ fn leaf_decision<DB: DatabaseLike>(
         });
     }
 
-    // A caller-set share gate is request-completed the same way: the share row settles the
-    // member value and the caller's set settles the rest. A clock composed into it is a
-    // second comparison this cannot name, so that case falls back to the model's condition.
     if distinct
         .iter()
-        .any(|(source, ..)| matches!(source, TupleSource::CallerSetShareGate { .. }))
+        .any(|indexed| matches!(indexed.source, TupleSource::CallerSetShareGate { .. }))
     {
-        let [(
-            source @ TupleSource::CallerSetShareGate {
-                row_parameter,
-                request_parameter,
-                temporal_context,
-                ..
-            },
-            owner_type,
-            only_own_rows,
-        )] = distinct.as_slice()
+        let [indexed] = distinct.as_slice() else {
+            return None;
+        };
+        let TupleSource::CallerSetShareGate {
+            row_parameter,
+            request_parameter,
+            temporal_context,
+            ..
+        } = indexed.source
         else {
             return None;
         };
         if !temporal_context.is_empty() {
             return None;
         }
-        let description =
-            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
+        let description = indexed.description?.clone();
         return Some(RowDecision::RequestGated {
             relation: relation.clone(),
             shapes: vec![description],
@@ -358,16 +275,20 @@ fn leaf_decision<DB: DatabaseLike>(
         });
     }
 
-    let mut unique: BTreeSet<String> = BTreeSet::new();
+    let mut unique = BTreeSet::new();
     let mut shapes = Vec::new();
-    for (source, owner_type, only_own_rows) in feeding {
-        let description =
-            describe_tuple_source(source, owner_type, *only_own_rows, well_known, db)?;
-        if !row_names_a_user(&description.derivation, type_name, &well_known.user, db) {
+    for indexed in feeding {
+        let description = indexed.description?;
+        if !row_names_a_user(
+            &description.derivation,
+            type_name,
+            well_known.user.as_str(),
+            db,
+        ) {
             return None;
         }
-        if unique.insert(source.dedup_key()) {
-            shapes.push(description);
+        if unique.insert(indexed.source.dedup_key()) {
+            shapes.push(description.clone());
         }
     }
     Some(RowDecision::Leaf {

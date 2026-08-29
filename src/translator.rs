@@ -3,28 +3,34 @@ use crate::no_std_prelude::*;
 #[cfg(feature = "std")]
 use std::path::Path;
 
+use alloc::sync::Arc;
+
 use crate::classifier::function_registry::{FunctionRegistry, RegistryLoadError, SessionAttribute};
 use crate::classifier::patterns::{ClassifiedPolicy, ConfidenceLevel};
 use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
-use crate::generator::action_relations::{action_relations, ActionRelations};
+use crate::generator::action_relations::action_relations;
 use crate::generator::json_model::{json_model_from_plan, AuthorizationModel};
 use crate::generator::model_generator::{
     build_filtered_schema_plan, render_dsl_from_plan, GeneratorSettings, SchemaPlan,
 };
-use crate::generator::notes::{NoteSeverity, TranslationNote};
-use crate::generator::records::Record;
-use crate::generator::relations::{relation_shapes, RelationShapes};
-use crate::generator::row_naming::{row_naming, RowNaming};
+use crate::generator::relations::relation_shapes;
+use crate::generator::row_naming::row_naming;
 use crate::generator::tuple_generator::{
     generate_tuple_queries_from_plan, record_from_tuple_row, TupleQuery, TupleRow, TupleRowError,
+    UnboundedColumns,
 };
-use crate::generator::unrestricted::{unrestricted_tables, UnrestrictedTable};
+use crate::generator::unrestricted::unrestricted_tables;
 use crate::generator::well_known::WellKnownTypes;
 #[cfg(feature = "std")]
 use crate::output::formatter::{write_output, WriteError};
 use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
 use crate::parser::sql_parser::{DatabaseLike, ParserDB};
+use crate::types::UnrestrictedTable;
+use crate::types::{
+    ActionRelations, NoteSeverity, Record, RelationShapes, RowNaming, TranslationNote,
+};
+use crate::types::{ConditionParameterName, ConditionParameterNameError};
 
 pub use crate::generator::model_generator::PlanningError;
 
@@ -46,10 +52,16 @@ impl TranslatorBuilder {
 
     /// Name the condition parameter a caller supplies for a guard against statement
     /// time, which every check context then has to use. Defaults to `request_time`.
-    #[must_use]
-    pub fn with_request_time_parameter(mut self, name: impl Into<String>) -> Self {
-        self.generator.request_time_parameter = name.into();
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` is not a usable `CEL` identifier.
+    pub fn with_request_time_parameter(
+        mut self,
+        name: impl Into<String>,
+    ) -> Result<Self, ConditionParameterNameError> {
+        self.generator.request_time_parameter = ConditionParameterName::try_from(name.into())?;
+        Ok(self)
     }
 
     /// Replace the type names the generator reserves for its own vocabulary.
@@ -165,9 +177,7 @@ impl Translator {
 
     /// Plan a translation of `db`.
     ///
-    /// The plan is built once here and each output is rendered from it on demand, so a
-    /// caller wanting the model, the JSON and the tuples classifies once rather than
-    /// three times.
+    /// Classification, planning, tuple queries, and relation shapes are each derived once.
     pub fn translate<'a, DB: DatabaseLike>(
         &self,
         db: &'a DB,
@@ -198,6 +208,23 @@ impl Translator {
     }
 }
 
+#[derive(Debug)]
+struct DerivedOutputs {
+    tuple_queries: Vec<TupleQuery>,
+    relations: Vec<RelationShapes>,
+}
+
+impl DerivedOutputs {
+    fn build<DB: DatabaseLike>(plan: &SchemaPlan, bounds: &UnboundedColumns, db: &DB) -> Self {
+        let generated = generate_tuple_queries_from_plan(plan, bounds, db);
+        let relations = relation_shapes(plan, &generated.descriptions, db);
+        Self {
+            tuple_queries: generated.queries,
+            relations,
+        }
+    }
+}
+
 /// A planned translation of one schema.
 ///
 /// Holding the plan is what makes the outputs cheap, and it is also what makes them
@@ -207,6 +234,7 @@ impl Translator {
 pub struct Translation<'a, DB: DatabaseLike = ParserDB> {
     db: &'a DB,
     plan: SchemaPlan,
+    derived: Arc<DerivedOutputs>,
     policies: Vec<ClassifiedPolicy>,
     min_confidence: ConfidenceLevel,
 }
@@ -221,10 +249,14 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
         min_confidence: ConfidenceLevel,
         settings: &GeneratorSettings,
     ) -> Result<Self, PlanningError> {
-        let plan = build_filtered_schema_plan(&policies, db, registry, min_confidence, settings)?;
+        let bounds = UnboundedColumns::resolve(db);
+        let plan =
+            build_filtered_schema_plan(&policies, db, registry, min_confidence, settings, &bounds)?;
+        let derived = Arc::new(DerivedOutputs::build(&plan, &bounds, db));
         Ok(Self {
             db,
             plan,
+            derived,
             policies,
             min_confidence,
         })
@@ -247,12 +279,9 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
 
     /// Every relation the emitted model declares, with the shapes whose records fill
     /// it and whether one row decides them.
-    ///
-    /// Reads the plan the translation already holds, so the answers follow the
-    /// settings this translation was planned with.
     #[must_use]
-    pub fn relations(&self) -> Vec<RelationShapes> {
-        relation_shapes(&self.plan, self.db)
+    pub fn relations(&self) -> &[RelationShapes] {
+        &self.derived.relations
     }
 
     /// How rows of each table the model names are named as objects, which is what a
@@ -350,8 +379,8 @@ impl<'a, DB: DatabaseLike> Outputs<'a, DB> {
 
     /// SQL that populates the relationship tuples.
     #[must_use]
-    pub fn tuple_queries(&self) -> Vec<TupleQuery> {
-        generate_tuple_queries_from_plan(&self.0.plan, self.0.db)
+    pub fn tuple_queries(&self) -> &[TupleQuery] {
+        &self.0.derived.tuple_queries
     }
 
     /// Read one row a [`Outputs::tuple_queries`] query returned back as the record
@@ -397,7 +426,7 @@ impl<'a, DB: DatabaseLike> Outputs<'a, DB> {
             output_dir,
             name,
             &self.model(),
-            &self.tuple_queries(),
+            self.tuple_queries(),
             &self.report(),
         )
     }
@@ -433,3 +462,106 @@ impl core::fmt::Display for UnhandledExpressions {
 }
 
 impl core::error::Error for UnhandledExpressions {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+    use core::fmt::Write;
+
+    use crate::generator::tuple_generator::{
+        reset_unbounded_columns_resolutions, unbounded_columns_resolutions,
+    };
+    use crate::parser::sql_parser::parse_schema;
+
+    const SCHEMA: &str = r"
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_name TEXT,
+    editor_name TEXT
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY owner_read ON docs FOR SELECT USING (owner_name = current_user);
+CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
+";
+
+    fn schema_with_sources(source_count: usize) -> String {
+        let mut schema = String::from("CREATE TABLE docs (\n    id UUID PRIMARY KEY");
+        for index in 0..source_count {
+            write!(schema, ",\n    owner_{index} TEXT").expect("column writes");
+        }
+        schema.push_str("\n);\nALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n");
+        for index in 0..source_count {
+            writeln!(
+                schema,
+                "CREATE POLICY owner_{index} ON docs FOR SELECT USING (owner_{index} = current_user);"
+            )
+            .expect("policy writes");
+        }
+        schema
+    }
+
+    #[test]
+    fn column_bound_discovery_runs_once_per_output_derivation() {
+        for source_count in [1, 8, 32] {
+            let db = parse_schema(&schema_with_sources(source_count)).expect("schema parses");
+            reset_unbounded_columns_resolutions();
+
+            let translation = TranslatorBuilder::new()
+                .build()
+                .translate(&db)
+                .expect("translation plans");
+            assert!(!translation.relations().is_empty());
+            assert_eq!(
+                translation
+                    .clone()
+                    .outputs_accepting_gaps()
+                    .tuple_queries()
+                    .len(),
+                source_count
+            );
+            assert_eq!(unbounded_columns_resolutions(), 1);
+        }
+    }
+
+    #[test]
+    fn cloned_translations_share_derived_output_storage() {
+        let db = parse_schema(SCHEMA).expect("schema parses");
+        let translation = TranslatorBuilder::new()
+            .build()
+            .translate(&db)
+            .expect("translation plans");
+        let cloned = translation.clone();
+        let original_relations = translation.relations();
+        let cloned_relations = cloned.relations();
+
+        assert!(!original_relations.is_empty());
+        assert!(core::ptr::eq(
+            original_relations.as_ptr(),
+            cloned_relations.as_ptr()
+        ));
+    }
+    #[test]
+    fn relation_shapes_reuse_rendered_query_descriptions() {
+        let db = parse_schema(SCHEMA).expect("schema parses");
+        let translation = TranslatorBuilder::new()
+            .build()
+            .translate(&db)
+            .expect("translation plans");
+        let descriptions: Vec<_> = translation
+            .derived
+            .tuple_queries
+            .iter()
+            .filter_map(|query| query.description.as_ref())
+            .collect();
+
+        assert!(!descriptions.is_empty());
+        for description in descriptions {
+            assert!(translation
+                .derived
+                .relations
+                .iter()
+                .any(|relation| relation.shapes.contains(description)));
+        }
+    }
+}

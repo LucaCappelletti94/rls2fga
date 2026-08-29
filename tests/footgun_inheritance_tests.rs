@@ -3,11 +3,11 @@
 //!
 //! Parent rules through a foreign key, `INHERITS` children, and partitions.
 
-use rls2fga::classifier::patterns::ConfidenceLevel;
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::notes::TranslationNote;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
 
@@ -725,11 +725,17 @@ CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user
 /// `AND` and the query emits tuples for rows the policy refuses.
 #[test]
 fn a_disjunctive_membership_predicate_stays_parenthesised_in_the_tuple_query() {
-    let (_, tuples) = membership_translation(
-        "EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id \
-         AND doc_members.user_id = current_user \
-         AND (doc_members.role = 'editor' OR doc_members.role = 'admin'))",
+    let sql = support::qualify_table_declarations(
+        &format!(
+            "{}CREATE POLICY docs_members ON docs FOR SELECT USING (
+EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id
+  AND doc_members.user_id = current_user
+  AND (doc_members.role = 'editor' OR doc_members.role = 'admin')));",
+            support::footgun::MEMBERSHIP_SCHEMA
+        ),
+        &["docs", "doc_members"],
     );
+    let (_, tuples) = translation(&sql);
     assert!(
         tuples.contains("AND (role = 'editor' OR role = 'admin')"),
         "the disjunction must stay inside its own parentheses:\n{tuples}"
@@ -842,7 +848,9 @@ CREATE TABLE secret_docs(classification TEXT) INHERITS (docs);
 /// read `FROM ONLY`, and the child rows that drops are disclosed.
 #[test]
 fn an_inheritance_parents_tuples_read_only_its_own_rows() {
-    let db = db_of(INHERITANCE_PARENT_SCHEMA);
+    let sql =
+        support::qualify_table_declarations(INHERITANCE_PARENT_SCHEMA, &["docs", "secret_docs"]);
+    let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -850,12 +858,12 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
 
     let tuples = outputs.tuple_queries();
     assert!(
-        !tuples_reading_from(&tuples, "FROM ONLY \"docs\"").is_empty(),
+        !tuples_reading_from(tuples, "FROM ONLY \"public\".\"docs\"").is_empty(),
         "an inheritance parent's tuples must come from its own rows alone, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
     assert!(
-        tuples_reading_from(&tuples, "FROM \"docs\"").is_empty(),
+        tuples_reading_from(tuples, "FROM \"public\".\"docs\"").is_empty(),
         "a plain FROM loads child rows into parent objects, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
@@ -864,7 +872,7 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
         outputs.notes().iter().any(|note| matches!(
             note,
             TranslationNote::InheritanceParentReadsOwnRowsOnly { table, children }
-                if table == "docs" && children == &["secret_docs".to_string()]
+                if table.to_string() == "public.docs" && children.iter().map(ToString::to_string).collect::<Vec<_>>() == vec!["public.secret_docs".to_string()]
         )),
         "dropping child rows must be disclosed and name the child, got: {:#?}",
         outputs.notes()
@@ -882,14 +890,16 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
 /// exact. The root must stay untouched.
 #[test]
 fn a_partitioned_roots_tuples_still_read_every_partition() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE measurements(id INT PRIMARY KEY, owner_id TEXT) PARTITION BY RANGE (id);
 ALTER TABLE measurements ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON measurements FOR SELECT USING (owner_id = current_user);
-CREATE TABLE measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (100);
+CREATE TABLE public.measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (100);
 ",
+        &["measurements"],
     );
+    let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -897,12 +907,12 @@ CREATE TABLE measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (1
 
     let tuples = outputs.tuple_queries();
     assert!(
-        !tuples_reading_from(&tuples, "FROM \"measurements\"").is_empty(),
+        !tuples_reading_from(tuples, "FROM \"public\".\"measurements\"").is_empty(),
         "a partitioned root's tuples come from every partition, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
     assert!(
-        tuples_reading_from(&tuples, "ONLY").is_empty(),
+        tuples_reading_from(tuples, "ONLY").is_empty(),
         "ONLY on a partitioned root reads zero rows, got: {:#?}",
         tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
     );
@@ -920,7 +930,7 @@ CREATE TABLE measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (1
 /// has `INHERITS` children reads only its own rows, the middle of a chain included.
 #[test]
 fn an_inheritance_childs_own_type_reads_only_its_own_rows_too() {
-    let db = db_of(
+    let sql = support::qualify_table_declarations(
         r"
 CREATE TABLE docs(id INT PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -931,31 +941,39 @@ ALTER TABLE secret_docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY c ON secret_docs FOR SELECT USING (owner_id = current_user);
 CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
 ",
+        &["docs", "secret_docs", "deep_docs"],
     );
+    let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
         .outputs_accepting_gaps();
 
     let tuples = outputs.tuple_queries();
-    for table in ["docs", "secret_docs"] {
+    for (table, source) in [
+        ("docs", "\"public\".\"docs\""),
+        ("secret_docs", "\"public\".\"secret_docs\""),
+    ] {
         assert!(
-            !tuples_reading_from(&tuples, &format!("FROM ONLY \"{table}\"")).is_empty(),
+            !tuples_reading_from(tuples, &format!("FROM ONLY {source}")).is_empty(),
             "'{table}' has inheritance children, so its tuples read ONLY, got: {:#?}",
             tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
         );
         assert!(
-            tuples_reading_from(&tuples, &format!("FROM \"{table}\"")).is_empty(),
+            tuples_reading_from(tuples, &format!("FROM {source}")).is_empty(),
             "'{table}' must not also read its children, got: {:#?}",
             tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
         );
     }
-    for (table, child) in [("docs", "secret_docs"), ("secret_docs", "deep_docs")] {
+    for (table, child) in [
+        ("public.docs", "public.secret_docs"),
+        ("public.secret_docs", "public.deep_docs"),
+    ] {
         assert!(
             outputs.notes().iter().any(|note| matches!(
                 note,
                 TranslationNote::InheritanceParentReadsOwnRowsOnly { table: t, children }
-                    if t == table && children == &[child.to_string()]
+                    if t.to_string() == table && children.iter().map(ToString::to_string).collect::<Vec<_>>() == vec![child.to_string()]
             )),
             "'{table}' must disclose dropping '{child}', got: {:#?}",
             outputs.notes()
