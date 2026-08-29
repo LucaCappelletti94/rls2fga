@@ -41,10 +41,10 @@ jobs:
       - name: Run quality checks
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          cargo test --locked --lib --tests
-          cargo test --all-features --locked --no-run --lib --tests
-          cargo test --doc --all-features --locked
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --lib --tests
+          cargo test --all-features --no-run --lib --tests
+          cargo test --doc --all-features
 
   no-std:
     name: no_std build (thumbv7em-none-eabi)
@@ -63,7 +63,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build lib without std for a bare-metal target
-        run: cargo build --lib --no-default-features --locked --target thumbv7em-none-eabi
+        run: cargo build --lib --no-default-features --target thumbv7em-none-eabi
 
   fuzz:
     name: Fuzz harness (build + seed regression)
@@ -116,7 +116,7 @@ jobs:
       - name: Build docs
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --all-features --no-deps
+        run: cargo doc --all-features --no-deps
 
   security-audit:
     name: Security audit
@@ -134,6 +134,9 @@ jobs:
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
+
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
 
       - name: Run cargo-audit
         run: cargo audit
@@ -165,7 +168,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --locked --lib --tests --lcov --output-path lcov.info
+        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
