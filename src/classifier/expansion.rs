@@ -211,13 +211,14 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
         )));
     }
 
-    match function.language() {
-        Some(language) if language.eq_ignore_ascii_case("sql") => {}
-        Some(language) => {
+    match function.stored_language().as_deref() {
+        Some("sql") => {}
+        Some(_) => {
+            let language = function.language().unwrap_or("unknown");
             return Some(refused(format!(
                 "Function '{function_name}' is LANGUAGE {language}, and only a \
                  single-expression LANGUAGE sql body expands"
-            )))
+            )));
         }
         None => {
             return Some(refused(format!(
@@ -285,16 +286,9 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
 
     // Declared argument names, in position order, as PostgreSQL stores them.
     let named_args: Vec<(usize, String)> = function
-        .argument_names(db)
+        .stored_argument_names(db)
         .enumerate()
-        .filter_map(|(index, name)| {
-            name.map(|name| {
-                (
-                    index,
-                    stored_identifier(name.name(), name.name_is_quoted()).into_owned(),
-                )
-            })
-        })
+        .filter_map(|(index, name)| name.map(|name| (index, name.into_owned())))
         .collect();
 
     // Q6: a bare body name matching both an argument and a column of a table in

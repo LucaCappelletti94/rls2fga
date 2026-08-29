@@ -117,7 +117,7 @@ pub fn normalize_relation_name(name: &str) -> String {
 
 /// Terminal lowercase identifier of a possibly schema-qualified function name.
 pub fn normalized_function_name(func: &sqlparser::ast::Function) -> String {
-    normalize_relation_name(&func.name.to_string())
+    normalize_identifier(sql_traits::utils::last_str(&func.name))
 }
 
 /// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation

@@ -641,10 +641,13 @@ impl FunctionSemantic {
     pub fn analyze_body_with_settings(
         body: &str,
         return_type: &str,
-        _language: &str,
+        language: &str,
         security: &FunctionSecurity,
         settings: &AccessorInferenceSettings,
     ) -> Option<FunctionSemantic> {
+        if language != "sql" {
+            return None;
+        }
         let body_lower = body.to_lowercase();
         let return_type_lower = return_type.to_lowercase();
 
@@ -1210,5 +1213,18 @@ mod tests {
                 && team_table == "teams"
                 && team_pk_col == "id"
         ));
+    }
+
+    #[test]
+    fn analyze_body_rejects_current_setting_accessor_body_when_language_is_not_sql() {
+        let semantic = FunctionSemantic::analyze_body(
+            "SELECT current_setting('app.current_user_id')::uuid",
+            "uuid",
+            "plpgsql",
+        );
+        assert!(
+            semantic.is_none(),
+            "plpgsql body cannot be a direct SQL accessor regardless of its text"
+        );
     }
 }

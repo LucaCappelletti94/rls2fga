@@ -982,3 +982,30 @@ fn the_readme_example_blocks_match_the_output() {
         "the README tuple block drifted from the output"
     );
 }
+
+/// `normalized_function_name` extracts the terminal identifier via `last_str`, not by rendering the full `ObjectName` to a string.
+#[test]
+fn terminal_function_name_does_not_render_object_name_to_string() {
+    let offenders = fns_whose_body(|body| {
+        body.contains("fn normalized_function_name(") && body.contains(".name.to_string()")
+    });
+    assert_eq!(
+        offenders.len(),
+        0,
+        "normalized_function_name serializes ObjectName before extracting the terminal \
+         identifier, route through sql_traits::utils::last_str instead: {offenders:?}"
+    );
+}
+
+/// A raw argument-name arity walk must be paired with the stored-name walk used for substitution.
+#[test]
+fn function_argument_names_route_through_stored_argument_names() {
+    let offenders = fns_whose_body(|body| {
+        body.matches(".argument_names(").count() > body.matches(".stored_argument_names(").count()
+    });
+    assert_eq!(
+        offenders.len(),
+        0,
+        "found unpaired direct argument_names call(s): {offenders:?}"
+    );
+}

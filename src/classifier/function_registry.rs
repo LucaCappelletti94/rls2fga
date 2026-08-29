@@ -598,6 +598,9 @@ impl FunctionRegistry {
             let Some(body) = function.body() else {
                 continue;
             };
+            let Some(language) = function.stored_language() else {
+                continue;
+            };
             let target = function.target_name();
             // A set of identities is not one identity, so a set returning function is
             // never an accessor. It is the only thing that can be a set reader, which
@@ -613,7 +616,7 @@ impl FunctionRegistry {
             if let Some(semantic) = FunctionSemantic::analyze_body_with_settings(
                 body,
                 &return_type,
-                "sql",
+                &language,
                 &security,
                 settings,
             ) {
@@ -622,7 +625,7 @@ impl FunctionRegistry {
                 && FunctionSemantic::analyze_body_with_settings(
                     body,
                     &return_type,
-                    "sql",
+                    &language,
                     &FunctionSecurity::Invoker,
                     settings,
                 )
@@ -919,5 +922,23 @@ CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
                 "`RETURNS {declaration}` must not be inferred as a scalar current-user accessor"
             );
         }
+    }
+
+    #[test]
+    fn enrich_from_schema_does_not_register_non_sql_language_as_accessor() {
+        let sql = r"
+CREATE FUNCTION plpgsql_user_id() RETURNS UUID
+  LANGUAGE plpgsql STABLE SECURITY INVOKER
+  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+";
+        let db = parse_schema(sql).expect("schema should parse");
+
+        let mut registry = FunctionRegistry::new();
+        registry.enrich_from_schema(&db);
+
+        assert!(
+            !registry.is_current_user_accessor("plpgsql_user_id"),
+            "a plpgsql function must not be inferred as a current-user accessor"
+        );
     }
 }

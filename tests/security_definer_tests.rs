@@ -281,6 +281,22 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 }
 
 #[test]
+fn a_quoted_uppercase_language_name_refuses() {
+    let sql = r#"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE "SQL" SECURITY DEFINER AS
+'SELECT TRUE';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
+"#;
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("SQL"),
+        "quoted uppercase LANGUAGE \"SQL\" is not the built-in sql identifier: {reason}"
+    );
+}
+
+#[test]
 fn a_multi_statement_body_refuses() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
