@@ -943,7 +943,7 @@ fn fenced_block(text: &str, language: &str) -> String {
 #[test]
 fn the_readme_example_blocks_match_the_output() {
     let schema = "
-    CREATE TABLE public.documents (
+    CREATE TABLE documents (
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
     );

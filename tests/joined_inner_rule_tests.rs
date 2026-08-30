@@ -39,8 +39,6 @@ fn translate_qualified(customer_fk: &str, using: &str) -> (String, String) {
         "{}\nCREATE POLICY p ON line_items FOR SELECT USING ({using});",
         schema(customer_fk)
     );
-    let sql =
-        support::qualify_table_declarations(&sql, &["orgs", "customers", "orders", "line_items"]);
     translate_sql(&sql)
 }
 

@@ -11,7 +11,7 @@ use crate::generator::identity::{
 };
 use crate::generator::ir::{TupleSource, TupleSourceKey};
 use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
-use crate::generator::notes::SkippedTuples;
+pub use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
     deny_relation, WellKnownTypes, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID,
 };
@@ -48,12 +48,15 @@ pub struct TupleQuery {
     pub sql: String,
     /// The same records as structure, so a caller holding one row's values
     /// reaches them without a database. `None` where the query produces no
-    /// records, which is the `TODO` placeholder alone.
+    /// records, which is a gap alone.
     pub description: Option<RecordDescription>,
     /// Condition the rows carry, when the query yields the two extra columns a
     /// conditional tuple needs. `None` means three columns and no condition, so a
     /// loader knows the shape without parsing the SQL.
     pub condition: Option<String>,
+    /// The gap this entry stands for, where no statement could be built. `sql` is then
+    /// advice rather than something to run: executing it loads nothing and succeeds.
+    pub skipped: Option<SkippedTuples>,
 }
 
 /// Format a list of tuple queries into a single SQL string.
@@ -360,21 +363,6 @@ pub(crate) fn generate_tuple_queries_from_plan<'plan, DB: DatabaseLike>(
             if descriptions.contains_key(&key) {
                 continue;
             }
-            if let Some(table) = source.first_unqualified_table() {
-                let mut query = skipped_query(&SkippedTuples::UnqualifiedTable {
-                    table: table.clone(),
-                });
-                query.description = crate::generator::describe::describe_tuple_source(
-                    source,
-                    type_plan.type_name.as_str(),
-                    &query,
-                    &plan.well_known,
-                    db,
-                );
-                descriptions.insert(key, query.description.clone());
-                queries.push(query);
-                continue;
-            }
             let Some(query) = render_tuple_source(
                 source,
                 type_plan.type_name.as_str(),
@@ -647,6 +635,7 @@ fn render_ownership_tuple_source(
         ),
         description: None,
         condition: None,
+        skipped: None,
     }
 }
 
@@ -683,9 +672,7 @@ fn single_comment_line(text: &str) -> String {
 /// crate passes through here, so new [`TupleSource`] variants inherit it.
 fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
     query.comment = single_comment_line(&query.comment);
-    // A `Todo` source renders its body as a comment too. A real query never starts with
-    // `--`, so this leaves generated SQL untouched.
-    if query.sql.trim_start().starts_with("--") {
+    if query.skipped.is_some() {
         query.sql = single_comment_line(&query.sql);
     }
     query
@@ -774,6 +761,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -805,6 +793,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -942,6 +931,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -975,6 +965,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1022,6 +1013,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     ),
                     description: None,
                     condition: None,
+                    skipped: None,
                 });
             };
             // The clock rides the member tuple as a condition, so the query drops its
@@ -1071,6 +1063,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: Some(gate.condition.clone()),
+                skipped: None,
             })
         }
 
@@ -1153,6 +1146,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: Some(condition.clone()),
+                skipped: None,
             })
         }
 
@@ -1196,6 +1190,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1233,6 +1228,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     ),
                     description: None,
                     condition: None,
+                    skipped: None,
                 });
             };
             let mut context = String::new();
@@ -1282,6 +1278,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: Some(gate.condition.clone()),
+                skipped: None,
             })
         }
 
@@ -1304,6 +1301,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1362,6 +1360,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1384,6 +1383,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1411,6 +1411,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1438,6 +1439,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1470,6 +1472,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: Some(condition.clone()),
+                skipped: None,
             })
         }
 
@@ -1514,6 +1517,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: Some(condition.clone()),
+                skipped: None,
             })
         }
 
@@ -1530,6 +1534,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1554,6 +1559,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1580,6 +1586,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
             })
         }
 
@@ -1594,6 +1601,7 @@ fn skipped_query(reason: &SkippedTuples) -> TupleQuery {
         sql: reason.body(),
         description: None,
         condition: None,
+        skipped: Some(reason.clone()),
     })
 }
 
@@ -1758,12 +1766,14 @@ mod tests {
                 sql: "SELECT 1;".to_string(),
                 description: None,
                 condition: None,
+                skipped: None,
             },
             TupleQuery {
                 comment: "-- two".to_string(),
                 sql: "SELECT 2;".to_string(),
                 description: None,
                 condition: None,
+                skipped: None,
             },
         ];
         let formatted = format_tuples(&tuples);
@@ -1779,6 +1789,7 @@ mod tests {
             sql: "SELECT 1;".to_string(),
             description: None,
             condition: None,
+            skipped: None,
         }];
 
         assert!(format_tuples(&tuples).starts_with(

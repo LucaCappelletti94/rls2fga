@@ -192,12 +192,16 @@ impl TableId {
     }
 
     /// The fully qualified SQL name.
+    ///
+    /// A table stored without a schema resides in `public`, so this names that schema
+    /// rather than leaving the reading session's search path to choose one.
     #[must_use]
     pub fn sql_name(&self) -> String {
-        match &self.schema {
-            Some(schema) => format!("{}.{}", quoted_for_sql(schema), quoted_for_sql(&self.name)),
-            None => quoted_for_sql(&self.name),
-        }
+        format!(
+            "{}.{}",
+            quoted_for_sql(self.schema.as_deref().unwrap_or("public")),
+            quoted_for_sql(&self.name)
+        )
     }
 }
 

@@ -827,18 +827,8 @@ fn well_known_names_have_a_single_source_of_truth() {
     )
     .expect("custom type names should be valid");
     let mut rendered = String::new();
-    for (fixture, tables) in [
-        (
-            "abac_status",
-            &["users", "teams", "team_members", "ownables", "owner_grants"][..],
-        ),
-        ("pg_role_gate", &["docs"][..]),
-        (
-            "role_threshold_compound_key",
-            &["users", "teams", "team_members", "ownables", "owner_grants"][..],
-        ),
-    ] {
-        let sql = support::qualify_table_declarations(&support::read_fixture_sql(fixture), tables);
+    for fixture in ["abac_status", "pg_role_gate", "role_threshold_compound_key"] {
+        let sql = support::read_fixture_sql(fixture);
         let registry =
             std::fs::read_to_string(format!("tests/fixtures/{fixture}/function_registry.json"))
                 .ok();
@@ -904,8 +894,7 @@ fn valid_extended_well_known_type_name_keeps_its_exact_spelling() {
     .expect("the extended identifier should be valid");
     assert_eq!(names.user().as_str(), user);
 
-    let schema =
-        support::qualify_table_declarations(&reserved_type_collision_schema("docs"), &["docs"]);
+    let schema = reserved_type_collision_schema("docs");
     let db = db_of(&schema);
     let outputs = translator_with_types(names)
         .translate(&db)

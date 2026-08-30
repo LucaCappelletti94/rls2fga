@@ -98,8 +98,8 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT TO contractor
 /// bound role keeps the access it forbids.
 #[test]
 fn a_role_scoped_barrier_keeps_the_tuples_it_subtracts() {
-    let sql = support::qualify_table_declarations(ROLE_SCOPED_BARRIER, &["docs"]);
-    let db = db_of(&sql);
+    let sql = ROLE_SCOPED_BARRIER;
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)
@@ -288,8 +288,7 @@ CREATE POLICY docs_review ON docs AS RESTRICTIVE FOR SELECT
 /// Permissive read policies are an OR, so being in either role is enough.
 #[test]
 fn membership_readable_by_two_roles_admits_either_role() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
@@ -298,10 +297,8 @@ CREATE POLICY dm_support ON doc_members FOR SELECT TO support USING (true);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
-",
-        &["docs", "doc_members"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)

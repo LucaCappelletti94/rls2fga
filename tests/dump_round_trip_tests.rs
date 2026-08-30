@@ -254,7 +254,7 @@ async fn every_fixture_round_trips_through_pg_dump() {
             match parsed {
                 Err(error) => Some(format!("{fixture}: its dump does not parse: {error}")),
                 Ok(dumped_db) => {
-                    let fixture_db = support::parse_qualified_fixture_db(fixture);
+                    let fixture_db = support::parse_fixture_db(fixture);
                     let (fixture_model, fixture_tuples) = artifacts(&fixture_db, fixture);
                     let (dump_model, dump_tuples) = artifacts(&dumped_db, fixture);
                     if fixture_model != dump_model {

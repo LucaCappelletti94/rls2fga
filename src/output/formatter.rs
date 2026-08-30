@@ -167,6 +167,7 @@ mod tests {
             sql: "SELECT 1;".to_string(),
             description: None,
             condition: None,
+            skipped: None,
         }];
 
         write_output(&dir, "docs", "model", &tuples, REPORT).expect("write_output should succeed");

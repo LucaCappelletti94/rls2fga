@@ -8,7 +8,6 @@
 use std::collections::BTreeSet;
 
 use rls2fga::classifier::function_registry::{FunctionRegistry, SessionAttribute};
-use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier::classify_policies;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::TupleQuery;
@@ -176,17 +175,6 @@ fn fixture_names() -> Vec<String> {
     names.sort();
     assert!(names.len() > 20, "the corpus should not have shrunk");
     names
-}
-
-fn qualified_fixture_classified(
-    fixture: &str,
-    tables: &[&str],
-) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
-    let sql = support::qualify_table_declarations(&support::read_fixture_sql(fixture), tables);
-    let db = parse_schema(&sql).expect("qualified fixture SQL should parse");
-    let registry = support::try_load_fixture_registry(fixture);
-    let classified = classify_policies(&db, &registry);
-    (classified, db, registry)
 }
 
 fn declared_relations(
@@ -1238,8 +1226,8 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
 /// so the latest deadline is read by querying rather than settled from one row.
 #[test]
 fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
-    let schema = support::qualify_table_declarations(HOLDER, &["reviewers"]);
-    let shapes = shapes_of(&schema, ACCESSOR_REGISTRY);
+    let schema = HOLDER;
+    let shapes = shapes_of(schema, ACCESSOR_REGISTRY);
     let holder = shapes
         .iter()
         .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
@@ -1251,7 +1239,7 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
         );
     };
     assert_eq!(queries.len(), 1, "one table carries the change");
-    assert_eq!(queries[0].table.to_string(), "public.reviewers");
+    assert_eq!(queries[0].table.to_string(), "reviewers");
     assert_eq!(queries[0].key_columns, ["user_id"]);
     assert_eq!(
         queries[0].scope,
@@ -1453,7 +1441,7 @@ fn every_query_the_loader_runs_has_a_shape() {
             .outputs_accepting_gaps()
             .tuple_queries()
         {
-            if query.sql.trim_start().starts_with("--") {
+            if query.skipped.is_some() {
                 continue;
             }
             checked += 1;
@@ -2698,8 +2686,7 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
 /// reached through a tuple-to-userset, so two viewers are two objects that union.
 #[test]
 fn a_caller_set_share_gets_its_own_object_reached_by_userset() {
-    let (classified, db, registry) =
-        qualified_fixture_classified("connetto_capability", &["papers", "paper_shares"]);
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -3227,10 +3214,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
     }
     assert!(swept > 0, "the corpus produces joining shapes");
 
-    let (classified, db, registry) = qualified_fixture_classified(
-        "earth_metabolome",
-        &["users", "teams", "team_members", "ownables", "owner_grants"],
-    );
+    let (classified, db, registry) = support::try_load_fixture_classified("earth_metabolome");
     let planned = Translation::plan(
         classified,
         &db,
@@ -3258,7 +3242,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
     for query in &joined {
         assert_eq!(
             query.table.to_string(),
-            "public.owner_grants",
+            "owner_grants",
             "only the grant table needs a replay here: {query:?}"
         );
         assert_eq!(
@@ -3435,7 +3419,7 @@ fn every_tuple_query_states_the_shape_of_its_own_rows() {
         .outputs_accepting_gaps();
         for query in outputs.tuple_queries() {
             let named = format!("{fixture}: {}", query.comment.trim());
-            if query.sql.trim_start().starts_with("--") {
+            if query.skipped.is_some() {
                 assert!(
                     query.condition.is_none(),
                     "{named} loads nothing, so it cannot claim a projection"

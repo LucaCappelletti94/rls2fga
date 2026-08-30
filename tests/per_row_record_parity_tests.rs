@@ -535,7 +535,7 @@ fn assert_descriptions_match_their_sql(
         let Some(description) = &query.description else {
             // Only the TODO placeholder produces no records, and it emits no query.
             assert!(
-                query.sql.trim_start().starts_with("--"),
+                query.skipped.is_some(),
                 "{label}: a real query must carry a description:\n{}\n{}",
                 query.comment,
                 query.sql
@@ -739,7 +739,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
 
     // Without the accessor the ownership, list, field and membership policies fall
     // below the threshold and the schema exercises only three shapes.
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         ROW_SHAPES_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -805,7 +805,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
         conn.batch_execute(REQUEST_GATE_SEED)
             .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
 
-        let (classified, db, registry) = support::try_load_qualified_fixture_classified(fixture);
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
         let outputs = Translation::plan(
             classified,
             &db,
@@ -884,7 +884,7 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
     conn.batch_execute(CLOCK_GATE_SEED)
         .expect("failed to seed the clock-gate schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(CLOCK_GATE_SCHEMA, None);
+    let (classified, db, registry) = support::classify_sql(CLOCK_GATE_SCHEMA, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -977,7 +977,7 @@ async fn an_expiring_share_settles_and_matches_its_own_sql() {
     conn.batch_execute(EXPIRING_SHARE_SEED)
         .expect("failed to seed the expiring shares");
 
-    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
         EXPIRING_SHARE_SCHEMA,
         r#"[
       { "key": "app.user_id", "kind": "caller_id" },
@@ -1044,8 +1044,7 @@ async fn a_settled_share_arm_matches_its_own_sql() {
     )
     .expect("failed to seed the papers and shares");
 
-    let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("connetto_capability");
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1105,7 +1104,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .expect("failed to seed the compound-key grant schema");
 
     let (classified, db, registry) =
-        support::load_qualified_fixture_classified("role_threshold_compound_key");
+        support::load_fixture_classified("role_threshold_compound_key");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1197,7 +1196,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     )
     .expect("failed to seed the earth_metabolome schema");
 
-    let (classified, db, registry) = support::load_qualified_fixture_classified("earth_metabolome");
+    let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
     let outputs = Translation::plan(
         classified.clone(),
         &db,
@@ -1294,7 +1293,7 @@ async fn holder_shapes_match_their_own_sql() {
     conn.batch_execute(HOLDER_SEED)
         .expect("failed to seed the holder schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         HOLDER_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1365,7 +1364,7 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
     .expect("failed to seed the wrapped-membership schema");
 
     let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("membership_wrapped_function_safe");
+        support::try_load_fixture_classified("membership_wrapped_function_safe");
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1475,7 +1474,7 @@ async fn a_composite_key_membership_matches_its_own_sql() {
     conn.batch_execute(COMPOSITE_KEY_MEMBERSHIP_SEED)
         .expect("failed to seed the composite-key membership schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         COMPOSITE_KEY_MEMBERSHIP_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1541,7 +1540,7 @@ INSERT INTO docs (id, title) VALUES
     )
     .expect("failed to seed the rows the scope judges");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema, None);
+    let (classified, db, registry) = support::classify_sql(schema, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -1555,7 +1554,7 @@ INSERT INTO docs (id, title) VALUES
     let mut pointers = 0usize;
     let mut role_facts = 0usize;
     for query in outputs.tuple_queries() {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         let rows = rows_returned(&mut conn, &query.sql);
@@ -1662,7 +1661,7 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
     conn.batch_execute(COMPOUND_IDENTITY_SEED)
         .expect("failed to seed the compound identity schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1702,7 +1701,7 @@ async fn a_timestamptz_identity_matches_between_the_sql_and_the_evaluator() {
     conn.batch_execute(TIMESTAMPTZ_IDENTITY_SEED)
         .expect("failed to seed the timestamp identity schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         TIMESTAMPTZ_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -1920,7 +1919,7 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
     conn.batch_execute(RECIPE_SEED)
         .expect("failed to seed the recipe schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         RECIPE_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2054,7 +2053,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
     conn.batch_execute(COMPOUND_IDENTITY_SEED)
         .expect("failed to seed the compound identity schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2158,7 +2157,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     conn.batch_execute(NAMING_SEED)
         .expect("failed to seed the naming schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         NAMING_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2193,7 +2192,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
     let queries = outputs.tuple_queries();
     let written: BTreeSet<String> = queries
         .iter()
-        .filter(|query| !query.sql.trim_start().starts_with("--"))
+        .filter(|query| query.skipped.is_none())
         .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
         .map(|record| record.object)
         .collect();
@@ -2275,7 +2274,7 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
     conn.batch_execute(PARTITION_SEED)
         .expect("failed to seed the partitions");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         PARTITION_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2293,7 +2292,7 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
     let queries = outputs.tuple_queries();
     let written: BTreeSet<String> = queries
         .iter()
-        .filter(|query| !query.sql.trim_start().starts_with("--"))
+        .filter(|query| query.skipped.is_none())
         .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
         .map(|record| record.object)
         .collect();
@@ -2370,7 +2369,7 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
     conn.batch_execute(REPLACEMENT_SEED)
         .expect("failed to seed the replacement schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(
+    let (classified, db, registry) = support::classify_sql(
         REPLACEMENT_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
@@ -2487,7 +2486,7 @@ INSERT INTO docs (id, title) VALUES
     )
     .expect("failed to seed the rows the scope judges");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema, None);
+    let (classified, db, registry) = support::classify_sql(schema, None);
     let outputs = Translation::plan(
         classified,
         &db,

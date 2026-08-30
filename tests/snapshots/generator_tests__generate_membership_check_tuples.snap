@@ -6,12 +6,12 @@ SET TIME ZONE 'UTC';
 SET DateStyle = 'ISO, MDY';
 SET bytea_output = 'hex';
 
--- teams membership from public.team_members
+-- teams membership from team_members
 SELECT 'teams:' || CASE WHEN "team_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "team_id"::text ELSE '~' || encode(convert_to("team_id"::text, 'UTF8'), 'hex') END AS object, 'member' AS relation, 'user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "user_id"::text ELSE '~' || encode(convert_to("user_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."team_members"
 WHERE "team_id" IS NOT NULL AND "user_id" IS NOT NULL;
 
--- public.projects to teams bridge for tuple-to-userset
+-- projects to teams bridge for tuple-to-userset
 SELECT 'projects:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'teams' AS relation, 'teams:' || CASE WHEN "team_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "team_id"::text ELSE '~' || encode(convert_to("team_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."projects"
 WHERE "id" IS NOT NULL

@@ -656,3 +656,33 @@ fn a_parenthesized_opaque_attribute_conjunct_classifies_as_the_bare_one() {
         "parentheses and the list spelling are not a classification"
     );
 }
+
+/// A schema text that writes a table with no schema name places it in `public`, so the
+/// loader has to read it there. Emitting nothing loads no facts and denies every request,
+/// and emitting the bare name lets the reading session's search path redirect it.
+#[test]
+fn a_table_written_without_a_schema_loads_its_rows_from_public() {
+    let db = db_of(
+        "CREATE TABLE notes(id UUID PRIMARY KEY, owner TEXT);\n\
+         ALTER TABLE notes ENABLE ROW LEVEL SECURITY;\n\
+         CREATE POLICY notes_owner ON notes FOR SELECT USING (owner = current_user);\n",
+    );
+    let outputs = translator(ConfidenceLevel::A)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let tuples = outputs.tuple_queries();
+
+    assert!(
+        !tuples.is_empty(),
+        "an owned table has facts to load, so it needs a query"
+    );
+    for query in tuples {
+        assert!(
+            query.sql.contains("FROM \"public\".\"notes\""),
+            "the query must read the schema the declaration places the table in:\n{}\n{}",
+            query.comment,
+            query.sql
+        );
+    }
+}

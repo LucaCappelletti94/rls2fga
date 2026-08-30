@@ -11,7 +11,7 @@ SELECT 'paper_shares:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN
 FROM "public"."paper_shares"
 WHERE "paper_id" IS NOT NULL AND "viewer" IS NOT NULL AND length('paper_shares:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "viewer"::text ~ '^[A-Za-z0-9._@-]+$' THEN "viewer"::text ELSE '~' || encode(convert_to("viewer"::text, 'UTF8'), 'hex') END) <= 256;
 
--- public.paper_shares to papers bridge for tuple-to-userset
+-- paper_shares to papers bridge for tuple-to-userset
 SELECT 'paper_shares:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "viewer"::text ~ '^[A-Za-z0-9._@-]+$' THEN "viewer"::text ELSE '~' || encode(convert_to("viewer"::text, 'UTF8'), 'hex') END AS object, 'papers' AS relation, 'papers:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."paper_shares"
 WHERE "paper_id" IS NOT NULL
@@ -26,7 +26,7 @@ FROM "public"."paper_shares"
 WHERE "paper_id" IS NOT NULL AND "viewer" IS NOT NULL AND length('paper_shares:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "viewer"::text ~ '^[A-Za-z0-9._@-]+$' THEN "viewer"::text ELSE '~' || encode(convert_to("viewer"::text, 'UTF8'), 'hex') END) <= 256
 AND "viewer" IS NOT NULL;
 
--- Caller-set share on paper_shares_share carrying public.paper_shares.viewer, evaluated by condition when_paper_shares_share_papers_p_44c31f28
+-- Caller-set share on paper_shares_share carrying paper_shares.viewer, evaluated by condition when_paper_shares_share_papers_p_44c31f28
 SELECT 'paper_shares_share:' || CASE WHEN "paper_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "paper_id"::text ELSE '~' || encode(convert_to("paper_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "viewer"::text ~ '^[A-Za-z0-9._@-]+$' THEN "viewer"::text ELSE '~' || encode(convert_to("viewer"::text, 'UTF8'), 'hex') END AS object, 'gate_papers_p_3b273139' AS relation, 'user:*' AS subject,
   'when_paper_shares_share_papers_p_44c31f28' AS condition, jsonb_build_object('viewer', "viewer"::text) AS context
 FROM "public"."paper_shares"

@@ -206,10 +206,7 @@ fn in_subquery_membership() {
 
 #[test]
 fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
-    let sql = support::qualify_table_declarations(
-        &support::read_fixture_sql("membership_wrapped_function_safe"),
-        &["docs", "doc_members"],
-    );
+    let sql = support::read_fixture_sql("membership_wrapped_function_safe");
     let db = sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -232,7 +229,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
                 pairs,
                 user_column,
                 ..
-            }) if join_table.to_string() == "public.doc_members"
+            }) if join_table.to_string() == "doc_members"
                 && matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
                 && user_column == "user_id"
         ),

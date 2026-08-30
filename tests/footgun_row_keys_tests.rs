@@ -564,7 +564,7 @@ CREATE POLICY p ON paper_shares FOR SELECT USING (
         .find(|query| query.comment.contains("bridge"))
         .expect("the delegation to the parent needs a bridge");
     assert!(
-        !bridge.sql.trim_start().starts_with("--"),
+        bridge.skipped.is_none(),
         "the bridge has to be a query, not a comment: {}",
         bridge.sql
     );

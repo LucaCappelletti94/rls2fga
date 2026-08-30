@@ -18,11 +18,6 @@ fn load_emi() -> (
     support::load_fixture_classified("earth_metabolome")
 }
 
-fn qualified_fixture_db(fixture: &str, tables: &[&str]) -> sql_parser::ParserDB {
-    let sql = support::qualify_table_declarations(&support::read_fixture_sql(fixture), tables);
-    sql_parser::parse_schema(&sql).expect("fixture SQL should parse")
-}
-
 /// The right-hand side of `define <relation>:` inside `type <type_name>`.
 fn relation_body(dsl: &str, type_name: &str, relation: &str) -> Option<String> {
     let mut in_type = false;
@@ -58,10 +53,7 @@ fn generate_emi_model() {
 
 #[test]
 fn generate_emi_tuples() {
-    let db = qualified_fixture_db(
-        "earth_metabolome",
-        &["users", "teams", "team_members", "ownables", "owner_grants"],
-    );
+    let db = support::parse_fixture_db("earth_metabolome");
     let registry = support::load_fixture_registry("earth_metabolome");
     let classified = policy_classifier::classify_policies(&db, &registry);
     let outputs = Translation::plan(
@@ -140,10 +132,7 @@ fn generate_public_flag_model() {
 
 #[test]
 fn generate_role_in_list_model_and_tuples() {
-    let db = qualified_fixture_db(
-        "role_in_list",
-        &["users", "teams", "team_members", "ownables", "owner_grants"],
-    );
+    let db = support::parse_fixture_db("role_in_list");
     let registry = support::load_fixture_registry("role_in_list");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -178,10 +167,7 @@ fn generate_role_in_list_model_and_tuples() {
 
 #[test]
 fn generate_membership_check_model_and_tuples() {
-    let db = qualified_fixture_db(
-        "membership_check",
-        &["users", "teams", "team_members", "projects"],
-    );
+    let db = support::parse_fixture_db("membership_check");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -217,7 +203,7 @@ fn generate_membership_check_model_and_tuples() {
 
 #[test]
 fn generate_parent_inheritance_model_and_tuples() {
-    let db = qualified_fixture_db("parent_inheritance", &["users", "projects", "tasks"]);
+    let db = support::parse_fixture_db("parent_inheritance");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -252,7 +238,7 @@ fn generate_parent_inheritance_model_and_tuples() {
 
 #[test]
 fn generate_public_flag_tuples() {
-    let db = qualified_fixture_db("public_flag", &["users", "articles"]);
+    let db = support::parse_fixture_db("public_flag");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -273,10 +259,7 @@ fn generate_public_flag_tuples() {
 
 #[test]
 fn generate_abac_status_model_and_tuples() {
-    let db = qualified_fixture_db(
-        "abac_status",
-        &["users", "teams", "team_members", "ownables", "owner_grants"],
-    );
+    let db = support::parse_fixture_db("abac_status");
     let registry = support::load_fixture_registry("abac_status");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -311,7 +294,7 @@ fn generate_abac_status_model_and_tuples() {
 
 #[test]
 fn generate_compound_or_model_and_tuples() {
-    let db = qualified_fixture_db("compound_or", &["users", "documents"]);
+    let db = support::parse_fixture_db("compound_or");
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
@@ -695,7 +678,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 
 #[test]
 fn generate_attribute_guard_model_and_tuples() {
-    let db = qualified_fixture_db("attribute_guard", &["articles"]);
+    let db = support::parse_fixture_db("attribute_guard");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -732,7 +715,7 @@ fn generate_attribute_guard_model_and_tuples() {
 /// condition block and on the context column the tuple SQL builds beside it.
 #[test]
 fn generate_shared_policy_name_model_and_tuples() {
-    let db = qualified_fixture_db("shared_policy_name", &["campaigns", "embargoes"]);
+    let db = support::parse_fixture_db("shared_policy_name");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -772,17 +755,7 @@ fn generate_shared_policy_name_model_and_tuples() {
 /// reads a sample and not a spectrum.
 #[test]
 fn generate_shared_owner_grants_model_and_tuples() {
-    let db = qualified_fixture_db(
-        "shared_owner_grants",
-        &[
-            "users",
-            "teams",
-            "team_members",
-            "owner_grants",
-            "samples",
-            "spectra",
-        ],
-    );
+    let db = support::parse_fixture_db("shared_owner_grants");
     let registry = support::load_fixture_registry("shared_owner_grants");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -829,7 +802,7 @@ fn generate_shared_owner_grants_model_and_tuples() {
     );
     assert_eq!(
         script
-            .matches("Owner identities that are rows of public.users")
+            .matches("Owner identities that are rows of users")
             .count(),
         1,
         "the identity facts load once for both tables:\n{script}"
@@ -849,7 +822,7 @@ fn generate_shared_owner_grants_model_and_tuples() {
 /// never passed, which is why this shape used to be refused outright.
 #[test]
 fn generate_two_owner_columns_model_and_tuples() {
-    let db = qualified_fixture_db("two_owner_columns", &["users", "owner_grants", "records"]);
+    let db = support::parse_fixture_db("two_owner_columns");
     let registry = support::load_fixture_registry("two_owner_columns");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -970,10 +943,7 @@ fn generate_two_role_functions_keeps_their_ladders_apart() {
 /// grants are stored once and serve both tables", and only the SQL says it.
 #[test]
 fn generate_two_role_functions_tuples() {
-    let db = qualified_fixture_db(
-        "two_role_functions",
-        &["users", "owner_grants", "projects", "ledgers"],
-    );
+    let db = support::parse_fixture_db("two_role_functions");
     let registry = support::load_fixture_registry("two_role_functions");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -1000,7 +970,7 @@ fn generate_two_role_functions_tuples() {
 /// a container run.
 #[test]
 fn generate_connetto_capability_model_and_tuples() {
-    let db = qualified_fixture_db("connetto_capability", &["papers", "paper_shares"]);
+    let db = support::parse_fixture_db("connetto_capability");
     let registry = support::try_load_fixture_registry("connetto_capability");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -1039,10 +1009,7 @@ fn generate_connetto_capability_model_and_tuples() {
 /// condition beside one without.
 #[test]
 fn generate_uncorrelated_membership_model_and_tuples() {
-    let db = qualified_fixture_db(
-        "uncorrelated_membership",
-        &["users", "staff", "reviewers", "docs", "memos"],
-    );
+    let db = support::parse_fixture_db("uncorrelated_membership");
     let registry = support::try_load_fixture_registry("uncorrelated_membership");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
@@ -1082,7 +1049,7 @@ fn generate_uncorrelated_membership_model_and_tuples() {
 /// null guards and the subject budget all show up here first.
 #[test]
 fn generate_simple_ownership_tuples() {
-    let db = qualified_fixture_db("simple_ownership", &["users", "resources"]);
+    let db = support::parse_fixture_db("simple_ownership");
     let mut registry = FunctionRegistry::new();
     registry.register_if_absent(
         "auth_current_user_id",
