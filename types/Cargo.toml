@@ -3,6 +3,7 @@ name = "rls2fga-types"
 version = "0.1.0"
 edition = "2021"
 description = "Reusable output contracts for rls2fga"
+license = "MIT"
 
 [features]
 default = []
