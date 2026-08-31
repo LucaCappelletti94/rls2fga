@@ -1,18 +1,11 @@
 #![cfg(not(target_os = "windows"))]
 
 use std::collections::BTreeSet;
-use std::thread;
-use std::time::Duration;
 
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::{Integer, Text};
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
 
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::TupleQuery;
@@ -25,9 +18,7 @@ use rls2fga::types::{
 
 mod support;
 
-const PG_USER: &str = "postgres";
-const PG_PASSWORD: &str = "postgres";
-const PG_DB: &str = "rls2fga";
+use support::containers::{PG_DB, PG_PASSWORD, PG_USER};
 
 const USER_ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
 const USER_BOB: &str = "00000000-0000-0000-0000-0000000000a2";
@@ -62,21 +53,6 @@ struct TupleRow {
 struct RoleRow {
     #[diesel(sql_type = Integer)]
     role: i32,
-}
-
-fn connect_postgres_with_retry(database_url: &str) -> PgConnection {
-    let mut last_error = String::new();
-    for _ in 0..30 {
-        match PgConnection::establish(database_url) {
-            Ok(conn) => return conn,
-            Err(error) => {
-                last_error = error.to_string();
-                thread::sleep(Duration::from_millis(200));
-            }
-        }
-    }
-
-    panic!("Failed to connect to PostgreSQL after retries: {last_error}");
 }
 
 fn seed_emi_data(conn: &mut PgConnection) {
@@ -155,21 +131,11 @@ fn postgres_role_for_user_and_doc(conn: &mut PgConnection, user_id: &str, doc_id
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn translated_schema_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("earth_metabolome");
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
@@ -203,14 +169,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
         "Expected generated tuple SQL to produce at least one tuple"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -404,21 +363,11 @@ fn postgres_allows_insert(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn insert_readback_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("insert_readback");
     let (classified, db, registry) = support::load_fixture_classified("insert_readback");
@@ -450,14 +399,7 @@ async fn insert_readback_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -596,21 +538,11 @@ fn postgres_allows_select(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn role_scoped_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scoped_membership");
     let (classified, db, registry) = support::load_fixture_classified("role_scoped_membership");
@@ -657,14 +589,7 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -759,21 +684,11 @@ fn postgres_allows_member_select(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn definer_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("definer_membership");
     let (classified, db, registry) = support::load_fixture_classified("definer_membership");
@@ -843,14 +758,7 @@ async fn definer_membership_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -961,21 +869,11 @@ fn postgres_allows_reviewed_select(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scoped_restrictive");
     let (classified, db, registry) = support::load_fixture_classified("role_scoped_restrictive");
@@ -1044,14 +942,7 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1112,21 +1003,11 @@ const INHERIT_READERS: [(&str, &str, bool); 2] = [
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn noinherit_member_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scope_inherit");
     let (classified, db, registry) = support::load_fixture_classified("role_scope_inherit");
@@ -1172,14 +1053,7 @@ async fn noinherit_member_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1323,21 +1197,11 @@ fn postgres_allows_upsert(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn upsert_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("upsert");
     let (classified, db, registry) = support::load_fixture_classified("upsert");
@@ -1390,14 +1254,7 @@ async fn upsert_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1509,21 +1366,11 @@ fn postgres_allows_folded_select(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn folded_identifier_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("folded_identifiers");
     let (classified, db, registry) = support::load_fixture_classified("folded_identifiers");
@@ -1595,14 +1442,7 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
         "the generated statements must return rows, otherwise every check answers no"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1743,21 +1583,11 @@ fn postgres_updates_note(conn: &mut PgConnection, user_id: &str, note: (&str, &s
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn locking_read_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("locking_read");
     let (classified, db, registry) = support::load_fixture_classified("locking_read");
@@ -1790,14 +1620,7 @@ async fn locking_read_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1854,21 +1677,11 @@ async fn locking_read_parity_postgres18_and_openfga() {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn absent_clause_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("clause_absent");
     let (classified, db, registry) = support::load_fixture_classified("clause_absent");
@@ -1900,14 +1713,7 @@ async fn absent_clause_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -1964,21 +1770,11 @@ async fn absent_clause_parity_postgres18_and_openfga() {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn altered_policy_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("policy_altered");
     let (classified, db, registry) = support::load_fixture_classified("policy_altered");
@@ -2010,14 +1806,7 @@ async fn altered_policy_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -2156,21 +1945,11 @@ fn postgres_readable_document_notes(conn: &mut PgConnection, user_id: &str) -> B
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("array_jsonb_membership");
     let (classified, db, registry) = support::load_fixture_classified("array_jsonb_membership");
@@ -2202,14 +1981,7 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -2292,21 +2064,11 @@ const SEEDED_EXPIRING_DOCS: [(&str, &str); 4] = [
 #[tokio::test]
 #[ignore = "requires Docker: starts PostgreSQL 18 and OpenFGA containers"]
 async fn request_time_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = r#"
 CREATE TABLE docs (id TEXT PRIMARY KEY, foo TEXT, "Foo" TIMESTAMPTZ);
@@ -2375,14 +2137,7 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING ("Foo" > now());
         "every row with a value carries a tuple and the NULL row carries none"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -2463,21 +2218,11 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING ("Foo" > now());
 #[tokio::test]
 #[ignore = "requires Docker: starts PostgreSQL 18 and OpenFGA containers"]
 async fn interval_grace_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
@@ -2540,14 +2285,7 @@ CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval
         "every row with a boundary carries a tuple and the NULL row carries none"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -2794,21 +2532,11 @@ fn postgres_readable_dated_docs(conn: &mut PgConnection) -> BTreeSet<String> {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn zoneless_temporal_guard_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE zoned_docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
@@ -2866,14 +2594,7 @@ CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now()
         conditional_rows.extend(execute_conditional_tuple_query(&mut conn, query));
     }
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3014,21 +2735,11 @@ fn postgres_rows_a_statement_changed(conn: &mut PgConnection, statement: &str) -
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn blanket_update_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE users (id TEXT PRIMARY KEY);
@@ -3079,14 +2790,7 @@ CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_curre
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3194,21 +2898,11 @@ fn postgres_readable_holder_docs(conn: &mut PgConnection, user_id: &str) -> BTre
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn uncorrelated_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE staff (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
@@ -3258,14 +2952,7 @@ CREATE POLICY docs_staff ON docs FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3369,21 +3056,11 @@ fn postgres_readable_doc_links(conn: &mut PgConnection, user_id: &str) -> BTreeS
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn parent_key_in_subquery_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE parent_docs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL);
@@ -3439,14 +3116,7 @@ CREATE POLICY doc_links_visible ON doc_links FOR SELECT
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3574,21 +3244,11 @@ fn postgres_readable_recursive_notes(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn read_recursion_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("read_recursion");
     let (classified, db, registry) = support::load_fixture_classified("read_recursion");
@@ -3640,14 +3300,7 @@ async fn read_recursion_parity_postgres18_and_openfga() {
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3753,21 +3406,11 @@ fn postgres_readable_ids(conn: &mut PgConnection, table: &str) -> BTreeSet<Strin
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn shared_policy_name_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE campaigns (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL);
@@ -3819,14 +3462,7 @@ CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
         tuple_queries.len()
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -3983,21 +3619,11 @@ fn caller_subject_list(subjects: Option<&str>) -> serde_json::Value {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn session_attribute_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("connetto_or_policy");
     conn.batch_execute(&schema_sql)
@@ -4050,14 +3676,7 @@ async fn session_attribute_parity_postgres18_and_openfga() {
         "a NULL owner matches nothing in PostgreSQL, so its row carries no tuple"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -4194,21 +3813,11 @@ fn papers_visible_to(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn shared_paper_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("connetto_capability");
     conn.batch_execute(&schema_sql)
@@ -4287,14 +3896,7 @@ async fn shared_paper_parity_postgres18_and_openfga() {
         "one conditional fact per sharing row, keyed on its own share object"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -4388,21 +3990,11 @@ async fn shared_paper_parity_postgres18_and_openfga() {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn two_viewers_of_one_paper_load_and_union_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
@@ -4452,14 +4044,7 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
     let outputs = planned();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -4621,21 +4206,11 @@ fn claim_documents_visible_to(conn: &mut PgConnection, claims: Option<&str>) -> 
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn token_claim_set_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     conn.batch_execute(&support::read_fixture_sql("token_claim_set"))
         .expect("Failed to apply the token_claim_set schema on PostgreSQL 18");
@@ -4688,14 +4263,7 @@ async fn token_claim_set_parity_postgres18_and_openfga() {
         "a NULL team matches nothing in PostgreSQL, so its row carries no tuple"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -4809,21 +4377,11 @@ fn postgres_readable_line_items(conn: &mut PgConnection, user_id: &str) -> BTree
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn correlated_column_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE orders (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, status TEXT NOT NULL);
@@ -4892,14 +4450,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -5009,21 +4560,11 @@ fn postgres_readable_joined_line_items(conn: &mut PgConnection, user_id: &str) -
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn joined_inner_rule_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE customers (id TEXT PRIMARY KEY, org_id TEXT NOT NULL);
@@ -5088,14 +4629,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -5220,21 +4754,11 @@ fn postgres_readable_events(conn: &mut PgConnection, user_id: &str) -> BTreeSet<
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn partitioned_table_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL, PRIMARY KEY (id, region))
@@ -5308,14 +4832,7 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -5430,21 +4947,11 @@ fn rows_as_json(conn: &mut PgConnection, sql: &str) -> Vec<serde_json::Value> {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn clock_gated_from_row_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE readings (
@@ -5496,14 +5003,7 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
         "the row decides which record exists: {description:?}"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -5613,21 +5113,11 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn shared_paper_from_row_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     conn.batch_execute(&support::read_fixture_sql("connetto_capability"))
         .expect("Failed to apply the connetto capability schema on PostgreSQL 18");
@@ -5694,14 +5184,7 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
         .as_ref()
         .expect("the query carries a description");
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -5838,21 +5321,11 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn expiring_share_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = r"
 CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
@@ -5910,14 +5383,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -6039,21 +5505,11 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn interval_grace_membership_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = r"
 CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
@@ -6111,14 +5567,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -6243,21 +5692,11 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn two_expiring_viewers_of_one_paper_gate_independently_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = r"
 CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
@@ -6313,14 +5752,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -6468,20 +5900,10 @@ fn all_tuple_writes(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn expiring_exists_membership_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE docs (id INT PRIMARY KEY);
@@ -6528,14 +5950,7 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id = support::openfga::create_store(&mut service_client, "expiring-exists").await;
@@ -6606,20 +6021,10 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn expiring_holder_membership_condition_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE memos (id INT PRIMARY KEY);
@@ -6663,14 +6068,7 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id = support::openfga::create_store(&mut service_client, "expiring-holder").await;
@@ -6776,21 +6174,11 @@ fn postgres_role_for_column(
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn shared_owner_grants_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("shared_owner_grants");
     let (classified, db, registry) = support::load_fixture_classified("shared_owner_grants");
@@ -6853,14 +6241,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
         "one stored fact per grant row, whatever either table holds: {tuple_keys:#?}"
     );
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -6937,21 +6318,11 @@ const RECORD_2: &str = "00000000-0000-0000-0000-00000000ee02";
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn two_owner_columns_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("two_owner_columns");
     let (classified, db, registry) = support::load_fixture_classified("two_owner_columns");
@@ -6998,14 +6369,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     let tuple_queries = outputs.tuple_queries();
     let tuple_keys = execute_tuple_queries(&mut conn, tuple_queries);
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -7072,21 +6436,11 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn quoted_role_identity_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = r#"
 CREATE TABLE docs (id TEXT PRIMARY KEY);
@@ -7132,14 +6486,7 @@ CREATE POLICY p ON memos FOR SELECT TO "Admin" USING (TRUE);
     let model = planned().json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, planned().tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -7266,21 +6613,11 @@ fn postgres_readable_tenant_papers(conn: &mut PgConnection, user_id: &str) -> BT
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn composite_key_self_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE tenant_papers (
@@ -7367,14 +6704,7 @@ CREATE POLICY papers_visible ON tenant_papers FOR SELECT
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -7487,21 +6817,11 @@ fn postgres_readable_composite_fk_docs(conn: &mut PgConnection, user_id: &str) -
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn composite_fk_membership_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
 
     let schema_sql = "
 CREATE TABLE projects (
@@ -7610,14 +6930,7 @@ CREATE POLICY docs_visible ON docs FOR SELECT
     let model = outputs.json_model();
     let tuple_queries = outputs.tuple_queries();
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
 
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -7703,21 +7016,11 @@ mod quoted_residual_schema {
 async fn quoted_nested_membership_parity_postgres18_and_openfga() {
     use quoted_residual_schema::{guarded_docs, memberships, protected_memberships};
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r#"
 CREATE TABLE docs(id TEXT PRIMARY KEY);
 CREATE TABLE memberships(doc_id TEXT REFERENCES docs(id), user_id TEXT);
@@ -7771,14 +7074,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -7812,21 +7108,11 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn quoted_definer_owner_parity_postgres18_and_openfga() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r#"
 CREATE ROLE actor;
 CREATE ROLE "Actor";
@@ -7876,14 +7162,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -7934,21 +7213,11 @@ mod strict_function_schema {
 async fn strict_function_null_parity_postgres18_and_openfga() {
     use strict_function_schema::strict_docs;
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r"
 CREATE TABLE docs(id TEXT PRIMARY KEY, gate TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -7988,14 +7257,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (strict_true(gate));
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -8052,21 +7314,11 @@ mod registry_function_schema {
 async fn qualified_registry_identity_parity_postgres18_and_openfga() {
     use registry_function_schema::registry_docs;
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r"
 CREATE SCHEMA auth;
 CREATE SCHEMA other;
@@ -8104,14 +7356,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -8177,21 +7422,11 @@ mod function_path_schema {
 async fn function_local_search_path_parity_postgres18_and_openfga() {
     use function_path_schema::{a, b, docs};
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r"
 CREATE SCHEMA a;
 CREATE SCHEMA b;
@@ -8255,14 +7490,7 @@ SET search_path TO a, public;
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -8308,21 +7536,11 @@ mod resolved_membership_schema {
 async fn resolved_membership_table_parity_postgres18_and_openfga() {
     use resolved_membership_schema::docs;
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r"
 CREATE SCHEMA app;
 CREATE TABLE public.docs(id TEXT PRIMARY KEY);
@@ -8359,14 +7577,7 @@ INSERT INTO public.memberships VALUES ('d1', 'app_reader');
         .expect("Failed to set the loader path");
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -8431,21 +7642,11 @@ mod aliased_guard_schema {
 async fn aliased_quoted_guard_parity_postgres18_and_openfga() {
     use aliased_guard_schema::{members, quoted_docs};
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     let schema_sql = r#"
 CREATE TABLE "M"(id TEXT PRIMARY KEY, owner_id TEXT);
 CREATE TABLE members(doc_id TEXT REFERENCES "M"(id), owner_id TEXT);
@@ -8497,14 +7698,7 @@ CREATE POLICY m_owner ON "M" FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =
@@ -8585,21 +7779,11 @@ mod caller_role_residual_schema {
 async fn caller_role_residual_parity_postgres18_and_openfga() {
     use caller_role_residual_schema::{gated_docs, tenant_members};
 
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
 
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut conn = connect_postgres_with_retry(&pg_url);
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
     conn.batch_execute("CREATE ROLE tenant_a;")
         .expect("Failed to create the tenant role");
     let schema_sql = r"
@@ -8655,14 +7839,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
     let model = outputs.json_model();
     let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
 
-    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let openfga = support::containers::start_openfga().await;
     let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
     let store_id =

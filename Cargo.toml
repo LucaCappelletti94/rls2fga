@@ -40,7 +40,9 @@ diesel = { version = "2", features = ["postgres", "serde_json"] }
 insta = { version = "1", features = ["json"] }
 serde_json = "1"
 testcontainers = "0.27"
-tokio = { version = "1", features = ["full"] }
+# `test-util` is not in `full`, and the startup retry is tested on paused time rather than
+# by sleeping through its own backoff.
+tokio = { version = "1", features = ["full", "test-util"] }
 
 # The server-backed suites write a model through the `client` feature, so they build
 # only with it.

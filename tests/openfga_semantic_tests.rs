@@ -2,11 +2,6 @@
 
 use openfga_client::client::{OpenFgaClient, TupleKey};
 use openfga_client::tonic::transport::Channel;
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
 
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
@@ -26,14 +21,7 @@ struct Scenario {
 #[ignore = "requires Docker and OpenFGA container"]
 async fn openfga_semantic_checks_all_patterns() {
     // ── Start shared OpenFGA container ──────────────────────────────────────
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let container = support::containers::start_openfga().await;
 
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
 

@@ -14,11 +14,8 @@ use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::Text;
-use testcontainers::{
-    core::{CmdWaitFor, ExecCommand, IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    ContainerAsync, GenericImage, ImageExt,
-};
+use testcontainers::core::{CmdWaitFor, ExecCommand};
+use testcontainers::{ContainerAsync, GenericImage};
 
 use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
@@ -27,9 +24,7 @@ use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
-const PG_USER: &str = "postgres";
-const PG_PASSWORD: &str = "postgres";
-const PG_DB: &str = "rls2fga";
+use support::containers::{PG_DB, PG_PASSWORD, PG_USER};
 
 /// Fixtures whose dump cannot parse yet, each waiting on a named sqlparser
 /// gap. An entry whose dump starts parsing fails the run, which is the signal
@@ -177,17 +172,7 @@ fn fixture_names() -> Vec<String> {
 #[tokio::test]
 #[ignore = "requires Docker and the postgres:18 container"]
 async fn every_fixture_round_trips_through_pg_dump() {
-    let postgres = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let postgres = support::containers::start_postgres().await;
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let admin_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
     let mut admin = connect_with_retry(&admin_url);

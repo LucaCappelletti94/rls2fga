@@ -6,12 +6,6 @@
 
 #![cfg(not(target_os = "windows"))]
 
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
-
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
 
@@ -32,14 +26,7 @@ const ACCESSOR_REGISTRY: &str =
 #[tokio::test]
 #[ignore = "requires Docker and an openfga/openfga container"]
 async fn a_written_model_is_the_model_the_server_answers_from() {
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("the OpenFGA container should start");
+    let container = support::containers::start_openfga().await;
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
     let mut service = support::openfga::connect(grpc_port).await;
     let store_id = support::openfga::create_store(&mut service, "client-surface").await;
@@ -114,14 +101,7 @@ async fn a_written_model_is_the_model_the_server_answers_from() {
 #[tokio::test]
 #[ignore = "requires Docker and an openfga/openfga container"]
 async fn the_denial_cannot_be_lifted_by_writing_a_fact() {
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let container = support::containers::start_openfga().await;
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
 
     let db = rls2fga::parser::sql_parser::parse_schema(OWNERSHIP).expect("the schema parses");

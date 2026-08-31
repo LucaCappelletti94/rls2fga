@@ -8,18 +8,12 @@
 #![cfg(not(target_os = "windows"))]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::thread;
-use std::time::Duration;
 
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::{Jsonb, Text};
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
+use testcontainers::GenericImage;
 
 use openfga_client::client::OpenFgaClient;
 use openfga_client::tonic::transport::Channel;
@@ -39,11 +33,9 @@ use rls2fga::types::{ColumnName, TableId};
 
 mod support;
 
-use support::{scalar_text, JsonRowValues};
+use support::containers::{PG_DB, PG_PASSWORD, PG_USER};
 
-const PG_USER: &str = "postgres";
-const PG_PASSWORD: &str = "postgres";
-const PG_DB: &str = "rls2fga";
+use support::{scalar_text, JsonRowValues};
 
 /// One `(object, relation, subject)` triple as the generated SQL returns it.
 ///
@@ -91,35 +83,11 @@ struct KeyRow {
     value: String,
 }
 
-fn connect_postgres_with_retry(database_url: &str) -> PgConnection {
-    let mut last_error = String::new();
-    for _ in 0..30 {
-        match PgConnection::establish(database_url) {
-            Ok(conn) => return conn,
-            Err(error) => {
-                last_error = error.to_string();
-                thread::sleep(Duration::from_millis(200));
-            }
-        }
-    }
-    panic!("Failed to connect to PostgreSQL after retries: {last_error}");
-}
-
 async fn start_postgres() -> (testcontainers::ContainerAsync<GenericImage>, PgConnection) {
-    let container = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", PG_USER)
-        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
-        .with_env_var("POSTGRES_DB", PG_DB)
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL 18 container");
+    let container = support::containers::start_postgres().await;
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{port}/{PG_DB}");
-    let conn = connect_postgres_with_retry(&url);
+    let conn = support::containers::connect_postgres_with_retry(&url);
     (container, conn)
 }
 
@@ -185,7 +153,7 @@ async fn every_fixture_schema_is_one_postgres_accepts() {
             .batch_execute(&format!("CREATE DATABASE {database}"))
             .expect("failed to create the fixture's own database");
         {
-            let mut conn = connect_postgres_with_retry(&format!(
+            let mut conn = support::containers::connect_postgres_with_retry(&format!(
                 "postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{port}/{database}"
             ));
             if let Some((_, prerequisite)) = FIXTURE_PREREQUISITES
@@ -1874,14 +1842,7 @@ async fn start_openfga(
     testcontainers::ContainerAsync<GenericImage>,
     OpenFgaClient<Channel>,
 ) {
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let container = support::containers::start_openfga().await;
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
 
     let mut service = support::openfga::connect(grpc_port).await;

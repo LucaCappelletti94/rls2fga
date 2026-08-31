@@ -1,11 +1,5 @@
 #![cfg(not(target_os = "windows"))]
 
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
-
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::well_known::{
@@ -21,14 +15,7 @@ mod support;
 #[ignore = "requires Docker and OpenFGA container"]
 async fn openfga_accepts_generated_model_and_checks_pass() {
     // 1. Start OpenFGA container
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8080.tcp())
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("Failed to start OpenFGA container");
+    let container = support::containers::start_openfga().await;
 
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
     let mut service_client = support::openfga::connect(grpc_port).await;
@@ -121,13 +108,7 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
 #[tokio::test]
 #[ignore = "requires Docker and OpenFGA container"]
 async fn openfga_accepts_generated_condition_parameter_names() {
-    let container = GenericImage::new("openfga/openfga", "v1.11.6")
-        .with_exposed_port(8081.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-        .with_cmd(["run"])
-        .start()
-        .await
-        .expect("OpenFGA should start");
+    let container = support::containers::start_openfga().await;
     let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
     let mut client = support::openfga::connect(grpc_port).await;
     let store_id = support::openfga::create_store(&mut client, "condition-parameter-test").await;

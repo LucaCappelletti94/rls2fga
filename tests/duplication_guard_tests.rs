@@ -48,26 +48,44 @@ fn production_code(source: &str) -> String {
     kept.join("\n")
 }
 
+/// Every `.rs` file under `dir`, depth first and in a stable order.
+fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("failed to read dir {}: {e}", dir.display()))
+        .map(|entry| entry.expect("dir entry").path())
+        .collect();
+    entries.sort();
+    for entry in entries {
+        if entry.is_dir() {
+            walk(&entry, into);
+        } else if entry.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            into.push(entry);
+        }
+    }
+}
+
+/// Every `.rs` file under `tests`, as `(path, source)`, verbatim.
+///
+/// The guards below read production code, because a test spells a name on purpose. This
+/// reads the test tree for the one guard that is about the test harness itself.
+fn test_modules() -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    walk(Path::new("tests"), &mut paths);
+    paths
+        .into_iter()
+        .map(|path| {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            (path.display().to_string(), source)
+        })
+        .collect()
+}
+
 /// Every `.rs` file under `src` carrying production code, as `(path, source)`.
 ///
 /// A whole `tests.rs` is skipped, and every other file is reduced to its production half
 /// by [`production_code`].
 fn src_modules() -> Vec<(String, String)> {
-    fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
-        let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-            .unwrap_or_else(|e| panic!("failed to read dir {}: {e}", dir.display()))
-            .map(|entry| entry.expect("dir entry").path())
-            .collect();
-        entries.sort();
-        for entry in entries {
-            if entry.is_dir() {
-                walk(&entry, into);
-            } else if entry.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                into.push(entry);
-            }
-        }
-    }
-
     let mut paths = Vec::new();
     walk(Path::new("src"), &mut paths);
     walk(Path::new("types/src"), &mut paths);
@@ -1032,5 +1050,37 @@ fn no_identifier_comparison_folds_quoting() {
         fn_definitions("normalize_identifier"),
         0,
         "normalize_identifier folds an identifier without knowing whether it was quoted"
+    );
+}
+
+/// One startup policy for every container the suites run.
+///
+/// A hand-built image is a second copy of that policy, and the copies are what let the
+/// retry cover 47 cases and miss the 48th.
+#[test]
+fn no_test_builds_a_container_image_outside_the_shared_helper() {
+    let helper = "tests/support/containers.rs";
+    let modules = test_modules();
+    assert!(
+        modules.iter().any(|(path, _)| path == helper),
+        "the startup helper `{helper}` is gone, so this guard proves nothing"
+    );
+
+    let offenders: Vec<String> = modules
+        .iter()
+        .filter(|(path, _)| path != helper)
+        .filter_map(|(path, source)| {
+            // Split so this file does not count itself. Exempting it instead would be the
+            // fail-open shape the header warns about.
+            let count = source.matches(concat!("GenericImage", "::new(")).count();
+            (count > 0).then(|| format!("{path}: {count}"))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "these tests build a container image by hand, so the shared startup retry does not \
+         cover them: {}",
+        offenders.join(", ")
     );
 }
