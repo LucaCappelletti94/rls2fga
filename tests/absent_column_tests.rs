@@ -195,9 +195,9 @@ fn no_generated_query_reads_a_column_its_table_does_not_declare() {
             // every table it reads, and the parts of those tables' own names.
             let mut spellable: Vec<String> = Vec::new();
             for table in &description.tables {
-                if let Some(schema) = table.schema() {
-                    spellable.push(schema.to_string());
-                }
+                // A table stored without a schema resides in `public`, which is what the
+                // query spells.
+                spellable.push(table.schema().unwrap_or("public").to_string());
                 spellable.push(table.name().to_string());
                 spellable.extend(declared_columns(&db, table).unwrap_or_default());
             }

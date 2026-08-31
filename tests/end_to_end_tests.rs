@@ -11,10 +11,7 @@ mod support;
 #[test]
 fn end_to_end_earth_metabolome() {
     // Stage 1-2: Parse
-    let sql = support::qualify_table_declarations(
-        &support::read_fixture_sql("earth_metabolome"),
-        &["users", "teams", "team_members", "ownables", "owner_grants"],
-    );
+    let sql = support::read_fixture_sql("earth_metabolome");
     let db = rls2fga::parser::sql_parser::parse_schema(&sql).expect("fixture SQL should parse");
     let registry = support::load_fixture_registry("earth_metabolome");
 

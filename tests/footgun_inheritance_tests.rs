@@ -725,15 +725,12 @@ CREATE POLICY projects_own ON projects FOR SELECT USING (owner_id = current_user
 /// `AND` and the query emits tuples for rows the policy refuses.
 #[test]
 fn a_disjunctive_membership_predicate_stays_parenthesised_in_the_tuple_query() {
-    let sql = support::qualify_table_declarations(
-        &format!(
-            "{}CREATE POLICY docs_members ON docs FOR SELECT USING (
+    let sql = format!(
+        "{}CREATE POLICY docs_members ON docs FOR SELECT USING (
 EXISTS (SELECT 1 FROM doc_members WHERE doc_members.doc_id = docs.id
   AND doc_members.user_id = current_user
   AND (doc_members.role = 'editor' OR doc_members.role = 'admin')));",
-            support::footgun::MEMBERSHIP_SCHEMA
-        ),
-        &["docs", "doc_members"],
+        support::footgun::MEMBERSHIP_SCHEMA
     );
     let (_, tuples) = translation(&sql);
     assert!(
@@ -848,9 +845,8 @@ CREATE TABLE secret_docs(classification TEXT) INHERITS (docs);
 /// read `FROM ONLY`, and the child rows that drops are disclosed.
 #[test]
 fn an_inheritance_parents_tuples_read_only_its_own_rows() {
-    let sql =
-        support::qualify_table_declarations(INHERITANCE_PARENT_SCHEMA, &["docs", "secret_docs"]);
-    let db = db_of(&sql);
+    let sql = INHERITANCE_PARENT_SCHEMA;
+    let db = db_of(sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -872,7 +868,7 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
         outputs.notes().iter().any(|note| matches!(
             note,
             TranslationNote::InheritanceParentReadsOwnRowsOnly { table, children }
-                if table.to_string() == "public.docs" && children.iter().map(ToString::to_string).collect::<Vec<_>>() == vec!["public.secret_docs".to_string()]
+                if table.to_string() == "docs" && children.iter().map(ToString::to_string).collect::<Vec<_>>() == vec!["secret_docs".to_string()]
         )),
         "dropping child rows must be disclosed and name the child, got: {:#?}",
         outputs.notes()
@@ -890,16 +886,13 @@ fn an_inheritance_parents_tuples_read_only_its_own_rows() {
 /// exact. The root must stay untouched.
 #[test]
 fn a_partitioned_roots_tuples_still_read_every_partition() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE measurements(id INT PRIMARY KEY, owner_id TEXT) PARTITION BY RANGE (id);
 ALTER TABLE measurements ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON measurements FOR SELECT USING (owner_id = current_user);
 CREATE TABLE public.measurements_q1 PARTITION OF measurements FOR VALUES FROM (1) TO (100);
-",
-        &["measurements"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -930,8 +923,7 @@ CREATE TABLE public.measurements_q1 PARTITION OF measurements FOR VALUES FROM (1
 /// has `INHERITS` children reads only its own rows, the middle of a chain included.
 #[test]
 fn an_inheritance_childs_own_type_reads_only_its_own_rows_too() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id INT PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);
@@ -940,10 +932,8 @@ ALTER TABLE ONLY secret_docs ADD CONSTRAINT secret_docs_pkey PRIMARY KEY (id);
 ALTER TABLE secret_docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY c ON secret_docs FOR SELECT USING (owner_id = current_user);
 CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
-",
-        &["docs", "secret_docs", "deep_docs"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -965,10 +955,7 @@ CREATE TABLE deep_docs(reason TEXT) INHERITS (secret_docs);
             tuples.iter().map(|q| &q.sql).collect::<Vec<_>>()
         );
     }
-    for (table, child) in [
-        ("public.docs", "public.secret_docs"),
-        ("public.secret_docs", "public.deep_docs"),
-    ] {
+    for (table, child) in [("docs", "secret_docs"), ("secret_docs", "deep_docs")] {
         assert!(
             outputs.notes().iter().any(|note| matches!(
                 note,

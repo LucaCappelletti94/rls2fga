@@ -165,17 +165,14 @@ CREATE POLICY projects_sel ON projects FOR SELECT USING (
 /// It is still a membership table, so refusing it denies access the policy grants.
 #[test]
 fn membership_table_whose_primary_key_is_its_foreign_key_still_translates() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_owner(doc_id UUID PRIMARY KEY REFERENCES docs(id), user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_owner o WHERE o.doc_id = docs.id AND o.user_id = current_user));
-",
-        &["docs", "doc_owner"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::A);
     let model = translator
         .translate(&db)
@@ -414,8 +411,7 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 /// user outside that role, so the grant it feeds requires that role too.
 #[test]
 fn membership_readable_only_by_a_role_requires_that_role() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, title TEXT);
 CREATE TABLE doc_members(id UUID PRIMARY KEY, doc_id UUID REFERENCES docs(id), user_id UUID);
 ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
@@ -423,10 +419,8 @@ CREATE POLICY dm_read ON doc_members FOR SELECT TO auditor USING (true);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_member ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
-",
-        &["docs", "doc_members"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     let model = translator
         .translate(&db)
@@ -604,8 +598,7 @@ fn an_uncorrelated_membership_check_translates_through_a_holder() {
                   ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
                   CREATE POLICY docs_sel ON docs FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
-    let schema = support::qualify_table_declarations(schema, &["staff", "docs"]);
-    let (dsl, tuples) = translation(&schema);
+    let (dsl, tuples) = translation(schema);
 
     assert_eq!(
         relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -640,8 +633,7 @@ fn a_clocked_holder_does_not_admit_an_unconditioned_member_tuple() {
                   CREATE POLICY memos_reviewers ON memos FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM reviewers WHERE reviewers.user_id = current_user \
                     AND reviewers.vetted_at > now()));\n";
-    let schema = support::qualify_table_declarations(schema, &["reviewers", "memos"]);
-    let (dsl, tuples) = translation(&schema);
+    let (dsl, tuples) = translation(schema);
 
     let member = relation_definition(&dsl, "reviewers_holder", "member")
         .unwrap_or_else(|| panic!("reviewers_holder must define member:\n{dsl}"));
@@ -701,9 +693,7 @@ fn a_holder_is_shared_per_member_source_and_never_across_them() {
                     EXISTS (SELECT 1 FROM auditors WHERE auditors.user_id = current_user));\n\
                   CREATE POLICY notes_staff ON notes FOR SELECT USING (\n\
                     EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
-    let schema =
-        support::qualify_table_declarations(schema, &["staff", "auditors", "docs", "notes"]);
-    let (dsl, tuples) = translation(&schema);
+    let (dsl, tuples) = translation(schema);
 
     assert_eq!(
         dsl.matches("type staff_holder").count(),
@@ -846,7 +836,6 @@ CREATE POLICY pd ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM m WHERE m.doc_id = docs.id AND m.user_id = current_user));
 "
     );
-    let sql = support::qualify_table_declarations(&sql, &["docs", "m"]);
     let db = db_of(&sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
@@ -899,7 +888,7 @@ fn a_membership_read_policy_that_cannot_admit_a_row_denies_the_guarded_table() {
         }
         if !notes
             .iter()
-            .any(|note| note.contains("'public.m' grants no reads"))
+            .any(|note| note.contains("'m' grants no reads"))
         {
             complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
         }
@@ -931,7 +920,7 @@ fn a_restrictive_kill_switch_on_a_membership_table_denies_the_guarded_table() {
         }
         if !notes
             .iter()
-            .any(|note| note.contains("'public.m' grants no reads"))
+            .any(|note| note.contains("'m' grants no reads"))
         {
             complaints.push(format!("`{policy}` reported no reason: {notes:?}"));
         }
@@ -988,8 +977,7 @@ fn a_membership_read_policy_that_may_admit_a_row_keeps_its_grant() {
 /// mints objects from, never to the rows a foreign table contributes.
 #[test]
 fn a_membership_tables_child_rows_still_grant() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE press_docs(embargo TEXT) INHERITS (docs);
 CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
@@ -998,10 +986,8 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = docs.id AND m.user_id = current_user)
 );
-",
-        &["docs", "press_docs", "doc_members", "super_members"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")

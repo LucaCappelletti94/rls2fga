@@ -25,7 +25,7 @@ use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 
 let sql = "
-    CREATE TABLE public.documents (
+    CREATE TABLE documents (
         id       UUID PRIMARY KEY,
         owner_id UUID NOT NULL
     );

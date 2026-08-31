@@ -131,8 +131,8 @@ fn a_composite_key_membership_row_keys_its_object_on_every_join_column() {
 /// to a prefix of a compound key answers for every row sharing that prefix.
 #[test]
 fn a_composite_key_membership_bound_query_binds_every_join_column() {
-    let sql = support::qualify_table_declarations(TWO_COLUMNS_SQL_RESIDUAL, &["p2", "s2"]);
-    let db = parse(&sql);
+    let sql = TWO_COLUMNS_SQL_RESIDUAL;
+    let db = parse(sql);
     let translated = translation(&db);
 
     let bound: Vec<Vec<String>> = translated
@@ -144,7 +144,7 @@ fn a_composite_key_membership_bound_query_binds_every_join_column() {
             _ => None,
         })
         .flatten()
-        .filter(|query| query.table.to_string() == "public.s2")
+        .filter(|query| query.table.to_string() == "s2")
         .map(|query| {
             query
                 .key_columns
@@ -191,8 +191,8 @@ fn model_and_tuples(sql: &str) -> (String, String) {
 /// order, and the bridge maps each row to itself.
 #[test]
 fn a_self_keyed_membership_names_the_guarded_row_by_its_whole_key() {
-    let sql = support::qualify_table_declarations(TWO_COLUMNS, &["p2", "s2"]);
-    let (model, tuples) = model_and_tuples(&sql);
+    let sql = TWO_COLUMNS;
+    let (model, tuples) = model_and_tuples(sql);
     for line in [
         "define can_select: member from p2",
         "define member: [user]",
@@ -201,7 +201,7 @@ fn a_self_keyed_membership_names_the_guarded_row_by_its_whole_key() {
         assert!(model.contains(line), "missing `{line}` in:\n{model}");
     }
     assert!(
-        tuples.contains("-- p2 membership from public.s2"),
+        tuples.contains("-- p2 membership from s2"),
         "membership query missing:\n{tuples}"
     );
     assert!(
@@ -211,7 +211,7 @@ fn a_self_keyed_membership_names_the_guarded_row_by_its_whole_key() {
          order:\n{tuples}"
     );
     assert!(
-        tuples.contains("-- public.p2 to p2 bridge for tuple-to-userset"),
+        tuples.contains("-- p2 to p2 bridge for tuple-to-userset"),
         "the self bridge maps each row to itself:\n{tuples}"
     );
 }
@@ -220,11 +220,8 @@ fn a_self_keyed_membership_names_the_guarded_row_by_its_whole_key() {
 /// in its key's order, and the bridge points the guarded row at that parent.
 #[test]
 fn a_composite_fk_membership_names_the_referenced_parent_by_its_whole_key() {
-    let sql = support::qualify_table_declarations(
-        COMPOSITE_FK_PARENT,
-        &["projects", "docs", "project_members"],
-    );
-    let (model, tuples) = model_and_tuples(&sql);
+    let sql = COMPOSITE_FK_PARENT;
+    let (model, tuples) = model_and_tuples(sql);
     for line in [
         "define can_select: member from projects",
         "define member: [user]",
@@ -233,7 +230,7 @@ fn a_composite_fk_membership_names_the_referenced_parent_by_its_whole_key() {
         assert!(model.contains(line), "missing `{line}` in:\n{model}");
     }
     assert!(
-        tuples.contains("-- projects membership from public.project_members"),
+        tuples.contains("-- projects membership from project_members"),
         "membership query missing:\n{tuples}"
     );
     assert!(
@@ -242,7 +239,7 @@ fn a_composite_fk_membership_names_the_referenced_parent_by_its_whole_key() {
         "the parent object carries both host columns in its key's order:\n{tuples}"
     );
     assert!(
-        tuples.contains("-- public.docs to projects bridge for tuple-to-userset"),
+        tuples.contains("-- docs to projects bridge for tuple-to-userset"),
         "the bridge points the guarded row at its parent:\n{tuples}"
     );
 }

@@ -84,10 +84,7 @@ fn ownership_outputs(db: &ParserDB) -> Outputs<'_, ParserDB> {
 }
 
 fn qualified_tenant_setting() -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
-    let sql = support::qualify_table_declarations(
-        &support::read_fixture_sql("tenant_setting"),
-        &["tenants", "documents"],
-    );
+    let sql = support::read_fixture_sql("tenant_setting");
     let db = parse_schema(&sql).expect("the schema should parse");
     let registry = support::try_load_fixture_registry("tenant_setting");
     let classified = policy_classifier::classify_policies(&db, &registry);

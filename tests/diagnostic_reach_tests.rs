@@ -15,6 +15,7 @@
 //! which is how this one came to look unreached.
 
 use rls2fga::generator::model_generator::GeneratorSettings;
+use rls2fga::generator::tuple_generator::SkippedTuples;
 use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::TranslationNote;
@@ -39,7 +40,7 @@ fn reported(
         .outputs_accepting_gaps()
         .tuple_queries()
         .iter()
-        .filter(|query| query.sql.trim_start().starts_with("--"))
+        .filter(|query| query.skipped.is_some())
         .map(|query| query.comment.clone())
         .collect();
     (notes, skips)
@@ -186,6 +187,55 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user);",
     );
 }
 
+/// A caller receives the gaps in the same list as the statements, and running a gap loads
+/// nothing while succeeding. So the entry states which it is, rather than leaving a caller
+/// to notice that the text opens with a comment.
+#[test]
+fn a_gap_carries_its_reason_and_a_statement_carries_none() {
+    let (classified, db, registry) = support::classify_sql(
+        "CREATE TABLE docs(owner_id TEXT);
+CREATE TABLE memos(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
+CREATE POLICY memos_owner ON memos FOR SELECT USING (owner_id = current_user);",
+        None,
+    );
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    let outputs = planned.outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    assert!(
+        queries.iter().any(|query| matches!(
+            query.skipped,
+            Some(SkippedTuples::NoObjectIdentifier { .. })
+        )),
+        "nothing names a row of docs, so that entry states the gap: {queries:#?}"
+    );
+    assert!(
+        queries
+            .iter()
+            .any(|query| query.skipped.is_none() && query.sql.contains("FROM \"public\".\"memos\"")),
+        "memos names its rows, so its entry is a statement: {queries:#?}"
+    );
+    for query in queries {
+        assert_eq!(
+            query.skipped.is_some(),
+            query.sql.trim_start().starts_with("--"),
+            "a gap and a statement must not be told apart two ways:\n{}\n{}",
+            query.comment,
+            query.sql
+        );
+    }
+}
+
 /// A role threshold on such a table cannot even point the row at its owner.
 #[test]
 fn an_owner_pointer_without_a_row_identity_is_skipped() {
@@ -231,14 +281,11 @@ CREATE POLICY p ON docs FOR SELECT USING (get_owner_role(current_user, lower(tit
 /// expansion cannot name a subject type either.
 #[test]
 fn a_grant_without_a_principal_table_is_skipped_twice() {
-    let sql = support::qualify_table_declarations(
-        &format!(
-            "{GRANT_TABLE}
+    let sql = format!(
+        "{GRANT_TABLE}
 CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (get_owner_role(current_user, owner_id) >= 2);"
-        ),
-        &["owner_grants", "docs"],
     );
     let (_, skips) = reported(&sql, Some(GRANTS), ConfidenceLevel::B);
     assert_reports(
@@ -306,7 +353,7 @@ CREATE POLICY ownables_update ON ownables FOR UPDATE
         .outputs_accepting_gaps()
         .tuple_queries()
         .iter()
-        .filter(|query| query.sql.trim_start().starts_with("--"))
+        .filter(|query| query.skipped.is_some())
         .map(|query| query.comment.clone())
         .collect();
 

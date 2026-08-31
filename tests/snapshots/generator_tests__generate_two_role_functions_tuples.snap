@@ -6,13 +6,13 @@ SET TIME ZONE 'UTC';
 SET DateStyle = 'ISO, MDY';
 SET bytea_output = 'hex';
 
--- public.ledgers to owner_grants_owner_23f04e74 bridge for tuple-to-userset
+-- ledgers to owner_grants_owner_23f04e74 bridge for tuple-to-userset
 SELECT 'ledgers:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner_id' AS relation, 'owner_grants_owner_23f04e74:' || CASE WHEN "owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner_id"::text ELSE '~' || encode(convert_to("owner_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."ledgers"
 WHERE "id" IS NOT NULL
 AND "owner_id" IS NOT NULL;
 
--- Owner identities that are rows of public.users
+-- Owner identities that are rows of users
 SELECT 'owner_grants_owner_23f04e74:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner_user' AS relation, 'user:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."users"
 WHERE "id" IS NOT NULL;
@@ -28,7 +28,7 @@ SELECT
 FROM "public"."owner_grants" og
 WHERE og."role_id" IN (5, 9);
 
--- Owner identities that are rows of public.users
+-- Owner identities that are rows of users
 SELECT 'owner_grants_owner_6e98b9a0:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner_user' AS relation, 'user:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."users"
 WHERE "id" IS NOT NULL;
@@ -45,7 +45,7 @@ SELECT
 FROM "public"."owner_grants" og
 WHERE og."role_id" IN (2, 3, 4);
 
--- public.projects to owner_grants_owner_6e98b9a0 bridge for tuple-to-userset
+-- projects to owner_grants_owner_6e98b9a0 bridge for tuple-to-userset
 SELECT 'projects:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'owner_id' AS relation, 'owner_grants_owner_6e98b9a0:' || CASE WHEN "owner_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner_id"::text ELSE '~' || encode(convert_to("owner_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."projects"
 WHERE "id" IS NOT NULL

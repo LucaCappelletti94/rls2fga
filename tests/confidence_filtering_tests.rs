@@ -67,8 +67,7 @@ fn model_generation_respects_min_confidence_threshold() {
 
 #[test]
 fn tuple_generation_respects_min_confidence_threshold() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);
 CREATE TABLE docs (
   id UUID PRIMARY KEY,
@@ -81,14 +80,12 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
   USING (status = 'published' AND owner_id = auth_current_user_id());
-",
-        &["users", "docs"],
-    );
+";
     let reg_json = r#"{
       "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
     }"#;
 
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
     let tuples_a = tuple_generator::format_tuples(
         Translation::plan(
             classified.clone(),

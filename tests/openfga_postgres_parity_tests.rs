@@ -171,7 +171,7 @@ async fn translated_schema_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("earth_metabolome");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("earth_metabolome");
+    let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply EMI schema on PostgreSQL 18");
     seed_emi_data(&mut conn);
@@ -420,7 +420,7 @@ async fn insert_readback_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("insert_readback");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("insert_readback");
+    let (classified, db, registry) = support::load_fixture_classified("insert_readback");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the insert_readback schema on PostgreSQL 18");
     conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, INSERT ON notes TO app_user;")
@@ -612,8 +612,7 @@ async fn role_scoped_membership_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scoped_membership");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("role_scoped_membership");
+    let (classified, db, registry) = support::load_fixture_classified("role_scoped_membership");
     // The policy names the role, so it has to exist before the schema is applied.
     conn.batch_execute("CREATE ROLE auditor")
         .expect("Failed to create the scoped role");
@@ -776,8 +775,7 @@ async fn definer_membership_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("definer_membership");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("definer_membership");
+    let (classified, db, registry) = support::load_fixture_classified("definer_membership");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the definer_membership schema on PostgreSQL 18");
 
@@ -979,8 +977,7 @@ async fn role_scoped_restrictive_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scoped_restrictive");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("role_scoped_restrictive");
+    let (classified, db, registry) = support::load_fixture_classified("role_scoped_restrictive");
     // The policy names the role, so it has to exist before the schema is applied.
     conn.batch_execute("CREATE ROLE contractor")
         .expect("Failed to create the scoped role");
@@ -1131,8 +1128,7 @@ async fn noinherit_member_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("role_scope_inherit");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("role_scope_inherit");
+    let (classified, db, registry) = support::load_fixture_classified("role_scope_inherit");
     // The policy names the role, so it has to exist before the schema is applied.
     conn.batch_execute("CREATE ROLE editors")
         .expect("Failed to create the scoped role");
@@ -1343,7 +1339,7 @@ async fn upsert_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("upsert");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("upsert");
+    let (classified, db, registry) = support::load_fixture_classified("upsert");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the upsert schema on PostgreSQL 18");
     conn.batch_execute(
@@ -1529,8 +1525,7 @@ async fn folded_identifier_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("folded_identifiers");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("folded_identifiers");
+    let (classified, db, registry) = support::load_fixture_classified("folded_identifiers");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the folded_identifiers schema on PostgreSQL 18");
 
@@ -1764,7 +1759,7 @@ async fn locking_read_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("locking_read");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("locking_read");
+    let (classified, db, registry) = support::load_fixture_classified("locking_read");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the locking_read schema on PostgreSQL 18");
     // A locking read needs the UPDATE privilege as well as SELECT.
@@ -1875,7 +1870,7 @@ async fn absent_clause_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("clause_absent");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("clause_absent");
+    let (classified, db, registry) = support::load_fixture_classified("clause_absent");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the clause_absent schema on PostgreSQL 18");
     conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user;")
@@ -1985,7 +1980,7 @@ async fn altered_policy_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("policy_altered");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("policy_altered");
+    let (classified, db, registry) = support::load_fixture_classified("policy_altered");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the policy_altered schema on PostgreSQL 18");
     conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user;")
@@ -2177,8 +2172,7 @@ async fn array_and_jsonb_membership_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("array_jsonb_membership");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("array_jsonb_membership");
+    let (classified, db, registry) = support::load_fixture_classified("array_jsonb_membership");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the array_jsonb_membership schema on PostgreSQL 18");
     conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user;")
@@ -2339,7 +2333,7 @@ CREATE POLICY docs_unexpired ON docs FOR SELECT USING ("Foo" > now());
     ))
     .expect("Failed to seed the expiring docs");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -2506,7 +2500,7 @@ CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval
     .expect("Failed to seed the grace-period docs");
     let seeded = ["g-fresh", "g-grace", "g-stale", "g-null"];
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -2841,7 +2835,7 @@ CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now()
     )
     .expect("Failed to seed the guarded rows");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -3071,8 +3065,7 @@ CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_curre
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -3251,8 +3244,7 @@ CREATE POLICY docs_staff ON docs FOR SELECT USING (
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -3433,8 +3425,7 @@ CREATE POLICY doc_links_visible ON doc_links FOR SELECT
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -3599,7 +3590,7 @@ async fn read_recursion_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("read_recursion");
-    let (classified, db, registry) = support::load_qualified_fixture_classified("read_recursion");
+    let (classified, db, registry) = support::load_fixture_classified("read_recursion");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the read_recursion schema on PostgreSQL 18");
     conn.batch_execute(
@@ -3785,7 +3776,7 @@ ALTER TABLE embargoes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY visible_now ON campaigns FOR SELECT TO PUBLIC USING (at <= now());
 CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
 ";
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     conn.batch_execute(schema_sql)
         .expect("Failed to apply the shared-name schema on PostgreSQL 18");
     conn.batch_execute(
@@ -4025,8 +4016,7 @@ async fn session_attribute_parity_postgres18_and_openfga() {
     ))
     .expect("Failed to seed the notes");
 
-    let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("connetto_or_policy");
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_or_policy");
     let planned = || {
         Translation::plan(
             classified.clone(),
@@ -4244,8 +4234,7 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     ))
     .expect("Failed to seed the papers and shares");
 
-    let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("connetto_capability");
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
     let planned = || {
         Translation::plan(
             classified.clone(),
@@ -4443,7 +4432,7 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
     )
     .expect("Failed to seed the papers and shares");
 
-    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
         schema_sql,
         r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
     );
@@ -4481,7 +4470,7 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
     // on the same `(user:*, gate, papers:1)` triple, which OpenFGA refuses as a duplicate.
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         if query.condition.is_some() {
@@ -4665,8 +4654,7 @@ async fn token_claim_set_parity_postgres18_and_openfga() {
         .execute(&mut conn)
         .expect("Failed to seed the documents");
 
-    let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("token_claim_set");
+    let (classified, db, registry) = support::try_load_fixture_classified("token_claim_set");
     let planned = || {
         Translation::plan(
             classified.clone(),
@@ -4890,8 +4878,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -5087,8 +5074,7 @@ CREATE POLICY line_items_visible ON line_items FOR SELECT
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -5284,8 +5270,7 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let translation = Translation::plan(
         classified,
         &db,
@@ -5470,7 +5455,7 @@ CREATE TABLE readings (
 ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
 ";
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     conn.batch_execute(schema_sql)
         .expect("Failed to apply the clock-gate schema on PostgreSQL 18");
     conn.batch_execute("CREATE ROLE app_user LOGIN; GRANT SELECT ON readings TO app_user;")
@@ -5667,8 +5652,7 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
     ))
     .expect("Failed to seed the papers and shares");
 
-    let (classified, db, registry) =
-        support::try_load_qualified_fixture_classified("connetto_capability");
+    let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
     let planned = || {
         Translation::plan(
             classified.clone(),
@@ -5696,7 +5680,7 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
                         RecordDerivation::FromRow {
                             table, template, ..
                         } => {
-                            table.to_string() == "public.paper_shares"
+                            table.to_string() == "paper_shares"
                                 && template.object_type == "paper_shares_share"
                         }
                         _ => false,
@@ -5769,7 +5753,7 @@ async fn shared_paper_from_row_parity_postgres18_and_openfga() {
         ));
     }
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") || core::ptr::eq(query, share_arm) {
+        if query.skipped.is_some() || core::ptr::eq(query, share_arm) {
             continue;
         }
         if query.condition.is_some() {
@@ -5889,7 +5873,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     )
 );
 ";
-    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
         schema_sql,
         r#"[
       { "key": "app.user_id", "kind": "caller_id" },
@@ -5944,7 +5928,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     // Load exactly what the loader loads: every query, conditional and plain.
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         if query.condition.is_some() {
@@ -6090,7 +6074,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     )
 );
 ";
-    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
         schema_sql,
         r#"[
       { "key": "app.user_id", "kind": "caller_id" },
@@ -6144,7 +6128,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
 
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         if query.condition.is_some() {
@@ -6295,7 +6279,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     )
 );
 ";
-    let (classified, db, registry) = support::classify_qualified_sql_with_session_attributes(
+    let (classified, db, registry) = support::classify_sql_with_session_attributes(
         schema_sql,
         r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
     );
@@ -6347,7 +6331,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     // The load itself asserts the two shares do not collide on one object.
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         if query.condition.is_some() {
@@ -6448,7 +6432,7 @@ fn all_tuple_writes(
 ) -> Vec<openfga_client::client::TupleKey> {
     let mut writes: Vec<openfga_client::client::TupleKey> = Vec::new();
     for query in tuple_queries {
-        if query.sql.trim_start().starts_with("--") {
+        if query.skipped.is_some() {
             continue;
         }
         if query.condition.is_some() {
@@ -6530,7 +6514,7 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
     )
     .expect("Failed to seed the doc shares");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -6665,7 +6649,7 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
     )
     .expect("Failed to seed the reviewers");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -6808,8 +6792,7 @@ async fn shared_owner_grants_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("shared_owner_grants");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("shared_owner_grants");
+    let (classified, db, registry) = support::load_fixture_classified("shared_owner_grants");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the shared-owner schema on PostgreSQL 18");
     // Seeded as a script: every key here is a `uuid` column and the test driver is built
@@ -6970,8 +6953,7 @@ async fn two_owner_columns_parity_postgres18_and_openfga() {
     let mut conn = connect_postgres_with_retry(&pg_url);
 
     let schema_sql = support::read_fixture_sql("two_owner_columns");
-    let (classified, db, registry) =
-        support::load_qualified_fixture_classified("two_owner_columns");
+    let (classified, db, registry) = support::load_fixture_classified("two_owner_columns");
     conn.batch_execute(&schema_sql)
         .expect("Failed to apply the two-column schema on PostgreSQL 18");
     // Seeded as a script: every key here is a `uuid` column and the test driver is built
@@ -7134,7 +7116,7 @@ CREATE POLICY p ON memos FOR SELECT TO "Admin" USING (TRUE);
         .expect("Failed to create a querying role");
     }
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let planned = || {
         Translation::plan(
             classified.clone(),
@@ -7371,8 +7353,7 @@ CREATE POLICY papers_visible ON tenant_papers FOR SELECT
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -7615,8 +7596,7 @@ CREATE POLICY docs_visible ON docs FOR SELECT
 
     let registry_json =
         r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -7777,7 +7757,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         .execute(&mut conn)
         .expect("Failed to seed the protected row");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -7882,7 +7862,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
         .execute(&mut conn)
         .expect("Failed to seed the membership row");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -7994,7 +7974,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (strict_true(gate));
         .execute(&mut conn)
         .expect("Failed to seed the non-null row");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -8110,8 +8090,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
         .expect("Failed to seed the guarded row");
 
     let registry_json = r#"{"auth.uid":{"kind":"current_user_accessor","returns":"text"}}"#;
-    let (classified, db, registry) =
-        support::classify_qualified_sql(schema_sql, Some(registry_json));
+    let (classified, db, registry) = support::classify_sql(schema_sql, Some(registry_json));
     let outputs = Translation::plan(
         classified,
         &db,
@@ -8262,7 +8241,7 @@ SET search_path TO a, public;
         .execute(&mut conn)
         .expect("Failed to seed the function path table");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,
@@ -8364,7 +8343,7 @@ INSERT INTO public.memberships VALUES ('d1', 'app_reader');
     conn.batch_execute(schema_sql)
         .expect("Failed to apply the resolved membership schema");
 
-    let (classified, db, registry) = support::classify_qualified_sql(schema_sql, None);
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
     let outputs = Translation::plan(
         classified,
         &db,

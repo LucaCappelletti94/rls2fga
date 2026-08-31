@@ -365,17 +365,14 @@ fn a_redundant_select_gate_is_left_out() {
 /// Per relation, not per table: a table denying reads can still grant inserts.
 #[test]
 fn a_relation_reached_only_by_insert_keeps_its_tuples() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE docs(id INTEGER PRIMARY KEY, parent_id INTEGER, editor_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_sel ON docs FOR SELECT USING (
   EXISTS (SELECT 1 FROM docs p WHERE p.id = docs.parent_id AND p.editor_id = current_user));
 CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
-",
-        &["docs"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     let dsl = translator
         .translate(&db)
@@ -406,8 +403,7 @@ CREATE POLICY docs_ins ON docs FOR INSERT WITH CHECK (editor_id = current_user);
 /// A model that grants normally keeps every query it needs.
 #[test]
 fn a_granting_model_keeps_its_tuple_queries() {
-    let sql = support::qualify_table_declarations(
-        r"
+    let sql = r"
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY projects_sel ON projects FOR SELECT USING (owner_id = current_user);
@@ -415,10 +411,8 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
   EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_id = current_user));
-",
-        &["projects", "tasks"],
-    );
-    let db = db_of(&sql);
+";
+    let db = db_of(sql);
     let translator = translator(ConfidenceLevel::B);
     let outputs = translator
         .translate(&db)

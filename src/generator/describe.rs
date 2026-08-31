@@ -140,10 +140,10 @@ fn bound_eq(qualifier: Option<&str>, columns: &[ColumnName]) -> String {
 
 /// The whole-table query for this one source, which is what a bound query extends.
 ///
-/// `None` where the renderer stands a comment in place of a query, since a comment
-/// loads nothing and there is no text to bind.
+/// `None` where the renderer stands advice in place of a query, since advice loads nothing
+/// and there is no text to bind.
 fn rendered(query: &TupleQuery) -> Option<&TupleQuery> {
-    (!query.sql.trim_start().starts_with("--")).then_some(query)
+    query.skipped.is_none().then_some(query)
 }
 
 /// One value source per key column, in declared order.

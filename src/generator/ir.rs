@@ -509,11 +509,6 @@ pub(crate) enum TupleSourceKey<'a> {
     },
 }
 
-/// Returns `table` when it has no schema qualifier, otherwise `None`.
-fn first_unqualified(table: &TableId) -> Option<&TableId> {
-    table.schema().is_none().then_some(table)
-}
-
 impl TupleSource {
     /// True when the rendered objects belong to the type plan this source is
     /// attached to, rather than to a type named inside the source itself.
@@ -875,51 +870,6 @@ impl TupleSource {
                 gate: gate.as_ref(),
             },
             Self::Skipped { reason } => TupleSourceKey::Skipped { reason },
-        }
-    }
-
-    /// The first source table without a schema qualifier, which makes SQL `search_path` dependent.
-    pub(crate) fn first_unqualified_table(&self) -> Option<&TableId> {
-        match self {
-            Self::DirectOwnership { table, .. }
-            | Self::ArrayMembership { table, .. }
-            | Self::JsonbFieldOwnership { table, .. }
-            | Self::HolderBridge { table, .. }
-            | Self::ParentBridge { table, .. }
-            | Self::PublicFlag { table, .. }
-            | Self::RowPresenceGate { table, .. }
-            | Self::AttributeGate { table, .. }
-            | Self::ConditionalAttributeGate { table, .. }
-            | Self::SessionAttributeGate { table, .. }
-            | Self::ConstantTrue { table, .. }
-            | Self::PolicyScope { table, .. } => first_unqualified(table),
-            Self::OwnerIdentity {
-                principal_table, ..
-            } => first_unqualified(principal_table),
-            Self::TeamMembership {
-                membership_table, ..
-            } => first_unqualified(membership_table),
-            Self::ExistsMembership { join_table, .. }
-            | Self::CallerSetShareGate { join_table, .. }
-            | Self::CallerSetShareBridge { join_table, .. } => first_unqualified(join_table),
-            Self::HolderMembers { member_table, .. } => first_unqualified(member_table),
-            Self::ExplicitGrants {
-                grant_table,
-                user_principal,
-                team_principal,
-                ..
-            } => first_unqualified(grant_table)
-                .or_else(|| {
-                    user_principal
-                        .as_ref()
-                        .and_then(|p| first_unqualified(&p.table))
-                })
-                .or_else(|| {
-                    team_principal
-                        .as_ref()
-                        .and_then(|p| first_unqualified(&p.table))
-                }),
-            Self::PolicyScopeRoles { .. } | Self::Skipped { .. } => None,
         }
     }
 }

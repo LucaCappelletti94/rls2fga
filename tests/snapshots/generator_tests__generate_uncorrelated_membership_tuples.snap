@@ -6,18 +6,18 @@ SET TIME ZONE 'UTC';
 SET DateStyle = 'ISO, MDY';
 SET bytea_output = 'hex';
 
--- Everyone listed in public.staff, held by staff_holder
+-- Everyone listed in staff, held by staff_holder
 SELECT DISTINCT 'staff_holder:all' AS object, 'member' AS relation, 'user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "user_id"::text ELSE '~' || encode(convert_to("user_id"::text, 'UTF8'), 'hex') END AS subject
 FROM "public"."staff"
 WHERE "user_id" IS NOT NULL
 AND octet_length('user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "user_id"::text ELSE '~' || encode(convert_to("user_id"::text, 'UTF8'), 'hex') END) <= 512;
 
--- Every public.docs row points at the staff_holder holder
+-- Every docs row points at the staff_holder holder
 SELECT 'docs:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'staff_holder' AS relation, 'staff_holder:all' AS subject
 FROM "public"."docs"
 WHERE "id" IS NOT NULL AND length('docs:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END) <= 256;
 
--- Everyone listed in public.reviewers, held by reviewers_holder, evaluated by condition when_memos_memos_reviewers_0f827662
+-- Everyone listed in reviewers, held by reviewers_holder, evaluated by condition when_memos_memos_reviewers_0f827662
 SELECT 'reviewers_holder:all' AS object, 'member' AS relation, 'user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "user_id"::text ELSE '~' || encode(convert_to("user_id"::text, 'UTF8'), 'hex') END AS subject,
   'when_memos_memos_reviewers_0f827662' AS condition, jsonb_build_object('vetted_at', MAX("vetted_at")) AS context
 FROM "public"."reviewers"
@@ -26,7 +26,7 @@ AND octet_length('user:' || CASE WHEN "user_id"::text ~ '^[A-Za-z0-9._@-]+$' THE
 AND ("vetted_at" IS NOT NULL)
 GROUP BY "user_id";
 
--- Every public.memos row points at the reviewers_holder holder
+-- Every memos row points at the reviewers_holder holder
 SELECT 'memos:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'reviewers_holder' AS relation, 'reviewers_holder:all' AS subject
 FROM "public"."memos"
 WHERE "id" IS NOT NULL AND length('memos:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END) <= 256;
