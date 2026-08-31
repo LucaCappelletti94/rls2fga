@@ -27,7 +27,7 @@ pub(crate) fn rule_implies(
     by_name: &BTreeMap<&str, &TypePlan>,
     seen: &mut BTreeSet<(String, RelationName)>,
 ) -> bool {
-    if userset_key(rule) == userset_key(visible) {
+    if rule == visible {
         return true;
     }
     match visible {
