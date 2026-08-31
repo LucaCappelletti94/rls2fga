@@ -36,7 +36,7 @@ use crate::generator::relations::relation_shapes;
 use crate::generator::row_naming::row_naming;
 use crate::generator::tuple_generator::{generate_tuple_queries_from_plan, UnboundedColumns};
 use crate::generator::well_known::can_select_relation;
-use crate::parser::names::{lookup_table, resolve_table_id, same_identifier};
+use crate::parser::names::{lookup_table, resolve_table_id};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 use crate::types::RelationShapes;
 use crate::types::TranslationNote;
@@ -358,11 +358,11 @@ fn derive_chain<DB: DatabaseLike>(
 }
 
 /// Whether a resolved table and a spelling identify one table of `db`.
+///
+/// A spelling the schema cannot place identifies nothing, since a chain built on a guess
+/// would name records the filtered row never reaches.
 fn same_table<DB: DatabaseLike>(db: &DB, left: &TableId, right: &str) -> bool {
-    resolve_table_id(db, right).map_or_else(
-        || same_identifier(left.name(), right) || same_identifier(&left.to_string(), right),
-        |right| *left == right,
-    )
+    resolve_table_id(db, right).is_some_and(|right| *left == right)
 }
 
 /// Whether a shape names an object of the type its relation is defined on, from a value

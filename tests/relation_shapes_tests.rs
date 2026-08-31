@@ -642,7 +642,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
         // and the join table of another type's shape in the next.
         let keys: Vec<(TableId, String, Vec<ColumnName>)> = planned
             .row_naming()
-            .into_iter()
+            .iter()
             .map(|naming| {
                 let columns = naming
                     .key
@@ -653,7 +653,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
                         _ => None,
                     })
                     .collect();
-                (naming.table, naming.type_name, columns)
+                (naming.table.clone(), naming.type_name.clone(), columns)
             })
             .collect();
 

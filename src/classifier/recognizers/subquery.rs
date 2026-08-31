@@ -1,7 +1,7 @@
 use super::*;
 use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::SessionAttribute;
-use crate::parser::names::{lookup_table_id, resolve_table_id, table_identity, unquote_identifier};
+use crate::parser::names::{lookup_table_id, resolve_table_id, table_identity};
 use crate::types::{ColumnName, TableId};
 use alloc::collections::BTreeSet;
 use sqlparser::ast::{Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr};
@@ -231,7 +231,8 @@ fn drop_self_equalities(expr: &Expr) -> Option<Expr> {
                 predicate,
                 Expr::BinaryOp { left, op: BinaryOperator::Eq, right }
                     if matches!((left.as_ref(), right.as_ref()),
-                        (Expr::Identifier(l), Expr::Identifier(r)) if l.value == r.value)
+                        (Expr::Identifier(l), Expr::Identifier(r))
+                            if stored_ident_name(l) == stored_ident_name(r))
             )
         })
         .cloned()
@@ -334,7 +335,8 @@ fn joins_drop_no_row<DB: DatabaseLike>(
     let joined: Vec<RelationSource> = relation_sources(select)
         .into_iter()
         .filter(|source| {
-            !qualifier_matches_table(&source.table_name, parent_table, parent_alias)
+            // An unprovable pair counts as joined, and the key checks below then refuse.
+            !written_tables_are_same(db, &source.table_name, parent_table).unwrap_or(false)
                 && source
                     .alias
                     .as_deref()
@@ -451,13 +453,13 @@ fn foreign_references(
                 if let Expr::CompoundIdentifier(parts) = expr {
                     if let [.., qualifier, last] = parts.as_slice() {
                         if !qualifier_matches_table(
-                            &qualifier.value,
+                            stored_ident_name(qualifier).as_ref(),
                             self.parent_table,
                             self.parent_alias,
                         ) {
                             let found = (
-                                qualifier.value.clone(),
-                                ColumnName::from_stored(last.value.as_str()),
+                                stored_ident_name(qualifier).into_owned(),
+                                ColumnName::from_stored(stored_ident_name(last)),
                             );
                             if !self.found.contains(&found) {
                                 self.found.push(found);
@@ -497,7 +499,9 @@ fn replace_compound_identifier(expr: &mut Expr, from: (&str, &str), to: &Ident) 
         fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
             if let Expr::CompoundIdentifier(parts) = &*expr {
                 if let [.., qualifier, last] = parts.as_slice() {
-                    if qualifier.value == self.qualifier && last.value == self.column {
+                    if stored_ident_name(qualifier) == self.qualifier
+                        && stored_ident_name(last) == self.column
+                    {
                         *expr = Expr::Identifier(self.to.clone());
                     }
                 }
@@ -850,17 +854,14 @@ fn membership_exists_from_in_subquery(
 
 /// `col` as `qualifier.col`, leaving anything already qualified alone.
 ///
-/// The qualifier is written unquoted because every comparison against it folds case and
-/// quoting, so it matches whichever spelling the schema declared.
+/// The synthesized qualifier is quoted around the table's stored name, so its own stored
+/// form is exactly that name whatever case the schema declared it in.
 fn qualified_column(expr: &Expr, qualifier: &str) -> Expr {
     let Expr::Identifier(column) = expr else {
         return expr.clone();
     };
-    let relation = table_qualifier_candidates(qualifier)
-        .pop()
-        .unwrap_or_else(|| qualifier.to_string());
     Expr::CompoundIdentifier(vec![
-        Ident::new(unquote_identifier(&relation).into_owned()),
+        Ident::with_quote('"', stored_relation_name(qualifier)),
         column.clone(),
     ])
 }
@@ -1006,7 +1007,10 @@ fn analyze_membership_select<DB: DatabaseLike>(
     let all_sources = relation_sources(select);
     let unique_table_count = all_sources
         .iter()
-        .map(|s| normalize_relation_name(&s.table_name))
+        .map(|source| {
+            resolve_table_id(db, &source.table_name)
+                .map_or_else(|| source.table_name.clone(), |table| table.to_string())
+        })
         .collect::<BTreeSet<_>>()
         .len();
     if unique_table_count != all_sources.len() {
@@ -1019,9 +1023,10 @@ fn analyze_membership_select<DB: DatabaseLike>(
     // security the scan is the owner's, which probe A shows never recurses, so the
     // membership routes below answer it.
     if !state.reading_as_owner()
-        && all_sources
-            .iter()
-            .any(|source| same_identifier(&source.table_name, outer_table))
+        && all_sources.iter().any(|source| {
+            // A source the schema cannot place may be the guarded table, so it refuses.
+            written_tables_are_same(db, &source.table_name, outer_table).unwrap_or(true)
+        })
     {
         return MembershipSelectAnalysis::RescansGuardedTable;
     }
@@ -1066,7 +1071,9 @@ fn analyze_membership_select<DB: DatabaseLike>(
                 .iter()
                 .map(|source| source.table_name.clone())
                 .filter(|name| {
-                    normalize_relation_name(name) != normalize_relation_name(&join_table)
+                    // An unprovable pair counts as foreign, which refuses rather than
+                    // dropping a third table's conditions.
+                    !written_tables_are_same(db, name, &join_table).unwrap_or(false)
                 })
                 .collect();
             if !foreign.is_empty() {
@@ -1105,7 +1112,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         return None;
     }
     // Reading the guarded table itself is a self-reference, not a member source.
-    if same_identifier(&source.table_name, outer_table) {
+    if written_tables_are_same(db, &source.table_name, outer_table).unwrap_or(true) {
         return None;
     }
     let member = lookup_table(db, &source.table_name)?;
@@ -1160,7 +1167,11 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         }
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
-        extras.push(residual_predicate(&normalized));
+        let residual = residual_predicate(&normalized);
+        if residual.request.is_none() && !conjunct_reads_only_the_row(&normalized, &columns) {
+            return None;
+        }
+        extras.push(residual);
     }
 
     Some(MembershipSelectAnalysis::Uncorrelated {
@@ -1371,7 +1382,7 @@ fn scans_root_entity_by_its_key<DB: DatabaseLike>(db: &DB, table: &str, column: 
     let Ok(primary_key) = meta.primary_key_column(db) else {
         return true;
     };
-    let is_primary_key = primary_key.is_some_and(|pk| same_identifier(pk.column_name(), column));
+    let is_primary_key = primary_key.is_some_and(|pk| pk.stored_column_name() == column);
     if !is_primary_key {
         return false;
     }
@@ -1379,7 +1390,7 @@ fn scans_root_entity_by_its_key<DB: DatabaseLike>(db: &DB, table: &str, column: 
         fk.host_column(db)
             .ok()
             .flatten()
-            .is_some_and(|host| same_identifier(host.column_name(), column))
+            .is_some_and(|host| host.stored_column_name() == column)
     })
 }
 
@@ -1659,7 +1670,9 @@ pub(super) fn table_factor_parts(tf: &TableFactor) -> Option<(String, Option<Str
     if let TableFactor::Table { name, alias, .. } = tf {
         Some((
             name.to_string(),
-            alias.as_ref().map(|a| a.name.value.clone()),
+            alias
+                .as_ref()
+                .map(|a| stored_ident_name(&a.name).into_owned()),
         ))
     } else {
         None
@@ -2052,7 +2065,16 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
             // SQL literal forms that text-based rewriting would mangle.
             let mut normalized_pred = pred.clone();
             strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
-            extras.push(residual_predicate(&normalized_pred));
+            // The loader answers this query as itself, once, so a conjunct it cannot
+            // decide from the row alone would answer a different question than the
+            // caller's check does. A recognized request value keeps its own route.
+            let residual = residual_predicate(&normalized_pred);
+            if residual.request.is_none()
+                && !conjunct_reads_only_the_row(&normalized_pred, join_cols)
+            {
+                return None;
+            }
+            extras.push(residual);
         }
     }
 
@@ -2174,7 +2196,7 @@ fn strip_qualifier(
                 if let Expr::CompoundIdentifier(parts) = &*expr {
                     if let [.., qualifier, last] = parts.as_slice() {
                         if qualifier_matches_table(
-                            &qualifier.value,
+                            stored_ident_name(qualifier).as_ref(),
                             self.join_table,
                             self.join_alias,
                         ) {
@@ -2226,7 +2248,7 @@ pub(super) fn predicate_references_other_table(
                 if let Expr::CompoundIdentifier(parts) = expr {
                     if let [.., qualifier, _] = parts.as_slice() {
                         if !qualifier_matches_table(
-                            &qualifier.value,
+                            stored_ident_name(qualifier).as_ref(),
                             self.join_table,
                             self.join_alias,
                         ) {
@@ -2317,11 +2339,8 @@ fn build_unqualified_membership_scope<DB: DatabaseLike>(
         return UnqualifiedMembershipScope::default();
     }
 
-    let join_table_norm = normalize_relation_name(join_table);
-    let join_columns = join_cols
-        .iter()
-        .map(|name| normalize_relation_name(name))
-        .collect();
+    let join_table_stored = stored_relation_name(join_table);
+    let join_columns = join_cols.iter().map(ToString::to_string).collect();
 
     let mut scope = UnqualifiedMembershipScope {
         enforce: true,
@@ -2331,7 +2350,7 @@ fn build_unqualified_membership_scope<DB: DatabaseLike>(
     };
 
     for source in sources {
-        if normalize_relation_name(&source.table_name) == join_table_norm {
+        if stored_relation_name(&source.table_name) == join_table_stored {
             continue;
         }
 
@@ -2349,7 +2368,7 @@ fn build_unqualified_membership_scope<DB: DatabaseLike>(
         for col in columns {
             scope
                 .other_columns
-                .insert(normalize_relation_name(col.column_name()));
+                .insert(col.stored_column_name().into_owned());
         }
     }
 
@@ -2382,7 +2401,7 @@ fn predicate_has_ambiguous_unqualified_column(
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
             if self.subquery_depth == 0 {
                 if let Expr::Identifier(ident) = expr {
-                    let col = normalize_relation_name(&ident.value);
+                    let col = stored_ident_name(ident).into_owned();
                     let in_join = self.scope.join_columns.contains(&col);
                     let in_other = self.scope.other_columns.contains(&col);
                     if !in_join || in_other || self.scope.unknown_other_source {
@@ -2405,27 +2424,34 @@ fn predicate_has_ambiguous_unqualified_column(
     expr.visit(&mut checker).is_break()
 }
 
+/// Whether a column qualifier names this scan.
+///
+/// Every argument is a stored identifier, which is what makes plain equality
+/// `PostgreSQL`'s own rule: an unquoted spelling folded on the way in, a quoted one kept
+/// its case, and `"M"` therefore never answers for `m`. An alias replaces the table's own
+/// name for its scope, so a qualifier spelling the hidden name refers to an enclosing
+/// scope's table.
 pub(super) fn qualifier_matches_table(
     qualifier: &str,
     table_name: &str,
     alias: Option<&str>,
 ) -> bool {
-    // An alias replaces the table's own name for its scope, so a qualifier
-    // spelling the hidden name refers to an enclosing scope's table.
     match alias {
-        Some(alias) => same_identifier(qualifier, alias),
-        None => table_qualifier_candidates(table_name)
-            .iter()
-            .any(|candidate| same_identifier(qualifier, candidate)),
+        Some(alias) => qualifier == alias,
+        None => qualifier == stored_relation_name(table_name),
     }
 }
 
-pub(super) fn table_qualifier_candidates(table_name: &str) -> Vec<String> {
-    let mut candidates = vec![table_name.to_string()];
-    if let Some((_, relation)) = split_schema_and_relation(table_name) {
-        candidates.push(relation);
-    }
-    candidates
+/// Whether two written table spellings denote one table, `None` when the schema does not
+/// say.
+///
+/// Each caller decides what an unprovable answer means, because the safe direction
+/// differs: a self scan must refuse when it cannot be ruled out, and a foreign source
+/// must refuse when it cannot be ruled in.
+fn written_tables_are_same<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> Option<bool> {
+    let left = resolve_table_id(db, left)?;
+    let right = resolve_table_id(db, right)?;
+    Some(left == right)
 }
 
 fn combine_predicates_with_and(predicates: Vec<Expr>) -> Option<Expr> {
@@ -2559,7 +2585,7 @@ fn fk_targets_column<DB: DatabaseLike>(
         })
         .any(|fk| {
             let table_matches = fk.referenced_table(db).is_ok_and(|referenced| {
-                qualifier_matches_table(referenced.table_name(), table, None)
+                qualifier_matches_table(referenced.stored_table_name().as_ref(), table, None)
             });
             table_matches
                 && fk.referenced_column(db).is_ok_and(|referenced| {
@@ -2589,7 +2615,11 @@ fn table_has_fk_to_parent<DB: DatabaseLike>(
             }
 
             fk.referenced_table(db).is_ok_and(|referenced| {
-                qualifier_matches_table(referenced.table_name(), parent_table_name, None)
+                qualifier_matches_table(
+                    referenced.stored_table_name().as_ref(),
+                    parent_table_name,
+                    None,
+                )
             })
         })
 }

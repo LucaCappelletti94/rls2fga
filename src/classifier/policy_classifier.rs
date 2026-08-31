@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::parser::names::{normalize_relation_name, table_has_column};
+use crate::parser::names::table_has_column;
 use crate::types::ColumnName;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
@@ -586,11 +586,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
             expansion::Expansion::Refused { reason } => unknown_d(expr, reason),
             expansion::Expansion::Body {
                 function,
+                identity,
                 reads_bypass_rls,
                 presence_columns,
                 expr: body,
             } => {
-                state.enter(normalize_relation_name(&function));
+                state.enter(identity);
                 if reads_bypass_rls {
                     state.enter_owner_read();
                 }

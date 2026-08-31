@@ -25,7 +25,7 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
 
 fn naming(sql: &str) -> Vec<RowNaming> {
     let db: ParserDB = parse_schema(sql).expect("the schema should parse");
-    let mut entries = translate(&db).row_naming();
+    let mut entries = translate(&db).row_naming().to_vec();
     entries.sort_by_key(|entry| entry.table.clone());
     entries
 }
@@ -123,7 +123,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     let db: ParserDB = parse_schema(sql).expect("the schema should parse");
     let planned = translate(&db);
     let entries = planned.row_naming();
-    let docs = entry(&entries, "docs");
+    let docs = entry(entries, "docs");
     let subject = row(&[("id", "a|b"), ("owner", "alice")]);
 
     let rendered = docs
@@ -159,7 +159,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner = current_setting('app.user_id',
     let db: ParserDB = parse_schema(sql).expect("the schema should parse");
     let planned = translate(&db);
     let entries = planned.row_naming();
-    let docs = entry(&entries, "docs");
+    let docs = entry(entries, "docs");
     let subject = row(&[("id", "{a,b}"), ("owner", "alice")]);
 
     assert_eq!(

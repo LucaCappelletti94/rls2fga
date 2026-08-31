@@ -549,13 +549,13 @@ ALTER TABLE a.notes ENABLE ROW LEVEL SECURITY;
     )
     .expect("the filter compiles");
 
-    let named = TranslatorBuilder::new()
+    let planned = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_current_user_setting_keys(["app.user_id"])
         .build()
         .translate(&db)
-        .expect("translation should plan")
-        .row_naming();
+        .expect("translation should plan");
+    let named = planned.row_naming();
     let entry = named
         .iter()
         .find(|entry| entry.table.to_string() == "a.notes")

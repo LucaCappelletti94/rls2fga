@@ -1009,3 +1009,28 @@ fn function_argument_names_route_through_stored_argument_names() {
         "found unpaired direct argument_names call(s): {offenders:?}"
     );
 }
+
+/// No production module decides SQL identifier identity by folding quoting away.
+///
+/// `PostgreSQL` folds an unquoted identifier and keeps a quoted one, so a comparison that
+/// strips quotes before deciding reads two different objects as one. Deleting the helpers
+/// is what stops the mistake being respelled under another name.
+#[test]
+fn no_identifier_comparison_folds_quoting() {
+    assert_eq!(
+        fn_definitions("same_identifier"),
+        0,
+        "same_identifier compares two SQL identifiers quote-blind, route through \
+         sql_traits::utils::identifier_resolution::identifiers_match instead"
+    );
+    assert_eq!(
+        count_all("same_identifier("),
+        0,
+        "a caller still folds quoting away to compare identifiers"
+    );
+    assert_eq!(
+        fn_definitions("normalize_identifier"),
+        0,
+        "normalize_identifier folds an identifier without knowing whether it was quoted"
+    );
+}

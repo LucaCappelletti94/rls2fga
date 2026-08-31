@@ -27,9 +27,9 @@ use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
     gate_condition_name, is_owner_like_column_name, lookup_table, lookup_table_id,
-    membership_read_scope_relation_name, normalize_relation_name, parent_type_from_fk_column,
-    resolve_table_id, role_limited_relation_name, role_scope_name, row_presence_relation_name,
-    same_identifier, stable_hex_suffix, table_id_has_column, table_identity, yielded_relation_name,
+    membership_read_scope_relation_name, parent_type_from_fk_column, resolve_table_id,
+    role_limited_relation_name, role_scope_name, row_presence_relation_name, stable_hex_suffix,
+    stored_relation_name, table_id_has_column, table_identity, yielded_relation_name,
     MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
@@ -1839,7 +1839,7 @@ fn types_bearing_name<DB: DatabaseLike>(
     table_types: &TableTypes,
 ) -> Vec<String> {
     db.tables()
-        .filter(|table| same_identifier(named, table.table_name()))
+        .filter(|table| stored_relation_name(named) == table.stored_table_name())
         .filter_map(|table| table_types.by_identity.get(&table_identity(table)).cloned())
         .collect()
 }
@@ -2662,8 +2662,8 @@ fn resolve_owner_column<DB: DatabaseLike>(table: &TableId, db: &DB) -> Option<Co
         let Ok(ref_table) = fk.referenced_table(db) else {
             continue;
         };
-        let normalized_ref = normalize_relation_name(ref_table.table_name());
-        if normalized_ref == "users" || normalized_ref == "owners" {
+        let stored_ref = ref_table.stored_table_name();
+        if stored_ref == "users" || stored_ref == "owners" {
             if let Some(col_name) = fk
                 .host_columns(db)
                 .into_iter()

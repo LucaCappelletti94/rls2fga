@@ -13,9 +13,9 @@ use crate::parser::expr::{function_arg_expr, function_call, positional_function_
 use crate::parser::function_analyzer::current_setting_literal_key;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    is_current_user_keyword_name, is_public_flag_column_name, is_user_related_column_name,
-    lookup_table, normalize_relation_name, normalized_function_name, same_identifier,
-    split_schema_and_relation, stored_ident_name,
+    folded_function_name, is_current_user_keyword_name, is_public_flag_column_name,
+    is_user_related_column_name, lookup_table, parse_target, stored_ident_name,
+    stored_relation_name,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableLike};
 use crate::types::ColumnName;
@@ -27,6 +27,7 @@ mod session;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
+pub(crate) use attribute::conjunct_reads_only_the_row;
 pub use attribute::{
     attribute_literal_predicate, attribute_request_predicate, is_attribute_check,
     residual_predicate,
@@ -145,7 +146,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     let Expr::Function(func) = expr else {
         return None;
     };
-    if normalized_function_name(func) != "pg_has_role" {
+    if folded_function_name(func).as_deref() != Some("pg_has_role") {
         return None;
     }
     let FunctionArguments::List(arg_list) = &func.args else {
@@ -725,7 +726,8 @@ pub(crate) fn called_function_names(expr: &Expr, registry: &FunctionRegistry) ->
     let _ = sqlparser::ast::visit_expressions(expr, |node| {
         if let Expr::Function(func) = node {
             if !is_current_user_expr(node, registry) && !takes_a_subquery(func) {
-                let name = normalized_function_name(func);
+                let name = folded_function_name(func)
+                    .unwrap_or_else(|| sql_traits::utils::last_str(&func.name).to_string());
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -745,7 +747,8 @@ pub(crate) fn subquery_set_constructors(expr: &Expr) -> Vec<String> {
     let _ = sqlparser::ast::visit_expressions(expr, |node| {
         if let Expr::Function(func) = node {
             if takes_a_subquery(func) {
-                let name = normalized_function_name(func);
+                let name = folded_function_name(func)
+                    .unwrap_or_else(|| sql_traits::utils::last_str(&func.name).to_string());
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -944,7 +947,7 @@ fn current_user_accessor_name(expr: &Expr) -> Option<String> {
         Expr::Identifier(ident) => ident
             .quote_style
             .is_none()
-            .then(|| normalize_relation_name(&ident.value)),
+            .then(|| ident.value.to_ascii_lowercase()),
         _ => None,
     }
 }
@@ -984,13 +987,13 @@ fn is_current_user_keyword(name: &str) -> bool {
 fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
     match accessor_root(expr) {
         Some(Expr::Identifier(ident)) => {
-            ident.quote_style.is_none()
-                && is_current_user_keyword(&normalize_relation_name(&ident.value))
+            ident.quote_style.is_none() && is_current_user_keyword(&ident.value)
         }
         Some(Expr::Function(func)) => {
-            split_schema_and_relation(&func.name.to_string()).is_none()
+            parse_target(&func.name.to_string()).is_some_and(|target| target.schema().is_none())
                 && matches!(func.args, FunctionArguments::None)
-                && is_current_user_keyword(&normalized_function_name(func))
+                && folded_function_name(func)
+                    .is_some_and(|name| is_current_user_keyword_name(&name))
         }
         _ => false,
     }
@@ -999,7 +1002,8 @@ fn is_sql_current_user_keyword_expr(expr: &Expr) -> bool {
 fn is_keyword_named_function_call_expr(expr: &Expr) -> bool {
     matches!(
         accessor_root(expr),
-        Some(Expr::Function(func)) if is_current_user_keyword(&normalized_function_name(func))
+        Some(Expr::Function(func)) if folded_function_name(func)
+            .is_some_and(|name| is_current_user_keyword_name(&name))
     )
 }
 
@@ -1020,10 +1024,9 @@ fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
     let Some(name) = current_user_accessor_name(expr) else {
         return false;
     };
-    let terminal = normalize_relation_name(&name);
     registry.is_current_user_accessor(&name)
         || reads_caller_setting_key(expr, registry)
-        || (is_current_user_keyword(&terminal) && is_sql_current_user_keyword_expr(expr))
+        || (is_current_user_keyword(&name) && is_sql_current_user_keyword_expr(expr))
 }
 
 #[cfg(test)]

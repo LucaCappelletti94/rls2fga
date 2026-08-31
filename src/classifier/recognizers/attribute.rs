@@ -228,6 +228,100 @@ pub fn residual_predicate(expr: &Expr) -> ResidualPredicate {
     }
 }
 
+/// Functions whose value is decided by their arguments alone.
+///
+/// Nothing here reads the caller, the session or the clock, which is what makes it safe
+/// for the tuple loader to answer on the caller's behalf. `to_char` is deliberately
+/// absent: its output depends on `DateStyle` and `lc_time`.
+const ROW_PURE_FUNCTIONS: &[&str] = &[
+    "abs",
+    "btrim",
+    "ceil",
+    "ceiling",
+    "char_length",
+    "character_length",
+    "coalesce",
+    "concat",
+    "concat_ws",
+    "floor",
+    "greatest",
+    "least",
+    "length",
+    "lower",
+    "ltrim",
+    "nullif",
+    "replace",
+    "round",
+    "rtrim",
+    "split_part",
+    "substr",
+    "substring",
+    "trim",
+    "upper",
+];
+
+/// Whether every value `expr` reads comes from the membership row or from the policy
+/// text, so the tuple loader answers it exactly as the caller would.
+///
+/// A positive rule rather than a list of refusals: the loader runs once, as itself, so a
+/// conjunct reading the caller's role, the caller's session or the clock answers a
+/// different question there than `PostgreSQL` answers at check time. Anything this cannot
+/// prove costs coverage instead.
+pub(crate) fn conjunct_reads_only_the_row(expr: &Expr, row_columns: &[String]) -> bool {
+    let pure = |expr: &Expr| conjunct_reads_only_the_row(expr, row_columns);
+    match unwrap_cast_or_nested(expr) {
+        Expr::Identifier(ident) => row_columns.contains(&stored_ident_name(ident).into_owned()),
+        Expr::Value(value) => !matches!(value.value, Value::Placeholder(_)),
+        Expr::TypedString { .. } => true,
+        Expr::UnaryOp { expr: inner, .. }
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::IsTrue(inner)
+        | Expr::IsNotTrue(inner)
+        | Expr::IsFalse(inner)
+        | Expr::IsNotFalse(inner)
+        | Expr::IsUnknown(inner)
+        | Expr::IsNotUnknown(inner) => pure(inner),
+        Expr::BinaryOp { left, right, .. } => pure(left) && pure(right),
+        Expr::IsDistinctFrom(left, right) | Expr::IsNotDistinctFrom(left, right) => {
+            pure(left) && pure(right)
+        }
+        Expr::Between {
+            expr: inner,
+            low,
+            high,
+            ..
+        } => pure(inner) && pure(low) && pure(high),
+        Expr::InList {
+            expr: inner, list, ..
+        } => pure(inner) && list.iter().all(pure),
+        Expr::Like {
+            expr: inner,
+            pattern,
+            ..
+        }
+        | Expr::ILike {
+            expr: inner,
+            pattern,
+            ..
+        } => pure(inner) && pure(pattern),
+        Expr::Function(func) => {
+            let named = folded_function_name(func)
+                .is_some_and(|name| ROW_PURE_FUNCTIONS.contains(&name.as_str()));
+            if !named {
+                return false;
+            }
+            let FunctionArguments::List(list) = &func.args else {
+                return false;
+            };
+            list.args
+                .iter()
+                .all(|arg| function_arg_expr(arg).is_some_and(pure))
+        }
+        _ => false,
+    }
+}
+
 fn residual_guard(expr: &Expr) -> Option<ResidualGuard> {
     let inner = unparenthesize(expr);
     if let Expr::IsNotNull(operand) = inner {
@@ -475,17 +569,19 @@ fn is_well_known_temporal_function(expr: &Expr) -> bool {
     let Expr::Function(func) = unwrap_cast_or_nested(expr) else {
         return false;
     };
-    let name = normalized_function_name(func);
+    let name = folded_function_name(func);
     matches!(
-        name.as_str(),
-        "now"
-            | "current_timestamp"
-            | "current_date"
-            | "current_time"
-            | "clock_timestamp"
-            | "statement_timestamp"
-            | "transaction_timestamp"
-            | "localtime"
-            | "localtimestamp"
+        name.as_deref(),
+        Some(
+            "now"
+                | "current_timestamp"
+                | "current_date"
+                | "current_time"
+                | "clock_timestamp"
+                | "statement_timestamp"
+                | "transaction_timestamp"
+                | "localtime"
+                | "localtimestamp"
+        )
     )
 }

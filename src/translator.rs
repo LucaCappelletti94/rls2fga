@@ -212,6 +212,7 @@ impl Translator {
 struct DerivedOutputs {
     tuple_queries: Vec<TupleQuery>,
     relations: Vec<RelationShapes>,
+    row_naming: Vec<RowNaming>,
 }
 
 impl DerivedOutputs {
@@ -221,6 +222,7 @@ impl DerivedOutputs {
         Self {
             tuple_queries: generated.queries,
             relations,
+            row_naming: row_naming(plan, db),
         }
     }
 }
@@ -291,8 +293,8 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// grants, this says which table's rows that type is. A partition is named after its
     /// root, so a row of one is asked about under the root's type.
     #[must_use]
-    pub fn row_naming(&self) -> Vec<RowNaming> {
-        row_naming(&self.plan, self.db)
+    pub fn row_naming(&self) -> &[RowNaming] {
+        &self.derived.row_naming
     }
 
     /// Which relations answer each action the model covers, and which version of the
@@ -540,6 +542,27 @@ CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
             original_relations.as_ptr(),
             cloned_relations.as_ptr()
         ));
+    }
+
+    /// Row naming is derived once and shared, like every other output the plan carries.
+    ///
+    /// Deriving it per call walks the tables per type, so a consumer asking twice pays
+    /// twice for an answer that cannot have changed.
+    #[test]
+    fn cloned_translations_share_row_naming_storage() {
+        let db = parse_schema(SCHEMA).expect("schema parses");
+        let translation = TranslatorBuilder::new()
+            .build()
+            .translate(&db)
+            .expect("translation plans");
+        let cloned = translation.clone();
+        let original = translation.row_naming();
+        let repeated = translation.row_naming();
+        let from_clone = cloned.row_naming();
+
+        assert!(!original.is_empty());
+        assert!(core::ptr::eq(original.as_ptr(), repeated.as_ptr()));
+        assert!(core::ptr::eq(original.as_ptr(), from_clone.as_ptr()));
     }
     #[test]
     fn relation_shapes_reuse_rendered_query_descriptions() {

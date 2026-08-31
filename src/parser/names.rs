@@ -18,17 +18,37 @@ pub fn unquote_identifier(ident: &str) -> alloc::borrow::Cow<'_, str> {
     alloc::borrow::Cow::Owned(inner.replace("\"\"", "\""))
 }
 
-/// Normalize an identifier for case-insensitive matching.
+/// The target a written name denotes, or `None` when it is not a name this crate can
+/// read.
 ///
-/// Trims whitespace, removes surrounding double quotes on a single identifier,
-/// and lowercases the result.
-pub fn normalize_identifier(ident: &str) -> String {
-    unquote_identifier(ident.trim()).to_ascii_lowercase()
+/// One parse for every written name, and it is upstream's, so the spelling this crate
+/// resolves and the spelling it renders cannot disagree. A name the grammar refuses
+/// denotes nothing, which is the same answer an unresolvable name already gets.
+pub fn parse_target(name: &str) -> Option<sql_traits::structs::TargetName<'_>> {
+    sql_traits::structs::TargetName::parse(name.trim()).ok()
 }
 
-/// True when two identifiers name the same thing, ignoring case and quoting.
-pub fn same_identifier(left: &str, right: &str) -> bool {
-    normalize_identifier(left) == normalize_identifier(right)
+/// The name `PostgreSQL` stores for the terminal part of a written, possibly
+/// schema-qualified name.
+///
+/// Identity between two written names is equality of their stored forms, so every
+/// comparison of one written name against another goes through this or through a
+/// resolved [`TableId`].
+pub fn stored_relation_name(name: &str) -> String {
+    parse_target(name).map_or_else(
+        || name.trim().to_string(),
+        |target| stored_identifier(target.name(), target.name_is_quoted()).into_owned(),
+    )
+}
+
+/// The terminal part of a written name folded for builtin recognition, `None` when it
+/// was quoted or unreadable.
+///
+/// A builtin or keyword is reached only by an unquoted spelling, so `"NOW"()` calls a
+/// user function of that exact name and never the clock.
+pub fn folded_builtin_name(name: &str) -> Option<String> {
+    let target = parse_target(name)?;
+    (!target.name_is_quoted()).then(|| target.name().to_ascii_lowercase())
 }
 
 /// The name `PostgreSQL` stores for an identifier written in SQL: unquoted folds
@@ -53,14 +73,16 @@ pub fn stored_ident_name(ident: &sqlparser::ast::Ident) -> alloc::borrow::Cow<'_
 /// user-defined function names and can produce false positives.
 pub fn is_current_user_keyword_name(name: &str) -> bool {
     matches!(
-        normalize_relation_name(name).as_str(),
-        "current_user" | "current_role"
+        folded_builtin_name(name).as_deref(),
+        Some("current_user" | "current_role")
     )
 }
 
-/// Split a potentially schema-qualified name into `(schema, relation)`.
+/// Split a name into the parts a SQL escaper has to quote one by one.
 ///
-/// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
+/// Deliberately not [`parse_target`]: this feeds `quote_sql_identifier`, whose input is
+/// arbitrary configured text rather than a name to resolve, and whose job is to make any
+/// input safe rather than to refuse what it cannot read.
 pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
     let mut in_quotes = false;
     let mut start = 0usize;
@@ -89,45 +111,26 @@ pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
     parts
 }
 
-/// Split a potentially schema-qualified name into `(schema, relation)`.
+/// Terminal identifier of a called function folded for builtin recognition, `None` when
+/// it was quoted.
 ///
-/// Handles dots inside quoted identifiers, e.g. `"my.schema"."table.name"`.
-pub fn split_schema_and_relation(name: &str) -> Option<(String, String)> {
-    let parts = split_qualified_identifier_parts(name);
-    let [.., schema_part, relation_part] = parts.as_slice() else {
-        return None;
-    };
-    let schema = unquote_identifier(schema_part).to_string();
-    let relation = unquote_identifier(relation_part).to_string();
-    Some((schema, relation))
-}
-
-/// Normalize an object name to its terminal relation/function identifier.
-///
-/// Examples:
-/// - `"public.docs"` -> `"docs"`
-/// - `"\"auth\".\"uid\""` -> `"uid"`
-/// - `"CURRENT_USER"` -> `"current_user"`
-pub fn normalize_relation_name(name: &str) -> String {
-    if let Some((_, relation)) = split_schema_and_relation(name.trim()) {
-        return normalize_identifier(&relation);
-    }
-    normalize_identifier(name)
-}
-
-/// Terminal lowercase identifier of a possibly schema-qualified function name.
-pub fn normalized_function_name(func: &sqlparser::ast::Function) -> String {
-    normalize_identifier(sql_traits::utils::last_str(&func.name))
+/// Only the builtins this crate knows are matched against it, so a quoted spelling names
+/// a user function and must not fold onto one of them.
+pub fn folded_function_name(func: &sqlparser::ast::Function) -> Option<String> {
+    let last = func.name.0.last().map(|part| match part {
+        sqlparser::ast::ObjectNamePart::Identifier(ident) => ident,
+        sqlparser::ast::ObjectNamePart::Function(function) => &function.name,
+    })?;
+    (last.quote_style.is_none()).then(|| last.value.to_ascii_lowercase())
 }
 
 /// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation
 /// when schema-qualified. Falls back to `resource` when nothing survives.
 pub fn canonical_fga_type_name(name: &str) -> String {
-    let relation = if let Some((_, relation)) = split_schema_and_relation(name.trim()) {
-        relation
-    } else {
-        unquote_identifier(name.trim()).to_string()
-    };
+    let relation = parse_target(name).map_or_else(
+        || unquote_identifier(name.trim()).to_string(),
+        |target| target.name().to_string(),
+    );
 
     let mut normalized = String::with_capacity(relation.len());
     let mut previous_was_underscore = false;
@@ -315,7 +318,7 @@ pub fn parent_type_from_fk_column(fk_column: &str) -> String {
 /// Uses underscore-delimited word-boundary matching to avoid false positives on
 /// names like `publication_id` (contains "public") or `is_invisible` (contains "visible").
 pub fn is_public_flag_column_name(name: &str) -> bool {
-    let lower = normalize_identifier(name);
+    let lower = name.trim().to_ascii_lowercase();
     lower
         .split('_')
         .any(|token| matches!(token, "public" | "published" | "visible"))
@@ -326,7 +329,7 @@ pub fn is_public_flag_column_name(name: &str) -> bool {
 /// Uses underscore-delimited word-boundary matching to avoid false positives
 /// on names like `abuser_id` (contains `user_id` as a substring).
 pub fn is_user_related_column_name(name: &str) -> bool {
-    let lower = normalize_identifier(name);
+    let lower = name.trim().to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split('_').collect();
     let has_user_id = has_token_pair(&tokens, "user", "id");
     let has_owner_id = has_token_pair(&tokens, "owner", "id");
@@ -341,7 +344,7 @@ pub fn is_user_related_column_name(name: &str) -> bool {
 /// on names like `ownership_status` (contains "owner") or `abuser_id`
 /// (contains `user_id` as substring).
 pub fn is_owner_like_column_name(name: &str) -> bool {
-    let lower = normalize_identifier(name);
+    let lower = name.trim().to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split('_').collect();
     // "owner" must appear as a complete token
     let has_owner = tokens.contains(&"owner");
@@ -358,23 +361,6 @@ fn has_token_pair(tokens: &[&str], first: &str, second: &str) -> bool {
     tokens.windows(2).any(|w| w == [first, second])
 }
 
-/// Split a name a statement wrote into the target it denotes, keeping the quoting
-/// of each part because that is what decides case sensitivity.
-fn target_parts(name: &str) -> (Option<(String, bool)>, (String, bool)) {
-    fn part(raw: &str) -> (String, bool) {
-        let trimmed = raw.trim();
-        let quoted = trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"');
-        (unquote_identifier(trimmed).to_string(), quoted)
-    }
-
-    let parts = split_qualified_identifier_parts(name);
-    match parts.as_slice() {
-        [.., schema, relation] => (Some(part(schema)), part(relation)),
-        [relation] => (None, part(relation)),
-        [] => (None, (String::new(), false)),
-    }
-}
-
 /// Resolve a name a statement wrote into the table it denotes, by `PostgreSQL`'s
 /// rules: a qualified name matches exactly, and an unqualified one walks the search
 /// path in order. An ambiguous name stays unresolved.
@@ -385,13 +371,7 @@ pub fn lookup_table<'db, DB>(
 where
     DB: sql_traits::prelude::DatabaseLike,
 {
-    let (schema, (relation, relation_quoted)) = target_parts(name);
-    let target = sql_traits::structs::TargetName::new(&relation, relation_quoted);
-    let target = match schema.as_ref() {
-        Some((schema, quoted)) => target.with_schema(schema, *quoted),
-        None => target,
-    };
-    db.resolve_target_table(target).ok().flatten()
+    db.resolve_target_table(parse_target(name)?).ok().flatten()
 }
 
 pub(crate) fn table_identity<T>(table: &T) -> TableId
@@ -411,6 +391,26 @@ where
     lookup_table(db, name).map(table_identity)
 }
 
+/// A stored identifier spelled as a lookup name, which is the quoted form: a quoted
+/// lookup is matched exactly, so it cannot fold onto another table's name.
+fn quoted_lookup(stored: &str) -> String {
+    let mut spelled = String::with_capacity(stored.len() + 2);
+    spelled.push('"');
+    for ch in stored.chars() {
+        if ch == '"' {
+            spelled.push('"');
+        }
+        spelled.push(ch);
+    }
+    spelled.push('"');
+    spelled
+}
+
+/// The table an identity names, through the catalog's index rather than a walk.
+///
+/// The index answers by lookup rules, which put a table stored without a schema in
+/// `public` and the other way round. Identity is exact, so the answer is confirmed
+/// against the stored names before it is returned.
 pub(crate) fn lookup_table_id<'db, DB>(
     db: &'db DB,
     identity: &TableId,
@@ -419,10 +419,11 @@ where
     DB: sql_traits::prelude::DatabaseLike,
 {
     use sql_traits::prelude::TableLike;
-    db.tables().find(|table| {
-        table.stored_table_schema().as_deref() == identity.schema()
-            && table.stored_table_name() == identity.name()
-    })
+    let schema = identity.schema().map(quoted_lookup);
+    let found = db.table(schema.as_deref(), &quoted_lookup(identity.name()))?;
+    (found.stored_table_schema().as_deref() == identity.schema()
+        && found.stored_table_name() == identity.name())
+    .then_some(found)
 }
 
 pub(crate) fn table_id_has_column<DB>(db: &DB, table: &TableId, column: &str) -> bool
@@ -473,11 +474,11 @@ mod tests {
     }
 
     #[test]
-    fn split_schema_and_relation_handles_quoted_dots() {
-        assert_eq!(
-            split_schema_and_relation(r#""my.schema"."table.name""#),
-            Some(("my.schema".to_string(), "table.name".to_string()))
-        );
+    fn parse_target_reads_quoted_dots_back() {
+        let target = parse_target(r#""my.schema"."table.name""#).expect("a readable name");
+        assert_eq!(target.schema(), Some("my.schema"));
+        assert_eq!(target.name(), "table.name");
+        assert!(target.schema_is_quoted() && target.name_is_quoted());
     }
 
     #[test]
@@ -540,11 +541,20 @@ mod tests {
     }
 
     #[test]
-    fn split_schema_and_relation_handles_escaped_quotes() {
-        assert_eq!(
-            split_schema_and_relation(r#""a""b"."c.d""#),
-            Some((r#"a"b"#.to_string(), "c.d".to_string()))
-        );
+    fn parse_target_reads_doubled_quotes_back() {
+        let target = parse_target(r#""a""b"."c.d""#).expect("a readable name");
+        assert_eq!(target.schema(), Some(r#"a"b"#));
+        assert_eq!(target.name(), "c.d");
+    }
+
+    /// A spelling the grammar refuses denotes nothing, which is how an unreadable name
+    /// falls closed instead of resolving to a table it does not name.
+    #[test]
+    fn parse_target_refuses_what_it_cannot_read() {
+        assert!(parse_target(r#""unterminated"#).is_none());
+        assert!(parse_target("app.").is_none());
+        assert!(parse_target("catalog.app.docs").is_none());
+        assert!(parse_target("").is_none());
     }
 
     #[test]
@@ -611,13 +621,6 @@ mod tests {
             None,
             "a quoted spelling matches exactly, so a folded one must not"
         );
-    }
-
-    #[test]
-    fn normalize_relation_name_handles_schema_quotes_and_case() {
-        assert_eq!(normalize_relation_name("auth.uid"), "uid");
-        assert_eq!(normalize_relation_name(r#""auth"."uid""#), "uid");
-        assert_eq!(normalize_relation_name(r#""UID""#), "uid");
     }
 
     #[test]

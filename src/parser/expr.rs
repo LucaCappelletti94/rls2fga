@@ -61,8 +61,8 @@ pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<ColumnName> {
         return Some(col);
     }
     if let Expr::Function(func) = expr {
-        let name = crate::parser::names::normalized_function_name(func);
-        if name == "coalesce" || name == "nullif" {
+        let name = crate::parser::names::folded_function_name(func);
+        if matches!(name.as_deref(), Some("coalesce" | "nullif")) {
             if let FunctionArguments::List(arg_list) = &func.args {
                 if let Some(first_arg) = arg_list.args.first() {
                     if let Some(inner) = function_arg_expr(first_arg) {
@@ -111,8 +111,8 @@ pub fn positional_function_arg(function: &Function, index: usize) -> Option<&Exp
 /// Returns `true` when the expression is wrapped through `COALESCE` or `NULLIF`.
 pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
     if let Expr::Function(func) = expr {
-        let name = crate::parser::names::normalized_function_name(func);
-        return name == "coalesce" || name == "nullif";
+        let name = crate::parser::names::folded_function_name(func);
+        return matches!(name.as_deref(), Some("coalesce" | "nullif"));
     }
     false
 }

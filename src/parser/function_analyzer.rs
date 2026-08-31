@@ -10,9 +10,7 @@ use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKin
 use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::unwrap_cast_or_nested;
-use crate::parser::names::{
-    is_current_user_keyword_name, normalized_function_name, split_schema_and_relation,
-};
+use crate::parser::names::{folded_function_name, is_current_user_keyword_name, parse_target};
 use crate::types::ColumnName;
 
 /// Semantic classification of a SQL function body.
@@ -556,7 +554,7 @@ pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let Expr::Function(func) = expr else {
         return None;
     };
-    if normalized_function_name(func) != "current_setting" {
+    if folded_function_name(func).as_deref() != Some("current_setting") {
         return None;
     }
     let FunctionArguments::List(arg_list) = &func.args else {
@@ -579,9 +577,10 @@ fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenc
             current_setting_literal_key(unwrap_cast_or_nested(expr))
                 .is_some_and(|key| settings.allows_current_setting_key(&key))
                 || {
-                    let normalized = normalized_function_name(func);
-                    is_current_user_keyword_name(&normalized)
-                        && split_schema_and_relation(&func.name.to_string()).is_none()
+                    folded_function_name(func)
+                        .is_some_and(|name| is_current_user_keyword_name(&name))
+                        && parse_target(&func.name.to_string())
+                            .is_some_and(|target| target.schema().is_none())
                         && matches!(func.args, FunctionArguments::None)
                 }
         }

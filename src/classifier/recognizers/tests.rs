@@ -1237,10 +1237,11 @@ CREATE TABLE s7(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
         "the reason names the respelling, got: {reason}"
     );
 }
-/// A subquery that reads the membership table itself adds no table the tuple query
-/// does not already read as the loader, so it stays an extra predicate.
+/// A subquery inside a residual is decided by the table's contents when the loader runs,
+/// under the loader's own read rules, so it is not decided by the membership row and the
+/// membership is refused.
 #[test]
-fn recognize_p4_allows_an_extra_predicate_subquery_reading_the_join_table() {
+fn recognize_p4_refuses_an_extra_predicate_subquery_over_the_join_table() {
     let db = parse_schema(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
@@ -1260,18 +1261,9 @@ CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
              )",
     );
 
-    let classified = recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new())
-        .expect("expected P4 match");
     assert!(
-        matches!(
-            &classified.pattern,
-            PatternClass::P4ExistsMembership(ExistsMembership { extra_predicates, .. })
-                if extra_predicates
-                    .sql()
-                    .is_some_and(|sql| sql.to_ascii_lowercase().contains("select role_name from doc_members"))
-        ),
-        "a subquery over the join table stays an extra predicate, got: {:?}",
-        classified.pattern
+        recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
+        "a residual the row does not decide cannot be precomputed by the loader"
     );
 }
 
@@ -2978,36 +2970,27 @@ fn strip_qualifier_from_expr_handles_is_not_distinct_from() {
     );
 }
 
-// 7. table_qualifier_candidates: schema-qualified name
+/// A qualifier is a stored identifier, so it answers for a scan exactly when `PostgreSQL`
+/// would resolve it there.
 #[test]
-fn table_qualifier_candidates_includes_relation_part() {
-    let candidates = table_qualifier_candidates("myschema.events");
-    assert!(
-        candidates.contains(&"events".to_string()),
-        "should include the relation part: {candidates:?}",
-    );
-    assert!(
-        candidates.contains(&"myschema.events".to_string()),
-        "should include the full qualified name: {candidates:?}",
-    );
-}
-
-#[test]
-fn table_qualifier_candidates_unqualified_name() {
-    let candidates = table_qualifier_candidates("users");
-    assert_eq!(candidates, vec!["users".to_string()]);
-}
-
-#[test]
-fn qualifier_matches_table_with_schema_qualified_name() {
-    // When table_name is "public.docs", qualifier "docs" should match.
+fn qualifier_matches_table_compares_stored_identifiers() {
+    // The terminal part of a schema-qualified table is what a column qualifier names.
     assert!(qualifier_matches_table("docs", "public.docs", None));
-    // And full name should also match.
-    assert!(qualifier_matches_table("public.docs", "public.docs", None));
-    // Alias takes priority.
-    assert!(qualifier_matches_table("d", "public.docs", Some("d")));
-    // Non-matching qualifier.
     assert!(!qualifier_matches_table("other", "public.docs", None));
+    // An alias replaces the table's own name for its scope.
+    assert!(qualifier_matches_table("d", "public.docs", Some("d")));
+    assert!(!qualifier_matches_table("docs", "public.docs", Some("d")));
+    // An unquoted spelling folded on the way in, so it answers for the folded table.
+    assert!(qualifier_matches_table("m", "public.m", None));
+    // A quoted spelling kept its case, so it is a different identifier.
+    assert!(!qualifier_matches_table("M", "public.m", None));
+    assert!(!qualifier_matches_table("m", r#"public."M""#, None));
+    assert!(qualifier_matches_table("M", r#"public."M""#, None));
+    // The same rule for an alias, which is where the guarded row's column was read as
+    // the membership row's.
+    assert!(!qualifier_matches_table("M", "public.members", Some("m")));
+    assert!(!qualifier_matches_table("m", "public.members", Some("M")));
+    assert!(qualifier_matches_table("M", "public.members", Some("M")));
 }
 
 // 9. diagnose_p4_membership_ambiguity: InSubquery form

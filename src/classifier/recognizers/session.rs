@@ -24,7 +24,7 @@ use crate::classifier::patterns::{
 };
 use crate::parser::expr::{function_arg_expr, unwrap_cast_or_nested};
 use crate::parser::function_analyzer::FunctionSemantic;
-use crate::parser::names::normalized_function_name;
+use crate::parser::names::folded_function_name;
 use crate::types::ColumnName;
 
 use super::{
@@ -207,7 +207,7 @@ pub(super) fn array_valued_set(expr: &Expr, registry: &FunctionRegistry) -> Opti
     if let FunctionArguments::Subquery(query) = &function.args {
         return row_valued_set(sole_projection(query)?, registry);
     }
-    if normalized_function_name(function) != "string_to_array" {
+    if folded_function_name(function).as_deref() != Some("string_to_array") {
         return None;
     }
     let FunctionArguments::List(list) = &function.args else {

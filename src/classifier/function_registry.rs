@@ -9,7 +9,7 @@ use crate::parser::function_analyzer::{
     body_setting_key, body_single_projection, normalize_setting_key, AccessorInferenceSettings,
     FunctionSemantic,
 };
-use crate::parser::names::normalize_identifier;
+use crate::parser::names::stored_relation_name;
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
 use crate::types::{ConditionParameterName, ConditionParameterNameError};
 use sql_traits::structs::TargetName;
@@ -180,43 +180,18 @@ pub enum RegistryLoadError {
 pub(crate) struct FunctionKey(String);
 
 impl FunctionKey {
+    /// The key a written call or registration spells.
+    ///
+    /// A name the grammar refuses reaches no declaration, and its own text keeps it
+    /// distinct from every readable key.
     fn parse(name: &str) -> Self {
-        let name = name.trim();
-        let mut previous_dot = None;
-        let mut last_dot = None;
-        let mut quoted = false;
-        let mut chars = name.char_indices().peekable();
-        while let Some((index, ch)) = chars.next() {
-            match ch {
-                '"' if quoted && chars.peek().is_some_and(|(_, next)| *next == '"') => {
-                    chars.next();
-                }
-                '"' => quoted = !quoted,
-                '.' if !quoted => {
-                    previous_dot = last_dot;
-                    last_dot = Some(index);
-                }
-                _ => {}
-            }
+        match crate::parser::names::parse_target(name) {
+            Some(target) => Self::from_target(&target),
+            None => Self::unqualified(name.trim(), true),
         }
-
-        let mut key = String::with_capacity(name.len() + 3);
-        if let Some(dot) = last_dot {
-            key.push('q');
-            key.push('\0');
-            let schema_start = previous_dot.map_or(0, |previous| previous + 1);
-            Self::push_identifier(&mut key, &name[schema_start..dot]);
-            key.push('\0');
-            Self::push_identifier(&mut key, &name[dot + 1..]);
-        } else {
-            key.push('u');
-            key.push('\0');
-            Self::push_identifier(&mut key, name);
-        }
-        Self(key)
     }
 
-    fn from_target(target: TargetName<'_>) -> Self {
+    fn from_target(target: &TargetName<'_>) -> Self {
         match target.schema() {
             Some(schema) => Self::qualified(
                 schema,
@@ -299,24 +274,6 @@ impl FunctionKey {
         display.push('"');
     }
 
-    fn push_identifier(key: &mut String, identifier: &str) {
-        let identifier = identifier.trim();
-        if let Some(inner) = identifier
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-        {
-            let mut chars = inner.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == '"' && chars.peek() == Some(&'"') {
-                    chars.next();
-                }
-                key.push(ch);
-            }
-        } else {
-            key.extend(identifier.chars().map(|ch| ch.to_ascii_lowercase()));
-        }
-    }
-
     fn as_str(&self) -> &str {
         &self.0
     }
@@ -371,15 +328,18 @@ impl FunctionRegistry {
     }
 
     /// Confirm a column as a public flag, lifting its `P6BooleanFlag` to confidence A.
+    ///
+    /// Confirmed by the name `PostgreSQL` stores, since what the confirmation buys is a
+    /// wildcard grant and `"Public"` is not the column `public`.
     pub fn register_public_flag_column(&mut self, column: impl Into<String>) {
         self.public_flag_columns
-            .insert(normalize_identifier(&column.into()));
+            .insert(stored_relation_name(&column.into()));
     }
 
-    /// True when `column` is an explicitly registered public-flag column.
+    /// True when `column`, named as the schema stores it, is an explicitly registered
+    /// public-flag column.
     pub(crate) fn is_confirmed_public_flag_column(&self, column: &str) -> bool {
-        self.public_flag_columns
-            .contains(&normalize_identifier(column))
+        self.public_flag_columns.contains(column)
     }
 
     /// Name the `current_setting` keys whose value is the caller's identity.
@@ -467,12 +427,12 @@ impl FunctionRegistry {
         self.functions.get(resolved.as_str())
     }
 
-    fn target_key(&self, target: TargetName<'_>) -> FunctionKey {
+    fn target_key(&self, target: &TargetName<'_>) -> FunctionKey {
         let key = FunctionKey::from_target(target);
         self.function_resolution.get(&key).cloned().unwrap_or(key)
     }
 
-    fn get_target(&self, target: TargetName<'_>) -> Option<&FunctionSemantic> {
+    fn get_target(&self, target: &TargetName<'_>) -> Option<&FunctionSemantic> {
         let key = self.target_key(target);
         self.functions.get(key.as_str())
     }
@@ -488,7 +448,7 @@ impl FunctionRegistry {
             .or_insert_with(|| semantic.clone());
     }
 
-    fn register_target_if_absent(&mut self, target: TargetName<'_>, semantic: &FunctionSemantic) {
+    fn register_target_if_absent(&mut self, target: &TargetName<'_>, semantic: &FunctionSemantic) {
         let key = self.target_key(target);
         self.function_names
             .entry(key.clone())
@@ -503,7 +463,7 @@ impl FunctionRegistry {
         let mut unqualified = BTreeMap::<FunctionKey, (usize, FunctionKey)>::new();
         for function in db.functions() {
             let target = function.target_name();
-            let raw = FunctionKey::from_target(target);
+            let raw = FunctionKey::from_target(&target);
             let canonical = match target.schema() {
                 Some(_) => raw.clone(),
                 None => db.search_path().next().map_or_else(
@@ -620,8 +580,8 @@ impl FunctionRegistry {
                 &security,
                 settings,
             ) {
-                self.register_target_if_absent(target, &semantic);
-            } else if self.get_target(target).is_none()
+                self.register_target_if_absent(&target, &semantic);
+            } else if self.get_target(&target).is_none()
                 && FunctionSemantic::analyze_body_with_settings(
                     body,
                     &return_type,
@@ -633,11 +593,11 @@ impl FunctionRegistry {
             {
                 // The same body as `SECURITY INVOKER` is an accessor, so the security
                 // mode is what stops it identifying the caller.
-                let target_key = self.target_key(target);
+                let target_key = self.target_key(&target);
                 self.owner_bound_accessors
                     .entry(target_key)
                     .or_insert_with(|| target.to_string());
-            } else if self.get_target(target).is_none() {
+            } else if self.get_target(&target).is_none() {
                 // A wrapper around a declared source is that source, so the inline and
                 // the wrapped spelling reach one declaration and cannot disagree.
                 if let Some(key) = body_setting_key(body)
@@ -645,7 +605,7 @@ impl FunctionRegistry {
                     .filter(|key| settings.declares_setting_key(key))
                 {
                     self.register_target_if_absent(
-                        target,
+                        &target,
                         &FunctionSemantic::SettingReader { key },
                     );
                 }
@@ -658,7 +618,7 @@ impl FunctionRegistry {
         let mut set_readers = Vec::new();
         for function in db.functions() {
             let target = function.target_name();
-            if !function.returns_set() || self.get_target(target).is_some() {
+            if !function.returns_set() || self.get_target(&target).is_some() {
                 continue;
             }
             let Some(source) = function
@@ -673,7 +633,7 @@ impl FunctionRegistry {
         }
         for (target, source) in set_readers {
             self.register_target_if_absent(
-                target,
+                &target,
                 &FunctionSemantic::SetReader {
                     key: normalize_setting_key(&source.key),
                     path: source.path,

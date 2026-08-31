@@ -20,8 +20,8 @@ use sqlparser::ast::{
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::parser::function_analyzer::{body_reads_effective_user, body_single_projection};
 use crate::parser::names::{
-    lookup_table, normalize_relation_name, normalized_function_name, stored_ident_name,
-    stored_identifier, table_has_column, unquote_identifier,
+    lookup_table, stored_ident_name, stored_identifier, stored_relation_name, table_has_column,
+    unquote_identifier,
 };
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike, RoleLike, TableLike};
 use crate::types::ColumnName;
@@ -105,6 +105,9 @@ pub(crate) enum Expansion {
     Body {
         /// The called function, as spelled in its declaration.
         function: String,
+        /// The name `PostgreSQL` stores for it, which is what tells two declarations
+        /// differing only by quoting apart on the expansion stack.
+        identity: String,
         /// The body's table reads run as an owner `PostgreSQL` lets past those
         /// tables' policies.
         reads_bypass_rls: bool,
@@ -166,7 +169,7 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
     if registry.get(&call_name).is_some() {
         return None;
     }
-    let terminal = normalized_function_name(func);
+    let terminal = stored_relation_name(&call_name);
     if registry.is_owner_bound_accessor(&call_name) {
         return None;
     }
@@ -362,11 +365,9 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
     // subqueries would otherwise capture the name. A qualifier one of the body's
     // relations claims cannot be spelled from inside, so it refuses.
     let outer_parts = qualifier_idents(table);
+    let outer_stored = stored_relation_name(table);
     let capture_prone = call_args.iter().any(|arg| match arg {
-        Expr::Identifier(_) => scan
-            .scope_names
-            .iter()
-            .any(|name| *name == normalize_relation_name(table)),
+        Expr::Identifier(_) => scan.scope_names.contains(&outer_stored),
         Expr::CompoundIdentifier(parts) => parts.first().is_some_and(|qualifier| {
             let qualifier = stored_ident_name(qualifier);
             scan.scope_names.iter().any(|name| *name == qualifier)
@@ -443,6 +444,7 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
 
     Some(Expansion::Body {
         function: function_name,
+        identity: terminal,
         reads_bypass_rls,
         presence_columns,
         expr: Box::new(substituted),
@@ -640,16 +642,23 @@ impl<DB: DatabaseLike> VisitorMut for QualifyStringBodyTables<'_, '_, DB> {
 
 /// The policy table's spelling as identifier parts, quoting preserved.
 fn qualifier_idents(table: &str) -> Vec<Ident> {
-    crate::parser::names::split_qualified_identifier_parts(table)
-        .into_iter()
-        .map(|part| {
-            if part.starts_with('"') {
-                Ident::with_quote('"', unquote_identifier(&part))
-            } else {
-                Ident::new(part)
-            }
-        })
-        .collect()
+    let Some(target) = crate::parser::names::parse_target(table) else {
+        return Vec::new();
+    };
+    let ident = |value: &str, quoted: bool| {
+        if quoted {
+            Ident::with_quote('"', value)
+        } else {
+            Ident::new(value)
+        }
+    };
+    match target.schema() {
+        Some(schema) => vec![
+            ident(schema, target.schema_is_quoted()),
+            ident(target.name(), target.name_is_quoted()),
+        ],
+        None => vec![ident(target.name(), target.name_is_quoted())],
+    }
 }
 
 fn call_argument_column(arg: &Expr, table: &str) -> Option<ColumnName> {
@@ -758,7 +767,7 @@ impl Visitor for BodyScan {
                     Some(alias) => self
                         .scope_names
                         .push(stored_ident_name(&alias.name).into_owned()),
-                    None => self.scope_names.push(normalize_relation_name(&spelling)),
+                    None => self.scope_names.push(stored_relation_name(&spelling)),
                 }
                 self.tables.push(spelling);
             }

@@ -2169,7 +2169,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan");
-    let naming = translation.row_naming();
+    let naming = translation.row_naming().to_vec();
     assert_eq!(
         naming.len(),
         3,
@@ -2198,7 +2198,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         .collect();
 
     let mut compared = 0usize;
-    for entry in &naming {
+    for entry in naming {
         let rendered: BTreeSet<String> = rows_of(&mut conn, &entry.table)
             .iter()
             .filter_map(|row| {
@@ -2286,7 +2286,7 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan");
-    let naming = translation.row_naming();
+    let naming = translation.row_naming().to_vec();
 
     let outputs = translation.outputs_accepting_gaps();
     let queries = outputs.tuple_queries();

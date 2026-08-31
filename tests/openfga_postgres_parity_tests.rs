@@ -19,7 +19,8 @@ use rls2fga::generator::tuple_generator::TupleQuery;
 use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::{
-    records_from_row, ColumnKind, RecordDerivation, RecordDescription, RowCell, RowList, RowValues,
+    records_from_row, ColumnKind, NoteSeverity, RecordDerivation, RecordDescription, RowCell,
+    RowList, RowValues,
 };
 
 mod support;
@@ -8396,4 +8397,330 @@ INSERT INTO public.memberships VALUES ('d1', 'app_reader');
 
     assert!(!expected);
     assert_eq!(actual, expected);
+}
+
+/// Typed schema for the aliased-guard case.
+///
+/// The guarded table is quoted, so its stored name differs from the membership alias only
+/// by case, and both tables carry a column named `owner_id`.
+mod aliased_guard_schema {
+    diesel::table! {
+        #[sql_name = "M"]
+        quoted_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        members (doc_id, owner_id) {
+            doc_id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// The qualifier `"M"` names the guarded row, and reading it as the alias `m` turns the
+/// guarded table's own owner column into the membership row's subject column.
+///
+/// `PostgreSQL` grants only the caller who owns the document. The membership row names
+/// somebody else, so a `member` tuple built from `members.owner_id` grants a caller the
+/// database denies.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn aliased_quoted_guard_parity_postgres18_and_openfga() {
+    use aliased_guard_schema::{members, quoted_docs};
+
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+    let schema_sql = r#"
+CREATE TABLE "M"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE members(doc_id TEXT REFERENCES "M"(id), owner_id TEXT);
+ALTER TABLE "M" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY m_owner ON "M" FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM members m
+    WHERE m.doc_id = "M".id
+      AND "M".owner_id = current_user
+  )
+);
+"#;
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the aliased guard schema");
+    conn.batch_execute(
+        r#"CREATE ROLE app_reader LOGIN;
+           GRANT SELECT ON "M", members TO app_reader;"#,
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(quoted_docs::table)
+        .values((
+            quoted_docs::id.eq("d1"),
+            quoted_docs::owner_id.eq("other_owner"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the guarded row");
+    diesel::insert_into(members::table)
+        .values((members::doc_id.eq("d1"), members::owner_id.eq("app_reader")))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so the loss is reported as
+    // below threshold rather than as an expression nobody classified.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "aliased-quoted-guard-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    // The row a wrong reading would have turned into a grant is present, so the case is
+    // not passing because the loader found nothing.
+    let seeded = members::table
+        .filter(members::owner_id.eq("app_reader"))
+        .count()
+        .get_result::<i64>(&mut conn)
+        .expect("counting the seeded membership row should not error");
+    assert_eq!(seeded, 1, "the membership row naming the caller is seeded");
+
+    let expected = conn
+        .transaction::<bool, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            let visible = quoted_docs::table
+                .filter(quoted_docs::id.eq("d1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok(visible == 1)
+        })
+        .expect("reading under row level security should not error");
+    let actual =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "m:d1").await;
+
+    assert!(
+        !expected,
+        "the document belongs to another owner, so PostgreSQL denies it"
+    );
+    assert!(
+        !actual,
+        "OpenFGA granted a row PostgreSQL denies: the guarded table's owner column was \
+         read as the membership row's subject"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
+}
+
+/// Typed schema for the caller-role residual case.
+mod caller_role_residual_schema {
+    diesel::table! {
+        #[sql_name = "docs"]
+        gated_docs (id) {
+            id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        #[sql_name = "doc_members"]
+        tenant_members (doc_id, user_id) {
+            doc_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+            tenant -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// `pg_has_role(role, privilege)` tests `current_user`, so a residual carrying it is
+/// decided by whoever runs the query.
+///
+/// The tuple loader is not the caller. It runs once, as itself, and a loader holding the
+/// tenant role admits every membership row the caller's own role would refuse.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn caller_role_residual_parity_postgres18_and_openfga() {
+    use caller_role_residual_schema::{gated_docs, tenant_members};
+
+    let postgres = GenericImage::new("postgres", "18")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        .start()
+        .await
+        .expect("Failed to start PostgreSQL 18 container");
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = connect_postgres_with_retry(&pg_url);
+    conn.batch_execute("CREATE ROLE tenant_a;")
+        .expect("Failed to create the tenant role");
+    let schema_sql = r"
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE doc_members(doc_id TEXT REFERENCES docs(id), user_id TEXT, tenant TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM doc_members m
+    WHERE m.doc_id = docs.id
+      AND m.user_id = current_user
+      AND pg_has_role(m.tenant, 'USAGE')
+  )
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the caller-role residual schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON docs, doc_members TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(gated_docs::table)
+        .values(gated_docs::id.eq("d1"))
+        .execute(&mut conn)
+        .expect("Failed to seed the guarded row");
+    diesel::insert_into(tenant_members::table)
+        .values((
+            tenant_members::doc_id.eq("d1"),
+            tenant_members::user_id.eq("app_reader"),
+            tenant_members::tenant.eq("tenant_a"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so the loss is reported as
+    // below threshold rather than as an expression nobody classified.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = GenericImage::new("openfga/openfga", "v1.11.6")
+        .with_exposed_port(8080.tcp())
+        .with_exposed_port(8081.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+        .with_cmd(["run"])
+        .start()
+        .await
+        .expect("Failed to start OpenFGA container");
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "caller-role-residual-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    // The loader holds the tenant role, so the residual is true for it and the membership
+    // row would have been loaded. Without this the case could pass on an empty table.
+    // `pg_has_role` is a scalar the query DSL does not carry.
+    let loader_holds_role = diesel::sql_query(
+        "SELECT pg_has_role('tenant_a', 'USAGE') AS holds_role FROM doc_members LIMIT 1",
+    )
+    .get_result::<HoldsRole>(&mut conn)
+    .expect("reading the loader's role membership should not error");
+    assert!(
+        loader_holds_role.holds_role,
+        "the loader has to hold the tenant role for this to be the over-grant case"
+    );
+
+    let expected = conn
+        .transaction::<bool, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            let visible = gated_docs::table
+                .filter(gated_docs::id.eq("d1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok(visible == 1)
+        })
+        .expect("reading under row level security should not error");
+    let actual =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "docs:d1").await;
+
+    assert!(
+        !expected,
+        "the caller does not hold the tenant role, so PostgreSQL denies it"
+    );
+    assert!(
+        !actual,
+        "OpenFGA granted a row PostgreSQL denies: the loader's own role decided a \
+         residual the caller's role governs"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
+}
+
+/// One boolean column, so the loader's role membership can be read back typed.
+#[derive(diesel::QueryableByName)]
+struct HoldsRole {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    holds_role: bool,
 }
