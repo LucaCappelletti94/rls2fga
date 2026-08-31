@@ -711,8 +711,7 @@ pub fn clause_illegal_for_command(
 /// A classified policy with classifications for USING and WITH CHECK.
 ///
 /// Holds what rls2fga reads of a policy rather than the catalog's own policy value,
-/// so the pipeline runs against any [`DatabaseLike`](crate::parser::sql_parser::DatabaseLike)
-/// rather than one instantiation of it.
+/// so the pipeline runs against any [`DatabaseLike`] rather than one instantiation of it.
 ///
 /// Every field is private, because the generator trusts a classification: a value whose
 /// stored clause and whose classification of that clause disagree would build a model the
