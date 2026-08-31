@@ -879,3 +879,69 @@ SET search_path TO public;
         "quoted schema identity was lost: {pattern:?}"
     );
 }
+
+/// `PostgreSQL` puts an unqualified `CREATE FUNCTION` in the first schema on the search
+/// path, so a policy naming that function in full calls the same declaration.
+///
+/// `pg_dump` qualifies every call it deparses, so refusing this loses the expansion on
+/// exactly the shape a dump carries.
+#[test]
+fn a_qualified_call_reaches_an_unqualified_declaration() {
+    let pattern = docs_using_pattern(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id NAME);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = CURRENT_USER)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (public.is_member(id));
+",
+    );
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. })
+                        if join_table.name() == "doc_members"
+                )
+        ),
+        "the call names the declaration the search path places in public: {pattern:?}"
+    );
+}
+
+/// A call naming a schema is that schema's function, so the search-path fallback cannot
+/// collapse two declarations of one name onto whichever came first.
+#[test]
+fn a_qualified_call_reaches_its_own_schemas_declaration() {
+    let pattern = docs_using_pattern(
+        r"
+CREATE SCHEMA other;
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id NAME);
+CREATE TABLE other.other_members(doc_id UUID, user_id NAME);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = CURRENT_USER)';
+CREATE FUNCTION other.is_member(d UUID) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO other, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM other_members m WHERE m.doc_id = d AND m.user_id = CURRENT_USER)';
+CREATE POLICY docs_sel ON docs FOR SELECT USING (other.is_member(id));
+",
+    );
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(
+                    &inner.pattern,
+                    PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. })
+                        if join_table.name() == "other_members"
+                )
+        ),
+        "the qualified call runs its own schema's body: {pattern:?}"
+    );
+}

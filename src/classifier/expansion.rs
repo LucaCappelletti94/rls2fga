@@ -176,7 +176,7 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
 
     let named: Vec<&DB::Function> = db
         .functions()
-        .filter(|declared| call_matches_declared(&func.name, *declared))
+        .filter(|declared| call_matches_declared(&func.name, *declared, db))
         .collect();
     let first_named = named.first()?;
     let function_name = first_named.name().to_string();
@@ -690,7 +690,17 @@ fn call_argument_column(arg: &Expr, table: &str) -> Option<ColumnName> {
     ))
 }
 
-fn call_matches_declared<F: FunctionLike>(call: &ObjectName, declared: &F) -> bool {
+/// Whether `call` names `declared`.
+///
+/// A declaration stored without a schema sits in the first schema on the search path, and
+/// that is the schema a dump's qualified call spells, so the effective schema is compared
+/// rather than the stored one. The registry canonicalizes an unqualified declaration by
+/// the same search-path entry.
+fn call_matches_declared<DB: DatabaseLike>(
+    call: &ObjectName,
+    declared: &DB::Function,
+    db: &DB,
+) -> bool {
     let mut call_parts = call.0.iter().rev().map(object_name_part_ident);
     let Some(call_name) = call_parts.next() else {
         return false;
@@ -702,10 +712,15 @@ fn call_matches_declared<F: FunctionLike>(call: &ObjectName, declared: &F) -> bo
         return true;
     };
     let target = declared.target_name();
-    let Some(declared_schema) = target.schema() else {
-        return false;
+    let declared_schema = if let Some(schema) = target.schema() {
+        stored_identifier(schema, target.schema_is_quoted())
+    } else {
+        let Some((schema, quoted)) = db.search_path().next() else {
+            return false;
+        };
+        stored_identifier(schema, quoted)
     };
-    stored_ident_name(call_schema) == stored_identifier(declared_schema, target.schema_is_quoted())
+    stored_ident_name(call_schema) == declared_schema
 }
 
 fn owner_identity<DB: DatabaseLike>(db: &DB, owner: &str) -> String {
