@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
 use crate::classifier::function_registry::SessionAttribute;
-use crate::parser::names::stored_ident_name;
-use crate::parser::sql_parser::PolicyLike;
+use crate::parser::names::{stored_ident_name, table_identity};
+use crate::parser::sql_parser::{DatabaseLike, PolicyLike};
 pub(crate) use crate::types::{
     AttributeLiteral, AttributeOperator, AttributePredicate, ColumnName, ConfidenceLevel,
     RolePrivilege, TableId,
@@ -713,48 +713,77 @@ pub fn clause_illegal_for_command(
 /// Holds what rls2fga reads of a policy rather than the catalog's own policy value,
 /// so the pipeline runs against any [`DatabaseLike`](crate::parser::sql_parser::DatabaseLike)
 /// rather than one instantiation of it.
+///
+/// Every field is private, because the generator trusts a classification: a value whose
+/// stored clause and whose classification of that clause disagree would build a model the
+/// database does not answer for. Construction goes through
+/// [`ClassifiedPolicy::from_policy`], and correction through
+/// [`consult_oracle`](crate::classifier::oracle::consult_oracle).
+///
+/// ```compile_fail
+/// # use rls2fga::classifier::patterns::{ClassifiedPolicy, PolicyCommand, PolicyMode};
+/// let policy = ClassifiedPolicy {
+///     name: "p".to_string(),
+///     table: "docs".to_string(),
+///     command: PolicyCommand::Select,
+///     mode: PolicyMode::Permissive,
+///     scoped_roles: Vec::new(),
+///     ddl_time_roles: Vec::new(),
+///     using: None,
+///     with_check: None,
+///     using_classification: None,
+///     with_check_classification: None,
+///     using_filtered_at: None,
+///     with_check_filtered_at: None,
+/// };
+/// ```
+///
+/// ```compile_fail
+/// # use rls2fga::classifier::patterns::ClassifiedPolicy;
+/// fn retarget(policy: &mut ClassifiedPolicy) {
+///     policy.table = "other".to_string();
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct ClassifiedPolicy {
-    /// Policy name as declared in the DDL.
-    pub name: String,
-    /// Target table as the policy spelled it, quoting and schema qualifier kept.
-    pub table: String,
-    /// DML command this policy restricts (`ALL` when unspecified).
-    pub command: PolicyCommand,
-    /// Policy mode (`PERMISSIVE` when omitted).
-    pub mode: PolicyMode,
-    /// Roles in `TO (...)`, empty when the policy applies to every role.
-    pub scoped_roles: Vec<String>,
-    /// `TO (...)` spellings resolved only when the DDL runs, empty for every policy a
-    /// dump can carry.
-    pub ddl_time_roles: Vec<String>,
-    /// The `USING` expression the policy stores, if any.
-    pub using: Option<Expr>,
-    /// The `WITH CHECK` expression the policy stores, if any.
-    pub with_check: Option<Expr>,
-    /// Classification of the USING expression, if present.
-    pub using_classification: Option<ClassifiedExpr>,
-    /// Classification of the WITH CHECK expression, if present.
-    pub with_check_classification: Option<ClassifiedExpr>,
-    /// Grade the `USING` classification held when `filter_policies_for_output`
-    /// dropped it, `None` when it survived or never existed. One field rather than a
-    /// flag beside a grade, so the two cannot disagree.
-    pub using_filtered_at: Option<ConfidenceLevel>,
-    /// Grade the `WITH CHECK` classification held when it was dropped. While this is
-    /// set the USING to WITH CHECK mirror must not be applied.
-    pub with_check_filtered_at: Option<ConfidenceLevel>,
+    pub(crate) name: String,
+    pub(crate) table: String,
+    /// The table the catalog places that spelling in, `None` when it cannot place it.
+    pub(crate) resolved_table: Option<TableId>,
+    pub(crate) command: PolicyCommand,
+    pub(crate) mode: PolicyMode,
+    pub(crate) scoped_roles: Vec<String>,
+    pub(crate) ddl_time_roles: Vec<String>,
+    pub(crate) using: Option<Expr>,
+    pub(crate) with_check: Option<Expr>,
+    pub(crate) using_classification: Option<ClassifiedExpr>,
+    pub(crate) with_check_classification: Option<ClassifiedExpr>,
+    /// Grade the `USING` classification held when `filter_policies_for_output` dropped it,
+    /// `None` when it survived or never existed. One field rather than a flag beside a
+    /// grade, so the two cannot disagree.
+    pub(crate) using_filtered_at: Option<ConfidenceLevel>,
+    /// Grade the `WITH CHECK` classification held when it was dropped. While this is set
+    /// the USING to WITH CHECK mirror must not be applied.
+    pub(crate) with_check_filtered_at: Option<ConfidenceLevel>,
 }
 
 impl ClassifiedPolicy {
     /// Read a policy out of a catalog, before anything classifies its clauses.
     ///
     /// The single place a catalog's own policy becomes one of these, so nothing
-    /// downstream has to know what the catalog stores.
+    /// downstream has to know what the catalog stores. The table is resolved here, where
+    /// the catalog is in hand, so no later stage re-reads the spelling as text.
     pub fn from_policy<P: PolicyLike>(policy: &P, db: &P::DB) -> Self {
         let (scoped_roles, ddl_time_roles) = split_scoped_roles(policy, db);
+        let target = policy.target_table_name();
         Self {
             name: policy.name().to_string(),
-            table: policy.target_table_name().to_string(),
+            table: target.to_string(),
+            resolved_table: db
+                .resolve_target_table(target)
+                .ok()
+                .flatten()
+                .map(table_identity),
             command: PolicyCommand::from(policy.command()),
             mode: derive_policy_mode(policy),
             scoped_roles,
@@ -768,6 +797,19 @@ impl ClassifiedPolicy {
         }
     }
 
+    /// The same policy guarding a table spelling the catalog cannot place.
+    ///
+    /// For a caller whose catalog hands over a policy naming a table it does not resolve,
+    /// which the generator answers by refusing to claim one row decides the reads of any
+    /// table bearing the name. `ParserDB` refuses such a schema outright, so this is the
+    /// only door to that handling.
+    #[must_use]
+    pub fn guarding_unresolvable_table(mut self, spelled: impl Into<String>) -> Self {
+        self.table = spelled.into();
+        self.resolved_table = None;
+        self
+    }
+
     /// Policy name as declared in the DDL.
     pub fn name(&self) -> &str {
         &self.name
@@ -778,6 +820,11 @@ impl ClassifiedPolicy {
         &self.table
     }
 
+    /// The table the catalog places that spelling in, `None` when it cannot place it.
+    pub fn resolved_table(&self) -> Option<&TableId> {
+        self.resolved_table.as_ref()
+    }
+
     /// DML command this policy restricts (ALL if unspecified).
     pub fn command(&self) -> PolicyCommand {
         self.command
@@ -786,6 +833,36 @@ impl ClassifiedPolicy {
     /// Policy mode (`PERMISSIVE` by default when omitted).
     pub fn mode(&self) -> PolicyMode {
         self.mode
+    }
+
+    /// The `USING` expression the policy stores, if any.
+    pub fn using(&self) -> Option<&Expr> {
+        self.using.as_ref()
+    }
+
+    /// The `WITH CHECK` expression the policy stores, if any.
+    pub fn with_check(&self) -> Option<&Expr> {
+        self.with_check.as_ref()
+    }
+
+    /// Classification of the `USING` expression, if present.
+    pub fn using_classification(&self) -> Option<&ClassifiedExpr> {
+        self.using_classification.as_ref()
+    }
+
+    /// Classification of the `WITH CHECK` expression, if present.
+    pub fn with_check_classification(&self) -> Option<&ClassifiedExpr> {
+        self.with_check_classification.as_ref()
+    }
+
+    /// Grade the `USING` classification held when the threshold dropped it.
+    pub fn using_filtered_at(&self) -> Option<ConfidenceLevel> {
+        self.using_filtered_at
+    }
+
+    /// Grade the `WITH CHECK` classification held when the threshold dropped it.
+    pub fn with_check_filtered_at(&self) -> Option<ConfidenceLevel> {
+        self.with_check_filtered_at
     }
 
     /// Iterate over all classified policy expressions (`USING` and `WITH CHECK`).

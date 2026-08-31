@@ -57,8 +57,7 @@ fn tenant_isolation_is_classified() {
     );
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -86,8 +85,7 @@ fn compound_or_owner_or_public() {
     assert_eq!(classified.len(), 1, "Should find one compound policy");
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -160,9 +158,8 @@ fn supabase_auth_uid_pattern() {
     assert_eq!(classified.len(), 2, "expected both Supabase policies");
     for cp in &classified {
         let classification = cp
-            .using_classification
-            .as_ref()
-            .or(cp.with_check_classification.as_ref())
+            .using_classification()
+            .or(cp.with_check_classification())
             .expect("expected Supabase policy classification");
         assert!(
             matches!(
@@ -189,8 +186,7 @@ fn in_subquery_membership() {
     assert_eq!(classified.len(), 1, "Should find one IN-subquery policy");
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -218,8 +214,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
     );
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
     assert!(
         matches!(
@@ -272,8 +267,7 @@ fn fixture_wrapped_outer_table_membership_predicate_fails_closed_with_unknown_re
     );
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -296,8 +290,7 @@ fn current_user_keyword_equality() {
     assert_eq!(classified.len(), 1, "Should find one current_user policy");
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -329,7 +322,7 @@ fn multi_policy_table_classification() {
         .iter()
         .find(|c| c.name() == "published_visible")
         .expect("Should find published_visible policy");
-    let pub_class = published.using_classification.as_ref().unwrap();
+    let pub_class = published.using_classification().unwrap();
 
     match &pub_class.pattern {
         PatternClass::P9AttributeCondition(AttributeCondition {
@@ -351,7 +344,7 @@ fn multi_policy_table_classification() {
         .iter()
         .find(|c| c.name() == "author_sees_own")
         .expect("Should find author_sees_own policy");
-    let author_class = author.using_classification.as_ref().unwrap();
+    let author_class = author.using_classification().unwrap();
     assert!(
         matches!(
             author_class.pattern,
@@ -384,8 +377,7 @@ fn role_in_list_classification() {
     assert_eq!(classified.len(), 1, "Should find one role IN-list policy");
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("Should have USING classification");
 
     match &classification.pattern {
@@ -468,12 +460,10 @@ fn pipeline_summary_all_common_patterns() {
         let tuples = outputs.tuple_queries();
 
         let all_a = classified.iter().all(|cp| {
-            cp.using_classification
-                .as_ref()
+            cp.using_classification()
                 .is_none_or(|c| c.confidence >= ConfidenceLevel::B)
                 && cp
-                    .with_check_classification
-                    .as_ref()
+                    .with_check_classification()
                     .is_none_or(|c| c.confidence >= ConfidenceLevel::B)
         });
 

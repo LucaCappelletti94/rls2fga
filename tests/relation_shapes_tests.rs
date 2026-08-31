@@ -2272,12 +2272,17 @@ CREATE POLICY b_owner ON b.docs FOR SELECT USING (owner_id = auth_current_user_i
 CREATE POLICY a_team ON a.docs FOR SELECT USING (team_id = auth_current_user_id());
 ";
     let (db, registry) = parsed(sql, ACCESSOR_REGISTRY);
-    let mut classified = classify_policies(&db, &registry);
-    for cp in &mut classified {
-        if cp.name() == "a_team" {
-            cp.table = "docs".to_string();
-        }
-    }
+    let classified: Vec<_> = classify_policies(&db, &registry)
+        .into_iter()
+        .map(|cp| {
+            if cp.name() == "a_team" {
+                // Both schemas bear `docs`, so the catalog cannot place this spelling.
+                cp.guarding_unresolvable_table("docs")
+            } else {
+                cp
+            }
+        })
+        .collect();
     let planned = Translation::plan(
         classified,
         &db,

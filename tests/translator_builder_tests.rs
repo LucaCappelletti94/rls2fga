@@ -26,8 +26,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         !matches!(
@@ -56,8 +55,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -86,8 +84,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = listed_ids_accessor());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         !matches!(
@@ -114,8 +111,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user_id());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -144,8 +140,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = oauth_token());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -172,8 +167,7 @@ CREATE POLICY p ON notes FOR SELECT USING (owner = current_setting('app.user_id'
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner"),
@@ -250,8 +244,7 @@ fn an_accessor_body_that_can_return_no_row_does_not_name_the_caller() {
     fn classify(body: &str) -> PatternClass {
         let db = parse_schema(&schema(body)).expect("schema should parse");
         TranslatorBuilder::new().build().classify(&db)[0]
-            .using_classification
-            .as_ref()
+            .using_classification()
             .expect("expected USING classification")
             .pattern
             .clone()
@@ -277,14 +270,12 @@ fn owned_columns(translator: &rls2fga::translator::Translator, sql: &str) -> Vec
     let mut owned: Vec<String> = translator
         .classify(&db)
         .iter()
-        .filter_map(
-            |policy| match policy.using_classification.as_ref()?.pattern {
-                PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
-                    Some(column.to_string())
-                }
-                _ => None,
-            },
-        )
+        .filter_map(|policy| match policy.using_classification()?.pattern {
+            PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
+                Some(column.to_string())
+            }
+            _ => None,
+        })
         .collect();
     owned.sort();
     owned
@@ -352,8 +343,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(
@@ -383,8 +373,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = app_user_id());
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -409,8 +398,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_i
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -472,8 +460,7 @@ CREATE POLICY p ON rows_ FOR SELECT USING (tenant_id = current_setting('app.tena
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "tenant_id"),
@@ -496,8 +483,7 @@ CREATE POLICY p ON docs FOR SELECT
 
     let classified = TranslatorBuilder::new().build().classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -522,8 +508,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('APP.User_I
 
     let classified = translator.classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -553,14 +538,12 @@ CREATE POLICY p_editor ON docs FOR UPDATE USING (editor_id = current_setting('ot
     let classified = translator.classify(&db);
     let mut owned: Vec<&str> = classified
         .iter()
-        .filter_map(
-            |policy| match policy.using_classification.as_ref()?.pattern {
-                PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
-                    Some(column.as_str())
-                }
-                _ => None,
-            },
-        )
+        .filter_map(|policy| match policy.using_classification()?.pattern {
+            PatternClass::P3DirectOwnership(DirectOwnership { ref column }) => {
+                Some(column.as_str())
+            }
+            _ => None,
+        })
         .collect();
     owned.sort_unstable();
     assert_eq!(
@@ -596,8 +579,7 @@ CREATE POLICY p ON docs FOR SELECT USING (
         .build()
         .classify(&db);
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("the policy has a USING clause");
 
     assert!(matches!(
@@ -623,9 +605,10 @@ fn declared(
         .into_iter()
         .filter_map(|policy| {
             let using = policy
-                .using_classification
-                .or(policy.with_check_classification)?;
-            Some((policy.name, using.pattern, using.confidence))
+                .using_classification()
+                .or_else(|| policy.with_check_classification())?
+                .clone();
+            Some((policy.name().to_string(), using.pattern, using.confidence))
         })
         .collect()
 }

@@ -262,8 +262,7 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
 
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("infinite recursion")),
@@ -314,8 +313,7 @@ CREATE POLICY p ON docs FOR SELECT
     assert_eq!(classified.len(), 1);
 
     let using = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(&using.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")),

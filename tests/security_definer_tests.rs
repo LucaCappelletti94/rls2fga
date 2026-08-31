@@ -18,11 +18,10 @@ fn docs_using_pattern(sql: &str) -> PatternClass {
     let classified = translator(ConfidenceLevel::B).classify(&db);
     let policy = classified
         .iter()
-        .find(|policy| matches!(policy.table.as_str(), "docs" | "public.docs"))
+        .find(|policy| matches!(policy.table_name(), "docs" | "public.docs"))
         .expect("docs policy should classify");
     policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern
         .clone()
@@ -413,11 +412,10 @@ CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
     let classified = translator(ConfidenceLevel::B).classify(&db);
     let policy = classified
         .iter()
-        .find(|policy| policy.table == "doc_members")
+        .find(|policy| policy.table_name() == "doc_members")
         .expect("doc_members policy should classify");
     let pattern = &policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern;
     assert!(
@@ -459,8 +457,7 @@ CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
     let classified = translator(ConfidenceLevel::B).classify(&db);
     let policy = classified.first().expect("one policy");
     let pattern = &policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern;
     assert!(
@@ -590,11 +587,10 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
     let classified = translator.classify(&db);
     let policy = classified
         .iter()
-        .find(|policy| policy.table == "docs")
+        .find(|policy| policy.table_name() == "docs")
         .expect("docs policy should classify");
     let pattern = &policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern;
     assert!(

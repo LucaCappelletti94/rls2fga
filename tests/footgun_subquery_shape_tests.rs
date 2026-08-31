@@ -325,8 +325,7 @@ fn refused_teams_policy_complaints(clause: &str, reason_names: &str) -> Vec<Stri
         panic!("expected one classified policy for `{clause}`");
     };
     let pattern = &policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern;
     match pattern {

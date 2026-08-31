@@ -138,8 +138,7 @@ fn every_pattern_enclosing_an_answered_refusal_is_regraded() {
 
     let mut classified = translator().classify(&db);
     let before = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("the policy has a USING clause")
         .confidence;
     assert_eq!(
@@ -151,8 +150,7 @@ fn every_pattern_enclosing_an_answered_refusal_is_regraded() {
     consult_oracle(&mut classified, &BitFlagIsPublic);
 
     let outer = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("the clause survives");
     assert_eq!(
         outer.confidence,
@@ -203,8 +201,7 @@ fn an_oracle_answer_below_the_threshold_is_still_dropped() {
 
     // The grade the oracle claimed has to propagate outward, not be assumed.
     let outer = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("the clause is still there");
     assert_eq!(
         outer.confidence,
@@ -235,7 +232,8 @@ fn an_oracle_that_bails_changes_nothing() {
 
     assert!(answered.is_empty(), "a bail records nothing");
     assert_eq!(
-        classified[0].using_classification, untouched[0].using_classification,
+        classified[0].using_classification(),
+        untouched[0].using_classification(),
         "a bail leaves the classification exactly as it was"
     );
     let dsl = dsl_of(&db, &classified);

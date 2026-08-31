@@ -31,8 +31,7 @@ CREATE FUNCTION my_user_func() RETURNS UUID LANGUAGE sql AS 'SELECT current_user
     assert_eq!(classified.len(), 1);
 
     let c = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("should have USING");
     assert!(
         matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
@@ -59,7 +58,7 @@ CREATE POLICY p ON docs FOR SELECT USING (mystery_func(val));
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &c.pattern {
         assert!(
             reason.contains("registered as Unknown"),
@@ -98,7 +97,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(val, id));
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     if let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &c.pattern {
         assert!(
             reason.contains("did not match any recognized translation pattern"),
@@ -188,7 +187,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     // A literal guard is row data the tuples carry, so the pair keeps its
     // structure instead of flattening to the partial P7 column name.
     assert!(
@@ -215,7 +214,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -238,7 +237,7 @@ CREATE POLICY p ON docs FOR SELECT USING (current_user = ANY(allowed_users));
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -262,7 +261,7 @@ CREATE POLICY p ON docs FOR SELECT USING (tags && user_tags);
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -288,7 +287,7 @@ CREATE POLICY p ON tasks FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         !matches!(
             &c.pattern,
@@ -365,7 +364,7 @@ CREATE POLICY p ON docs FOR SELECT USING (auth.role() = 'authenticated');
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -391,7 +390,7 @@ CREATE POLICY p ON docs FOR SELECT USING (auth.role() IN ('authenticated', 'admi
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -411,7 +410,7 @@ CREATE POLICY p ON docs FOR SELECT USING (pg_has_role('admin', 'MEMBER'));
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -431,7 +430,7 @@ CREATE POLICY p ON docs FOR SELECT USING (pg_has_role(current_user, 'editor', 'M
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -462,7 +461,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_i
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
         "Expected P3 for current_setting accessor, got: {:?}",
@@ -488,7 +487,7 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = (SELECT auth.uid()));
 
     let classified = policy_classifier::classify_policies(&db, &registry);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -515,7 +514,7 @@ CREATE POLICY p ON docs FOR SELECT USING (is_public = FALSE);
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "Negated boolean flag (= FALSE) should classify as Unknown, got: {:?}",
@@ -532,7 +531,7 @@ CREATE POLICY p ON docs FOR SELECT USING (is_public IS FALSE);
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
         "IS FALSE boolean flag should classify as Unknown, got: {:?}",
@@ -549,7 +548,7 @@ CREATE POLICY p ON docs FOR SELECT USING (TRUE);
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -569,7 +568,7 @@ CREATE POLICY p ON docs FOR SELECT USING (FALSE);
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -593,7 +592,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,
@@ -622,7 +621,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
             if reason.contains("infinite recursion")),
@@ -664,7 +663,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(&c.pattern, PatternClass::P4ExistsMembership(ExistsMembership { pairs, .. })
             if matches!(pairs.as_slice(), [pair]
@@ -739,7 +738,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         !matches!(
             &c.pattern,
@@ -766,7 +765,7 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-    let c = classified[0].using_classification.as_ref().unwrap();
+    let c = classified[0].using_classification().unwrap();
     assert!(
         matches!(
             &c.pattern,

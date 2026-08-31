@@ -226,8 +226,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         .expect("expected tasks_inherit_project policy");
 
     let using = task_policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(
@@ -401,8 +400,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
         .expect("expected p_select policy");
 
     let using = policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("expected USING classification");
     assert!(
         matches!(

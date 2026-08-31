@@ -340,8 +340,7 @@ pub(crate) fn shaped_membership_subquery_complaints(clause: &str, shaping: &str)
         panic!("expected one classified policy for `{clause}`");
     };
     let pattern = &policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern;
     match pattern {

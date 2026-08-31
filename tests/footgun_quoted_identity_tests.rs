@@ -28,8 +28,7 @@ fn using_pattern(sql: &str) -> PatternClass {
         );
     };
     policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .pattern
         .clone()
@@ -289,8 +288,7 @@ CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
         .build()
         .classify(&db);
     let confidence = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .confidence;
     assert_ne!(
@@ -317,8 +315,7 @@ CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
         .build()
         .classify(&db);
     let confidence = classified[0]
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify")
         .confidence;
     assert_eq!(

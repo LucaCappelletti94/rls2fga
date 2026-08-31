@@ -98,10 +98,7 @@ fn end_to_end_emi_all_level_a() {
     let classified = policy_classifier::classify_policies(&db, &registry);
 
     for cp in &classified {
-        for c in [&cp.using_classification, &cp.with_check_classification]
-            .into_iter()
-            .flatten()
-        {
+        for c in cp.classifications() {
             assert_eq!(
                 c.confidence,
                 ConfidenceLevel::A,

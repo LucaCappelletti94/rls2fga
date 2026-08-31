@@ -682,17 +682,17 @@ pub(crate) enum TypeScope<'a> {
 /// Every classified policy under the key its table resolves to, plus a seeded entry for each
 /// row-level-security table no policy named.
 ///
-/// Keyed by the schema's own spelling, since two policies may quote the table differently and
-/// one table must be built once. `group_keys` memoizes the resolution, which walks the tables,
-/// and every policy on one table repeats it.
+/// Keyed by the resolved identity the policy already carries, so two policies quoting one
+/// table the same way land together and nothing re-reads the spelling as text.
 fn group_policies_by_table<'a, DB: DatabaseLike>(
     policies: &'a [ClassifiedPolicy],
     db: &DB,
-    group_keys: &mut BTreeMap<String, String>,
 ) -> BTreeMap<String, Vec<&'a ClassifiedPolicy>> {
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
-        let key = table_group_key(db, cp.table_name().to_string(), group_keys);
+        let key = cp
+            .resolved_table()
+            .map_or_else(|| cp.table_name().to_string(), ToString::to_string);
         by_table.entry(key).or_default().push(cp);
     }
 
@@ -719,16 +719,19 @@ fn group_policies_by_table<'a, DB: DatabaseLike>(
 ///
 /// The filtered set cannot say whether a policy exists at all. Splitting the two keys would
 /// tell the operator RLS denies a command its own policy grants.
-fn declared_permissive_policies<'a, DB: DatabaseLike>(
-    db: &'a DB,
-    group_keys: &mut BTreeMap<String, String>,
-) -> BTreeMap<String, Vec<&'a DB::Policy>> {
+fn declared_permissive_policies<DB: DatabaseLike>(db: &DB) -> BTreeMap<String, Vec<&DB::Policy>> {
     let mut declared: BTreeMap<String, Vec<&DB::Policy>> = BTreeMap::new();
     for policy in db.policies() {
         if derive_policy_mode(policy) != PolicyMode::Permissive {
             continue;
         }
-        let key = table_group_key(db, policy.target_table_name().to_string(), group_keys);
+        let target = policy.target_table_name();
+        let spelled = target.to_string();
+        let key = db
+            .resolve_target_table(target)
+            .ok()
+            .flatten()
+            .map_or(spelled, qualified_table_name);
         declared.entry(key).or_default().push(policy);
     }
     declared
@@ -794,12 +797,11 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         });
     }
 
-    let mut group_keys: BTreeMap<String, String> = BTreeMap::new();
-    let by_table = group_policies_by_table(policies, db, &mut group_keys);
+    let by_table = group_policies_by_table(policies, db);
 
     report_row_level_security_bypasses(db, &mut notes);
 
-    let declared_permissive = declared_permissive_policies(db, &mut group_keys);
+    let declared_permissive = declared_permissive_policies(db);
 
     let table_types = TableTypes::assign(db, scope, &settings.well_known, &mut notes)?;
     let recursion = PolicyReadRecursion::detect(db, &table_types);
@@ -1970,25 +1972,6 @@ fn read_join_table_readability<DB: DatabaseLike>(
 /// Schema-qualified stored name, in the spelling `lookup_table` resolves.
 pub(crate) fn qualified_table_name<T: TableLike>(table: &T) -> String {
     table_identity(table).to_string()
-}
-
-/// Key grouping every spelling of one table together, memoized in `cache` because
-/// resolving a spelling walks the tables. Both groupings call this, so the filtered
-/// classifications and the schema's own policies cannot land under different keys.
-fn table_group_key<DB: DatabaseLike>(
-    db: &DB,
-    named: String,
-    cache: &mut BTreeMap<String, String>,
-) -> String {
-    if let Some(key) = cache.get(&named) {
-        return key.clone();
-    }
-    let key = match lookup_table(db, &named) {
-        Some(table) => qualified_table_name(table),
-        None => named.clone(),
-    };
-    cache.insert(named, key.clone());
-    key
 }
 
 /// Final `OpenFGA` type name of every table that gets one, assigned in one pass so a

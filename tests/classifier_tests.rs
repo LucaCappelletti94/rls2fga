@@ -20,9 +20,8 @@ fn classify_emi_policies_as_p1() {
 
     for cp in &classified {
         let classification = cp
-            .using_classification
-            .as_ref()
-            .or(cp.with_check_classification.as_ref())
+            .using_classification()
+            .or(cp.with_check_classification())
             .expect("Should have at least one classification");
 
         assert!(
@@ -56,7 +55,7 @@ fn classify_emi_select_threshold() {
     if let Some(ClassifiedExpr {
         pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
         ..
-    }) = &select.using_classification
+    }) = select.using_classification()
     {
         assert_eq!(*threshold, 2);
     } else {
@@ -76,7 +75,7 @@ fn classify_emi_delete_threshold() {
     if let Some(ClassifiedExpr {
         pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
         ..
-    }) = &delete.using_classification
+    }) = delete.using_classification()
     {
         assert_eq!(*threshold, 4);
     } else {
@@ -101,8 +100,7 @@ fn classify_simple_ownership_as_p3() {
 
     for cp in &classified {
         let classification = cp
-            .using_classification
-            .as_ref()
+            .using_classification()
             .expect("Should have USING classification");
 
         assert!(
@@ -128,7 +126,7 @@ fn classify_public_flag_as_p6_heuristic_gives_confidence_b() {
     assert_eq!(classified.len(), 1);
 
     let cp = &classified[0];
-    let classification = cp.using_classification.as_ref().unwrap();
+    let classification = cp.using_classification().unwrap();
     assert!(
         matches!(
             classification.pattern,
@@ -154,7 +152,7 @@ fn classify_public_flag_registered_column_gives_confidence_a() {
     assert_eq!(classified.len(), 1);
 
     let cp = &classified[0];
-    let classification = cp.using_classification.as_ref().unwrap();
+    let classification = cp.using_classification().unwrap();
     assert!(
         matches!(
             classification.pattern,
@@ -178,7 +176,7 @@ fn classify_abac_status_as_a_threshold_beside_a_literal_guard() {
     assert_eq!(classified.len(), 1);
 
     let cp = &classified[0];
-    let classification = cp.using_classification.as_ref().unwrap();
+    let classification = cp.using_classification().unwrap();
     // The literal guard is row data the tuples carry, so the pair keeps its
     // structure instead of flattening to the partial P7 column name.
     assert!(
@@ -210,8 +208,7 @@ fn classify_tenant_isolation_without_registry_via_function_body_inference() {
 
     let cp = &classified[0];
     let classification = cp
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("tenant policy should have USING classification");
     match &classification.pattern {
         PatternClass::P3DirectOwnership(DirectOwnership { column }) => {

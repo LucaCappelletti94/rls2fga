@@ -128,7 +128,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         return Err(refuse(reason.clone()));
     }
 
-    let policy = synthetic_policy(guarded_table, expr, &classified);
+    let policy = synthetic_policy(guarded_table, expr, &classified, db);
     let bounds = UnboundedColumns::resolve(db);
     let plan = build_plan_typing(
         &filter_policies_for_output(&[policy], min_confidence),
@@ -241,10 +241,16 @@ fn describes_the_filter(note: &TranslationNote) -> bool {
 }
 
 /// The policy a filter would be if anyone had written it as one.
-fn synthetic_policy(table: &str, expr: &Expr, classified: &ClassifiedExpr) -> ClassifiedPolicy {
+fn synthetic_policy<DB: DatabaseLike>(
+    table: &str,
+    expr: &Expr,
+    classified: &ClassifiedExpr,
+    db: &DB,
+) -> ClassifiedPolicy {
     ClassifiedPolicy {
         name: "subscription filter".to_string(),
         table: table.to_string(),
+        resolved_table: resolve_table_id(db, table),
         command: PolicyCommand::Select,
         mode: PolicyMode::Permissive,
         scoped_roles: Vec::new(),

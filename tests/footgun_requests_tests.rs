@@ -38,8 +38,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = app_user_id());
         panic!("expected exactly one classified policy");
     };
     let using = policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify");
     assert!(
         matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
@@ -1346,8 +1345,7 @@ fn a_set_the_authority_does_not_supply_is_refused() {
             .with_session_attributes(vec![attribute])
             .build()
             .classify(&db)[0]
-            .using_classification
-            .as_ref()
+            .using_classification()
             .expect("expected a USING classification")
             .pattern
             .clone()

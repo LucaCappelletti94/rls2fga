@@ -39,8 +39,7 @@ CREATE POLICY docs_sel ON docs FOR SELECT
         panic!("expected exactly one classified policy");
     };
     let using = policy
-        .using_classification
-        .as_ref()
+        .using_classification()
         .expect("USING should classify");
     assert!(
         matches!(
