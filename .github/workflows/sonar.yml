@@ -32,6 +32,8 @@ jobs:
         with:
           # Full history improves blame-based new-code attribution.
           fetch-depth: 0
+          # Later steps never talk to git, so keep the token out of git config.
+          persist-credentials: false
 
       - name: Cache cargo downloads
         uses: actions/cache@v6
@@ -50,7 +52,12 @@ jobs:
             --profile minimal \
             --component clippy
 
+      - name: Clippy report
+        # Token-free clippy run. The scan step only imports this report, so
+        # SONAR_TOKEN never reaches dependency build scripts or proc macros.
+        run: cargo clippy --message-format=json > clippy-report.json
+
       - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
