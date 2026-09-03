@@ -1109,28 +1109,37 @@ fn analyze_membership_select<DB: DatabaseLike>(
     }
 }
 
+/// Columns whose value the evaluating session's time zone decides.
+fn session_zoned_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> Vec<String> {
+    table
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .filter(|column| type_carries_a_zone(&column.data_type(db)))
+        .map(|column| column.stored_column_name().into_owned())
+        .collect()
+}
+
+/// A qualified or quoted spelling names the same type as the bare one.
+fn type_carries_a_zone(data_type: &str) -> bool {
+    let lowered = data_type.to_ascii_lowercase();
+    let terminal = lowered
+        .rsplit('.')
+        .next()
+        .unwrap_or(&lowered)
+        .trim_matches('"');
+    terminal.starts_with("timestamptz")
+        || terminal.starts_with("timetz")
+        || ((terminal.starts_with("timestamp") || terminal.starts_with("time"))
+            && terminal.contains("with time zone"))
+}
+
 /// The subquery asks only whether the caller is a member of something, naming no column
 /// of the guarded table.
 ///
 /// Every refusal here matters, because the translation grants the whole table at once:
 /// exactly one source with no joins, exactly one comparison against the caller, and
 /// nothing reaching outside that one table. Anything else stays refused.
-fn session_zoned_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> Vec<String> {
-    table
-        .columns(db)
-        .into_iter()
-        .flatten()
-        .filter(|column| {
-            let data_type = column.data_type(db).to_ascii_lowercase();
-            data_type.starts_with("timestamptz")
-                || data_type.starts_with("timetz")
-                || ((data_type.starts_with("timestamp") || data_type.starts_with("time"))
-                    && data_type.contains("with time zone"))
-        })
-        .map(|column| column.stored_column_name().into_owned())
-        .collect()
-}
-
 fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     select: &Select,
     db: &DB,

@@ -670,7 +670,13 @@ fn placeholder_numbers(sql: &str) -> Option<BTreeSet<usize>> {
     let mut index = 0usize;
     while let Some(&byte) = bytes.get(index) {
         match byte {
-            b'E' | b'e' if bytes.get(index + 1) == Some(&b'\'') => {
+            b'E' | b'e'
+                if bytes.get(index + 1) == Some(&b'\'')
+                    && !index
+                        .checked_sub(1)
+                        .and_then(|previous| bytes.get(previous))
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') =>
+            {
                 index = skip_escape_quoted(bytes, index + 2);
             }
             b'\'' => index = skip_quoted(bytes, index + 1, b'\''),
@@ -2709,6 +2715,15 @@ mod tests {
         .expect("the two key placeholders are present");
         assert_eq!(valid.key_columns(), ["tenant", "id"]);
         assert_eq!(valid.table(), &table("docs"));
+
+        BoundQuery::new(
+            table("docs"),
+            vec![ColumnName::from_stored("id")],
+            "SELECT * FROM docs WHERE note LIKE'a\\' AND label='$2' AND id = $1".to_string(),
+            None,
+            scope.clone(),
+        )
+        .expect("a keyword ending in E does not open an escape string");
 
         assert_eq!(
             BoundQuery::new(

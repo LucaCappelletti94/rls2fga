@@ -28,7 +28,9 @@ CREATE TABLE public.doc_members (
     granted_at TIMESTAMPTZ NOT NULL,
     local_at TIMESTAMP NOT NULL,
     starts_at TIMETZ NOT NULL,
-    expires_at TIMESTAMPTZ
+    expires_at TIMESTAMPTZ,
+    qualified_at pg_catalog.timestamptz NOT NULL,
+    qualified_starts_at pg_catalog.timetz NOT NULL
 );
 ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON public.docs FOR SELECT USING (
@@ -137,6 +139,21 @@ fn an_offsetless_zoned_literal_never_reaches_the_loader() {
         "m.granted_at < '2030-01-01 00:00:00'::timestamptz",
         "m.granted_at < '2030-01-01 00:00:00'",
         "m.starts_at < '09:00:00'::timetz",
+    ] {
+        let sql = member_query_sql(predicate);
+        assert!(
+            !sql.contains("2030-01-01") && !sql.contains("09:00:00"),
+            "the loader's time zone would interpret {predicate}:\n{sql}"
+        );
+    }
+}
+
+/// A schema-qualified spelling names the same zoned type.
+#[test]
+fn a_qualified_zoned_type_is_still_session_interpreted() {
+    for predicate in [
+        "m.qualified_at < '2030-01-01 00:00:00'",
+        "m.qualified_starts_at < '09:00:00'",
     ] {
         let sql = member_query_sql(predicate);
         assert!(
