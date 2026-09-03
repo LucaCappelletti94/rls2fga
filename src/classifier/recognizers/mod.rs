@@ -22,16 +22,19 @@ use crate::types::ColumnName;
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
+/// Whether a residual answers every caller alike.
+mod invariant;
 /// Request-scoped values a deployment declared readable.
 mod session;
 /// P4/P5 membership and parent-inheritance recognizers (correlated EXISTS / IN subqueries).
 mod subquery;
 
-pub(crate) use attribute::conjunct_reads_only_the_row;
 pub use attribute::{
     attribute_literal_predicate, attribute_request_predicate, is_attribute_check,
     residual_predicate,
 };
+pub(crate) use attribute::{conjunct_reads_only_the_row, residual_predicate_reading};
+pub(crate) use invariant::{residual_relations, MembershipScope};
 pub use session::recognize_session_attribute;
 pub(crate) use session::{caller_set, row_valued_set};
 pub(crate) use subquery::projected_select;

@@ -769,28 +769,31 @@ fn dollar_quote_end(bytes: &[u8], mut index: usize) -> Option<usize> {
     (bytes.get(index) == Some(&b'$')).then_some(index)
 }
 
-/// The slice of stored facts one bound query's result fully determines.
+/// The slice of stored facts one query's result fully determines.
 ///
-/// The result is the whole truth for the slice as this shape states it, so
-/// what the result stopped returning is stale. Which slice that is belongs to
-/// the query, since nothing downstream can rediscover it from the SQL: one
-/// query is keyed on the object it moves, another on the subject it grants
-/// to, and the two reconcile against different reads.
+/// The result is the whole truth for the slice as this shape states it, so what the result
+/// stopped returning is stale. Which slice that is belongs to the query, since nothing
+/// downstream can rediscover it from the SQL: one query is keyed on the object it moves,
+/// another on the subject it grants to, and the two reconcile against different reads.
 ///
-/// Whole only as **this shape** states it: a consumer reconciling the slice
-/// must first establish that no other shape states facts in the same slice,
-/// or the reconciliation deletes the other shape's facts.
+/// This names the family; the key narrows it to one member. A
+/// [`BoundQuery`] carries that key, and
+/// [`RecordDerivation::WholeShape`] carries none, where the family
+/// itself is the slice.
+///
+/// Whole only as **this shape** states it: a consumer reconciling the slice must first
+/// establish that no other shape states facts in the same slice, or the reconciliation
+/// deletes the other shape's facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplayScope {
-    /// Every fact `relations` state about the one object the bound key names.
+    /// Every fact `relations` state about objects of `object_type`.
     Object {
         /// Type the object belongs to.
         object_type: String,
         /// The relations this query's rows can carry.
         relations: Vec<RelationName>,
     },
-    /// Every fact `relation` grants on `object_type` rows to the one subject
-    /// the bound key names.
+    /// Every fact `relation` grants on `object_type` rows to subjects of `subject_type`.
     Subject {
         /// Type the subject belongs to.
         subject_type: String,
@@ -882,6 +885,23 @@ pub enum RecordDerivation {
         /// Why one row does not decide, for the report.
         reason: String,
     },
+    /// The records depend on rows the changed row does not name, so no key narrows the
+    /// query: a change to any table it reads is answered by running all of it, and the
+    /// result is the whole truth for `scope`.
+    ///
+    /// A whole-table aggregate is this. Its value moves when any row of the relation it
+    /// reads moves, which can admit or withdraw records keyed on rows that never changed,
+    /// so replaying the changed row's slice would leave those standing.
+    WholeShape {
+        /// The query, taking no key and carrying no placeholder.
+        query: String,
+        /// The condition its rows carry, absent where they carry none.
+        condition: Option<String>,
+        /// The slice the result fully determines, unnarrowed.
+        scope: ReplayScope,
+        /// Why no key narrows it, for the report.
+        reason: String,
+    },
 }
 
 /// The records one tuple query produces, described as structure.
@@ -906,7 +926,9 @@ impl RecordDescription {
     pub fn row_table(&self) -> Option<&TableId> {
         match &self.derivation {
             RecordDerivation::FromRow { table, .. } => Some(table),
-            RecordDerivation::Constant { .. } | RecordDerivation::Joined { .. } => None,
+            RecordDerivation::Constant { .. }
+            | RecordDerivation::Joined { .. }
+            | RecordDerivation::WholeShape { .. } => None,
         }
     }
 }
@@ -980,7 +1002,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         RecordDerivation::FromRow {
             template, guards, ..
         } => (template, guards),
-        RecordDerivation::Joined { reason, .. } => {
+        RecordDerivation::Joined { reason, .. } | RecordDerivation::WholeShape { reason, .. } => {
             return Err(RecordError::NotDerivableFromOneRow(reason.clone()))
         }
         RecordDerivation::Constant { .. } => {

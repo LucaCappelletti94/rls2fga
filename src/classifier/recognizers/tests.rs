@@ -20,6 +20,27 @@ fn parse_select(sql: &str) -> Select {
     select.as_ref().clone()
 }
 
+/// The membership columns of one source, spelled out rather than through a scope value.
+fn membership_columns(
+    select: &Select,
+    table: &str,
+    alias: Option<&str>,
+    columns: &[String],
+    guarded_table: &str,
+    registry: &FunctionRegistry,
+) -> Option<(Vec<MembershipJoinPair>, ColumnName, ResidualPredicates)> {
+    extract_membership_columns(
+        select,
+        &MembershipScope {
+            table,
+            alias,
+            columns,
+            guarded_table,
+        },
+        registry,
+    )
+}
+
 fn db_with_docs_and_members() -> ParserDB {
     parse_schema(
         r"
@@ -861,10 +882,10 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 }
 
-/// An extra predicate whose subquery reads a table other than the membership table
-/// would be precomputed from the loader's view of that table, while `PostgreSQL`
-/// evaluates the policy as the caller and filters that table by its own RLS. A
-/// single-table tuple query cannot carry the caller's view of a second table.
+/// An extra predicate whose subquery reads a table the database filters rows on would be
+/// precomputed from the loader's view of that table, while `PostgreSQL` evaluates the
+/// policy as the caller and applies that table's own read rules. A single-table tuple
+/// query cannot carry the caller's view of a second table.
 #[test]
 fn recognize_p4_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -872,6 +893,7 @@ fn recognize_p4_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subq
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
 CREATE TABLE roles(name TEXT);
+ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
 ",
     )
     .expect("schema should parse");
@@ -893,7 +915,7 @@ CREATE TABLE roles(name TEXT);
     );
 }
 
-/// The holder shape carries the same extras, so a third-table subquery in an
+/// The holder shape carries the same extras, so a guarded third-table subquery in an
 /// uncorrelated membership fails closed there too.
 #[test]
 fn uncorrelated_membership_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
@@ -902,6 +924,7 @@ fn uncorrelated_membership_fails_closed_for_extra_predicate_reading_a_third_tabl
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
 CREATE TABLE roles(name TEXT);
+ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
 ",
     )
     .expect("schema should parse");
@@ -922,8 +945,8 @@ CREATE TABLE roles(name TEXT);
     );
 }
 
-/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite, so the
-/// third-table subquery fails closed there too.
+/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite, so a guarded
+/// third table fails closed there too.
 #[test]
 fn recognize_p4_in_subquery_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -931,6 +954,7 @@ fn recognize_p4_in_subquery_fails_closed_for_extra_predicate_reading_a_third_tab
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
 CREATE TABLE roles(name TEXT);
+ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
 ",
     )
     .expect("schema should parse");
@@ -956,6 +980,54 @@ CREATE TABLE roles(name TEXT);
         )
         .is_none(),
         "the IN spelling of a third-table-subquery extra predicate fails closed"
+    );
+}
+
+/// The `IN` spelling reaches the same resolver, so an unrestricted third table translates
+/// there too rather than only through `EXISTS`.
+#[test]
+fn recognize_p4_in_subquery_allows_an_unrestricted_third_table_in_a_subquery() {
+    let db = parse_schema(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+CREATE TABLE roles(name TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = registry_with_role_level();
+
+    let in_expr = parse_expr(
+        "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+                 AND dm.role_name = ANY (SELECT name FROM roles)
+             )",
+    );
+
+    let classified = recognize_p4_in_subquery(
+        &in_expr,
+        &db,
+        &registry,
+        "docs",
+        PolicyCommand::Select,
+        &ExpansionState::new(),
+    )
+    .expect("a third table the database filters nothing on is translatable");
+    let PatternClass::P4ExistsMembership(membership) = &classified.pattern else {
+        panic!(
+            "expected an EXISTS membership, got {:?}",
+            classified.pattern
+        );
+    };
+    let sql = membership
+        .extra_predicates
+        .sql()
+        .expect("the residual rides the tuple query");
+    assert!(
+        sql.contains(r#"FROM "public"."roles""#),
+        "the third relation is named as the catalog carries it, got: {sql}"
     );
 }
 
@@ -1238,14 +1310,14 @@ CREATE TABLE s7(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
     );
 }
 /// A subquery inside a residual is decided by the table's contents when the loader runs,
-/// under the loader's own read rules, so it is not decided by the membership row and the
-/// membership is refused.
+/// so a relation the loader and the caller can read differently refuses.
 #[test]
 fn recognize_p4_refuses_an_extra_predicate_subquery_over_the_join_table() {
     let db = parse_schema(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
 ",
     )
     .expect("schema should parse");
@@ -1263,7 +1335,424 @@ CREATE TABLE doc_members(doc_id UUID, user_id UUID, role_name TEXT);
 
     assert!(
         recognize_p4(&exists_expr, &db, &registry, "docs", &ExpansionState::new()).is_none(),
-        "a residual the row does not decide cannot be precomputed by the loader"
+        "a residual the row does not decide over a guarded relation cannot be precomputed"
+    );
+}
+
+/// The schema the exemption tests share: the guarded table, an open share table, and a
+/// second open table a residual can reach for.
+fn papers_schema(extra: &str) -> ParserDB {
+    parse_schema(&format!(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers(cutoff INT);
+{extra}
+"
+    ))
+    .expect("schema should parse")
+}
+
+/// The R86 shape: membership qualified by beating the average weight across the whole
+/// share table.
+fn average_weight_membership() -> Expr {
+    parse_expr(
+        "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT avg(weight) FROM paper_shares)
+             )",
+    )
+}
+
+fn recognized_residual_sql(db: &ParserDB, expr: &Expr) -> String {
+    let registry = FunctionRegistry::new();
+    let classified = recognize_p4(expr, db, &registry, "papers", &ExpansionState::new())
+        .expect("a residual over relations the database filters nothing on is translatable");
+    assert_eq!(
+        classified.confidence,
+        ConfidenceLevel::A,
+        "the exemption changes what is recognized, never how well"
+    );
+    let PatternClass::P4ExistsMembership(membership) = &classified.pattern else {
+        panic!(
+            "expected an EXISTS membership, got {:?}",
+            classified.pattern
+        );
+    };
+    membership
+        .extra_predicates
+        .sql()
+        .expect("the residual rides the tuple query")
+}
+
+/// Upstream obligation 1: row security off on every relation the residual reads means the
+/// loader's one answer is every caller's.
+#[test]
+fn a_residual_over_an_unrestricted_relation_is_recognized() {
+    let db = papers_schema("");
+    let sql = recognized_residual_sql(&db, &average_weight_membership());
+    assert!(
+        sql.contains("avg(weight)") && sql.contains("paper_shares"),
+        "the residual keeps its aggregate for the tuple query, got: {sql}"
+    );
+}
+
+/// Upstream obligation 2: the same policy refuses once the share table filters rows,
+/// because then the loader reads it as itself and the caller does not.
+#[test]
+fn a_residual_over_a_row_secured_relation_is_refused() {
+    let db = papers_schema("ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &average_weight_membership(),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "a relation with row security on answers differently per caller"
+    );
+}
+
+/// Upstream obligation 3: a policy on a relation that never enabled row security is inert,
+/// so it cannot make any read differ.
+#[test]
+fn a_residual_over_a_relation_with_an_inert_policy_is_recognized() {
+    let db = papers_schema(
+        "CREATE POLICY shares_p ON paper_shares FOR SELECT USING (viewer = current_user);",
+    );
+    let sql = recognized_residual_sql(&db, &average_weight_membership());
+    assert!(
+        sql.contains("avg(weight)"),
+        "policy presence is not the test, got: {sql}"
+    );
+}
+
+/// Upstream obligation 4: `FORCE` subjects the owner once row security is on and activates
+/// nothing by itself.
+#[test]
+fn a_residual_over_a_forced_but_disabled_relation_is_recognized() {
+    let db = papers_schema("ALTER TABLE paper_shares FORCE ROW LEVEL SECURITY;");
+    let sql = recognized_residual_sql(&db, &average_weight_membership());
+    assert!(
+        sql.contains("avg(weight)"),
+        "FORCE alone activates nothing, got: {sql}"
+    );
+}
+
+/// The exemption is about the relations read, not about which table the membership scans,
+/// so a residual reaching a third open relation is translatable too.
+#[test]
+fn a_residual_reading_a_third_unrestricted_relation_is_recognized() {
+    let db = papers_schema("");
+    let sql = recognized_residual_sql(
+        &db,
+        &parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT max(cutoff) FROM tiers)
+             )",
+        ),
+    );
+    assert!(
+        sql.contains("max(cutoff)") && sql.contains("tiers"),
+        "the third relation's read rides the tuple query, got: {sql}"
+    );
+}
+
+/// A partition child inherits its root's read rules, and a read through the root applies
+/// them, so the child's own cleared flag proves nothing.
+#[test]
+fn a_residual_over_a_child_of_a_row_secured_root_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE weights(weight INT, region TEXT) PARTITION BY LIST (region);
+CREATE TABLE weights_eu PARTITION OF weights FOR VALUES IN ('eu');
+ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT avg(weight) FROM weights_eu)
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "the root's policies filter the child's rows through the root"
+    );
+}
+
+/// Nothing is proven about a relation the catalog does not carry, and views are not carried
+/// at all.
+#[test]
+fn a_residual_naming_an_unresolvable_relation_is_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT avg(weight) FROM elsewhere)
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "an unread relation cannot be proven to answer everyone alike"
+    );
+}
+
+/// Row security is not the only way an answer can depend on who is asking: the residual can
+/// simply read the caller.
+#[test]
+fn a_residual_whose_subquery_reads_the_caller_is_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (
+                   SELECT avg(weight) FROM paper_shares WHERE viewer = current_user
+                 )
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "an average over the caller's own rows is the caller's average"
+    );
+}
+
+/// An unnamed function's body may read anything and may answer per call, so it is not
+/// proven by proving the relations in the text.
+#[test]
+fn a_residual_calling_an_unknown_function_is_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT house_cutoff(weight) FROM paper_shares)
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "a function the crate cannot place may read the caller"
+    );
+}
+
+/// `LIMIT` picks a row per evaluation rather than per identity, so the loader's pick and
+/// the caller's need not agree even where both read the same open relation.
+#[test]
+fn a_residual_whose_subquery_limits_its_rows_is_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT weight FROM paper_shares LIMIT 1)
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "an unordered single row is whichever row the evaluation reached"
+    );
+}
+
+/// The nested relation reaches the generated SQL inside the residual's text, so it has to
+/// be spelled the way the query spells the table it scans. Left as the policy wrote it, it
+/// would resolve through whatever `search_path` the loader happens to hold.
+#[test]
+fn a_recognized_residual_qualifies_its_nested_relation() {
+    let db = papers_schema("");
+    let sql = recognized_residual_sql(&db, &average_weight_membership());
+    assert!(
+        sql.contains(r#"FROM "public"."paper_shares""#),
+        "the residual names the relation as the scan names it, got: {sql}"
+    );
+}
+
+/// The exemption widens which relations a residual may read, never which expressions the
+/// crate can evaluate: a conjunct reading no relation at all still has to be one the row
+/// decides.
+#[test]
+fn a_relation_free_residual_the_row_cannot_decide_is_still_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND house_cutoff(s.weight)
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "an unplaceable function is no more decidable for reading no table"
+    );
+}
+
+/// The policy's subquery sits inside the guarded row's scope too, and the generated query
+/// does not, so a nested reference to the guarded table names nothing there.
+#[test]
+fn a_residual_correlating_to_the_guarded_row_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY, category TEXT);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers(cutoff INT, category TEXT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (
+                   SELECT max(cutoff) FROM tiers WHERE category = papers.category
+                 )
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "the generated query scans the membership table alone, so the guarded row is absent"
+    );
+}
+
+/// The same reach without a qualifier: with the name absent from both the nested relation
+/// and the membership row, `PostgreSQL` binds it to the guarded row, which the generated
+/// query does not scan.
+#[test]
+fn a_residual_binding_a_bare_column_to_the_guarded_row_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY, category TEXT);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers(cutoff INT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT max(cutoff) FROM tiers WHERE category = 'gold')
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "only the guarded row carries the name, and the generated query never scans it"
+    );
+}
+
+/// A bare name the membership row carries is a different matter: both the policy and the
+/// generated query resolve it to that row, so the correlation survives and translates.
+#[test]
+fn a_residual_correlating_to_the_membership_row_is_recognized() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY, category TEXT);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT, category TEXT);
+CREATE TABLE tiers(cutoff INT);
+",
+    )
+    .expect("schema should parse");
+    let sql = recognized_residual_sql(
+        &db,
+        &parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT max(cutoff) FROM tiers WHERE cutoff < category)
+             )",
+        ),
+    );
+    assert!(
+        sql.contains("category"),
+        "the membership row's column keeps its correlation, got: {sql}"
     );
 }
 
@@ -1652,8 +2141,7 @@ fn membership_column_extraction_requires_explicit_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
-            .is_none(),
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry).is_none(),
         "membership without user predicate must fail closed"
     );
 }
@@ -1782,7 +2270,7 @@ fn extract_membership_columns_detects_reversed_predicates() {
     ];
 
     let (pairs, user_column, _) =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("reversed predicates should still infer membership columns");
     assert!(
         matches!(pairs.as_slice(), [pair]
@@ -2069,7 +2557,7 @@ fn extract_membership_columns_covers_right_join_side_and_extra_predicates() {
     ];
 
     let (pairs, user_column, extras) =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
             .expect("columns should still be inferred");
     assert!(
         matches!(pairs.as_slice(), [pair]
@@ -2092,8 +2580,7 @@ fn extract_membership_columns_returns_none_without_user_predicate() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
-            .is_none(),
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry).is_none(),
         "membership without any WHERE must fail closed"
     );
 }
@@ -2116,8 +2603,7 @@ fn membership_column_extraction_requires_user_predicate_not_just_role() {
     ];
 
     assert!(
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry)
-            .is_none(),
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry).is_none(),
         "membership with only a role predicate must fail closed"
     );
 }
@@ -2137,8 +2623,7 @@ fn membership_column_extraction_fails_when_fk_remains_ambiguous() {
         "role".to_string(),
     ];
 
-    let extracted =
-        extract_membership_columns(&select, "memberships", Some("m"), &cols, "docs", &registry);
+    let extracted = membership_columns(&select, "memberships", Some("m"), &cols, "docs", &registry);
     assert!(
         extracted.is_none(),
         "ambiguous membership FK should fail closed"
@@ -2165,7 +2650,7 @@ fn extract_membership_columns_accumulates_every_correlated_pair() {
     ];
 
     let (pairs, _, _) =
-        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry)
+        membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry)
             .expect("both correlated pairs are accumulated");
     assert!(
         matches!(pairs.as_slice(), [first, second]
@@ -2682,8 +3167,7 @@ fn extract_membership_columns_via_join_on_clause() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("m"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause fk_col and WHERE user_col should be extracted"
@@ -2817,8 +3301,7 @@ fn extract_membership_columns_on_clause_user_left_join_right_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (left=join) should be extracted"
@@ -2842,8 +3325,7 @@ fn extract_membership_columns_on_clause_user_right_join_left_current_user() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause user_col (right=join) should be extracted"
@@ -2867,8 +3349,7 @@ fn extract_membership_columns_on_clause_fk_right_is_join() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_some(),
         "ON-clause FK (right_is_join) should be extracted"
@@ -2896,8 +3377,7 @@ fn extract_membership_columns_where_right_is_join_fk_conflict_returns_none() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(
         result.is_none(),
         "conflicting right_is_join FK columns should return None"
@@ -3374,8 +3854,7 @@ fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
         "user_id".to_string(),
         "role".to_string(),
     ];
-    let result =
-        extract_membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
+    let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
     assert!(result.is_some());
     let (pairs, user, _) = result.unwrap();
     assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));

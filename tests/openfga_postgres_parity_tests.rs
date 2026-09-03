@@ -3982,6 +3982,190 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     );
 }
 
+/// Seeded so one viewer holds both a share the average admits and one it excludes, and so
+/// a third caller holds none. A model that ignored the aggregate would grant `alice` paper
+/// 3 as well, and one that dropped the membership would grant nobody anything.
+const SEEDED_WEIGHTED_SHARES: [(i32, &str, i32); 3] =
+    [(1, "alice", 50), (2, "bob", 30), (3, "alice", 1)];
+
+/// Callers as `app.user_id`, including one holding no share and the unset session.
+const WEIGHTED_CALLERS: [Option<&str>; 4] = [None, Some("alice"), Some("bob"), Some("carol")];
+
+/// Papers a `LOGIN` role reads under one caller state, which is the oracle.
+fn weighted_papers_visible_to(conn: &mut PgConnection, user_id: Option<&str>) -> BTreeSet<i32> {
+    let mut seen = BTreeSet::new();
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        conn.batch_execute("SET LOCAL ROLE app_reader")?;
+        diesel::sql_query("SELECT set_config('app.user_id', $1, true)")
+            .bind::<diesel::sql_types::Nullable<Text>, _>(user_id)
+            .execute(conn)?;
+        let rows: Vec<IdRow> = diesel::sql_query("SELECT id FROM papers ORDER BY id").load(conn)?;
+        seen = rows.into_iter().map(|row| row.id).collect();
+        Err::<(), _>(diesel::result::Error::RollbackTransaction)
+    })
+    .ok();
+    seen
+}
+
+/// Upstream connetto R86 against both services: a membership qualified by an average over
+/// the whole share table.
+///
+/// The residual is decided by rows the granted row does not name, and translates only
+/// because `paper_shares` carries no row security, so the loader's average is every
+/// caller's. Running the generated query on PostgreSQL is also what proves the relation
+/// the residual names inside its subquery is spelled so the database resolves it.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn cross_row_residual_parity_postgres18_and_openfga() {
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = support::read_fixture_sql("cross_row_residual");
+    conn.batch_execute(&schema_sql)
+        .expect("Failed to apply the cross-row residual schema on PostgreSQL 18");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN; \
+         GRANT SELECT ON papers TO app_reader; \
+         GRANT SELECT ON paper_shares TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    let papers: BTreeSet<i32> = SEEDED_WEIGHTED_SHARES
+        .iter()
+        .map(|(paper, _, _)| *paper)
+        .collect();
+    let paper_rows: Vec<String> = papers.iter().map(|id| format!("({id}, 'owner')")).collect();
+    let share_rows: Vec<String> = SEEDED_WEIGHTED_SHARES
+        .iter()
+        .map(|(paper, viewer, weight)| format!("({paper}, '{viewer}', {weight})"))
+        .collect();
+    conn.batch_execute(&format!(
+        "INSERT INTO papers (id, owner) VALUES {}; \
+         INSERT INTO paper_shares (paper_id, viewer, weight) VALUES {};",
+        paper_rows.join(", "),
+        share_rows.join(", ")
+    ))
+    .expect("Failed to seed the papers and weighted shares");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("cross_row_residual");
+    let planned = || {
+        Translation::plan(
+            classified.clone(),
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+    };
+    let model = planned().json_model();
+    let outputs = planned();
+    let runnable: Vec<TupleQuery> = outputs
+        .tuple_queries()
+        .iter()
+        .filter(|query| query.sql.contains("SELECT "))
+        .cloned()
+        .collect();
+    assert!(
+        runnable
+            .iter()
+            .any(|query| query.sql.contains("avg(weight)")),
+        "the aggregate has to ride the tuple query, or the loader grants what the policy \
+         refuses: {runnable:?}"
+    );
+    assert!(
+        runnable.iter().any(|query| {
+            query
+                .sql
+                .matches(r#""public"."paper_shares""#)
+                .count()
+                .ge(&2)
+        }),
+        "the scan and the residual's own subquery both name the relation the catalog \
+         carries: {runnable:?}"
+    );
+
+    let keys = execute_tuple_queries(&mut conn, &runnable);
+    assert!(
+        !keys.is_empty(),
+        "the aggregate admits some share, or the case proves nothing"
+    );
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "cross-row-residual-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(
+        &client,
+        keys.iter()
+            .map(|key| support::openfga::make_tuple(&key.object, &key.relation, &key.subject))
+            .collect(),
+    )
+    .await;
+
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    let mut excluded_by_the_average = 0usize;
+    for user_id in WEIGHTED_CALLERS {
+        let visible = weighted_papers_visible_to(&mut conn, user_id);
+        let caller = user_id.unwrap_or("nobody");
+        for id in &papers {
+            let expected = visible.contains(id);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+                // A share row this caller holds on a paper they still cannot read is the
+                // average doing the filtering rather than the membership.
+                if SEEDED_WEIGHTED_SHARES
+                    .iter()
+                    .any(|(paper, viewer, _)| paper == id && Some(*viewer) == user_id)
+                {
+                    excluded_by_the_average += 1;
+                }
+            }
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{caller}"),
+                "can_select",
+                &format!("papers:{id}"),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "papers:{id} for user_id={user_id:?}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        granted > 0,
+        "no paper is readable anywhere, so denying everything would pass"
+    );
+    assert!(
+        denied > 0,
+        "no paper is denied anywhere, so granting everything would pass"
+    );
+    assert!(
+        excluded_by_the_average > 0,
+        "no share is excluded by the average, so ignoring the residual would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA cross-row residual parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
 /// A paper shared to two viewers must load and union rather than collide. Keying every
 /// share tuple on the paper put both viewers on one `(user:*, gate, papers:1)` triple,
 /// which `OpenFGA` rejects as a duplicate write. Each share is now its own object, so the

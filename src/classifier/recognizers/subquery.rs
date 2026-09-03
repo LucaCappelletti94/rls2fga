@@ -1102,6 +1102,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
                     outer_table,
                     &source,
                     &predicates.selection,
+                    registry,
                 )
             })
             .unwrap_or(MembershipSelectAnalysis::AmbiguousNoUniqueJoin),
@@ -1110,7 +1111,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
 }
 
 /// Columns whose value the evaluating session's time zone decides.
-fn session_zoned_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> Vec<String> {
+pub(super) fn session_zoned_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> Vec<String> {
     table
         .columns(db)
         .into_iter()
@@ -1146,6 +1147,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     outer_table: &str,
     source: &RelationSource,
     predicates: &[AnalyzedMembershipPredicate<'_>],
+    registry: &FunctionRegistry,
 ) -> Option<MembershipSelectAnalysis> {
     if select.from.iter().any(|item| !item.joins.is_empty()) {
         return None;
@@ -1195,13 +1197,22 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         {
             return None;
         }
-        if predicate_subquery_reads_other_table(predicate, Some(db), &source.table_name) {
-            return None;
-        }
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
-        let residual = residual_predicate(&normalized);
-        if residual.request.is_none()
+        let relations = residual_relations(
+            &mut normalized,
+            Some(db),
+            registry,
+            &MembershipScope {
+                table: &source.table_name,
+                alias: source.alias.as_deref(),
+                columns: &columns,
+                guarded_table: outer_table,
+            },
+        )?;
+        let residual = residual_predicate_reading(&normalized, relations);
+        if residual.relations.is_empty()
+            && residual.request.is_none()
             && !conjunct_reads_only_the_row(&normalized, &columns, &session_zoned_columns)
         {
             return None;
@@ -1807,14 +1818,18 @@ fn membership_matches<'a, DB: DatabaseLike>(
             registry,
         );
 
+        let scope = MembershipScope {
+            table: &source.table_name,
+            alias: source.alias.as_deref(),
+            columns: &col_names,
+            guarded_table: outer_table,
+        };
         if let Some(columns) = extract_membership_columns_with_analysis(
             select,
-            &source.table_name,
-            source.alias.as_deref(),
-            &col_names,
-            outer_table,
+            &scope,
             Some(db),
             &predicates,
+            registry,
         ) {
             matches.push((source.table_name.clone(), columns));
         }
@@ -2071,20 +2086,11 @@ fn guarded_row_column(reference: ColumnRef, outer_table: &str) -> Option<ColumnN
 #[cfg(test)]
 pub(super) fn extract_membership_columns(
     select: &Select,
-    join_table: &str,
-    join_alias: Option<&str>,
-    join_cols: &[String],
-    outer_table: &str,
+    scope: &MembershipScope<'_>,
     registry: &FunctionRegistry,
 ) -> Option<(Vec<MembershipJoinPair>, ColumnName, ResidualPredicates)> {
     extract_membership_columns_with_db::<crate::parser::sql_parser::ParserDB>(
-        select,
-        join_table,
-        join_alias,
-        join_cols,
-        outer_table,
-        None,
-        registry,
+        select, scope, None, registry,
     )
     .map(|columns| (columns.pairs, columns.user_column, columns.extra_predicates))
 }
@@ -2092,35 +2098,28 @@ pub(super) fn extract_membership_columns(
 #[cfg(test)]
 fn extract_membership_columns_with_db<DB: DatabaseLike>(
     select: &Select,
-    join_table: &str,
-    join_alias: Option<&str>,
-    join_cols: &[String],
-    outer_table: &str,
+    scope: &MembershipScope<'_>,
     db: Option<&DB>,
     registry: &FunctionRegistry,
 ) -> Option<MembershipColumns> {
     let predicates =
-        analyze_membership_predicates(select, join_table, join_alias, join_cols, registry);
-    extract_membership_columns_with_analysis(
-        select,
-        join_table,
-        join_alias,
-        join_cols,
-        outer_table,
-        db,
-        &predicates,
-    )
+        analyze_membership_predicates(select, scope.table, scope.alias, scope.columns, registry);
+    extract_membership_columns_with_analysis(select, scope, db, &predicates, registry)
 }
 
 fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
     select: &Select,
-    join_table: &str,
-    join_alias: Option<&str>,
-    join_cols: &[String],
-    outer_table: &str,
+    scope: &MembershipScope<'_>,
     db: Option<&DB>,
     analyzed_predicates: &MembershipPredicateAnalyses<'_>,
+    registry: &FunctionRegistry,
 ) -> Option<MembershipColumns> {
+    let MembershipScope {
+        table: join_table,
+        alias: join_alias,
+        columns: join_cols,
+        guarded_table: outer_table,
+    } = *scope;
     let mut correlated: Vec<MembershipJoinPair> = Vec::new();
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<(ColumnName, MemberMatch)> = None;
@@ -2175,22 +2174,20 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
             return None;
         }
-        // A subquery in an extra predicate is evaluated as the caller by
-        // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
-        if predicate_subquery_reads_other_table(pred, db, join_table) {
-            return None;
-        }
         // Keep additional predicates for tuple filtering.
         // Strip join-table qualifiers at the AST level before rendering to SQL.
         // This handles double-quoted identifiers, dollar-quoted strings, and other
         // SQL literal forms that text-based rewriting would mangle.
         let mut normalized_pred = pred.clone();
         strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
-        // The loader answers this query as itself, once, so a conjunct it cannot
-        // decide from the row alone would answer a different question than the
-        // caller's check does. A recognized request value keeps its own route.
-        let residual = residual_predicate(&normalized_pred);
-        if residual.request.is_none()
+        // The loader answers this query as itself, once, so a conjunct it cannot decide
+        // from the row alone would answer a different question than the caller's check
+        // does, unless every relation it reads answers everybody alike. A recognized
+        // request value keeps its own route.
+        let relations = residual_relations(&mut normalized_pred, db, registry, scope)?;
+        let residual = residual_predicate_reading(&normalized_pred, relations);
+        if residual.relations.is_empty()
+            && residual.request.is_none()
             && !conjunct_reads_only_the_row(&normalized_pred, join_cols, &session_zoned_columns)
         {
             return None;
@@ -2386,57 +2383,6 @@ pub(super) fn predicate_references_other_table(
         join_alias,
         subquery_depth: 0,
     };
-    expr.visit(&mut checker).is_break()
-}
-
-/// True when a subquery inside `expr` reads anything but the resolved join table.
-pub(super) fn predicate_subquery_reads_other_table<DB: DatabaseLike>(
-    expr: &Expr,
-    db: Option<&DB>,
-    join_table: &str,
-) -> bool {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{TableFactor, Visit, Visitor};
-
-    struct SubqueryTableChecker<'a, DB> {
-        db: Option<&'a DB>,
-        join_table: Option<TableId>,
-    }
-
-    impl<DB: DatabaseLike> Visitor for SubqueryTableChecker<'_, DB> {
-        type Break = ();
-
-        fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
-            let (Some(db), Some(join_table)) = (self.db, self.join_table.as_ref()) else {
-                return ControlFlow::Break(());
-            };
-            let TableFactor::Table { name, .. } = factor else {
-                return ControlFlow::Break(());
-            };
-            let Some(table) = lookup_table(db, &name.to_string()) else {
-                return ControlFlow::Break(());
-            };
-            let identity = TableId::from_stored(
-                table.stored_table_schema().map(Into::into),
-                table.stored_table_name().into(),
-            );
-            if &identity == join_table {
-                ControlFlow::Continue(())
-            } else {
-                ControlFlow::Break(())
-            }
-        }
-    }
-    let join_table = db.and_then(|db| {
-        lookup_table(db, join_table).map(|table| {
-            TableId::from_stored(
-                table.stored_table_schema().map(Into::into),
-                table.stored_table_name().into(),
-            )
-        })
-    });
-
-    let mut checker = SubqueryTableChecker { db, join_table };
     expr.visit(&mut checker).is_break()
 }
 

@@ -473,6 +473,21 @@ pub enum TranslationNote {
         /// The extra predicate, as written.
         predicate: String,
     },
+    /// A residual the membership row does not decide was translated because every relation
+    /// it reads shows every row to everybody.
+    ///
+    /// The proof is against the schema as translated. A relation that gains row security
+    /// later makes the loader's answer the loader's own, and the translation has to be
+    /// redone.
+    MembershipResidualReadsUnrestrictedTables {
+        /// Policy holding the check.
+        policy: String,
+        /// The residual, as written.
+        predicate: String,
+        /// The relations the proof rests on.
+        #[serde(with = "table_id_vec_as_str")]
+        tables: Vec<TableId>,
+    },
     /// A nullable boolean predicate grants NULL rows that the generated tuples omit.
     NullableBooleanFlagNarrowed {
         /// Policy carrying `IS NOT FALSE`.
@@ -573,7 +588,8 @@ impl TranslationNote {
             | Self::PolicyClauseAbsent { .. }
             | Self::MembershipTableGrantsNoReads { .. }
             | Self::FunctionExpanded { .. }
-            | Self::MembershipExtraPredicate { .. } => NoteSeverity::Faithful,
+            | Self::MembershipExtraPredicate { .. }
+            | Self::MembershipResidualReadsUnrestrictedTables { .. } => NoteSeverity::Faithful,
         }
     }
 
@@ -626,6 +642,7 @@ impl TranslationNote {
             | Self::FunctionExpanded { policy, .. }
             | Self::MembershipTableGuarded { policy, .. }
             | Self::MembershipExtraPredicate { policy, .. }
+            | Self::MembershipResidualReadsUnrestrictedTables { policy, .. }
             | Self::NullableBooleanFlagNarrowed { policy, .. }
             | Self::ParentRuleUntranslated { policy, .. }
             | Self::AttributeNeedsRuntimeEnforcement { policy, .. }
@@ -869,6 +886,26 @@ impl fmt::Display for TranslationNote {
                 "Membership policy carries extra predicate '{predicate}' that must be preserved \
                  in tuple SQL"
             ),
+            Self::MembershipResidualReadsUnrestrictedTables {
+                predicate, tables, ..
+            } => {
+                write!(
+                    f,
+                    "Residual '{predicate}' is decided by rows beyond the membership row, and \
+                     translates because row level security is off on "
+                )?;
+                for (index, table) in tables.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "'{table}'")?;
+                }
+                write!(
+                    f,
+                    ". Enabling it on any of them makes the answer the loader's own, so \
+                     translate again"
+                )
+            }
             Self::NullableBooleanFlagNarrowed { column, .. } => write!(
                 f,
                 "'{column} IS NOT FALSE' admits NULL rows, but generated tuples include only TRUE"

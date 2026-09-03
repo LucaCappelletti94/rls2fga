@@ -7,6 +7,40 @@ use super::*;
 
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
+/// Disclose the residual the membership carries, naming what an exemption rests on.
+///
+/// A residual reading relations was translated only because the database filters none of
+/// their rows, and that proof is against the schema as translated, so the disclosure names
+/// them. `gated` drops the conjuncts the clock already took into the condition.
+fn announce_residual(
+    extra_predicates: &ResidualPredicates,
+    gated: bool,
+    policy_name: &str,
+    notes: &mut Vec<TranslationNote>,
+) {
+    let announced = if gated {
+        extra_predicates.sql_excluding_requests()
+    } else {
+        extra_predicates.sql()
+    };
+    let Some(predicate) = announced else {
+        return;
+    };
+    let tables = extra_predicates.relations();
+    notes.push(if tables.is_empty() {
+        TranslationNote::MembershipExtraPredicate {
+            policy: policy_name.to_string(),
+            predicate,
+        }
+    } else {
+        TranslationNote::MembershipResidualReadsUnrestrictedTables {
+            policy: policy_name.to_string(),
+            predicate,
+            tables,
+        }
+    });
+}
+
 /// A membership naming no column of the guarded table, which admits every row at once through a holder.
 pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     uncorrelated_membership: &UncorrelatedMembership,
@@ -76,17 +110,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         _ => None,
     };
 
-    let announced = if gate.is_some() {
-        extra_predicates.sql_excluding_requests()
-    } else {
-        extra_predicates.sql()
-    };
-    if let Some(extra) = announced {
-        notes.push(TranslationNote::MembershipExtraPredicate {
-            policy: policy_name.to_string(),
-            predicate: extra,
-        });
-    }
+    announce_residual(extra_predicates, gate.is_some(), policy_name, notes);
 
     // One holder per member source, never per table and never per policy: two
     // policies reading the same table may share, and two reading different
@@ -373,17 +397,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     }
 
     // The clock moved into the condition, so only what remains needs announcing.
-    let announced = if gate.is_some() {
-        extra_predicates.sql_excluding_requests()
-    } else {
-        extra_predicates.sql()
-    };
-    if let Some(extra) = announced {
-        notes.push(TranslationNote::MembershipExtraPredicate {
-            policy: policy_name.to_string(),
-            predicate: extra,
-        });
-    }
+    announce_residual(extra_predicates, gate.is_some(), policy_name, notes);
 
     if let Some((condition, context, identity_cols)) = witness {
         let share_type = share_type_name(join_table, table_types);

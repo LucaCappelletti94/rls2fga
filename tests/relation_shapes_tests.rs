@@ -3704,3 +3704,101 @@ fn unqualified_table_declaration_does_not_produce_search_path_dependent_sql() {
         );
     }
 }
+
+/// A membership qualified by a whole-table aggregate over relations the database filters
+/// nothing on.
+const CROSS_ROW_RESIDUAL: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE papers (id TEXT PRIMARY KEY);
+CREATE TABLE paper_shares (paper_id TEXT REFERENCES papers(id), viewer TEXT, weight INT);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = current_user
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+/// `RecordDescription::tables` promises every table the query reads, and a consumer
+/// refuses a table its change stream does not carry. A residual reaching another relation
+/// puts that relation's rows into the answer, so leaving it unnamed makes the consumer
+/// believe a stream it does not watch cannot move these records.
+#[test]
+fn a_cross_row_residual_names_every_relation_it_reads() {
+    let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    let tables: BTreeSet<String> = member
+        .shapes
+        .iter()
+        .flat_map(|shape| shape.tables.iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        tables.contains("paper_shares") && tables.contains("tiers"),
+        "the aggregate's relation belongs in the table list, got {tables:?}"
+    );
+}
+
+/// The aggregate is global, so inserting one share can move records for papers whose own
+/// shares never changed. A replay narrowed to the changed row's paper answers that paper
+/// and leaves the rest standing, which withholds nothing but keeps grants the database no
+/// longer allows. The description has to say no key narrows it.
+#[test]
+fn a_cross_row_residual_refuses_a_keyed_replay() {
+    let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    let shape = member
+        .shapes
+        .first()
+        .expect("the membership reports one shape");
+    match &shape.derivation {
+        RecordDerivation::WholeShape { scope, query, .. } => {
+            assert!(
+                query.contains("max(cutoff)"),
+                "the unnarrowed query is the whole filter, got: {query}"
+            );
+            assert_eq!(
+                scope,
+                &ReplayScope::Object {
+                    object_type: "papers".to_string(),
+                    relations: vec![member_relation()],
+                },
+                "the result is the whole truth for the membership facts on papers"
+            );
+        }
+        other => panic!("a whole-table aggregate cannot be replayed per row, got {other:?}"),
+    }
+}
+
+/// The exemption is proven against the schema as translated, so a relation that gains row
+/// security later invalidates it. The disclosure has to name which relations the proof
+/// rests on, or a consumer cannot know what to watch.
+#[test]
+fn a_cross_row_residual_discloses_the_relations_its_proof_rests_on() {
+    let (db, registry) = parsed(CROSS_ROW_RESIDUAL, "{}");
+    let notes = translation(&db, &registry, &GeneratorSettings::default())
+        .outputs_accepting_gaps()
+        .notes()
+        .to_vec();
+    let disclosure = notes
+        .iter()
+        .find_map(|note| match note {
+            TranslationNote::MembershipResidualReadsUnrestrictedTables { tables, .. } => {
+                Some(tables.clone())
+            }
+            _ => None,
+        })
+        .expect("the exemption is disclosed");
+    let named: BTreeSet<String> = disclosure.iter().map(ToString::to_string).collect();
+    assert!(
+        named.contains("tiers"),
+        "the relation the proof rests on is named, got {named:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .all(|note| !matches!(note, TranslationNote::MembershipExtraPredicate { .. })),
+        "one residual is disclosed once, by the note that names its proof"
+    );
+}

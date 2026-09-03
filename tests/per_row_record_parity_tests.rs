@@ -562,6 +562,47 @@ fn assert_descriptions_match_their_sql(
                 records += expected.len();
                 continue;
             }
+            // No key narrows this one, so there is no bound query to compare and the
+            // carried query has to be the whole one. What ties it to the table list is
+            // that the list names exactly the relations the query reads.
+            RecordDerivation::WholeShape {
+                query: whole,
+                condition,
+                ..
+            } => {
+                joined += 1;
+                assert_eq!(
+                    whole, &query.sql,
+                    "{label}: an unnarrowed replay is the whole query: {}",
+                    query.comment
+                );
+                assert_eq!(
+                    condition, &query.condition,
+                    "{label}: the rows carry the query's own condition: {}",
+                    query.comment
+                );
+                assert!(
+                    !description.tables.is_empty(),
+                    "{label}: a query reading nothing cannot need a whole replay: {}",
+                    query.comment
+                );
+                for table in &description.tables {
+                    assert!(
+                        whole.contains(&table.sql_name()),
+                        "{label}: {} is listed but the query never reads it:\n{}",
+                        table,
+                        query.sql
+                    );
+                }
+                let expected = records_from_sql(outputs, conn, query);
+                assert!(
+                    !expected.is_empty(),
+                    "{label}: the unnarrowed replay yields nothing, so it proves nothing: {}",
+                    query.comment
+                );
+                records += expected.len();
+                continue;
+            }
             // `RecordDerivation` is non_exhaustive, so a variant added later has
             // to be judged here rather than passing as one of the three above.
             other => panic!("{label}: unhandled derivation {other:?}"),
@@ -740,6 +781,73 @@ async fn every_row_shape_description_matches_its_own_sql() {
     assert!(
         records > 20,
         "the seed must produce records to compare, saw {records}"
+    );
+}
+
+/// Weights straddling their own average, so the residual admits some shares and refuses
+/// others, and so the query the description carries has something to be wrong about.
+const CROSS_ROW_SEED: &str = "
+INSERT INTO papers (id, owner) VALUES (1, 'owner'), (2, 'owner'), (3, 'owner');
+INSERT INTO paper_shares (paper_id, viewer, weight) VALUES
+    (1, 'alice', 50),
+    (2, 'bob',   30),
+    (3, 'alice', 1);
+";
+
+/// The shape no key narrows: a membership qualified by an average over the whole share
+/// table.
+///
+/// Nothing else in this file produces it, and the derivation it carries is the one a
+/// consumer must not narrow, so leaving it uncovered would leave the replay contract
+/// stated and unchecked.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_cross_row_residual_description_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(&support::read_fixture_sql("cross_row_residual"))
+        .expect("failed to apply the cross-row residual schema");
+    conn.batch_execute(CROSS_ROW_SEED)
+        .expect("failed to seed the cross-row residual schema");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("cross_row_residual");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let unnarrowed = queries
+        .iter()
+        .filter(|query| {
+            query.description.as_ref().is_some_and(|description| {
+                matches!(description.derivation, RecordDerivation::WholeShape { .. })
+            })
+        })
+        .count();
+    assert_eq!(
+        unnarrowed, 1,
+        "the membership is the one shape no key narrows, saw {unnarrowed}"
+    );
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "cross-row residual");
+    assert_eq!(
+        pure, 1,
+        "each paper names itself from its own row, and nothing else is row-decided, saw {pure}"
+    );
+    assert_eq!(
+        joined, 1,
+        "the membership is read by querying, since no row decides an average, saw {joined}"
+    );
+    assert_eq!(
+        records, 5,
+        "three papers name themselves and the two shares above the average grant, saw {records}"
     );
 }
 
