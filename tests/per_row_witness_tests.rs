@@ -2,7 +2,7 @@
 //! evaluate its clock per row, as `PostgreSQL` evaluates `EXISTS`: one witness
 //! object per membership row, never per-column aggregates that mix rows.
 
-use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{ConfidenceLevel, TranslationNote};
 
 mod support;
 
@@ -46,10 +46,6 @@ fn a_multi_deadline_membership_evaluates_per_row() {
         dsl.contains("type members_share"),
         "each membership row is its own witness object:\n{dsl}"
     );
-    // The chain: can_select resolves member on the parent, whose member is computed
-    // over the share link, whose member is the per-row conditional user. The share's
-    // member relation carries a condition-derived suffix, since the canonical
-    // `member` reservation means plain users.
     let (witness_relation, witness_body) = relation_definitions(&dsl, "members_share")
         .into_iter()
         .find(|(_, body)| body.contains("user with "))
@@ -58,12 +54,14 @@ fn a_multi_deadline_membership_evaluates_per_row() {
         witness_body.contains("user with "),
         "each witness admits its member only through the condition:\n{dsl}"
     );
-    let access = relation_definition(&dsl, "docs", "member")
-        .expect("docs computes its member over the share link");
-    assert_eq!(
-        access,
-        format!("{witness_relation} from members_share"),
-        "the access relation resolves the witness member over the share link:\n{dsl}"
+    let expected = format!("{witness_relation} from members_share");
+    let (access_relation, _) = relation_definitions(&dsl, "docs")
+        .into_iter()
+        .find(|(_, body)| body == &expected)
+        .expect("docs reaches the witness member over the share link");
+    assert_ne!(
+        access_relation, "member",
+        "the witness walk must not reserve the direct member relation:\n{dsl}"
     );
 }
 
@@ -133,12 +131,14 @@ CREATE POLICY p ON tasks FOR SELECT USING (EXISTS (
         .into_iter()
         .find(|(_, body)| body.contains("user with "))
         .expect("the share type defines its conditional member");
-    let access = relation_definition(&dsl, "projects", "member")
-        .expect("the parent computes its member over the share link");
-    assert_eq!(
-        access,
-        format!("{witness_relation} from project_members_share"),
-        "the parent resolves the witnesses:\n{dsl}"
+    let expected = format!("{witness_relation} from project_members_share");
+    let (access_relation, _) = relation_definitions(&dsl, "projects")
+        .into_iter()
+        .find(|(_, body)| body == &expected)
+        .expect("the parent reaches the witness member over the share link");
+    assert_ne!(
+        access_relation, "member",
+        "the witness walk must not reserve the direct member relation:\n{dsl}"
     );
     let can_select =
         relation_definition(&dsl, "tasks", "can_select").expect("tasks defines can_select");
@@ -216,12 +216,14 @@ CREATE POLICY p ON memos FOR SELECT USING (EXISTS (
         .into_iter()
         .find(|(_, body)| body.contains("user with "))
         .expect("the share type defines its conditional member");
-    let access = relation_definition(&dsl, "reviewers_holder", "member")
-        .expect("the holder computes its member over the shares link");
-    assert_eq!(
-        access,
-        format!("{witness_relation} from reviewers_share"),
-        "the holder resolves the witnesses:\n{dsl}"
+    let expected = format!("{witness_relation} from reviewers_share");
+    let (access_relation, _) = relation_definitions(&dsl, "reviewers_holder")
+        .into_iter()
+        .find(|(_, body)| body == &expected)
+        .expect("the holder reaches the witness member over the shares link");
+    assert_ne!(
+        access_relation, "member",
+        "the witness walk must not reserve the direct member relation:\n{dsl}"
     );
 }
 
@@ -280,5 +282,107 @@ CREATE POLICY p ON memos FOR SELECT USING (EXISTS (
     assert_eq!(
         can_select, "no_access",
         "no sound compression exists, so the command denies:\n{dsl}"
+    );
+}
+
+const MIXED_MEMBERSHIP_BASE: &str = "
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE members(id INT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id),
+  user_id TEXT NOT NULL, trial_ends TIMESTAMPTZ NOT NULL, support_ends TIMESTAMPTZ NOT NULL);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+";
+
+const WITNESS_POLICY: &str = "
+CREATE POLICY clocked ON docs FOR SELECT USING (EXISTS (
+  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user
+    AND m.trial_ends > now() AND m.support_ends > now()));
+";
+
+const PLAIN_POLICY: &str = "
+CREATE POLICY plain ON docs FOR DELETE USING (EXISTS (
+  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+";
+
+#[test]
+fn a_witness_and_plain_membership_keep_distinct_relations_in_both_orders() {
+    for (name, first, second) in [
+        ("witness first", WITNESS_POLICY, PLAIN_POLICY),
+        ("plain first", PLAIN_POLICY, WITNESS_POLICY),
+    ] {
+        let sql = format!("{MIXED_MEMBERSHIP_BASE}{first}{second}");
+        let (dsl, tuples) = model_and_tuples(&sql);
+        assert_eq!(
+            relation_definition(&dsl, "docs", "member").as_deref(),
+            Some("[user]"),
+            "{name} must leave the canonical member relation direct:\n{dsl}"
+        );
+        let (witness_relation, _) = relation_definitions(&dsl, "docs")
+            .into_iter()
+            .find(|(_, body)| body.contains("from members_share"))
+            .unwrap_or_else(|| panic!("{name} must retain the witness walk:\n{dsl}"));
+        assert_ne!(
+            witness_relation, "member",
+            "{name} must keep the witness walk off the direct relation:\n{dsl}"
+        );
+        let plain_query = tuples
+            .split_inclusive(';')
+            .find(|query| {
+                query.contains("FROM \"public\".\"members\"")
+                    && query.contains("'member' AS relation")
+            })
+            .unwrap_or_else(|| panic!("{name} must emit the plain membership query:\n{tuples}"));
+        assert!(
+            plain_query.contains("'member' AS relation"),
+            "{name} must load the relation the ordinary path reads:\n{plain_query}"
+        );
+    }
+}
+
+#[test]
+fn a_witness_membership_announces_the_request_clock() {
+    let db = db_of(TWO_DEADLINES);
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    assert!(
+        translation.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::CallerSuppliesConditionParameter {
+                parameter,
+                setting_key: None,
+                ..
+            } if parameter == "request_time"
+        )),
+        "the caller contract must name the witness clock: {:?}",
+        translation.notes()
+    );
+}
+
+#[test]
+fn a_holder_witness_applies_the_subject_size_limit_to_its_share() {
+    let sql = "
+CREATE TABLE memos(id TEXT PRIMARY KEY);
+CREATE TABLE reviewers(id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+  vetted_until TIMESTAMPTZ NOT NULL, cleared_until TIMESTAMPTZ NOT NULL);
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON memos FOR SELECT USING (EXISTS (
+  SELECT 1 FROM reviewers r WHERE r.user_id = current_user
+    AND r.vetted_until > now() AND r.cleared_until > now()));
+";
+    let (_, tuples) = model_and_tuples(sql);
+    let holder_link = tuples
+        .split_inclusive(';')
+        .find(|query| {
+            query.contains("'reviewers_holder:all' AS object")
+                && query.contains("'reviewers_share:'")
+        })
+        .expect("the holder links to each witness");
+    assert!(
+        holder_link.contains("octet_length('reviewers_share:'"),
+        "the witness is a subject and must use the byte limit:\n{holder_link}"
+    );
+    assert!(
+        !holder_link.contains("\nAND length('reviewers_share:'"),
+        "the holder object is fixed and needs no column-derived object guard:\n{holder_link}"
     );
 }

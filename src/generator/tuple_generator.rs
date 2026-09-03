@@ -1403,11 +1403,11 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 .join(" AND ");
             let guards = join_row_is_nameable(
                 &base,
-                &subject_sql,
-                None,
+                &object_sql,
+                Some(&subject_sql),
                 member_table,
-                identity_cols,
                 &[],
+                identity_cols,
                 names,
             );
             Some(TupleQuery {

@@ -1984,3 +1984,18 @@ fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
         "the alias was dropped on groups, so the walk must point at what it named"
     );
 }
+
+#[test]
+fn a_witness_membership_source_carries_its_condition() {
+    let source = TupleSource::MembershipShareMembers {
+        join_table: table_id("members"),
+        identity_cols: vec![ColumnName::from_stored("id")],
+        user_col: ColumnName::from_stored("user_id"),
+        share_type: "members_share".to_string(),
+        relation: RelationName::canonicalized("member"),
+        condition: "when_valid".to_string(),
+        extra_predicates: ResidualPredicates::default(),
+        context: Vec::new(),
+    };
+    assert!(source_carries_condition(&source));
+}

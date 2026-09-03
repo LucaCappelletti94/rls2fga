@@ -133,7 +133,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             vec![DirectSubject::Type(share_type.clone())],
         );
         let witness_member = holder_plan.ensure_computed(
-            member_relation(),
+            format!("{share_type}_member"),
             UsersetExpr::TupleToUserset {
                 tupleset: link.clone(),
                 computed: member_rel,
@@ -420,7 +420,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                 vec![DirectSubject::Type(share_type.clone())],
             );
             let witness_member = table_plan.ensure_computed(
-                member_relation(),
+                format!("{share_type}_member"),
                 UsersetExpr::TupleToUserset {
                     tupleset: link.clone(),
                     computed: member_rel.clone(),
@@ -436,7 +436,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                 vec![DirectSubject::Type(share_type.clone())],
             );
             let witness_member = parent_plan.ensure_computed(
-                member_relation(),
+                format!("{share_type}_member"),
                 UsersetExpr::TupleToUserset {
                     tupleset: link.clone(),
                     computed: member_rel.clone(),

@@ -96,7 +96,7 @@ fn is_plain_column_key(expr: &sqlparser::ast::Expr) -> bool {
 
 /// The one column naming a row, `None` when several do or none does.
 ///
-/// Derived from [`resolve_pk_columns`] rather than resolving again, so a caller
+/// Derived from [`resolve_row_identity`] rather than resolving again, so a caller
 /// that cannot work with a compound key refuses explicitly instead of by
 /// accident.
 pub(crate) fn single_identity_column<DB: DatabaseLike>(

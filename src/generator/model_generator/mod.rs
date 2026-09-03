@@ -1650,7 +1650,8 @@ fn note_request_contracts(
             // row or rides a member tuple.
             TupleSource::ConditionalAttributeGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
-            | TupleSource::HolderMembers { gate: Some(_), .. } => {
+            | TupleSource::HolderMembers { gate: Some(_), .. }
+            | TupleSource::MembershipShareMembers { .. } => {
                 contracts.insert((settings.request_time_parameter.to_string(), None, None));
             }
             _ => {}
@@ -1709,6 +1710,7 @@ fn source_carries_condition(source: &TupleSource) -> bool {
             | TupleSource::CallerSetShareGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
             | TupleSource::HolderMembers { gate: Some(_), .. }
+            | TupleSource::MembershipShareMembers { .. }
     )
 }
 
