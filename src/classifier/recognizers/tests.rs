@@ -2045,7 +2045,7 @@ fn recognize_p6_covers_visible_branch_and_non_literal_binary_case() {
     let classified = recognize_p6(&visible, &db, &registry).expect("expected visible match");
     assert!(matches!(
         &classified.pattern,
-        PatternClass::P6BooleanFlag(BooleanFlag { column }) if column == "visible"
+        PatternClass::P6BooleanFlag(BooleanFlag { column, .. }) if column == "visible"
     ));
 
     let non_literal = parse_expr("is_public = owner_id");

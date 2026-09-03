@@ -8,14 +8,14 @@
 
 use crate::prelude::*;
 use alloc::borrow::Cow;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::identity::WILDCARD_SUBJECT_ID;
 use crate::identity::{
     encode_identity, encode_part, hex_digit, object_name_fits, subject_name_fits,
 };
 use crate::{AttributeLiteral, AttributeOperator, AttributePredicate};
-use crate::{ColumnName, RelationName, TableId};
+use crate::{ColumnName, RelationName, TableId, TypeName};
 use serde::{Deserialize, Serialize};
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
@@ -508,13 +508,13 @@ impl From<ValueSource> for SubjectKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordTemplate {
     /// `OpenFGA` type the object belongs to.
-    pub object_type: String,
+    pub object_type: TypeName,
     /// How the object's name is built.
     pub object_key: ObjectKey,
     /// Relation name, always fixed.
     pub relation: RelationName,
     /// `OpenFGA` type the subject belongs to.
-    pub subject_type: String,
+    pub subject_type: TypeName,
     /// How the subject's name is built.
     pub subject_key: SubjectKey,
     /// The condition context the record carries, absent for an unconditional one.
@@ -546,28 +546,221 @@ pub struct RecordContextEntry {
     pub rendering: ContextRendering,
 }
 
-/// A query bound by the columns keying the slice it determines, for a shape whose
-/// records no single row decides.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A query bound by the columns keying the slice it determines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoundQuery {
+    table: TableId,
+    key_columns: Vec<ColumnName>,
+    sql: String,
+    condition: Option<String>,
+    scope: ReplayScope,
+}
+
+impl BoundQuery {
+    /// Construct a query whose placeholders are exactly `$1` through `$n`.
+    pub fn new(
+        table: TableId,
+        key_columns: Vec<ColumnName>,
+        sql: String,
+        condition: Option<String>,
+        scope: ReplayScope,
+    ) -> Result<Self, BoundQueryError> {
+        if key_columns.is_empty() {
+            return Err(BoundQueryError::EmptyKey);
+        }
+        let placeholders =
+            placeholder_numbers(&sql).ok_or(BoundQueryError::MalformedPlaceholder)?;
+        let expected: BTreeSet<usize> = (1..=key_columns.len()).collect();
+        if placeholders != expected {
+            return Err(BoundQueryError::PlaceholderMismatch {
+                key_columns: key_columns.len(),
+                placeholders: placeholders.into_iter().collect(),
+            });
+        }
+        Ok(Self {
+            table,
+            key_columns,
+            sql,
+            condition,
+            scope,
+        })
+    }
+
     /// Table the change arrived on.
-    pub table: TableId,
-    /// Columns the query binds, in the order its placeholders take them.
-    ///
-    /// All of the columns naming the slice, since a query bound to a prefix of a
-    /// compound key answers for every row sharing that prefix, which is a different
-    /// question.
-    pub key_columns: Vec<ColumnName>,
-    /// SQL taking the key values as `$1` through `$n`, in `key_columns` order.
-    pub sql: String,
-    /// Condition the rows carry, when the query yields the two extra columns a
-    /// conditional tuple needs. `None` means three columns and no condition, so a
-    /// caller replaying one row knows the shape without parsing the SQL.
-    pub condition: Option<String>,
-    /// Which stored facts this query's result fully determines. A fact in the
-    /// slice the result no longer returns is stale, which is what lets a
-    /// consumer take a withdrawn grant out of its store.
-    pub scope: ReplayScope,
+    #[must_use]
+    pub fn table(&self) -> &TableId {
+        &self.table
+    }
+
+    /// Columns in placeholder order.
+    #[must_use]
+    pub fn key_columns(&self) -> &[ColumnName] {
+        &self.key_columns
+    }
+
+    /// SQL taking the key values as `$1` through `$n`.
+    #[must_use]
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    /// Condition carried by the result rows.
+    #[must_use]
+    pub fn condition(&self) -> Option<&str> {
+        self.condition.as_deref()
+    }
+
+    /// Stored facts this query fully determines.
+    #[must_use]
+    pub fn scope(&self) -> &ReplayScope {
+        &self.scope
+    }
+}
+
+/// Why a bound query could not uphold its key-placeholder contract.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BoundQueryError {
+    /// A query bound to nothing does not identify a slice.
+    #[error("a bound query needs at least one key column")]
+    EmptyKey,
+    /// A decimal placeholder exceeded the platform index range.
+    #[error("a bound query contains a malformed placeholder")]
+    MalformedPlaceholder,
+    /// The SQL does not name exactly one placeholder number per key column.
+    #[error(
+        "a bound query with {key_columns} key columns needs placeholders $1 through ${key_columns}, found {placeholders:?}"
+    )]
+    PlaceholderMismatch {
+        /// Number of key columns.
+        key_columns: usize,
+        /// Distinct placeholder numbers found outside SQL literals and comments.
+        placeholders: Vec<usize>,
+    },
+}
+
+#[derive(Deserialize)]
+struct BoundQueryWire {
+    table: TableId,
+    key_columns: Vec<ColumnName>,
+    sql: String,
+    condition: Option<String>,
+    scope: ReplayScope,
+}
+
+impl<'de> Deserialize<'de> for BoundQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = BoundQueryWire::deserialize(deserializer)?;
+        Self::new(
+            wire.table,
+            wire.key_columns,
+            wire.sql,
+            wire.condition,
+            wire.scope,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+fn placeholder_numbers(sql: &str) -> Option<BTreeSet<usize>> {
+    let bytes = sql.as_bytes();
+    let mut placeholders = BTreeSet::new();
+    let mut index = 0usize;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'E' | b'e' if bytes.get(index + 1) == Some(&b'\'') => {
+                index = skip_escape_quoted(bytes, index + 2);
+            }
+            b'\'' => index = skip_quoted(bytes, index + 1, b'\''),
+            b'"' => index = skip_quoted(bytes, index + 1, b'"'),
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index += 2;
+                while bytes.get(index).is_some_and(|byte| *byte != b'\n') {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(bytes, index + 2);
+            }
+            b'$' => {
+                let start = index + 1;
+                if bytes.get(start).is_some_and(u8::is_ascii_digit) {
+                    index = start + 1;
+                    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                        index += 1;
+                    }
+                    let digits = core::str::from_utf8(bytes.get(start..index)?).ok()?;
+                    placeholders.insert(digits.parse().ok()?);
+                } else if let Some(end) = dollar_quote_end(bytes, start) {
+                    let delimiter = sql.get(index..=end)?;
+                    let body = sql.get(end + 1..)?;
+                    index = body
+                        .find(delimiter)
+                        .map_or(bytes.len(), |closing| end + 1 + closing + delimiter.len());
+                } else {
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    Some(placeholders)
+}
+
+fn skip_escape_quoted(bytes: &[u8], mut index: usize) -> usize {
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b'\'' if bytes.get(index + 1) == Some(&b'\'') => index += 2,
+            b'\'' => return index + 1,
+            _ => index += 1,
+        }
+    }
+    index
+}
+
+fn skip_quoted(bytes: &[u8], mut index: usize, quote: u8) -> usize {
+    while let Some(byte) = bytes.get(index) {
+        if *byte != quote {
+            index += 1;
+        } else if bytes.get(index + 1) == Some(&quote) {
+            index += 2;
+        } else {
+            return index + 1;
+        }
+    }
+    index
+}
+
+fn skip_block_comment(bytes: &[u8], mut index: usize) -> usize {
+    let mut depth = 1usize;
+    while index < bytes.len() {
+        if bytes.get(index..index + 2) == Some(b"/*") {
+            depth += 1;
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"*/") {
+            depth -= 1;
+            index += 2;
+            if depth == 0 {
+                break;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    index
+}
+
+fn dollar_quote_end(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        index += 1;
+    }
+    (bytes.get(index) == Some(&b'$')).then_some(index)
 }
 
 /// The slice of stored facts one bound query's result fully determines.
@@ -804,7 +997,10 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         }
     }
 
-    let object = match template.object_key.evaluate(&template.object_type, row) {
+    let object = match template
+        .object_key
+        .evaluate(template.object_type.as_str(), row)
+    {
         Eval::Value(object) => object,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
@@ -839,7 +1035,10 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         None => None,
     };
 
-    let subjects = match template.subject_key.evaluate(&template.subject_type, row) {
+    let subjects = match template
+        .subject_key
+        .evaluate(template.subject_type.as_str(), row)
+    {
         Eval::Value(subjects) => subjects,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
@@ -1362,10 +1561,10 @@ mod tests {
             derivation: RecordDerivation::FromRow {
                 table: table("paper_shares"),
                 template: Box::new(RecordTemplate {
-                    object_type: "papers".to_string(),
+                    object_type: TypeName::canonicalized("papers"),
                     object_key: ObjectKey::column("paper_id"),
                     relation: member_relation(),
-                    subject_type: "user".to_string(),
+                    subject_type: TypeName::canonicalized("user"),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: "when_share".to_string(),
@@ -1656,10 +1855,10 @@ mod tests {
             derivation: RecordDerivation::FromRow {
                 table: table("docs"),
                 template: Box::new(RecordTemplate {
-                    object_type: "docs".to_string(),
+                    object_type: TypeName::canonicalized("docs"),
                     object_key,
                     relation: member_relation(),
-                    subject_type: "user".to_string(),
+                    subject_type: TypeName::canonicalized("user"),
                     subject_key,
                     context,
                 }),
@@ -2485,5 +2684,71 @@ mod tests {
             timestamp.json_text("observed_at", &["owner".to_string()]),
             RowCell::Absent
         );
+    }
+
+    #[test]
+    fn bound_queries_enforce_the_key_placeholder_set() {
+        let scope = ReplayScope::Object {
+            object_type: "docs".to_string(),
+            relations: vec![member_relation()],
+        };
+        let valid = BoundQuery::new(
+            table("docs"),
+            vec![
+                ColumnName::from_stored("tenant"),
+                ColumnName::from_stored("id"),
+            ],
+            concat!(
+                "SELECT '$3', E'can\\'t $4', \"$5\", $$ $6 $$ FROM docs ",
+                "WHERE tenant = $1 AND id = $2 /* $7 /* $8 */ */ -- $9\n",
+            )
+            .to_string(),
+            None,
+            scope.clone(),
+        )
+        .expect("the two key placeholders are present");
+        assert_eq!(valid.key_columns(), ["tenant", "id"]);
+        assert_eq!(valid.table(), &table("docs"));
+
+        assert_eq!(
+            BoundQuery::new(
+                table("docs"),
+                Vec::new(),
+                "SELECT * FROM docs".to_string(),
+                None,
+                scope.clone(),
+            )
+            .expect_err("an empty key must fail"),
+            BoundQueryError::EmptyKey
+        );
+        assert_eq!(
+            BoundQuery::new(
+                table("docs"),
+                vec![ColumnName::from_stored("id")],
+                "SELECT * FROM docs WHERE id = $999999999999999999999999999999999".to_string(),
+                None,
+                scope.clone(),
+            )
+            .expect_err("an overflowing placeholder must fail"),
+            BoundQueryError::MalformedPlaceholder
+        );
+        let mismatch = BoundQuery::new(
+            table("docs"),
+            vec![
+                ColumnName::from_stored("tenant"),
+                ColumnName::from_stored("id"),
+            ],
+            "SELECT * FROM docs WHERE tenant = $1".to_string(),
+            None,
+            scope,
+        )
+        .expect_err("a missing key placeholder must fail");
+        assert!(matches!(
+            mismatch,
+            BoundQueryError::PlaceholderMismatch {
+                key_columns: 2,
+                placeholders
+            } if placeholders == [1]
+        ));
     }
 }

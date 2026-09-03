@@ -1,4 +1,5 @@
 use super::*;
+use sqlparser::ast::{DataType, TimezoneInfo};
 
 /// The guard as structure when the compared value is one only the request knows.
 ///
@@ -260,19 +261,24 @@ const ROW_PURE_FUNCTIONS: &[&str] = &[
     "upper",
 ];
 
-/// Whether every value `expr` reads comes from the membership row or from the policy
-/// text, so the tuple loader answers it exactly as the caller would.
-///
-/// A positive rule rather than a list of refusals: the loader runs once, as itself, so a
-/// conjunct reading the caller's role, the caller's session or the clock answers a
-/// different question there than `PostgreSQL` answers at check time. Anything this cannot
-/// prove costs coverage instead.
-pub(crate) fn conjunct_reads_only_the_row(expr: &Expr, row_columns: &[String]) -> bool {
-    let pure = |expr: &Expr| conjunct_reads_only_the_row(expr, row_columns);
-    match unwrap_cast_or_nested(expr) {
+/// Whether the loader can decide `expr` from the membership row and policy text.
+pub(crate) fn conjunct_reads_only_the_row(
+    expr: &Expr,
+    row_columns: &[String],
+    session_zoned_columns: &[String],
+) -> bool {
+    let pure = |expr: &Expr| conjunct_reads_only_the_row(expr, row_columns, session_zoned_columns);
+    match unparenthesize(expr) {
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => !zoned_literal_uses_session(data_type, inner) && pure(inner),
         Expr::Identifier(ident) => row_columns.contains(&stored_ident_name(ident).into_owned()),
         Expr::Value(value) => !matches!(value.value, Value::Placeholder(_)),
-        Expr::TypedString { .. } => true,
+        Expr::TypedString(typed) => {
+            !zoned_literal_value_uses_session(&typed.data_type, &typed.value.value)
+        }
         Expr::UnaryOp { expr: inner, .. }
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
@@ -282,19 +288,38 @@ pub(crate) fn conjunct_reads_only_the_row(expr: &Expr, row_columns: &[String]) -
         | Expr::IsNotFalse(inner)
         | Expr::IsUnknown(inner)
         | Expr::IsNotUnknown(inner) => pure(inner),
-        Expr::BinaryOp { left, right, .. } => pure(left) && pure(right),
+        Expr::BinaryOp { left, op, right } => {
+            !(attribute_operator(op).is_some()
+                && comparison_uses_session_zone(left, right, session_zoned_columns))
+                && pure(left)
+                && pure(right)
+        }
         Expr::IsDistinctFrom(left, right) | Expr::IsNotDistinctFrom(left, right) => {
-            pure(left) && pure(right)
+            !comparison_uses_session_zone(left, right, session_zoned_columns)
+                && pure(left)
+                && pure(right)
         }
         Expr::Between {
             expr: inner,
             low,
             high,
             ..
-        } => pure(inner) && pure(low) && pure(high),
+        } => {
+            !(is_session_zoned_column(inner, session_zoned_columns)
+                && (literal_uses_session_against_zoned_column(low)
+                    || literal_uses_session_against_zoned_column(high)))
+                && pure(inner)
+                && pure(low)
+                && pure(high)
+        }
         Expr::InList {
             expr: inner, list, ..
-        } => pure(inner) && list.iter().all(pure),
+        } => {
+            !(is_session_zoned_column(inner, session_zoned_columns)
+                && list.iter().any(literal_uses_session_against_zoned_column))
+                && pure(inner)
+                && list.iter().all(pure)
+        }
         Expr::Like {
             expr: inner,
             pattern,
@@ -319,6 +344,132 @@ pub(crate) fn conjunct_reads_only_the_row(expr: &Expr, row_columns: &[String]) -
                 .all(|arg| function_arg_expr(arg).is_some_and(pure))
         }
         _ => false,
+    }
+}
+
+fn comparison_uses_session_zone(
+    left: &Expr,
+    right: &Expr,
+    session_zoned_columns: &[String],
+) -> bool {
+    (is_session_zoned_column(left, session_zoned_columns)
+        && literal_uses_session_against_zoned_column(right))
+        || (is_session_zoned_column(right, session_zoned_columns)
+            && literal_uses_session_against_zoned_column(left))
+}
+
+fn is_session_zoned_column(expr: &Expr, session_zoned_columns: &[String]) -> bool {
+    extract_column_name(expr).is_some_and(|column| {
+        session_zoned_columns
+            .iter()
+            .any(|candidate| candidate == column.as_str())
+    })
+}
+
+fn literal_uses_session_against_zoned_column(expr: &Expr) -> bool {
+    match unparenthesize(expr) {
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => match temporal_zone(data_type) {
+            Some(true) => zoned_literal_uses_session(data_type, inner),
+            Some(false) => string_literal_value(inner).is_some(),
+            None => false,
+        },
+        Expr::TypedString(typed) => match temporal_zone(&typed.data_type) {
+            Some(true) => zoned_literal_value_uses_session(&typed.data_type, &typed.value.value),
+            Some(false) => sql_string_value(&typed.value.value).is_some(),
+            None => false,
+        },
+        Expr::Value(value) => sql_string_value(&value.value).is_some_and(value_uses_session_zone),
+        _ => false,
+    }
+}
+
+fn zoned_literal_uses_session(data_type: &DataType, expr: &Expr) -> bool {
+    temporal_zone(data_type) == Some(true)
+        && string_literal_value(expr).is_some_and(value_uses_session_zone)
+}
+
+fn zoned_literal_value_uses_session(data_type: &DataType, value: &Value) -> bool {
+    temporal_zone(data_type) == Some(true)
+        && sql_string_value(value).is_some_and(value_uses_session_zone)
+}
+
+fn temporal_zone(data_type: &DataType) -> Option<bool> {
+    match data_type {
+        DataType::Timestamp(_, zone) | DataType::Time(_, zone) => Some(matches!(
+            zone,
+            TimezoneInfo::WithTimeZone | TimezoneInfo::Tz
+        )),
+        _ => None,
+    }
+}
+
+fn string_literal_value(expr: &Expr) -> Option<&str> {
+    match unwrap_cast_or_nested(expr) {
+        Expr::TypedString(typed) => sql_string_value(&typed.value.value),
+        Expr::Value(value) => sql_string_value(&value.value),
+        _ => None,
+    }
+}
+
+fn sql_string_value(value: &Value) -> Option<&str> {
+    match value {
+        Value::SingleQuotedString(value)
+        | Value::EscapedStringLiteral(value)
+        | Value::UnicodeStringLiteral(value)
+        | Value::NationalStringLiteral(value) => Some(value),
+        Value::DollarQuotedString(value) => Some(&value.value),
+        _ => None,
+    }
+}
+
+fn value_uses_session_zone(value: &str) -> bool {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("infinity") || value.eq_ignore_ascii_case("-infinity") {
+        return false;
+    }
+    !has_explicit_utc_offset(value)
+}
+
+fn has_explicit_utc_offset(value: &str) -> bool {
+    if value.ends_with('Z') || value.ends_with('z') {
+        return true;
+    }
+    let Some(sign) = value.rfind(['+', '-']) else {
+        return false;
+    };
+    if !value[..sign].contains(':') {
+        return false;
+    }
+    let offset = &value[sign + 1..];
+    if !offset.contains(':') {
+        return !offset.is_empty()
+            && offset.len() <= 6
+            && offset.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    let mut parts = offset.split(':');
+    let Some(hours) = parts.next() else {
+        return false;
+    };
+    if hours.is_empty() || hours.len() > 2 || !hours.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Some(minutes) = parts.next() else {
+        return false;
+    };
+    if minutes.len() != 2 || !minutes.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    match parts.next() {
+        Some(seconds) => {
+            seconds.len() == 2
+                && seconds.bytes().all(|byte| byte.is_ascii_digit())
+                && parts.next().is_none()
+        }
+        None => true,
     }
 }
 

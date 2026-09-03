@@ -551,7 +551,7 @@ fn membership_analysis_has_a_single_source_of_truth() {
         "having.is_some()",
         "qualify.is_some()",
         "Distinct::On",
-        "sample: Some(_)",
+        "sample.is_some()",
         "with.is_some()",
         "locks.is_empty()",
     ] {
@@ -818,38 +818,39 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
     );
 }
 
-/// Every peel of a cast goes through the one peeler, however it is spelled.
+/// Every plain cast peel goes through the shared peeler.
 ///
-/// `parenthesis_peeling_has_a_single_source_of_truth` reads the loop's own rebinding, so
-/// it catches a second peeler written as a loop and nothing else. The same rule written
-/// as recursion passes it, and the crate already holds several, so a widened peel reaches
-/// one door and not the next: a clause `pg_dump` parenthesises would be recognized on one
-/// and refused on the other, which is the failure that cost every membership and parent
-/// policy its translation once already.
+/// The two temporal readers inspect the cast type before recursing.
 #[test]
 fn every_cast_peel_routes_through_the_shared_peeler() {
     let own_peels = fns_whose_body(|body| {
-        // The signature line is part of the body, so the shared peeler would otherwise
-        // read as calling itself.
         let after_signature = body.split_once('\n').map_or("", |(_, rest)| rest);
         body.contains("Expr::Cast") && !after_signature.contains("unwrap_cast_or_nested(")
     });
-    let others: Vec<&String> = own_peels
+    let unexpected: Vec<&String> = own_peels
         .iter()
-        .filter(|found| !found.ends_with(": unwrap_cast_or_nested"))
+        .filter(|found| {
+            !found.ends_with(": unwrap_cast_or_nested")
+                && !found.ends_with(": conjunct_reads_only_the_row")
+                && !found.ends_with(": literal_uses_session_against_zoned_column")
+        })
         .collect();
 
+    for expected in [
+        "unwrap_cast_or_nested",
+        "conjunct_reads_only_the_row",
+        "literal_uses_session_against_zoned_column",
+    ] {
+        assert!(
+            own_peels
+                .iter()
+                .any(|found| found.ends_with(&format!(": {expected}"))),
+            "expected one cast reader named '{expected}'"
+        );
+    }
     assert!(
-        own_peels
-            .iter()
-            .any(|found| found.ends_with(": unwrap_cast_or_nested")),
-        "the shared peeler must be found, or this guard reads nothing"
-    );
-    assert_eq!(
-        others.len(),
-        0,
-        "a cast is peeled in {} places outside the shared peeler: {others:#?}",
-        others.len()
+        unexpected.is_empty(),
+        "a cast is peeled outside the three readers: {unexpected:#?}"
     );
 }
 

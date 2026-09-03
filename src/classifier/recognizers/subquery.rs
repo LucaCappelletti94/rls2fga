@@ -4,7 +4,9 @@ use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::names::{lookup_table_id, resolve_table_id, table_identity};
 use crate::types::{ColumnName, TableId};
 use alloc::collections::BTreeSet;
-use sqlparser::ast::{Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr};
+use sqlparser::ast::{
+    Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr, TableWithJoins,
+};
 
 /// EXISTS membership check.
 pub fn recognize_p4<DB: DatabaseLike>(
@@ -556,22 +558,27 @@ pub(super) fn select_result_shaping_clause(select: &Select) -> Option<&'static s
     matches!(select.distinct, Some(Distinct::On(_))).then_some("DISTINCT ON")
 }
 
-/// True when a `FROM` item draws a sample of its table rather than the whole of it.
-///
-/// Only a named table is checked, since `PostgreSQL` samples a table or a materialized
-/// view and refuses `TABLESAMPLE` on a derived subquery outright. A join is not walked
-/// because a sampled table is always a named source, and a second source refuses the
-/// analysis whatever this answers.
+/// True when any named source draws a sample rather than the whole relation.
 fn from_item_is_sampled(select: &Select) -> bool {
-    select.from.iter().any(|from| {
-        matches!(
-            from.relation,
-            TableFactor::Table {
-                sample: Some(_),
-                ..
-            }
-        )
-    })
+    select.from.iter().any(table_with_joins_is_sampled)
+}
+
+fn table_with_joins_is_sampled(item: &TableWithJoins) -> bool {
+    table_factor_is_sampled(&item.relation)
+        || item
+            .joins
+            .iter()
+            .any(|join| table_factor_is_sampled(&join.relation))
+}
+
+fn table_factor_is_sampled(factor: &TableFactor) -> bool {
+    match factor {
+        TableFactor::Table { sample, .. } => sample.is_some(),
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => table_with_joins_is_sampled(table_with_joins),
+        _ => false,
+    }
 }
 
 /// True when a row count is a literal of at least one, so it cannot empty a result.
@@ -1031,7 +1038,10 @@ fn analyze_membership_select<DB: DatabaseLike>(
         return MembershipSelectAnalysis::RescansGuardedTable;
     }
 
-    let mut matches = membership_matches(select, db, registry, outer_table);
+    let MembershipMatches {
+        mut matches,
+        uncorrelated,
+    } = membership_matches(select, &all_sources, db, registry, outer_table);
     if matches.len() > 1 {
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
@@ -1084,10 +1094,17 @@ fn analyze_membership_select<DB: DatabaseLike>(
                 columns,
             }
         }
-        None if selection_references_current_user(select, registry) => {
-            analyze_uncorrelated_membership(select, db, registry, outer_table)
-                .unwrap_or(MembershipSelectAnalysis::AmbiguousNoUniqueJoin)
-        }
+        None if selection_references_current_user(select, registry) => uncorrelated
+            .and_then(|(source, predicates)| {
+                analyze_uncorrelated_membership(
+                    select,
+                    db,
+                    outer_table,
+                    &source,
+                    &predicates.selection,
+                )
+            })
+            .unwrap_or(MembershipSelectAnalysis::AmbiguousNoUniqueJoin),
         None => MembershipSelectAnalysis::NoMatch,
     }
 }
@@ -1098,16 +1115,29 @@ fn analyze_membership_select<DB: DatabaseLike>(
 /// Every refusal here matters, because the translation grants the whole table at once:
 /// exactly one source with no joins, exactly one comparison against the caller, and
 /// nothing reaching outside that one table. Anything else stays refused.
+fn session_zoned_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> Vec<String> {
+    table
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .filter(|column| {
+            let data_type = column.data_type(db).to_ascii_lowercase();
+            data_type.starts_with("timestamptz")
+                || data_type.starts_with("timetz")
+                || ((data_type.starts_with("timestamp") || data_type.starts_with("time"))
+                    && data_type.contains("with time zone"))
+        })
+        .map(|column| column.stored_column_name().into_owned())
+        .collect()
+}
+
 fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
-    registry: &FunctionRegistry,
     outer_table: &str,
+    source: &RelationSource,
+    predicates: &[AnalyzedMembershipPredicate<'_>],
 ) -> Option<MembershipSelectAnalysis> {
-    let sources = relation_sources(select);
-    let [source] = sources.as_slice() else {
-        return None;
-    };
     if select.from.iter().any(|item| !item.joins.is_empty()) {
         return None;
     }
@@ -1122,25 +1152,19 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         .flatten()
         .map(|c| c.stored_column_name().into_owned())
         .collect();
+    let session_zoned_columns = session_zoned_columns(member, db);
 
-    let selection = select.selection.as_ref()?;
-    let mut predicates = Vec::new();
-    flatten_and_predicates(selection, &mut predicates);
+    select.selection.as_ref()?;
 
     let mut user_column: Option<ColumnName> = None;
     let mut extras: Vec<ResidualPredicate> = Vec::new();
-    for predicate in predicates {
-        match analyze_membership_eq_predicate(
-            predicate,
-            &source.table_name,
-            source.alias.as_deref(),
-            &columns,
-            registry,
-        ) {
+    for analyzed in predicates {
+        let predicate = analyzed.predicate;
+        match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(column, MemberMatch::Caller)
                 if user_column.is_none() =>
             {
-                user_column = Some(column);
+                user_column = Some(column.clone());
                 continue;
             }
             // A second caller comparison, a link to the outer row, or a join column
@@ -1168,7 +1192,9 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
         let mut normalized = predicate.clone();
         strip_qualifier_from_expr(&mut normalized, &source.table_name, source.alias.as_deref());
         let residual = residual_predicate(&normalized);
-        if residual.request.is_none() && !conjunct_reads_only_the_row(&normalized, &columns) {
+        if residual.request.is_none()
+            && !conjunct_reads_only_the_row(&normalized, &columns, &session_zoned_columns)
+        {
             return None;
         }
         extras.push(residual);
@@ -1740,14 +1766,21 @@ fn membership_sources_include_ambiguous_unresolvable_shape<DB: DatabaseLike>(
     relation_factor_count > 1 && (has_non_plain_source || has_unresolvable_source)
 }
 
-fn membership_matches<DB: DatabaseLike>(
-    select: &Select,
+struct MembershipMatches<'a> {
+    matches: Vec<(String, MembershipColumns)>,
+    uncorrelated: Option<(RelationSource, MembershipPredicateAnalyses<'a>)>,
+}
+
+fn membership_matches<'a, DB: DatabaseLike>(
+    select: &'a Select,
+    sources: &[RelationSource],
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
-) -> Vec<(String, MembershipColumns)> {
+) -> MembershipMatches<'a> {
     let mut matches = Vec::new();
-    for source in relation_sources(select) {
+    let mut uncorrelated = None;
+    for source in sources {
         let Some(table) = lookup_table(db, &source.table_name) else {
             continue;
         };
@@ -1757,20 +1790,33 @@ fn membership_matches<DB: DatabaseLike>(
             .flatten()
             .map(|c| c.stored_column_name().into_owned())
             .collect();
+        let predicates = analyze_membership_predicates(
+            select,
+            &source.table_name,
+            source.alias.as_deref(),
+            &col_names,
+            registry,
+        );
 
-        if let Some(columns) = extract_membership_columns_with_db(
+        if let Some(columns) = extract_membership_columns_with_analysis(
             select,
             &source.table_name,
             source.alias.as_deref(),
             &col_names,
             outer_table,
             Some(db),
-            registry,
+            &predicates,
         ) {
-            matches.push((source.table_name, columns));
+            matches.push((source.table_name.clone(), columns));
+        }
+        if sources.len() == 1 {
+            uncorrelated = Some((source.clone(), predicates));
         }
     }
-    matches
+    MembershipMatches {
+        matches,
+        uncorrelated,
+    }
 }
 
 pub(super) fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
@@ -1832,6 +1878,58 @@ enum MembershipEqAnalysis {
         correlated: ColumnRef,
     },
     OuterCorrelation,
+}
+
+struct AnalyzedMembershipPredicate<'a> {
+    predicate: &'a Expr,
+    analysis: MembershipEqAnalysis,
+}
+
+struct MembershipPredicateAnalyses<'a> {
+    selection: Vec<AnalyzedMembershipPredicate<'a>>,
+    joins: Vec<AnalyzedMembershipPredicate<'a>>,
+}
+
+fn analyze_membership_predicates<'a>(
+    select: &'a Select,
+    join_table: &str,
+    join_alias: Option<&str>,
+    join_cols: &[String],
+    registry: &FunctionRegistry,
+) -> MembershipPredicateAnalyses<'a> {
+    let mut selection = Vec::new();
+    if let Some(predicate) = &select.selection {
+        flatten_and_predicates(predicate, &mut selection);
+    }
+    let selection = selection
+        .into_iter()
+        .map(|predicate| AnalyzedMembershipPredicate {
+            predicate,
+            analysis: analyze_membership_eq_predicate(
+                predicate, join_table, join_alias, join_cols, registry,
+            ),
+        })
+        .collect();
+
+    let mut joins = Vec::new();
+    for from_item in &select.from {
+        for join in &from_item.joins {
+            if let Some(predicate) = join_on_expr(&join.join_operator) {
+                flatten_and_predicates(predicate, &mut joins);
+            }
+        }
+    }
+    let joins = joins
+        .into_iter()
+        .map(|predicate| AnalyzedMembershipPredicate {
+            predicate,
+            analysis: analyze_membership_eq_predicate(
+                predicate, join_table, join_alias, join_cols, registry,
+            ),
+        })
+        .collect();
+
+    MembershipPredicateAnalyses { selection, joins }
 }
 
 fn analyze_membership_eq_predicate(
@@ -1982,6 +2080,7 @@ pub(super) fn extract_membership_columns(
     .map(|columns| (columns.pairs, columns.user_column, columns.extra_predicates))
 }
 
+#[cfg(test)]
 fn extract_membership_columns_with_db<DB: DatabaseLike>(
     select: &Select,
     join_table: &str,
@@ -1991,6 +2090,28 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     db: Option<&DB>,
     registry: &FunctionRegistry,
 ) -> Option<MembershipColumns> {
+    let predicates =
+        analyze_membership_predicates(select, join_table, join_alias, join_cols, registry);
+    extract_membership_columns_with_analysis(
+        select,
+        join_table,
+        join_alias,
+        join_cols,
+        outer_table,
+        db,
+        &predicates,
+    )
+}
+
+fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
+    select: &Select,
+    join_table: &str,
+    join_alias: Option<&str>,
+    join_cols: &[String],
+    outer_table: &str,
+    db: Option<&DB>,
+    analyzed_predicates: &MembershipPredicateAnalyses<'_>,
+) -> Option<MembershipColumns> {
     let mut correlated: Vec<MembershipJoinPair> = Vec::new();
     let mut fk_col_is_explicit = false; // true only when found via an explicit `join_col = outer_col` predicate
     let mut user_col: Option<(ColumnName, MemberMatch)> = None;
@@ -1998,97 +2119,86 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
     let unqualified_scope = db
         .map(|db| build_unqualified_membership_scope(select, db, join_table, join_cols))
         .unwrap_or_default();
+    let session_zoned_columns = db
+        .and_then(|db| lookup_table(db, join_table).map(|table| session_zoned_columns(table, db)))
+        .unwrap_or_default();
 
-    // Collect JOIN ON predicates separately (they provide explicit FK correlation but should
-    // not be included in the extra_predicate_sql used in generated tuple queries).
-    let mut on_predicates: Vec<&Expr> = Vec::new();
-    for from_item in &select.from {
-        for join in &from_item.joins {
-            if let Some(on_expr) = join_on_expr(&join.join_operator) {
-                flatten_and_predicates(on_expr, &mut on_predicates);
-            }
-        }
-    }
+    // JOIN predicates provide correlation but do not enter the generated filter.
 
     // Process WHERE predicates (with extras).
-    if let Some(selection) = &select.selection {
-        let mut predicates = Vec::new();
-        flatten_and_predicates(selection, &mut predicates);
-
-        for pred in predicates {
-            match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry)
-            {
-                MembershipEqAnalysis::UserColumn(col, how) => {
-                    user_col = Some((col, how));
-                    continue;
+    for analyzed in &analyzed_predicates.selection {
+        let pred = analyzed.predicate;
+        match &analyzed.analysis {
+            MembershipEqAnalysis::UserColumn(col, how) => {
+                user_col = Some((col.clone(), how.clone()));
+                continue;
+            }
+            MembershipEqAnalysis::FkCandidate {
+                join_column,
+                correlated: reference,
+            } => {
+                let pair = MembershipJoinPair {
+                    join_column: join_column.clone(),
+                    outer_column: guarded_row_column(reference.clone(), outer_table)?,
+                };
+                if !correlated.contains(&pair) {
+                    correlated.push(pair);
                 }
-                MembershipEqAnalysis::FkCandidate {
-                    join_column,
-                    correlated: reference,
-                } => {
-                    let pair = MembershipJoinPair {
-                        join_column,
-                        outer_column: guarded_row_column(reference, outer_table)?,
-                    };
-                    if !correlated.contains(&pair) {
-                        correlated.push(pair);
-                    }
-                    fk_col_is_explicit = true;
-                    continue;
-                }
-                MembershipEqAnalysis::OuterCorrelation => {
-                    // Neither side is the membership row's, so PostgreSQL filters
-                    // through the guarded row per hit. The tuple query reads only
-                    // the membership table and cannot carry that filter.
-                    return None;
-                }
-                MembershipEqAnalysis::NotRelevant => {}
+                fk_col_is_explicit = true;
+                continue;
             }
-
-            // Scope validation: reject predicates that reference columns from
-            // tables other than the join table.  Such predicates require a JOIN
-            // that the generated single-table tuple query cannot provide, so
-            // they would produce semantically invalid SQL.
-            if predicate_references_other_table(pred, join_table, join_alias) {
+            MembershipEqAnalysis::OuterCorrelation => {
+                // Neither side is the membership row's, so PostgreSQL filters
+                // through the guarded row per hit. The tuple query reads only
+                // the membership table and cannot carry that filter.
                 return None;
             }
-            if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
-                return None;
-            }
-            // A subquery in an extra predicate is evaluated as the caller by
-            // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
-            if predicate_subquery_reads_other_table(pred, db, join_table) {
-                return None;
-            }
-            // Keep additional predicates for tuple filtering.
-            // Strip join-table qualifiers at the AST level before rendering to SQL.
-            // This handles double-quoted identifiers, dollar-quoted strings, and other
-            // SQL literal forms that text-based rewriting would mangle.
-            let mut normalized_pred = pred.clone();
-            strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
-            // The loader answers this query as itself, once, so a conjunct it cannot
-            // decide from the row alone would answer a different question than the
-            // caller's check does. A recognized request value keeps its own route.
-            let residual = residual_predicate(&normalized_pred);
-            if residual.request.is_none()
-                && !conjunct_reads_only_the_row(&normalized_pred, join_cols)
-            {
-                return None;
-            }
-            extras.push(residual);
+            MembershipEqAnalysis::NotRelevant => {}
         }
+
+        // Scope validation: reject predicates that reference columns from
+        // tables other than the join table.  Such predicates require a JOIN
+        // that the generated single-table tuple query cannot provide, so
+        // they would produce semantically invalid SQL.
+        if predicate_references_other_table(pred, join_table, join_alias) {
+            return None;
+        }
+        if predicate_has_ambiguous_unqualified_column(pred, &unqualified_scope) {
+            return None;
+        }
+        // A subquery in an extra predicate is evaluated as the caller by
+        // `PostgreSQL`, so a table beyond the join table cannot be precomputed.
+        if predicate_subquery_reads_other_table(pred, db, join_table) {
+            return None;
+        }
+        // Keep additional predicates for tuple filtering.
+        // Strip join-table qualifiers at the AST level before rendering to SQL.
+        // This handles double-quoted identifiers, dollar-quoted strings, and other
+        // SQL literal forms that text-based rewriting would mangle.
+        let mut normalized_pred = pred.clone();
+        strip_qualifier_from_expr(&mut normalized_pred, join_table, join_alias);
+        // The loader answers this query as itself, once, so a conjunct it cannot
+        // decide from the row alone would answer a different question than the
+        // caller's check does. A recognized request value keeps its own route.
+        let residual = residual_predicate(&normalized_pred);
+        if residual.request.is_none()
+            && !conjunct_reads_only_the_row(&normalized_pred, join_cols, &session_zoned_columns)
+        {
+            return None;
+        }
+        extras.push(residual);
     }
 
     // Also scan JOIN ON conditions for explicit FK correlation.
     // These are NOT added to extras because the generated tuple query does not include a JOIN.
-    for pred in &on_predicates {
+    for analyzed in &analyzed_predicates.joins {
         if fk_col_is_explicit {
-            break; // FK already found; no need to scan further.
+            break;
         }
-        match analyze_membership_eq_predicate(pred, join_table, join_alias, join_cols, registry) {
+        match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(col, how) => {
                 if user_col.is_none() {
-                    user_col = Some((col, how));
+                    user_col = Some((col.clone(), how.clone()));
                 }
             }
             MembershipEqAnalysis::FkCandidate {
@@ -2096,8 +2206,8 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                 correlated: reference,
             } => {
                 let pair = MembershipJoinPair {
-                    join_column,
-                    outer_column: guarded_row_column(reference, outer_table)?,
+                    join_column: join_column.clone(),
+                    outer_column: guarded_row_column(reference.clone(), outer_table)?,
                 };
                 if !correlated.contains(&pair) {
                     correlated.push(pair);

@@ -27,7 +27,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         comparison,
         separator,
     } = declared;
-    let pk_cols = resolve_row_identity(source_table, db)?;
+    let identity_cols = resolve_row_identity(source_table, db)?;
 
     let request_parameter = source.condition_parameter().clone();
     let mut namespace = condition_parameters.namespace([&request_parameter]);
@@ -80,7 +80,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     );
     table_plan.add_source(TupleSource::SessionAttributeGate {
         table: source_table.clone(),
-        pk_cols,
+        identity_cols,
         relation: relation.clone(),
         condition,
         row_parameter,
@@ -163,7 +163,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     db: &DB,
     request_time_parameter: &ConditionParameterName,
 ) -> Option<UsersetExpr> {
-    let pk_cols = resolve_row_identity(source_table, db)?;
+    let identity_cols = resolve_row_identity(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, request.column.as_str(), db)?;
 
     let request_parameter = request_time_parameter.clone();
@@ -207,7 +207,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     );
     table_plan.add_source(TupleSource::ConditionalAttributeGate {
         table: source_table.clone(),
-        pk_cols,
+        identity_cols,
         relation: relation.clone(),
         condition,
         row_parameter: row_parameter.to_string(),
@@ -458,7 +458,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     // Each share row becomes its own object, keyed on the join table's own primary key, so
     // two viewers of one guarded row never collide on one `(user:*, gate, object)` triple.
     // With no key to name the share rows apart, that collision is unavoidable, so refuse.
-    let Some(pk_cols) = resolve_row_identity(join_table, db) else {
+    let Some(identity_cols) = resolve_row_identity(join_table, db) else {
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
             reason: format!(
@@ -562,7 +562,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         .collect();
     let gate_source = TupleSource::CallerSetShareGate {
         join_table: join_table.clone(),
-        pk_cols: pk_cols.clone(),
+        identity_cols: identity_cols.clone(),
         share_type: share_type.clone(),
         relation: gate_relation.clone(),
         condition,
@@ -586,7 +586,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     table_plan.add_source(gate_source);
     table_plan.add_source(TupleSource::ShareBridge {
         join_table: join_table.clone(),
-        identity_cols: pk_cols,
+        identity_cols,
         object_cols: vec![fk_column.clone()],
         guarded_type,
         share_type,

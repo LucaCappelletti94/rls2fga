@@ -39,16 +39,16 @@ pub use action_relations::{
     ActionAnswer, ActionJudgement, ActionRelations, ActionStatement, RowVersion,
 };
 pub use identifiers::{
-    ColumnName, ConditionParameterName, ConditionParameterNameError, RelationName,
-    RelationNameError, TableId, TableRef, TypeName, TypeNameError,
+    stable_hex_suffix, ColumnName, ConditionParameterName, ConditionParameterNameError,
+    RelationName, RelationNameError, TableId, TableRef, TypeName, TypeNameError,
 };
 pub use notes::{NoteSeverity, TranslationNote};
 pub use patterns::{
     AttributeLiteral, AttributeOperator, AttributePredicate, ConfidenceLevel, RolePrivilege,
 };
 pub use records::{
-    records_from_row, BoundQuery, ColumnKind, ColumnRead, ContextRendering, Guard, ObjectKey,
-    Record, RecordContext, RecordContextEntry, RecordContextValue, RecordDerivation,
+    records_from_row, BoundQuery, BoundQueryError, ColumnKind, ColumnRead, ContextRendering, Guard,
+    ObjectKey, Record, RecordContext, RecordContextEntry, RecordContextValue, RecordDerivation,
     RecordDescription, RecordError, RecordTemplate, ReplayScope, RowCell, RowList, RowValues,
     SubjectKey, ValueSource,
 };

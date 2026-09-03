@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::types::{ColumnName, RelationName, TableId};
+use crate::types::{stable_hex_suffix, ColumnName, RelationName, TableId};
 
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
@@ -75,39 +75,6 @@ pub fn is_current_user_keyword_name(name: &str) -> bool {
     )
 }
 
-/// Split a name into the parts a SQL escaper has to quote one by one.
-///
-/// Deliberately not [`parse_target`]: this feeds `quote_sql_identifier`, whose input is
-/// arbitrary configured text rather than a name to resolve, and whose job is to make any
-/// input safe rather than to refuse what it cannot read.
-pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
-    let mut in_quotes = false;
-    let mut start = 0usize;
-    let mut parts: Vec<String> = Vec::new();
-    let mut chars = name.char_indices().peekable();
-
-    while let Some((idx, ch)) = chars.next() {
-        match ch {
-            '"' => {
-                if in_quotes && chars.peek().is_some_and(|(_, next)| *next == '"') {
-                    // Escaped quote inside a quoted identifier: "".
-                    chars.next();
-                    continue;
-                }
-                in_quotes = !in_quotes;
-            }
-            '.' if !in_quotes => {
-                parts.push(name[start..idx].trim().to_string());
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(name[start..].trim().to_string());
-
-    parts
-}
-
 pub use sql_traits::utils::identifier_resolution::{builtin_function_name, folded_function_name};
 
 /// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation
@@ -155,15 +122,6 @@ pub fn canonical_fga_type_name(name: &str) -> String {
     }
 
     canonical
-}
-
-pub(crate) fn stable_hex_suffix(input: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in input.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{:08x}", (hash & 0xffff_ffff) as u32)
 }
 
 /// `OpenFGA` rejects a relation name longer than this.
@@ -501,26 +459,6 @@ mod tests {
         assert_eq!(
             stored_ident_name(&Ident::with_quote('"', "Owner_Id")),
             "Owner_Id"
-        );
-    }
-
-    #[test]
-    fn split_qualified_identifier_parts_handles_quoted_dots() {
-        assert_eq!(
-            split_qualified_identifier_parts(r#""my.schema"."table.name""#),
-            vec!["\"my.schema\"".to_string(), "\"table.name\"".to_string()]
-        );
-    }
-
-    #[test]
-    fn split_qualified_identifier_parts_handles_escaped_quotes() {
-        assert_eq!(
-            split_qualified_identifier_parts(r#""a""b"."c.d""#),
-            vec![r#""a""b""#.to_string(), r#""c.d""#.to_string()]
-        );
-        assert_eq!(
-            split_qualified_identifier_parts(r#""a""b".c"#),
-            vec![r#""a""b""#.to_string(), "c".to_string()]
         );
     }
 

@@ -261,7 +261,9 @@ fn canonical_identifier(name: &str, fallback: &str) -> String {
     }
 }
 
-fn stable_hex_suffix(value: &str) -> String {
+/// Return the stable eight-digit suffix used to disambiguate generated names.
+#[must_use]
+pub fn stable_hex_suffix(value: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in value.bytes() {
         hash ^= u64::from(byte);
@@ -274,7 +276,8 @@ fn stable_hex_suffix(value: &str) -> String {
 ///
 /// Generator-assigned names are canonicalized and disambiguated before construction.
 /// Configured names are validated and preserve their exact text.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
 pub struct TypeName(String);
 
 impl TypeName {
@@ -323,6 +326,13 @@ impl TryFrom<&str> for TypeName {
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
         Self::try_from(name.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TypeName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::try_from(name).map_err(serde::de::Error::custom)
     }
 }
 
@@ -665,5 +675,11 @@ mod tests {
         let public = TableId::from_stored(Some("public".to_string()), "docs".to_string());
         assert_ne!(app, public);
         assert_ne!(app, TableId::from_stored(None, "docs".to_string()));
+    }
+
+    #[test]
+    fn type_names_validate_at_the_public_boundary() {
+        assert_eq!(TypeName::try_from("docs").expect("valid type name"), "docs");
+        assert!(TypeName::try_from("not a type").is_err());
     }
 }

@@ -28,9 +28,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         grant_grantee_col,
         grant_resource_col,
         grant_role_col,
-        team_membership_table: _,
-        team_membership_user_col,
-        team_membership_team_col,
+        team_membership,
         user_table,
         user_pk_col,
         team_table,
@@ -69,7 +67,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         identities.push(TupleSource::OwnerIdentity {
             owner_type: scope.type_name.to_string(),
             principal_table: upi.table,
-            principal_pk_col: upi.pk_col,
+            principal_identity_col: upi.identity_col,
             subject_type: table_plan.well_known.user.to_string(),
             relation: owner_user_relation(),
         });
@@ -85,7 +83,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
             identities.push(TupleSource::OwnerIdentity {
                 owner_type: scope.type_name.to_string(),
                 principal_table: tpi.table,
-                principal_pk_col: tpi.pk_col,
+                principal_identity_col: tpi.identity_col,
                 subject_type: table_plan.well_known.team.to_string(),
                 relation: owner_team_relation(),
             });
@@ -99,15 +97,11 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     }
 
     // --- Team membership ---
-    if let (Some(tm_table), Some(tm_user), Some(tm_team)) = (
-        team_membership_table,
-        team_membership_user_col,
-        team_membership_team_col,
-    ) {
+    if let (Some(tm_table), Some(membership)) = (team_membership_table, team_membership.as_ref()) {
         let membership_source = TupleSource::TeamMembership {
             membership_table: tm_table.clone(),
-            team_col: tm_team.clone(),
-            user_col: tm_user.clone(),
+            team_col: membership.team_col.clone(),
+            user_col: membership.user_col.clone(),
         };
         table_plan.add_source(membership_source.clone());
         all_types

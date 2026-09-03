@@ -104,11 +104,11 @@ fn parsed_with_session_attributes(
     (db, registry)
 }
 
-fn translation<'a>(
-    db: &'a ParserDB,
+fn translation(
+    db: &ParserDB,
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
-) -> Translation<'a> {
+) -> Translation {
     Translation::plan(
         classify_policies(db, registry),
         db,
@@ -221,7 +221,7 @@ fn scope_relations(scope: &ReplayScope) -> Vec<(String, RelationName)> {
 fn description_relations(description: &RecordDescription) -> Vec<(String, RelationName)> {
     match &description.derivation {
         RecordDerivation::FromRow { template, .. } => {
-            vec![(template.object_type.clone(), template.relation.clone())]
+            vec![(template.object_type.to_string(), template.relation.clone())]
         }
         RecordDerivation::Constant { record } => {
             vec![(
@@ -231,7 +231,7 @@ fn description_relations(description: &RecordDescription) -> Vec<(String, Relati
         }
         RecordDerivation::Joined { queries, .. } => queries
             .iter()
-            .flat_map(|query| scope_relations(&query.scope))
+            .flat_map(|query| scope_relations(query.scope()))
             .collect(),
         _ => Vec::new(),
     }
@@ -471,7 +471,7 @@ fn every_relation_the_model_declares_is_reported() {
             };
             checked += 1;
             assert!(
-                reported.contains(&(template.object_type.clone(), template.relation.clone())),
+                reported.contains(&(template.object_type.to_string(), template.relation.clone())),
                 "{fixture}: {}#{} produces records yet is not reported",
                 template.object_type,
                 template.relation
@@ -919,11 +919,11 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
                     assert!(
                         whole_table
                             .iter()
-                            .any(|sql| is_that_query_plus_one_line(sql, &bound.sql)),
+                            .any(|sql| is_that_query_plus_one_line(sql, bound.sql())),
                         "{fixture}: {}#{} binds a query no whole-table query becomes:\n{}",
                         entry.type_name,
                         entry.relation,
-                        bound.sql
+                        bound.sql()
                     );
                 }
             }
@@ -956,7 +956,7 @@ fn every_replay_slice_names_the_relation_its_shape_fills() {
                 };
                 for query in queries {
                     checked += 1;
-                    let names_relation = match &query.scope {
+                    let names_relation = match query.scope() {
                         ReplayScope::Object {
                             object_type,
                             relations,
@@ -973,7 +973,9 @@ fn every_replay_slice_names_the_relation_its_shape_fills() {
                     assert!(
                         names_relation,
                         "{fixture}: {}#{} has a replay slice for {:?}",
-                        entry.type_name, entry.relation, query.scope
+                        entry.type_name,
+                        entry.relation,
+                        query.scope()
                     );
                 }
             }
@@ -1056,7 +1058,7 @@ fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
                 continue;
             };
             for bound in queries {
-                let identifier = appended_predicate_identifier(&bound.sql);
+                let identifier = appended_predicate_identifier(bound.sql());
                 checked += 1;
                 if identifier.contains("\"\"") {
                     escaped += 1;
@@ -1066,7 +1068,7 @@ fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
                     "{}#{} binds {identifier}, which no whole-table query spells:\n{}",
                     entry.type_name,
                     entry.relation,
-                    bound.sql
+                    bound.sql()
                 );
             }
         }
@@ -1195,7 +1197,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
         "one holder object stands for the whole list"
     );
 
-    let members = entry(&shapes, &holder_type, member_relation().as_str());
+    let members = entry(&shapes, holder_type.as_str(), member_relation().as_str());
     assert_eq!(members.shapes.len(), 1, "one member source, one shape");
     let RecordDerivation::FromRow {
         table,
@@ -1239,11 +1241,11 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
         );
     };
     assert_eq!(queries.len(), 1, "one table carries the change");
-    assert_eq!(queries[0].table.to_string(), "reviewers");
-    assert_eq!(queries[0].key_columns, ["user_id"]);
+    assert_eq!(queries[0].table().to_string(), "reviewers");
+    assert_eq!(queries[0].key_columns(), ["user_id"]);
     assert_eq!(
-        queries[0].scope,
-        ReplayScope::Subject {
+        queries[0].scope(),
+        &ReplayScope::Subject {
             subject_type: "user".to_string(),
             relation: member_relation(),
             object_type: holder.type_name.as_str().to_string(),
@@ -1251,10 +1253,9 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
         "the replay determines what the one member holds through the holder"
     );
     let condition = queries[0]
-        .condition
-        .as_deref()
+        .condition()
         .expect("the clock rides the member tuple as a condition");
-    let sql = &queries[0].sql;
+    let sql = queries[0].sql();
     assert!(
         sql.contains(&format!("'{condition}' AS condition")),
         "the replay names the condition its own SQL projects:\n{sql}"
@@ -1340,9 +1341,9 @@ CREATE POLICY docs_status ON docs FOR SELECT USING (status > 'draft');
     };
     assert!(reason.contains("row comparison on status needs SQL"));
     assert_eq!(queries.len(), 1);
-    assert_eq!(queries[0].table.to_string(), "public.docs");
-    assert_eq!(queries[0].key_columns.len(), 1);
-    assert_eq!(queries[0].key_columns[0].as_str(), "id");
+    assert_eq!(queries[0].table().to_string(), "public.docs");
+    assert_eq!(queries[0].key_columns().len(), 1);
+    assert_eq!(queries[0].key_columns()[0].as_str(), "id");
 }
 
 #[test]
@@ -3191,7 +3192,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
                 };
                 for query in queries {
                     swept += 1;
-                    match &query.scope {
+                    match query.scope() {
                         ReplayScope::Object {
                             object_type,
                             relations,
@@ -3205,7 +3206,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
                         }
                         ReplayScope::Subject { relation, .. } => {
                             assert_eq!(
-                                query.key_columns.len(),
+                                query.key_columns().len(),
                                 1,
                                 "{fixture}: {}#{} keys a subject slice on several columns",
                                 entry.type_name,
@@ -3252,28 +3253,28 @@ fn every_replay_declares_the_slice_its_result_determines() {
     // only thing left to replay, and it reads no guarded table at all.
     for query in &joined {
         assert_eq!(
-            query.table.to_string(),
+            query.table().to_string(),
             "owner_grants",
             "only the grant table needs a replay here: {query:?}"
         );
         assert_eq!(
-            query.key_columns,
+            query.key_columns(),
             ["granted_owner_id"],
             "a grant row is about the owner it names: {query:?}"
         );
         assert!(
-            !query.sql.contains("\"ownables\""),
+            !query.sql().contains("\"ownables\""),
             "the grant query stopped fanning out over the rows an owner owns:\n{}",
-            query.sql
+            query.sql()
         );
         let ReplayScope::Object {
             object_type,
             relations,
-        } = &query.scope
+        } = query.scope()
         else {
             panic!(
                 "the bound owner is the object the facts are about: {:?}",
-                query.scope
+                query.scope()
             );
         };
         assert_eq!(object_type, "owner_grants_owner");
@@ -3343,7 +3344,7 @@ fn membership_records_carry_the_resolved_table_identity() {
     let [bound] = queries.as_slice() else {
         panic!("expected one bound query, got {queries:?}");
     };
-    assert_eq!(&bound.table, table);
+    assert_eq!(bound.table(), table);
 }
 
 /// The named shapes above pin two cases, and a bound query reaches a consumer wherever
@@ -3372,20 +3373,20 @@ fn every_bound_query_agrees_with_its_own_projection() {
                 };
                 for query in queries {
                     let named = format!("{fixture}: {}#{}", entry.type_name, entry.relation);
-                    if let Some(condition) = &query.condition {
+                    if let Some(condition) = query.condition() {
                         conditional += 1;
                         assert!(
-                            query.sql.contains(&format!("'{condition}' AS condition")),
+                            query.sql().contains(&format!("'{condition}' AS condition")),
                             "{named} names condition '{condition}' for a replay that does \
                          not project it:\n{}",
-                            query.sql
+                            query.sql()
                         );
                     } else {
                         plain += 1;
                         assert!(
-                            !query.sql.contains(" AS condition"),
+                            !query.sql().contains(" AS condition"),
                             "{named} projects a condition its replay does not name:\n{}",
-                            query.sql
+                            query.sql()
                         );
                     }
                 }

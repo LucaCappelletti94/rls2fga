@@ -18,7 +18,7 @@ use crate::types::{ColumnName, RelationName, TableId, TypeName};
 pub(crate) struct PrincipalInfo {
     /// Table that stores the principal entities.
     pub table: TableId,
-    pub pk_col: ColumnName,
+    pub identity_col: ColumnName,
 }
 
 /// Which value of a compressed column witnesses the comparison when several rows
@@ -67,7 +67,7 @@ pub(crate) enum TupleSource {
     /// P3 ownership. Produces `(type:pk, relation, user:owner_col)`.
     DirectOwnership {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         owner_col: ColumnName,
         /// One relation per column, so two ownership columns cannot union their
         /// principals.
@@ -79,7 +79,7 @@ pub(crate) enum TupleSource {
     /// `= ANY` refuses it.
     ArrayMembership {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         array_col: ColumnName,
         relation: RelationName,
     },
@@ -88,7 +88,7 @@ pub(crate) enum TupleSource {
     /// extracting `path` as text, dropping the NULL a missing key yields.
     JsonbFieldOwnership {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         column: ColumnName,
         path: Vec<String>,
         relation: RelationName,
@@ -104,7 +104,7 @@ pub(crate) enum TupleSource {
         /// Type the owner identities belong to.
         owner_type: String,
         principal_table: TableId,
-        principal_pk_col: ColumnName,
+        principal_identity_col: ColumnName,
         /// `user` or `team`.
         subject_type: String,
         relation: RelationName,
@@ -168,7 +168,7 @@ pub(crate) enum TupleSource {
     /// P6 public flag. Produces `(type:pk, relation, user:*)` where the flag holds.
     PublicFlag {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         flag_col: ColumnName,
         relation: RelationName,
     },
@@ -176,7 +176,7 @@ pub(crate) enum TupleSource {
     /// A strict function's column arguments must be present before its body can grant.
     RowPresenceGate {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         relation: RelationName,
         columns: Vec<ColumnName>,
     },
@@ -185,7 +185,7 @@ pub(crate) enum TupleSource {
     /// `(type:pk, relation, user:*)` for the rows the guard admits.
     AttributeGate {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         predicate: AttributePredicate,
         relation: RelationName,
     },
@@ -195,7 +195,7 @@ pub(crate) enum TupleSource {
     /// row's own value for the parameter the request cannot supply.
     ConditionalAttributeGate {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         relation: RelationName,
         condition: String,
         /// Condition parameter the row supplies, and the column it reads.
@@ -209,7 +209,7 @@ pub(crate) enum TupleSource {
     /// named.
     SessionAttributeGate {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         relation: RelationName,
         condition: String,
         /// Condition parameter the tuple supplies, and where its value comes from.
@@ -234,7 +234,7 @@ pub(crate) enum TupleSource {
         join_table: TableId,
         /// Primary key of `join_table`, which the share object is keyed on so each row is
         /// its own object.
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         /// Synthetic type the share objects belong to.
         share_type: String,
         relation: RelationName,
@@ -298,7 +298,7 @@ pub(crate) enum TupleSource {
     /// P10 constant `TRUE`. Produces `(type:pk, relation, user:*)` for every row.
     ConstantTrue {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         relation: RelationName,
     },
 
@@ -310,7 +310,7 @@ pub(crate) enum TupleSource {
     /// per row per role.
     PolicyScope {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         scope_relation: RelationName,
         /// Synthetic type the scope objects belong to.
         scope_type: String,
@@ -335,7 +335,7 @@ pub(crate) enum TupleSource {
     /// holder reaches all of them.
     HolderBridge {
         table: TableId,
-        pk_cols: Vec<ColumnName>,
+        identity_cols: Vec<ColumnName>,
         relation: RelationName,
         holder_type: String,
     },
@@ -416,19 +416,19 @@ impl Ord for ResidualSqlKey<'_> {
 pub(crate) enum TupleSourceKey<'a> {
     DirectOwnership {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         owner_col: &'a ColumnName,
         relation: &'a RelationName,
     },
     ArrayMembership {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         array_col: &'a ColumnName,
         relation: &'a RelationName,
     },
     JsonbFieldOwnership {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         column: &'a ColumnName,
         path: &'a [String],
         relation: &'a RelationName,
@@ -436,7 +436,7 @@ pub(crate) enum TupleSourceKey<'a> {
     OwnerIdentity {
         owner_type: &'a str,
         principal_table: &'a TableId,
-        principal_pk_col: &'a ColumnName,
+        principal_identity_col: &'a ColumnName,
         subject_type: &'a str,
         relation: &'a RelationName,
     },
@@ -471,25 +471,25 @@ pub(crate) enum TupleSourceKey<'a> {
     },
     PublicFlag {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         flag_col: &'a ColumnName,
         relation: &'a RelationName,
     },
     RowPresenceGate {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         columns: &'a [ColumnName],
         relation: &'a RelationName,
     },
     AttributeGate {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         predicate: &'a AttributePredicate,
         relation: &'a RelationName,
     },
     ConditionalAttributeGate {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
         condition: &'a str,
         row_parameter: &'a str,
@@ -497,7 +497,7 @@ pub(crate) enum TupleSourceKey<'a> {
     },
     SessionAttributeGate {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
         condition: &'a str,
         row_parameter: &'a RowParameter,
@@ -507,7 +507,7 @@ pub(crate) enum TupleSourceKey<'a> {
     CallerSetShareGate {
         share_type: &'a str,
         join_table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         member_col: &'a ColumnName,
         relation: &'a RelationName,
         condition: &'a str,
@@ -543,12 +543,12 @@ pub(crate) enum TupleSourceKey<'a> {
     },
     ConstantTrue {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
     },
     PolicyScope {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         scope_relation: &'a RelationName,
         scope_type: &'a str,
         scope_object: &'a str,
@@ -561,7 +561,7 @@ pub(crate) enum TupleSourceKey<'a> {
     },
     HolderBridge {
         table: &'a TableId,
-        pk_cols: &'a [ColumnName],
+        identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
         holder_type: &'a str,
     },
@@ -689,35 +689,35 @@ impl TupleSource {
         match self {
             Self::DirectOwnership {
                 table,
-                pk_cols,
+                identity_cols,
                 owner_col,
                 relation,
             } => TupleSourceKey::DirectOwnership {
                 table,
-                pk_cols,
+                identity_cols,
                 owner_col,
                 relation,
             },
             Self::ArrayMembership {
                 table,
-                pk_cols,
+                identity_cols,
                 array_col,
                 relation,
             } => TupleSourceKey::ArrayMembership {
                 table,
-                pk_cols,
+                identity_cols,
                 array_col,
                 relation,
             },
             Self::JsonbFieldOwnership {
                 table,
-                pk_cols,
+                identity_cols,
                 column,
                 path,
                 relation,
             } => TupleSourceKey::JsonbFieldOwnership {
                 table,
-                pk_cols,
+                identity_cols,
                 column,
                 path,
                 relation,
@@ -725,13 +725,13 @@ impl TupleSource {
             Self::OwnerIdentity {
                 owner_type,
                 principal_table,
-                principal_pk_col,
+                principal_identity_col,
                 subject_type,
                 relation,
             } => TupleSourceKey::OwnerIdentity {
                 owner_type,
                 principal_table,
-                principal_pk_col,
+                principal_identity_col,
                 subject_type,
                 relation,
             },
@@ -795,47 +795,47 @@ impl TupleSource {
             },
             Self::PublicFlag {
                 table,
-                pk_cols,
+                identity_cols,
                 flag_col,
                 relation,
             } => TupleSourceKey::PublicFlag {
                 table,
-                pk_cols,
+                identity_cols,
                 flag_col,
                 relation,
             },
             Self::RowPresenceGate {
                 table,
-                pk_cols,
+                identity_cols,
                 columns,
                 relation,
             } => TupleSourceKey::RowPresenceGate {
                 table,
-                pk_cols,
+                identity_cols,
                 columns,
                 relation,
             },
             Self::AttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 predicate,
                 relation,
             } => TupleSourceKey::AttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 predicate,
                 relation,
             },
             Self::ConditionalAttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 condition,
                 row_parameter,
                 column,
             } => TupleSourceKey::ConditionalAttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 condition,
                 row_parameter,
@@ -843,7 +843,7 @@ impl TupleSource {
             },
             Self::SessionAttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 condition,
                 row_parameter,
@@ -852,7 +852,7 @@ impl TupleSource {
                 ..
             } => TupleSourceKey::SessionAttributeGate {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 condition,
                 row_parameter,
@@ -861,7 +861,7 @@ impl TupleSource {
             },
             Self::CallerSetShareGate {
                 join_table,
-                pk_cols,
+                identity_cols,
                 share_type,
                 member_col,
                 relation,
@@ -874,7 +874,7 @@ impl TupleSource {
             } => TupleSourceKey::CallerSetShareGate {
                 share_type,
                 join_table,
-                pk_cols,
+                identity_cols,
                 member_col,
                 relation,
                 condition,
@@ -936,22 +936,22 @@ impl TupleSource {
             },
             Self::ConstantTrue {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
             } => TupleSourceKey::ConstantTrue {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
             },
             Self::PolicyScope {
                 table,
-                pk_cols,
+                identity_cols,
                 scope_relation,
                 scope_type,
                 scope_object,
             } => TupleSourceKey::PolicyScope {
                 table,
-                pk_cols,
+                identity_cols,
                 scope_relation,
                 scope_type,
                 scope_object,
@@ -969,12 +969,12 @@ impl TupleSource {
             },
             Self::HolderBridge {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 holder_type,
             } => TupleSourceKey::HolderBridge {
                 table,
-                pk_cols,
+                identity_cols,
                 relation,
                 holder_type,
             },
@@ -1050,7 +1050,7 @@ mod tests {
         let identity = |owner_type: &str, principal: &str| TupleSource::OwnerIdentity {
             owner_type: owner_type.to_string(),
             principal_table: table(principal),
-            principal_pk_col: ColumnName::from_stored("id"),
+            principal_identity_col: ColumnName::from_stored("id"),
             subject_type: "user".to_string(),
             relation: owner_user_relation(),
         };
@@ -1162,7 +1162,7 @@ mod tests {
             };
             *user_principal = Some(PrincipalInfo {
                 table: table(principal),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             });
             source
         };

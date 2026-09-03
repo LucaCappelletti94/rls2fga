@@ -473,6 +473,13 @@ pub enum TranslationNote {
         /// The extra predicate, as written.
         predicate: String,
     },
+    /// A nullable boolean predicate grants NULL rows that the generated tuples omit.
+    NullableBooleanFlagNarrowed {
+        /// Policy carrying `IS NOT FALSE`.
+        policy: String,
+        /// Nullable column whose NULL rows fall closed.
+        column: ColumnName,
+    },
     /// The parent-side rule could not be translated.
     ParentRuleUntranslated {
         /// Policy inheriting from the parent.
@@ -550,6 +557,7 @@ impl TranslationNote {
                 NoteSeverity::BelowThreshold
             }
             Self::MembershipTableGuarded { .. }
+            | Self::NullableBooleanFlagNarrowed { .. }
             | Self::AttributeNeedsRuntimeEnforcement { .. }
             | Self::InheritanceParentReadsOwnRowsOnly { .. } => NoteSeverity::Partial,
             Self::ReadsDeniedSoWritesCannotName { .. }
@@ -618,6 +626,7 @@ impl TranslationNote {
             | Self::FunctionExpanded { policy, .. }
             | Self::MembershipTableGuarded { policy, .. }
             | Self::MembershipExtraPredicate { policy, .. }
+            | Self::NullableBooleanFlagNarrowed { policy, .. }
             | Self::ParentRuleUntranslated { policy, .. }
             | Self::AttributeNeedsRuntimeEnforcement { policy, .. }
             | Self::StandaloneAttributePolicy { policy, .. }
@@ -859,6 +868,10 @@ impl fmt::Display for TranslationNote {
                 f,
                 "Membership policy carries extra predicate '{predicate}' that must be preserved \
                  in tuple SQL"
+            ),
+            Self::NullableBooleanFlagNarrowed { column, .. } => write!(
+                f,
+                "'{column} IS NOT FALSE' admits NULL rows, but generated tuples include only TRUE"
             ),
             Self::ParentRuleUntranslated { parent_table, .. } => write!(
                 f,

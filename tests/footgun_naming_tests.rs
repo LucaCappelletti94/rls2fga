@@ -983,3 +983,12 @@ CREATE POLICY upd_foo_id ON widgets FOR UPDATE USING (foo_id                 = c
         query.sql
     );
 }
+
+#[test]
+fn the_stable_suffix_has_one_public_implementation() {
+    assert_eq!(rls2fga::stable_hex_suffix("rls2fga"), "b7b4bbb4");
+    assert_eq!(
+        rls2fga::stable_hex_suffix("rls2fga"),
+        rls2fga::types::stable_hex_suffix("rls2fga")
+    );
+}

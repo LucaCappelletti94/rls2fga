@@ -28,7 +28,7 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 
 /// A translation of the smallest schema there is, for tests about filenames rather
 /// than about models.
-fn any_outputs(db: &ParserDB) -> Outputs<'_> {
+fn any_outputs(db: &ParserDB) -> Outputs {
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(db, &registry);
     Translation::plan(
@@ -95,9 +95,11 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
             "grant_grantee_col": "grantee_id",
             "grant_resource_col": "resource_id",
             "grant_role_col": "role_level",
-            "team_membership_table": "team_memberships",
-            "team_membership_user_col": "user_id",
-            "team_membership_team_col": "team_id"
+            "team_membership": {
+                "table": "team_memberships",
+                "user_col": "user_id",
+                "team_col": "team_id"
+            }
         }
     }"#,
         )
@@ -153,9 +155,11 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
             "grant_grantee_col": "grantee_id",
             "grant_resource_col": "resource_id",
             "grant_role_col": "role_level",
-            "team_membership_table": "team_memberships",
-            "team_membership_user_col": "user_id",
-            "team_membership_team_col": "team_id"
+            "team_membership": {
+                "table": "team_memberships",
+                "user_col": "user_id",
+                "team_col": "team_id"
+            }
         }
     }"#,
         )

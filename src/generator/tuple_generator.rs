@@ -15,7 +15,7 @@ pub use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
     deny_relation, WellKnownTypes, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID,
 };
-use crate::parser::names::{split_qualified_identifier_parts, table_id_has_column, table_identity};
+use crate::parser::names::{table_id_has_column, table_identity};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use crate::types::{ColumnName, RelationName, TableId};
 use crate::types::{Record, RecordContextValue, RecordDescription};
@@ -392,14 +392,14 @@ struct ObjectSource<'a> {
     /// `OpenFGA` type the objects belong to.
     type_name: &'a str,
     /// Columns supplying the object identifier, in declared order.
-    pk_cols: &'a [ColumnName],
+    identity_cols: &'a [ColumnName],
     /// Read `FROM ONLY`, keeping inheritance children's rows out.
     only_own_rows: bool,
 }
 
 /// Each key column quoted, in declared order.
-fn quoted_key_parts(pk_cols: &[ColumnName]) -> Vec<String> {
-    pk_cols
+fn quoted_key_parts(identity_cols: &[ColumnName]) -> Vec<String> {
+    identity_cols
         .iter()
         .map(|c| quote_sql_identifier(c.as_str()))
         .collect()
@@ -484,13 +484,13 @@ fn subject_fits(
 fn owner_object_sql(
     owner_type: &str,
     table: &TableId,
-    pk_cols: &[ColumnName],
+    identity_cols: &[ColumnName],
     only_own_rows: bool,
     names: NameContext<'_>,
 ) -> (String, String, String) {
-    let pk_parts = quoted_key_parts(pk_cols);
-    let object_sql = typed_name_sql(owner_type, pk_parts.iter().map(String::as_str));
-    let key_not_null = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
+    let identity_parts = quoted_key_parts(identity_cols);
+    let object_sql = typed_name_sql(owner_type, identity_parts.iter().map(String::as_str));
+    let key_not_null = row_is_nameable(&identity_parts, &object_sql, table, identity_cols, names);
     let table_sql = owner_table_reference(table, only_own_rows);
     (table_sql, object_sql, key_not_null)
 }
@@ -595,26 +595,28 @@ fn render_ownership_tuple_source(
     let ObjectSource {
         table,
         type_name: table_type,
-        pk_cols,
+        identity_cols,
         only_own_rows,
     } = object;
     let table_sql = owner_table_reference(table, only_own_rows);
-    let pk_parts = quoted_key_parts(pk_cols);
+    let identity_parts = quoted_key_parts(identity_cols);
     let owner_col_sql = quote_sql_identifier(owner_col.as_str());
-    let object_sql = typed_name_sql(table_type, pk_parts.iter().map(String::as_str));
+    let object_sql = typed_name_sql(table_type, identity_parts.iter().map(String::as_str));
     let subject_sql = typed_name_sql(subject_prefix, [owner_col_sql.as_str()]);
 
     let owner_cols = [owner_col.clone()];
-    let nameable = row_is_nameable(&pk_parts, &object_sql, table, pk_cols, names);
+    let nameable = row_is_nameable(&identity_parts, &object_sql, table, identity_cols, names);
     let subject_guard = subject_fits_guard(&subject_sql, table, &owner_cols, names);
     // The owner column is the key itself where an identity names both sides, and stating
     // one predicate twice is noise in a script an operator reads.
     let mut predicates: Vec<&str> = Vec::new();
     let owner_not_null = format!("{owner_col_sql} IS NOT NULL");
-    let principal_filter = owner_filter.map(|(principal_table, principal_pk_col)| {
+    let principal_filter = owner_filter.map(|(principal_table, principal_identity_col)| {
         let principal_table_sql = principal_table.sql_name();
-        let principal_pk_col_sql = quote_sql_identifier(principal_pk_col.as_str());
-        format!("{owner_col_sql} IN (SELECT {principal_pk_col_sql} FROM {principal_table_sql})")
+        let principal_identity_col_sql = quote_sql_identifier(principal_identity_col.as_str());
+        format!(
+            "{owner_col_sql} IN (SELECT {principal_identity_col_sql} FROM {principal_table_sql})"
+        )
     });
     if let Some(filter) = &principal_filter {
         predicates.push(filter);
@@ -719,14 +721,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     match source {
         TupleSource::DirectOwnership {
             table,
-            pk_cols,
+            identity_cols,
             owner_col,
             relation,
         } => Some(render_ownership_tuple_source(
             ObjectSource {
                 table,
                 type_name: owner_type,
-                pk_cols,
+                identity_cols,
                 only_own_rows,
             },
             owner_col,
@@ -739,14 +741,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::ArrayMembership {
             table,
-            pk_cols,
+            identity_cols,
             array_col,
             relation,
         } => {
             let array_col_sql = quote_sql_identifier(array_col.as_str());
             let subject_sql = typed_name_sql(well_known.user.as_str(), [ARRAY_ELEMENT_ALIAS]);
             let (table_sql, object_sql, nameable) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_guard =
                 subject_fits_guard(&subject_sql, table, core::slice::from_ref(array_col), names);
             Some(TupleQuery {
@@ -767,7 +769,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::JsonbFieldOwnership {
             table,
-            pk_cols,
+            identity_cols,
             column,
             path,
             relation,
@@ -776,7 +778,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let field_operand = format!("({field_sql})");
             let subject_sql = typed_name_sql(well_known.user.as_str(), [field_operand.as_str()]);
             let (table_sql, object_sql, nameable) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_guard =
                 subject_fits_guard(&subject_sql, table, core::slice::from_ref(column), names);
             Some(TupleQuery {
@@ -800,17 +802,17 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         TupleSource::OwnerIdentity {
             owner_type: identity_type,
             principal_table,
-            principal_pk_col,
+            principal_identity_col,
             subject_type,
             relation,
         } => Some(render_ownership_tuple_source(
             ObjectSource {
                 table: principal_table,
                 type_name: identity_type,
-                pk_cols: core::slice::from_ref(principal_pk_col),
+                identity_cols: core::slice::from_ref(principal_identity_col),
                 only_own_rows,
             },
-            principal_pk_col,
+            principal_identity_col,
             relation,
             subject_type,
             format!("-- Owner identities that are rows of {principal_table}"),
@@ -865,9 +867,9 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
                 (Some(up), Some(tp)) => {
                     let user_tbl_sql = up.table.sql_name();
-                    let user_pk_sql = quote_sql_identifier(up.pk_col.as_str());
+                    let user_pk_sql = quote_sql_identifier(up.identity_col.as_str());
                     let team_tbl_sql = tp.table.sql_name();
-                    let team_pk_sql = quote_sql_identifier(tp.pk_col.as_str());
+                    let team_pk_sql = quote_sql_identifier(tp.identity_col.as_str());
                     subject_joins.push(format!(
                         "LEFT JOIN {user_tbl_sql} u ON u.{user_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
@@ -887,7 +889,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 (Some(_), None) => user_subject_sql,
                 (None, Some(tp)) => {
                     let team_tbl_sql = tp.table.sql_name();
-                    let team_pk_sql = quote_sql_identifier(tp.pk_col.as_str());
+                    let team_pk_sql = quote_sql_identifier(tp.identity_col.as_str());
                     subject_joins.push(format!(
                         "JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
@@ -1074,7 +1076,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         // two viewers of one guarded row become two objects rather than colliding on one.
         TupleSource::CallerSetShareGate {
             join_table,
-            pk_cols,
+            identity_cols,
             share_type,
             member_col,
             relation,
@@ -1087,10 +1089,10 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let join_table_sql = join_table.sql_name();
             let member_col_sql = quote_sql_identifier(member_col.as_str());
             let parameter_sql = quote_sql_string_literal(row_parameter);
-            let pk_parts = quoted_key_parts(pk_cols);
-            let object_sql = typed_name_sql(share_type, pk_parts.iter().map(String::as_str));
-            let mut null_cols = pk_parts;
-            if !pk_cols.contains(member_col) {
+            let identity_parts = quoted_key_parts(identity_cols);
+            let object_sql = typed_name_sql(share_type, identity_parts.iter().map(String::as_str));
+            let mut null_cols = identity_parts;
+            if !identity_cols.contains(member_col) {
                 null_cols.push(member_col_sql.clone());
             }
             let null_guards = null_cols
@@ -1103,7 +1105,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 &object_sql,
                 None,
                 join_table,
-                pk_cols,
+                identity_cols,
                 &[],
                 names,
             );
@@ -1363,12 +1365,12 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::HolderBridge {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             holder_type,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_sql = typed_name_literal(holder_type, HOLDER_OBJECT_ID);
             Some(TupleQuery {
                 comment: format!("-- Every {table} row points at the {holder_type} holder"),
@@ -1487,12 +1489,12 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::PublicFlag {
             table,
-            pk_cols,
+            identity_cols,
             flag_col,
             relation,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let flag_col_sql = quote_sql_identifier(flag_col.as_str());
             Some(TupleQuery {
                 comment: format!("-- Public access flag ({flag_col})"),
@@ -1511,12 +1513,12 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::RowPresenceGate {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             columns,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let presence = columns
                 .iter()
                 .map(|column| format!("{} IS NOT NULL", quote_sql_identifier(column.as_str())))
@@ -1539,12 +1541,12 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::AttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             predicate,
             relation,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let column_sql = quote_sql_identifier(predicate.column.as_str());
             let operator = render_attribute_operator(predicate.operator)?;
             let value_sql = render_attribute_literal(&predicate.value)?;
@@ -1570,14 +1572,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         // the row supplies, since the service cannot know either from the tuple alone.
         TupleSource::ConditionalAttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             condition,
             row_parameter,
             column,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let column_sql = quote_sql_identifier(column.as_str());
             let parameter_sql = quote_sql_string_literal(row_parameter);
             Some(TupleQuery {
@@ -1601,14 +1603,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::SessionAttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             condition,
             row_parameter,
             ..
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let parameter_sql = quote_sql_string_literal(row_parameter.parameter());
             // A NULL row value matches nothing in PostgreSQL, so it needs no tuple.
             let (carried_sql, carried_filter, what) = match row_parameter {
@@ -1646,11 +1648,11 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::ConstantTrue {
             table,
-            pk_cols,
+            identity_cols,
             relation,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             Some(TupleQuery {
                 comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
                 sql: format!(
@@ -1667,13 +1669,13 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         TupleSource::PolicyScope {
             table,
-            pk_cols,
+            identity_cols,
             scope_relation,
             scope_type,
             scope_object,
         } => {
             let (table_sql, object_sql, key_not_null) =
-                owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
+                owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_sql = typed_name_literal(scope_type, scope_object);
             Some(TupleQuery {
                 comment: format!("-- Every {table} row is judged by the scope {scope_object}"),
@@ -1762,35 +1764,9 @@ fn owner_table_reference(table: &TableId, only_own_rows: bool) -> String {
         quoted
     }
 }
-/// Quote `identifier` for SQL, splitting a qualified name and escaping each part.
-///
-/// The only place an identifier becomes SQL text. `describe.rs` reads it too, since a
-/// bound query's condition names a column and a second escaper would let one spelling
-/// escape what the other does not.
+/// Quote one stored identifier as one SQL identifier.
 pub(crate) fn quote_sql_identifier(identifier: &str) -> String {
-    split_qualified_identifier_parts(identifier)
-        .into_iter()
-        .map(|part| quote_sql_identifier_part(&part))
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn quote_sql_identifier_part(part: &str) -> String {
-    let trimmed = part.trim();
-    if trimmed.is_empty() {
-        return "\"\"".to_string();
-    }
-    // Strip pre-existing outer quotes and re-escape through the normal path.
-    // This prevents pre-quoted strings from bypassing validation (e.g. a
-    // function_registry.json entry containing `"foo" OR 1=1--`).
-    let raw = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        trimmed[1..trimmed.len() - 1].replace("\"\"", "\"")
-    } else {
-        trimmed.to_string()
-    };
-    // Always double-quote the identifier: this is semantically equivalent to unquoted
-    // lowercase identifiers and avoids the need for an ever-growing reserved-keyword list.
-    format!("\"{}\"", raw.replace('"', "\"\""))
+    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 /// Quote `value` as a SQL string literal.
@@ -1871,7 +1847,7 @@ mod tests {
 
         let owned = TupleSource::DirectOwnership {
             table: table("docs"),
-            pk_cols: vec![ColumnName::from_stored("id")],
+            identity_cols: vec![ColumnName::from_stored("id")],
             owner_col: ColumnName::from_stored("owner_id"),
             relation: RelationName::canonicalized("owner"),
         };
@@ -2069,6 +2045,7 @@ CREATE POLICY docs_update ON docs FOR ALL
         classified.with_check_classification = Some(ClassifiedExpr {
             pattern: PatternClass::P6BooleanFlag(BooleanFlag {
                 column: ColumnName::from_stored("is_public"),
+                admits_null: false,
             }),
             confidence: ConfidenceLevel::A,
         });
@@ -2603,35 +2580,14 @@ CREATE POLICY docs_select ON docs FOR SELECT
     }
 
     #[test]
-    fn quote_sql_identifier_part_always_double_quotes() {
-        // All identifiers, simple or keyword, are now always double-quoted.
-        // This prevents any reserved-word confusion without requiring a keyword list.
-        assert_eq!(quote_sql_identifier_part("simple"), "\"simple\"");
-        assert_eq!(quote_sql_identifier_part("null"), "\"null\"");
-        assert_eq!(quote_sql_identifier_part("with"), "\"with\"");
-        assert_eq!(quote_sql_identifier_part("join"), "\"join\"");
-        assert_eq!(quote_sql_identifier_part("default"), "\"default\"");
-        assert_eq!(quote_sql_identifier_part("case"), "\"case\"");
-
-        // Pre-quoted identifiers are stripped, unescaped, and re-quoted through
-        // the normal path to prevent injection via malformed registry entries.
-        assert_eq!(
-            quote_sql_identifier_part("\"simple\""),
-            "\"simple\"",
-            "pre-quoted simple identifier should round-trip as double-quoted"
-        );
-        assert_eq!(
-            quote_sql_identifier_part("\"mixed Case\""),
-            "\"mixed Case\"",
-            "pre-quoted identifier with spaces must be re-quoted"
-        );
-        // A pre-quoted identifier with inner doubled-quotes (SQL escaping):
-        // strip outer quotes → unescape `""` → `"` → re-escape → `""` → re-quote.
-        assert_eq!(
-            quote_sql_identifier_part("\"with\"\"inner\"\"quotes\""),
-            "\"with\"\"inner\"\"quotes\"",
-            "inner doubled quotes should be unescaped then properly re-escaped"
-        );
+    fn quote_sql_identifier_preserves_stored_names() {
+        for name in ["simple", "null", "with", "join", "default", "case"] {
+            assert_eq!(quote_sql_identifier(name), format!("\"{name}\""));
+        }
+        assert_eq!(quote_sql_identifier(""), "\"\"");
+        assert_eq!(quote_sql_identifier(" spaced "), "\" spaced \"");
+        assert_eq!(quote_sql_identifier("with\"quote"), "\"with\"\"quote\"");
+        assert_eq!(quote_sql_identifier("\"quoted\""), "\"\"\"quoted\"\"\"");
     }
 
     #[test]
@@ -2701,7 +2657,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             user_principal: None,
             team_principal: Some(PrincipalInfo {
                 table: table("teams"),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
@@ -2746,11 +2702,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
             )],
             user_principal: Some(PrincipalInfo {
                 table: table("users"),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             }),
             team_principal: Some(PrincipalInfo {
                 table: table("teams"),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
@@ -2799,7 +2755,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             user_principal: None,
             team_principal: Some(PrincipalInfo {
                 table: table("groups"),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
@@ -2845,7 +2801,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             user_principal: None,
             team_principal: Some(PrincipalInfo {
                 table: table("teams"),
-                pk_col: ColumnName::from_stored("id"),
+                identity_col: ColumnName::from_stored("id"),
             }),
         };
         let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");

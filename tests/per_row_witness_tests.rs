@@ -324,6 +324,17 @@ fn a_witness_and_plain_membership_keep_distinct_relations_in_both_orders() {
             witness_relation, "member",
             "{name} must keep the witness walk off the direct relation:\n{dsl}"
         );
+        let witness_edge = format!("{witness_relation} from docs");
+        assert_eq!(
+            relation_definition(&dsl, "docs", "can_select").as_deref(),
+            Some(witness_edge.as_str()),
+            "{name} must route SELECT through the clocked witness:\n{dsl}"
+        );
+        assert_eq!(
+            relation_definition(&dsl, "docs", "can_delete").as_deref(),
+            Some("member from docs and can_select"),
+            "{name} must route DELETE through the plain member relation:\n{dsl}"
+        );
         let plain_query = tuples
             .split_inclusive(';')
             .find(|query| {

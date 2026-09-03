@@ -24,7 +24,7 @@ use crate::types::{
     RecordContextEntry, RecordDerivation, RecordDescription, RecordTemplate, ReplayScope,
     SubjectKey, ValueSource,
 };
-use crate::types::{ColumnName, RelationName, TableId};
+use crate::types::{ColumnName, RelationName, TableId, TypeName};
 
 /// Sorted, deduplicated table list.
 fn tables(names: &[&TableId]) -> Vec<TableId> {
@@ -49,10 +49,10 @@ fn from_row(
     described(
         table,
         RecordTemplate {
-            object_type: object_type.to_string(),
+            object_type: TypeName::canonicalized(object_type),
             object_key: object_key.into(),
             relation: relation.clone(),
-            subject_type: subject_type.to_string(),
+            subject_type: TypeName::canonicalized(subject_type),
             subject_key: subject_key.into(),
             context: None,
         },
@@ -101,13 +101,14 @@ fn bind(
         Some((filter, grouping)) => format!("{filter}\nAND {predicate}\nGROUP BY {grouping};"),
         None => format!("{body}\nAND {predicate};"),
     };
-    Some(BoundQuery {
-        table: table.clone(),
-        key_columns: key_columns.to_vec(),
+    BoundQuery::new(
+        table.clone(),
+        key_columns.to_vec(),
         sql,
-        condition: query.condition.clone(),
+        query.condition.clone(),
         scope,
-    })
+    )
+    .ok()
 }
 
 /// The condition [`bind`] appends: every column compared to its own bound value.
@@ -201,10 +202,10 @@ fn is_true<DB: DatabaseLike>(table: &TableId, column: &ColumnName, db: &DB) -> G
 
 fn key_parts<DB: DatabaseLike>(
     table: &TableId,
-    pk_cols: &[ColumnName],
+    identity_cols: &[ColumnName],
     db: &DB,
 ) -> Vec<ValueSource> {
-    pk_cols
+    identity_cols
         .iter()
         .map(|column| value_column(table, column, db))
         .collect()
@@ -221,13 +222,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     match source {
         TupleSource::DirectOwnership {
             table,
-            pk_cols,
+            identity_cols,
             owner_col,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             value_column(table, owner_col, db),
@@ -238,13 +239,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // as `WHERE member IS NOT NULL` does.
         TupleSource::ArrayMembership {
             table,
-            pk_cols,
+            identity_cols,
             array_col,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             list_column(table, array_col, db),
@@ -253,14 +254,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::JsonbFieldOwnership {
             table,
-            pk_cols,
+            identity_cols,
             column,
             path,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             json_path(table, column, path, db),
@@ -272,7 +273,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         TupleSource::OwnerIdentity {
             owner_type: identity_type,
             principal_table,
-            principal_pk_col,
+            principal_identity_col,
             subject_type,
             relation,
         } => Some(from_row(
@@ -280,13 +281,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             identity_type,
             ObjectKey::new(key_parts(
                 principal_table,
-                core::slice::from_ref(principal_pk_col),
+                core::slice::from_ref(principal_identity_col),
                 db,
             )),
             relation,
             subject_type,
-            subject_column(principal_table, principal_pk_col, db),
-            vec![not_null(principal_table, principal_pk_col, db)],
+            subject_column(principal_table, principal_identity_col, db),
+            vec![not_null(principal_table, principal_identity_col, db)],
         )),
 
         TupleSource::ExplicitGrants {
@@ -457,10 +458,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: parent_type.clone(),
+                    object_type: TypeName::canonicalized(parent_type),
                     object_key: ObjectKey::new(key_parts(join_table, fk_cols, db)),
                     relation: member_relation(),
-                    subject_type: well_known.user.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: subject_column(join_table, user_col, db),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),
@@ -503,13 +504,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::PublicFlag {
             table,
-            pk_cols,
+            identity_cols,
             flag_col,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             SubjectKey::wildcard(),
@@ -518,13 +519,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::RowPresenceGate {
             table,
-            pk_cols,
+            identity_cols,
             columns,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             SubjectKey::wildcard(),
@@ -536,12 +537,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::ConstantTrue {
             table,
-            pk_cols,
+            identity_cols,
             relation,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             well_known.user.as_str(),
             SubjectKey::wildcard(),
@@ -550,14 +551,14 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
 
         TupleSource::PolicyScope {
             table,
-            pk_cols,
+            identity_cols,
             scope_relation,
             scope_type,
             scope_object,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             scope_relation,
             scope_type,
             ValueSource::Literal(scope_object.clone()),
@@ -590,7 +591,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // the same comparison the query puts in its WHERE.
         TupleSource::AttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             predicate,
             relation,
         } => {
@@ -602,8 +603,8 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         queries: bind(
                             query,
                             table,
-                            pk_cols,
-                            &bound_eq(None, pk_cols),
+                            identity_cols,
+                            &bound_eq(None, identity_cols),
                             ReplayScope::Object {
                                 object_type: owner_type.to_string(),
                                 relations: vec![relation.clone()],
@@ -618,7 +619,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(from_row(
                 table,
                 owner_type,
-                ObjectKey::new(key_parts(table, pk_cols, db)),
+                ObjectKey::new(key_parts(table, identity_cols, db)),
                 relation,
                 well_known.user.as_str(),
                 SubjectKey::wildcard(),
@@ -632,7 +633,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // carries it.
         TupleSource::ConditionalAttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             condition,
             row_parameter,
@@ -640,10 +641,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(described(
             table,
             RecordTemplate {
-                object_type: owner_type.to_string(),
-                object_key: ObjectKey::new(key_parts(table, pk_cols, db)),
+                object_type: TypeName::canonicalized(owner_type),
+                object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
                 relation: relation.clone(),
-                subject_type: well_known.user.to_string(),
+                subject_type: well_known.user.clone(),
                 subject_key: SubjectKey::wildcard(),
                 context: Some(RecordContext {
                     condition: condition.clone(),
@@ -662,7 +663,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // the recipe rather than the record says how the two meet.
         TupleSource::SessionAttributeGate {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             row_parameter,
             condition,
@@ -684,10 +685,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 table,
                 RecordTemplate {
-                    object_type: owner_type.to_string(),
-                    object_key: ObjectKey::new(key_parts(table, pk_cols, db)),
+                    object_type: TypeName::canonicalized(owner_type),
+                    object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
                     relation: relation.clone(),
-                    subject_type: well_known.user.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
@@ -709,7 +710,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // what keeps the records current.
         TupleSource::CallerSetShareGate {
             join_table,
-            pk_cols,
+            identity_cols,
             share_type,
             member_col,
             relation,
@@ -735,8 +736,8 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             queries: bind(
                                 query,
                                 join_table,
-                                pk_cols,
-                                &bound_eq(None, pk_cols),
+                                identity_cols,
+                                &bound_eq(None, identity_cols),
                                 ReplayScope::Object {
                                     object_type: share_type.clone(),
                                     relations: vec![relation.clone()],
@@ -774,10 +775,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: share_type.clone(),
-                    object_key: ObjectKey::new(key_parts(join_table, pk_cols, db)),
+                    object_type: TypeName::canonicalized(share_type),
+                    object_key: ObjectKey::new(key_parts(join_table, identity_cols, db)),
                     relation: relation.clone(),
-                    subject_type: well_known.user.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
                         condition: condition.clone(),
@@ -819,10 +820,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: share_type.clone(),
+                    object_type: TypeName::canonicalized(share_type),
                     object_key: ObjectKey::new(key_parts(join_table, identity_cols, db)),
                     relation: relation.clone(),
-                    subject_type: well_known.user.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: subject_column(join_table, user_col, db),
                     context: Some(RecordContext {
                         condition: condition.clone(),
@@ -876,13 +877,13 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         // Every row of the table points at the one holder object.
         TupleSource::HolderBridge {
             table,
-            pk_cols,
+            identity_cols,
             relation,
             holder_type,
         } => Some(from_row(
             table,
             owner_type,
-            ObjectKey::new(key_parts(table, pk_cols, db)),
+            ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
             holder_type,
             ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
@@ -1013,12 +1014,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 member_table,
                 RecordTemplate {
-                    object_type: holder_type.clone(),
+                    object_type: TypeName::canonicalized(holder_type),
                     object_key: ObjectKey::new(vec![ValueSource::Literal(
                         HOLDER_OBJECT_ID.to_string(),
                     )]),
                     relation: member_relation(),
-                    subject_type: well_known.user.to_string(),
+                    subject_type: well_known.user.clone(),
                     subject_key: subject_column(member_table, user_col, db),
                     context: Some(RecordContext {
                         condition: gate.condition.clone(),

@@ -2,8 +2,8 @@
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::parser::names::{canonical_fga_type_name, clamp_relation_name, stable_hex_suffix};
-use crate::types::RelationName;
+use crate::parser::names::{canonical_fga_type_name, clamp_relation_name};
+use crate::types::{stable_hex_suffix, RelationName};
 
 /// Normalized relation naming metadata for a role level.
 #[derive(Debug, Clone, PartialEq, Eq)]

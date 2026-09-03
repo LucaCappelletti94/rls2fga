@@ -12,22 +12,15 @@ use crate::classifier::patterns::{
 };
 use crate::types::TranslationNote;
 
-/// Escape a user-controlled string for safe embedding in a Markdown table cell.
-///
-/// Replaces `|` with `\|`, strips control characters, and collapses newlines
-/// so they do not break the table row.
+/// Remove Markdown table control characters and escape pipes.
 fn md_escape(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_control() || *c == ' ')
+        .filter(|c| !c.is_control())
         .collect::<String>()
         .replace('|', r"\|")
 }
 
-/// Build a markdown report with the confidence table and the translation's notes.
-///
-/// `policies` is the unfiltered classification output. Clauses below `min_confidence`
-/// are absent from the model and tuples, so the report is the only place their loss is
-/// visible.
+/// Build a report from the unfiltered policies, listing only clauses or arms the threshold drops.
 pub(crate) fn build_report(
     notes: &[TranslationNote],
     policies: &[ClassifiedPolicy],
@@ -122,10 +115,9 @@ fn write_dropped_section(
     let _ = writeln!(report);
     let _ = writeln!(
         report,
-        "Excluded from the model and tuple output. A PERMISSIVE clause grants \
-         nothing, so the model is narrower than the policy. A RESTRICTIVE clause \
-         becomes `no_access`, since PostgreSQL ANDs it onto every other policy. \
-         For an `OR`, only the listed arms are excluded."
+        "A dropped PERMISSIVE clause or arm grants nothing, a dropped RESTRICTIVE clause \
+         or arm becomes `no_access`, and only listed `OR` arms are excluded from the model \
+         and tuple output."
     );
     let _ = writeln!(report);
 
@@ -207,7 +199,7 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         }) => {
             format!("{} via {function}()", format_pattern(&inner.pattern))
         }
-        PatternClass::P6BooleanFlag(BooleanFlag { column }) => format!("P6 ({column})"),
+        PatternClass::P6BooleanFlag(BooleanFlag { column, .. }) => format!("P6 ({column})"),
         PatternClass::P7AbacAnd(AbacAnd { attribute_part, .. }) => {
             format!("P7 (ABAC: {attribute_part})")
         }
@@ -371,6 +363,7 @@ CREATE POLICY {name} ON docs USING (TRUE);
             (
                 PatternClass::P6BooleanFlag(BooleanFlag {
                     column: ColumnName::from_stored("is_public"),
+                    admits_null: false,
                 }),
                 "P6 (is_public)",
             ),

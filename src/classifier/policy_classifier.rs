@@ -1787,6 +1787,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
             (
                 PatternClass::P6BooleanFlag(BooleanFlag {
                     column: ColumnName::from_stored("c"),
+                    admits_null: false,
                 }),
                 "boolean-flag check",
             ),
@@ -1890,7 +1891,8 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
         // Non-relationship patterns
         assert!(!is_relationship_pattern_for_p7(
             &PatternClass::P6BooleanFlag(BooleanFlag {
-                column: ColumnName::from_stored("c")
+                column: ColumnName::from_stored("c"),
+                admits_null: false,
             })
         ));
         assert!(!is_relationship_pattern_for_p7(
@@ -1944,7 +1946,8 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 op: BoolOp::Or,
                 parts: vec![ClassifiedExpr {
                     pattern: PatternClass::P6BooleanFlag(BooleanFlag {
-                        column: ColumnName::from_stored("c")
+                        column: ColumnName::from_stored("c"),
+                        admits_null: false,
                     }),
                     confidence: ConfidenceLevel::A,
                 }],
@@ -2142,7 +2145,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         );
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
         assert!(
-            matches!(&classified.pattern, PatternClass::P6BooleanFlag(BooleanFlag { column }) if column == "is_public"),
+            matches!(&classified.pattern, PatternClass::P6BooleanFlag(BooleanFlag { column, .. }) if column == "is_public"),
             "a trailing FALSE branch catches only rows that deny either way, got: {:?}",
             classified.pattern
         );

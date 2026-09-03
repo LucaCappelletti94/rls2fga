@@ -34,7 +34,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // to the holder, so with no row identity there is nothing to hang it on, a
     // holder type minted here would outlive the expression that justified it,
     // and advice about the tuple SQL names a query nothing will emit.
-    let Some(pk_cols) = resolve_row_identity(source_table, db) else {
+    let Some(source_identity_cols) = resolve_row_identity(source_table, db) else {
         skip_source_without_row_identity(table_plan, source_table, "membership holder tuples", db);
         return deny_expr(table_plan);
     };
@@ -148,7 +148,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         });
         table_plan.add_source(TupleSource::HolderBridge {
             table: source_table.clone(),
-            pk_cols,
+            identity_cols: source_identity_cols,
             relation: holder_relation.clone(),
             holder_type,
         });
@@ -190,7 +190,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     }
     table_plan.add_source(TupleSource::HolderBridge {
         table: source_table.clone(),
-        pk_cols,
+        identity_cols: source_identity_cols,
         relation: holder_relation.clone(),
         holder_type,
     });
