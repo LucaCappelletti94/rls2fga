@@ -13,9 +13,9 @@ use crate::parser::expr::{function_arg_expr, function_call, positional_function_
 use crate::parser::function_analyzer::current_setting_literal_key;
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    folded_function_name, is_current_user_keyword_name, is_public_flag_column_name,
-    is_user_related_column_name, lookup_table, parse_target, stored_ident_name,
-    stored_relation_name,
+    builtin_function_name, folded_function_name, is_current_user_keyword_name,
+    is_public_flag_column_name, is_user_related_column_name, lookup_table, parse_target,
+    stored_ident_name, stored_relation_name,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, ForeignKeyLike, TableLike};
 use crate::types::ColumnName;
@@ -146,7 +146,7 @@ fn recognize_pg_has_role(expr: &Expr, registry: &FunctionRegistry) -> Option<Cla
     let Expr::Function(func) = expr else {
         return None;
     };
-    if folded_function_name(func).as_deref() != Some("pg_has_role") {
+    if builtin_function_name(func).as_deref() != Some("pg_has_role") {
         return None;
     }
     let FunctionArguments::List(arg_list) = &func.args else {

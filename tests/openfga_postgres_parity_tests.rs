@@ -8542,3 +8542,104 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
 }
 
 /// Typed schema for the shadowed clock case.
+mod shadowed_clock_schema {
+    diesel::table! {
+        #[sql_name = "docs"]
+        shadow_docs (id) {
+            id -> diesel::sql_types::Integer,
+        }
+    }
+}
+
+/// A declared `app.now()` returning `'infinity'` shadows the clock, so the policy
+/// grants nothing: `expires_at > 'infinity'` holds for no row.
+///
+/// Reading the call as the builtin minted a `request_time` condition, which grants
+/// every unexpired row the database denies. The translation must fall closed instead,
+/// and say so.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn qualified_clock_shadow_parity_postgres18_and_openfga() {
+    let postgres = support::containers::start_postgres().await;
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE SCHEMA app;
+CREATE FUNCTION app.now() RETURNS TIMESTAMPTZ LANGUAGE sql IMMUTABLE
+    AS $$SELECT 'infinity'::timestamptz$$;
+CREATE TABLE docs (id INT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the shadowed clock schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; \
+         GRANT USAGE ON SCHEMA app TO alice; \
+         GRANT SELECT ON docs TO alice; \
+         INSERT INTO docs (id, expires_at) VALUES (1, now() + interval '1 year');",
+    )
+    .expect("Failed to seed the unexpired row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "qualified-clock-shadow").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, all_tuple_writes(&mut conn, tuple_queries)).await;
+
+    let expected = conn
+        .transaction::<bool, diesel::result::Error, _>(|conn| {
+            diesel::sql_query("SET LOCAL ROLE alice").execute(conn)?;
+            let visible = shadowed_clock_schema::shadow_docs::table
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok(visible > 0)
+        })
+        .expect("reading under row level security should not error");
+    let now = postgres_now(&mut conn);
+    let actual = support::openfga::check_allowed_with_context(
+        &client,
+        "user:alice",
+        "can_select",
+        "docs:1",
+        serde_json::json!({ "request_time": now }),
+    )
+    .await;
+
+    assert!(
+        !expected,
+        "no timestamp exceeds infinity, so PostgreSQL denies the unexpired row"
+    );
+    assert!(
+        !actual,
+        "OpenFGA granted a row PostgreSQL denies: `app.now()` was read as the clock"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
+}

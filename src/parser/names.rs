@@ -61,10 +61,7 @@ pub fn stored_identifier(value: &str, quoted: bool) -> alloc::borrow::Cow<'_, st
     sql_traits::utils::identifier_resolution::normalize_identifier(value, quoted)
 }
 
-/// Stored name of an identifier written in a policy expression.
-pub fn stored_ident_name(ident: &sqlparser::ast::Ident) -> alloc::borrow::Cow<'_, str> {
-    stored_identifier(&ident.value, ident.quote_style.is_some())
-}
+pub use sql_traits::utils::identifier_resolution::stored_ident_name;
 
 /// True when `name` is a SQL keyword that resolves to the current session role.
 ///
@@ -111,18 +108,7 @@ pub(crate) fn split_qualified_identifier_parts(name: &str) -> Vec<String> {
     parts
 }
 
-/// Terminal identifier of a called function folded for builtin recognition, `None` when
-/// it was quoted.
-///
-/// Only the builtins this crate knows are matched against it, so a quoted spelling names
-/// a user function and must not fold onto one of them.
-pub fn folded_function_name(func: &sqlparser::ast::Function) -> Option<String> {
-    let last = func.name.0.last().map(|part| match part {
-        sqlparser::ast::ObjectNamePart::Identifier(ident) => ident,
-        sqlparser::ast::ObjectNamePart::Function(function) => &function.name,
-    })?;
-    (last.quote_style.is_none()).then(|| last.value.to_ascii_lowercase())
-}
+pub use sql_traits::utils::identifier_resolution::{builtin_function_name, folded_function_name};
 
 /// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation
 /// when schema-qualified. Falls back to `resource` when nothing survives.

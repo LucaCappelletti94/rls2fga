@@ -10,7 +10,9 @@ use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKin
 use crate::classifier::recognizers::projected_select;
 use crate::parser::expr::function_arg_expr;
 use crate::parser::expr::unwrap_cast_or_nested;
-use crate::parser::names::{folded_function_name, is_current_user_keyword_name, parse_target};
+use crate::parser::names::{
+    builtin_function_name, folded_function_name, is_current_user_keyword_name, parse_target,
+};
 use crate::types::ColumnName;
 
 /// Semantic classification of a SQL function body.
@@ -554,7 +556,7 @@ pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     let Expr::Function(func) = expr else {
         return None;
     };
-    if folded_function_name(func).as_deref() != Some("current_setting") {
+    if builtin_function_name(func).as_deref() != Some("current_setting") {
         return None;
     }
     let FunctionArguments::List(arg_list) = &func.args else {
