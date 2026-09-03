@@ -298,18 +298,18 @@ fn confidence_filtering_has_single_source_of_truth() {
 }
 
 #[test]
-fn pk_column_resolution_has_single_source_of_truth() {
-    let definitions = fn_definitions("resolve_pk_columns");
+fn row_identity_resolution_has_single_source_of_truth() {
+    let definitions = fn_definitions("resolve_row_identity");
 
     assert_eq!(
         definitions, 1,
-        "expected a single PK-resolution implementation, found {definitions}"
+        "expected a single row-identity implementation, found {definitions}"
     );
 
     // The single-column answer is derived from the list rather than resolved again.
     // A second resolution here is how a caller ends up naming a row one way while the
     // rest of the crate names it another.
-    let single = fn_definitions("single_pk_column");
+    let single = fn_definitions("single_identity_column");
 
     assert_eq!(
         single, 1,

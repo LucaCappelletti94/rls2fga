@@ -163,7 +163,7 @@ async fn openfga_semantic_checks_all_patterns() {
             name: "P6_public_flag",
             fixture: "public_flag",
             min_confidence: ConfidenceLevel::B,
-            tuples: vec![("articles:a1", "public_viewer", "user:*")],
+            tuples: vec![("articles:a1", "public_when_is_public", "user:*")],
             checks: vec![
                 ("user:anyone", "can_select", "articles:a1", true),
                 ("user:alice", "can_select", "articles:a1", true),
@@ -181,7 +181,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 // item1 is a status = 'active' row: the guard now translates as a
                 // per-row gate the tuple loader fills, rather than being dropped
                 // with a runtime-enforcement note.
-                ("ownables:item1", "public_viewer", "user:*"),
+                ("ownables:item1", "public_where_status_75289b56", "user:*"),
                 // item2 is not active, so the guard denies whatever the ladder says.
                 ("ownables:item2", "owner_id", "owner_grants_owner:o1"),
                 ("owner_grants_owner:o1", "owner_user", "user:alice"),
@@ -245,7 +245,7 @@ async fn openfga_semantic_checks_all_patterns() {
             min_confidence: ConfidenceLevel::B,
             tuples: vec![
                 ("documents:doc1", "owner", "user:alice"),
-                ("documents:doc1", "public_viewer", "user:*"),
+                ("documents:doc1", "public_when_is_public", "user:*"),
                 ("documents:doc2", "owner", "user:bob"),
             ],
             checks: vec![

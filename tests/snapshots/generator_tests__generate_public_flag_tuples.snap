@@ -7,7 +7,7 @@ SET DateStyle = 'ISO, MDY';
 SET bytea_output = 'hex';
 
 -- Public access flag (is_public)
-SELECT 'articles:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_viewer' AS relation, 'user:*' AS subject
+SELECT 'articles:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_when_is_public' AS relation, 'user:*' AS subject
 FROM "public"."articles"
 WHERE "id" IS NOT NULL
 AND "is_public" = TRUE;

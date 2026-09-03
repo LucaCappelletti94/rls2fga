@@ -1486,6 +1486,56 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
     );
 }
 
+/// The memo, not the name, carries injectivity: a 32-bit suffix can collide, and a
+/// colliding wildcard would merge two predicates' tuple sets under one gate.
+#[test]
+fn wildcard_gate_relations_never_share_across_keys_even_when_the_base_collides() {
+    let mut plan = TypePlan::new("docs");
+    let first =
+        plan.wildcard_gate_relation("attr:6:status:Eq:t9:published", "public_where_status_cafe");
+    let second =
+        plan.wildcard_gate_relation("attr:6:status:Eq:t5:draft", "public_where_status_cafe");
+    assert_ne!(
+        first, second,
+        "distinct predicate keys sharing a base name must not share a relation"
+    );
+    let repeat =
+        plan.wildcard_gate_relation("attr:6:status:Eq:t9:published", "public_where_status_cafe");
+    assert_eq!(first, repeat, "one predicate key, one relation");
+    assert!(
+        plan.direct_relations.contains_key(&first) && plan.direct_relations.contains_key(&second),
+        "both gates are declared as direct wildcard relations"
+    );
+}
+
+/// Whatever the collision count, the minted gate is a fresh wildcard relation, and the
+/// counter survives the length clamp instead of being truncated into a collision.
+#[test]
+fn a_wildcard_gate_never_adopts_an_occupied_name_however_many_collide() {
+    let mut plan = TypePlan::new("docs");
+    let foreign = vec![DirectSubject::Type("user".into())];
+    plan.ensure_direct("gate_base", foreign.clone());
+    for counter in 1..=4 {
+        plan.ensure_direct(format!("gate_base_{counter}"), foreign.clone());
+    }
+    let minted = plan.wildcard_gate_relation("key:a", "gate_base");
+    assert_eq!(
+        plan.direct_relations.get(&minted),
+        Some(&vec![DirectSubject::Wildcard(USER_TYPE.to_string())]),
+        "the minted gate holds its own wildcard subjects, never a foreign definition"
+    );
+
+    let long = "g".repeat(MAX_RELATION_NAME_LEN);
+    let first = plan.wildcard_gate_relation("key:b", long.clone());
+    let second = plan.wildcard_gate_relation("key:c", long);
+    assert_ne!(first, second, "a full-length base still yields per key");
+    assert!(second.as_str().len() <= MAX_RELATION_NAME_LEN);
+    assert!(
+        second.as_str().ends_with("_1"),
+        "the counter survives the clamp, got: {second}"
+    );
+}
+
 /// The rename is derived from the value, so the only way its result is already taken is
 /// something else holding that exact name. Renaming once and inserting blind then declares
 /// one name twice, since direct and computed relations live in separate maps.

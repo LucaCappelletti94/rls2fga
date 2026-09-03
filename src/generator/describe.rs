@@ -17,9 +17,7 @@ use crate::generator::identity::encode_part;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::RowParameter;
 use crate::generator::tuple_generator::{quote_sql_identifier, resolve_bridge_columns, TupleQuery};
-use crate::generator::well_known::{
-    member_relation, public_relation, WellKnownTypes, HOLDER_OBJECT_ID,
-};
+use crate::generator::well_known::{member_relation, WellKnownTypes, HOLDER_OBJECT_ID};
 use crate::parser::sql_parser::DatabaseLike;
 use crate::types::{
     BoundQuery, ColumnKind, ColumnRead, ContextRendering, Guard, ObjectKey, Record, RecordContext,
@@ -507,11 +505,12 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             pk_cols,
             flag_col,
+            relation,
         } => Some(from_row(
             table,
             owner_type,
             ObjectKey::new(key_parts(table, pk_cols, db)),
-            &public_relation(),
+            relation,
             well_known.user.as_str(),
             SubjectKey::wildcard(),
             vec![is_true(table, flag_col, db)],
@@ -535,11 +534,15 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 .collect(),
         )),
 
-        TupleSource::ConstantTrue { table, pk_cols } => Some(from_row(
+        TupleSource::ConstantTrue {
+            table,
+            pk_cols,
+            relation,
+        } => Some(from_row(
             table,
             owner_type,
             ObjectKey::new(key_parts(table, pk_cols, db)),
-            &public_relation(),
+            relation,
             well_known.user.as_str(),
             SubjectKey::wildcard(),
             Vec::new(),
@@ -589,6 +592,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             table,
             pk_cols,
             predicate,
+            relation,
         } => {
             let Some(guard) = compare_guard(table, predicate, db) else {
                 let query = rendered(query)?;
@@ -602,7 +606,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             &bound_eq(None, pk_cols),
                             ReplayScope::Object {
                                 object_type: owner_type.to_string(),
-                                relations: vec![public_relation()],
+                                relations: vec![relation.clone()],
                             },
                         )
                         .into_iter()
@@ -615,7 +619,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 table,
                 owner_type,
                 ObjectKey::new(key_parts(table, pk_cols, db)),
-                &public_relation(),
+                relation,
                 well_known.user.as_str(),
                 SubjectKey::wildcard(),
                 vec![guard],
@@ -784,29 +788,84 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             ))
         }
 
+        // One record per membership row: the object is the row's own witness, the
+        // subject the member it names, and its clock values travel in the context.
+        TupleSource::MembershipShareMembers {
+            join_table,
+            identity_cols,
+            user_col,
+            share_type,
+            relation,
+            condition,
+            extra_predicates,
+            context,
+        } => {
+            let mut guards = vec![not_null(join_table, user_col, db)];
+            guards.extend(
+                extra_predicates
+                    .row_guards()
+                    .into_iter()
+                    .filter_map(|guard| guard_from_residual(join_table, guard, db)),
+            );
+            let mut entries = Vec::with_capacity(context.len());
+            for gate in context {
+                guards.push(not_null(join_table, &gate.column, db));
+                entries.push(RecordContextEntry {
+                    key: gate.parameter.clone(),
+                    value: value_column(join_table, &gate.column, db),
+                    rendering: ContextRendering::Json,
+                });
+            }
+            Some(described(
+                join_table,
+                RecordTemplate {
+                    object_type: share_type.clone(),
+                    object_key: ObjectKey::new(key_parts(join_table, identity_cols, db)),
+                    relation: relation.clone(),
+                    subject_type: well_known.user.to_string(),
+                    subject_key: subject_column(join_table, user_col, db),
+                    context: Some(RecordContext {
+                        condition: condition.clone(),
+                        entries,
+                    }),
+                },
+                guards,
+            ))
+        }
+
         // Each share row links its guarded object to its own share object, so the record
         // follows from the one join row: the object is the guarded row named by the
-        // foreign key, the subject the share named by the join table's own key.
-        TupleSource::CallerSetShareBridge {
+        // object columns, the subject the share named by the row's own identity.
+        TupleSource::ShareBridge {
             join_table,
-            fk_col,
-            pk_cols,
+            object_cols,
+            identity_cols,
             guarded_type,
             share_type,
             relation,
         } => {
             // An empty key names no share, so the source produces no records to describe.
-            let (first, rest) = pk_cols.split_first()?;
-            let mut guards = vec![not_null(join_table, fk_col, db)];
+            let (first, rest) = identity_cols.split_first()?;
+            let mut guards: Vec<_> = object_cols
+                .iter()
+                .map(|column| not_null(join_table, column, db))
+                .collect();
             guards.extend(
-                pk_cols
+                identity_cols
                     .iter()
                     .map(|column| not_null(join_table, column, db)),
             );
+            let object_parts: Vec<_> = object_cols
+                .iter()
+                .map(|column| value_column(join_table, column, db))
+                .collect();
+            if object_parts.is_empty() {
+                return None;
+            }
             Some(from_row(
                 join_table,
                 guarded_type,
-                ObjectKey::new(vec![value_column(join_table, fk_col, db)]),
+                ObjectKey::new(object_parts),
                 relation,
                 share_type,
                 composite_subject(join_table, first, rest, db),
@@ -829,6 +888,31 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
             Vec::new(),
         )),
+
+        // One record per membership row: the object is the one holder, the subject the
+        // row's own witness.
+        TupleSource::HolderShares {
+            member_table,
+            identity_cols,
+            holder_type,
+            share_type,
+            relation,
+        } => {
+            let (first, rest) = identity_cols.split_first()?;
+            let guards = identity_cols
+                .iter()
+                .map(|column| not_null(member_table, column, db))
+                .collect();
+            Some(from_row(
+                member_table,
+                holder_type,
+                ObjectKey::new(vec![ValueSource::Literal(HOLDER_OBJECT_ID.to_string())]),
+                relation,
+                share_type,
+                composite_subject(member_table, first, rest, db),
+                guards,
+            ))
+        }
 
         // The holder is one object, so the object side is fixed and each member row
         // names a user. Two rows naming the same user write one record, which a set

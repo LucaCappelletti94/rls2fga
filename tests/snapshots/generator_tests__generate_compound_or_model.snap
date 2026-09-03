@@ -11,10 +11,10 @@ type documents
   relations
     define no_access: [nobody]
     define owner: [user]
-    define public_viewer: [user:*]
+    define public_when_is_public: [user:*]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: owner or public_viewer
+    define can_select: owner or public_when_is_public
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update

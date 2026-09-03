@@ -27,7 +27,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         comparison,
         separator,
     } = declared;
-    let pk_cols = resolve_pk_columns(source_table, db)?;
+    let pk_cols = resolve_row_identity(source_table, db)?;
 
     let request_parameter = source.condition_parameter().clone();
     let mut namespace = condition_parameters.namespace([&request_parameter]);
@@ -163,7 +163,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     db: &DB,
     request_time_parameter: &ConditionParameterName,
 ) -> Option<UsersetExpr> {
-    let pk_cols = resolve_pk_columns(source_table, db)?;
+    let pk_cols = resolve_row_identity(source_table, db)?;
     let parameter_type = condition_parameter_type(source_table, request.column.as_str(), db)?;
 
     let request_parameter = request_time_parameter.clone();
@@ -259,6 +259,20 @@ pub(crate) struct TemporalGate {
     pub(crate) parameter: ConditionParameterName,
     pub(crate) column: ColumnName,
     pub(crate) fragment: String,
+    pub(crate) witness: ContextWitness,
+}
+
+/// The compressing aggregate's direction for one comparison, `None` for an operator
+/// no condition can carry.
+fn context_witness(operator: AttributeOperator) -> Option<ContextWitness> {
+    match operator {
+        AttributeOperator::Gt
+        | AttributeOperator::GtEq
+        | AttributeOperator::Eq
+        | AttributeOperator::NotEq => Some(ContextWitness::Latest),
+        AttributeOperator::Lt | AttributeOperator::LtEq => Some(ContextWitness::Earliest),
+        _ => None,
+    }
 }
 
 /// Turn a residual's temporal comparisons (`col > now()`) into condition fragments
@@ -288,6 +302,7 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
                 clock_expr(request_time_parameter.as_str(), request.offset.as_ref())
             ),
             column: request.column.clone(),
+            witness: context_witness(request.operator)?,
             parameter,
         });
     }
@@ -349,6 +364,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
         .map(|gate| GateContextColumn {
             parameter: gate.parameter.to_string(),
             column: gate.column,
+            witness: gate.witness,
         })
         .collect();
     Some((condition, context))
@@ -409,7 +425,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     // The bridge names the guarded row by the join table's own column, so that column has
     // to hold the row's identifier. Correlated against anything else, the object named is
     // another row's, or no row at all.
-    if single_pk_column(source_table, db).as_ref() != Some(outer_column) {
+    if single_identity_column(source_table, db).as_ref() != Some(outer_column) {
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
             reason: format!(
@@ -442,7 +458,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     // Each share row becomes its own object, keyed on the join table's own primary key, so
     // two viewers of one guarded row never collide on one `(user:*, gate, object)` triple.
     // With no key to name the share rows apart, that collision is unavoidable, so refuse.
-    let Some(pk_cols) = resolve_pk_columns(join_table, db) else {
+    let Some(pk_cols) = resolve_row_identity(join_table, db) else {
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
             reason: format!(
@@ -541,6 +557,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         .map(|gate| GateContextColumn {
             parameter: gate.parameter.to_string(),
             column: gate.column,
+            witness: gate.witness,
         })
         .collect();
     let gate_source = TupleSource::CallerSetShareGate {
@@ -567,10 +584,10 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         vec![DirectSubject::Type(share_type.clone())],
     );
     table_plan.add_source(gate_source);
-    table_plan.add_source(TupleSource::CallerSetShareBridge {
+    table_plan.add_source(TupleSource::ShareBridge {
         join_table: join_table.clone(),
-        pk_cols,
-        fk_col: fk_column.clone(),
+        identity_cols: pk_cols,
+        object_cols: vec![fk_column.clone()],
         guarded_type,
         share_type,
         relation: link_relation.clone(),

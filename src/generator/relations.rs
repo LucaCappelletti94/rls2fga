@@ -18,7 +18,7 @@ use crate::types::{
 };
 use alloc::collections::{BTreeMap, BTreeSet};
 
-use crate::generator::db_lookup::resolve_pk_columns;
+use crate::generator::db_lookup::resolve_row_identity;
 use crate::generator::ir::TupleSource;
 use crate::generator::model_generator::{
     relation_grants_nothing, SchemaPlan, TypePlan, UsersetExpr,
@@ -334,7 +334,7 @@ fn row_names_a_user<DB: DatabaseLike>(
     let Some(object_columns) = object_columns else {
         return false;
     };
-    let Some(primary_key) = resolve_pk_columns(table, db) else {
+    let Some(primary_key) = resolve_row_identity(table, db) else {
         return false;
     };
     if object_columns != primary_key {

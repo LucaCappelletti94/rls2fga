@@ -231,7 +231,7 @@ CREATE POLICY tasks_sel ON tasks FOR SELECT USING (
     let projects_select = relation_definition(&dsl, "projects", "can_select")
         .expect("projects should define can_select");
     assert!(
-        projects_select.contains("public_viewer"),
+        projects_select.contains("public_when_is_public"),
         "the parent's own public policy still applies to the parent:\n{dsl}"
     );
 

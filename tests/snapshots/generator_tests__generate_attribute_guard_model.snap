@@ -10,10 +10,10 @@ type user
 type articles
   relations
     define no_access: [nobody]
-    define public_viewer: [user:*]
+    define public_where_status_131bc6df: [user:*]
     define can_delete: no_access
     define can_insert: no_access
-    define can_select: public_viewer
+    define can_select: public_where_status_131bc6df
     define can_select_for_update: can_update
     define can_update: no_access
     define can_update_without_reading: can_update

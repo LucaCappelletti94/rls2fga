@@ -288,6 +288,28 @@ pub fn row_presence_relation_name(columns: &[ColumnName]) -> RelationName {
     RelationName::canonicalized(clamp_relation_name(format!("present_{base}_{suffix}")))
 }
 
+/// Derive the relation a boolean public flag grants through, one per stored column.
+#[must_use]
+pub fn public_flag_relation_name(column: &str) -> RelationName {
+    RelationName::canonicalized(clamp_relation_name(format!(
+        "public_when_{}",
+        canonical_fga_type_name(column)
+    )))
+}
+
+/// Derive the relation a literal attribute gate grants through, one per predicate.
+///
+/// `key` is the predicate's structural identity, hashed for a stable readable name.
+/// Injectivity lives in the generator's memo, not in this 32-bit suffix.
+#[must_use]
+pub fn attribute_gate_relation_name(column: &str, key: &str) -> RelationName {
+    RelationName::canonicalized(clamp_relation_name(format!(
+        "public_where_{}_{}",
+        canonical_fga_type_name(column),
+        stable_hex_suffix(key)
+    )))
+}
+
 /// Derive the condition name that guard's relation reference points at.
 ///
 /// Keyed on the type as well as the policy: a condition name is global to the model while
@@ -391,26 +413,7 @@ where
     lookup_table(db, name).map(table_identity)
 }
 
-/// A stored identifier spelled as a lookup name, which is the quoted form: a quoted
-/// lookup is matched exactly, so it cannot fold onto another table's name.
-fn quoted_lookup(stored: &str) -> String {
-    let mut spelled = String::with_capacity(stored.len() + 2);
-    spelled.push('"');
-    for ch in stored.chars() {
-        if ch == '"' {
-            spelled.push('"');
-        }
-        spelled.push(ch);
-    }
-    spelled.push('"');
-    spelled
-}
-
-/// The table an identity names, through the catalog's index rather than a walk.
-///
-/// The index answers by lookup rules, which put a table stored without a schema in
-/// `public` and the other way round. Identity is exact, so the answer is confirmed
-/// against the stored names before it is returned.
+/// The table an identity names, through the catalog's stored-identity index.
 pub(crate) fn lookup_table_id<'db, DB>(
     db: &'db DB,
     identity: &TableId,
@@ -418,12 +421,7 @@ pub(crate) fn lookup_table_id<'db, DB>(
 where
     DB: sql_traits::prelude::DatabaseLike,
 {
-    use sql_traits::prelude::TableLike;
-    let schema = identity.schema().map(quoted_lookup);
-    let found = db.table(schema.as_deref(), &quoted_lookup(identity.name()))?;
-    (found.stored_table_schema().as_deref() == identity.schema()
-        && found.stored_table_name() == identity.name())
-    .then_some(found)
+    db.table_by_stored_identity(identity.schema(), identity.name())
 }
 
 pub(crate) fn table_id_has_column<DB>(db: &DB, table: &TableId, column: &str) -> bool
