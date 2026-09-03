@@ -75,7 +75,8 @@ const MAX_CLASSIFY_DEPTH: u32 = 64;
 
 /// Rewrite `CASE WHEN c1 THEN TRUE WHEN c2 THEN TRUE ... ELSE FALSE END` into
 /// an OR-tree of the TRUE-branch conditions.  Returns `None` when the CASE has
-/// a non-boolean result or is not a simple searched CASE.
+/// a non-boolean result, is not a simple searched CASE, or a FALSE branch
+/// precedes a TRUE branch, whose veto the OR-tree cannot carry.
 fn normalize_boolean_case(
     conditions: &[sqlparser::ast::CaseWhen],
     else_result: Option<&Expr>,
@@ -94,10 +95,14 @@ fn normalize_boolean_case(
 
     // Collect conditions whose result is TRUE.
     let mut true_conditions: Vec<Expr> = Vec::new();
+    let mut false_branch_seen = false;
     for case_when in conditions {
         match recognizers::constant_bool_value(&case_when.result) {
+            // CASE evaluates in order: an earlier FALSE branch vetoes rows this
+            // condition matches, so granting past it widens.
+            Some(true) if false_branch_seen => return None,
             Some(true) => true_conditions.push(case_when.condition.clone()),
-            Some(false) => {}    // skip FALSE branches
+            Some(false) => false_branch_seen = true,
             None => return None, // non-boolean result → bail
         }
     }
@@ -2102,6 +2107,43 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                 PatternClass::Unknown(UnclassifiedExpr { .. })
             ),
             "CASE with non-boolean results should stay Unknown, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn case_when_false_branch_before_a_true_branch_stays_unknown() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "CASE WHEN archived THEN FALSE \
+                  WHEN is_public THEN TRUE \
+                  ELSE FALSE END",
+        );
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+        assert!(
+            matches!(
+                &classified.pattern,
+                PatternClass::Unknown(UnclassifiedExpr { .. })
+            ),
+            "a FALSE branch vetoes rows every later TRUE branch would grant, got: {:?}",
+            classified.pattern
+        );
+    }
+
+    #[test]
+    fn case_when_false_branch_after_every_true_branch_still_normalizes() {
+        let db = docs_db();
+        let registry = FunctionRegistry::new();
+        let expr = parse_expr(
+            "CASE WHEN is_public THEN TRUE \
+                  WHEN archived THEN FALSE \
+                  ELSE FALSE END",
+        );
+        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+        assert!(
+            matches!(&classified.pattern, PatternClass::P6BooleanFlag(BooleanFlag { column }) if column == "is_public"),
+            "a trailing FALSE branch catches only rows that deny either way, got: {:?}",
             classified.pattern
         );
     }

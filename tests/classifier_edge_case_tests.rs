@@ -175,6 +175,90 @@ CREATE POLICY p ON docs FOR SELECT TO app_user, admin_role USING (owner_id = cur
     assert!(roles.contains(&"app_user".to_string()));
 }
 
+#[test]
+fn an_equality_between_two_guarded_row_columns_refuses_the_membership() {
+    // PostgreSQL filters every membership hit through the guarded row's own
+    // comparison. The tuple query reads only the membership table, so the
+    // conjunct is inexpressible there and the classification must refuse.
+    for conjunct in ["docs.owner_id = docs.reviewer_id", "owner_id = reviewer_id"] {
+        let sql = format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, reviewer_id TEXT);
+CREATE TABLE members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
+  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user
+    AND {conjunct}));
+"
+        );
+        let (classified, _db, _registry) = support::classify_sql_no_registry(&sql);
+        assert_eq!(classified.len(), 1);
+        let c = classified[0].using_classification().unwrap();
+        assert!(
+            matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
+            "`{conjunct}`: a guarded-row filter the tuple query cannot carry must refuse, got: {:?}",
+            c.pattern
+        );
+    }
+}
+
+#[test]
+fn the_same_membership_without_the_guarded_row_filter_stays_p4() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT, reviewer_id TEXT);
+CREATE TABLE members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
+  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
+";
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+    assert_eq!(classified.len(), 1);
+    let c = classified[0].using_classification().unwrap();
+    assert!(
+        matches!(&c.pattern, PatternClass::P4ExistsMembership(_)),
+        "the clean membership shape must keep translating, got: {:?}",
+        c.pattern
+    );
+    assert_eq!(c.confidence, ConfidenceLevel::A);
+}
+
+#[test]
+fn a_nullif_wrapped_ownership_refuses() {
+    // NULLIF(owner_id, 'system') = current_user denies the sentinel principal
+    // its rows. Tuples built from the raw column would reverse that exclusion.
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (NULLIF(owner_id, 'system') = current_user);
+";
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+    assert_eq!(classified.len(), 1);
+    let c = classified[0].using_classification().unwrap();
+    assert!(
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { .. })),
+        "the sentinel exclusion is unrepresentable in a P3 grant, got: {:?}",
+        c.pattern
+    );
+}
+
+#[test]
+fn a_coalesce_wrapped_ownership_still_classifies_at_b() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (COALESCE(owner_id, 'nobody') = current_user);
+";
+    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+    assert_eq!(classified.len(), 1);
+    let c = classified[0].using_classification().unwrap();
+    assert!(
+        matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
+        "COALESCE only narrows, so it keeps classifying, got: {:?}",
+        c.pattern
+    );
+    assert_eq!(c.confidence, ConfidenceLevel::B);
+}
+
 // ── Composite patterns ───────────────────────────────────────────────────────
 
 #[test]

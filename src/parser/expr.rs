@@ -54,15 +54,17 @@ pub fn extract_column_name(expr: &Expr) -> Option<ColumnName> {
     }
 }
 
-/// Like [`extract_column_name`] but also unwraps `COALESCE(col, default)` and
-/// `NULLIF(col, sentinel)`, extracting the column name from the first argument.
+/// Like [`extract_column_name`] but also unwraps `COALESCE(col, default)`,
+/// extracting the column name from the first argument. `NULLIF` is deliberately
+/// not unwrapped: its sentinel excludes a principal, which a bare column grant
+/// would reverse.
 pub fn extract_column_name_through_coalesce(expr: &Expr) -> Option<ColumnName> {
     if let Some(col) = extract_column_name(expr) {
         return Some(col);
     }
     if let Expr::Function(func) = expr {
         let name = crate::parser::names::folded_function_name(func);
-        if matches!(name.as_deref(), Some("coalesce" | "nullif")) {
+        if matches!(name.as_deref(), Some("coalesce")) {
             if let FunctionArguments::List(arg_list) = &func.args {
                 if let Some(first_arg) = arg_list.args.first() {
                     if let Some(inner) = function_arg_expr(first_arg) {
@@ -108,11 +110,11 @@ pub fn positional_function_arg(function: &Function, index: usize) -> Option<&Exp
     function_arg_expr(arg_list.args.get(index)?)
 }
 
-/// Returns `true` when the expression is wrapped through `COALESCE` or `NULLIF`.
+/// Returns `true` when the expression is wrapped through `COALESCE`.
 pub fn is_coalesce_wrapped(expr: &Expr) -> bool {
     if let Expr::Function(func) = expr {
         let name = crate::parser::names::folded_function_name(func);
-        return matches!(name.as_deref(), Some("coalesce" | "nullif"));
+        return matches!(name.as_deref(), Some("coalesce"));
     }
     false
 }
@@ -207,13 +209,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_column_name_through_coalesce_unwraps_nullif() {
+    fn extract_column_name_through_coalesce_refuses_nullif() {
         let expr = parse_expr("NULLIF(owner_id, '')");
         assert_eq!(
             extract_column_name_through_coalesce(&expr)
                 .as_ref()
                 .map(ColumnName::as_str),
-            Some("owner_id"),
+            None,
         );
     }
 

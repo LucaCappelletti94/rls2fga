@@ -7901,3 +7901,209 @@ struct HoldsRole {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     holds_role: bool,
 }
+
+/// Typed schema for the refused-spelling soundness case.
+mod refused_spelling_schema {
+    diesel::table! {
+        case_docs (id) {
+            id -> diesel::sql_types::Text,
+            archived -> diesel::sql_types::Bool,
+            is_public -> diesel::sql_types::Bool,
+        }
+    }
+
+    diesel::table! {
+        filter_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+            reviewer_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        filter_members (doc_id, user_id) {
+            doc_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        sentinel_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// Three spellings the classifier must refuse rather than widen: a CASE whose FALSE
+/// branch vetoes rows a later TRUE branch grants, a membership EXISTS filtered by an
+/// equality between two guarded-row columns, and a NULLIF sentinel exclusion.
+///
+/// Each table seeds exactly the row a wrong reading turned into a grant, and the pre-fix
+/// red run granted all three. `PostgreSQL` denies every probe, so `OpenFGA` must too.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn refused_spellings_fall_closed_parity_postgres18_and_openfga() {
+    use refused_spelling_schema::{case_docs, filter_docs, filter_members, sentinel_docs};
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE case_docs(id TEXT PRIMARY KEY, archived BOOLEAN NOT NULL, is_public BOOLEAN NOT NULL);
+CREATE TABLE filter_docs(id TEXT PRIMARY KEY, owner_id TEXT, reviewer_id TEXT);
+CREATE TABLE filter_members(doc_id TEXT REFERENCES filter_docs(id), user_id TEXT);
+CREATE TABLE sentinel_docs(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE case_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE filter_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sentinel_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY case_p ON case_docs FOR SELECT USING (
+  CASE WHEN archived THEN FALSE WHEN is_public THEN TRUE ELSE FALSE END
+);
+CREATE POLICY filter_p ON filter_docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM filter_members m
+    WHERE m.doc_id = filter_docs.id
+      AND m.user_id = current_user
+      AND filter_docs.owner_id = filter_docs.reviewer_id
+  )
+);
+CREATE POLICY sentinel_p ON sentinel_docs FOR SELECT USING (
+  NULLIF(owner_id, 'system') = current_user
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the refused-spelling schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON case_docs, filter_docs, filter_members TO app_reader;
+         CREATE ROLE system LOGIN;
+         GRANT SELECT ON sentinel_docs TO system;",
+    )
+    .expect("Failed to create the querying roles");
+    diesel::insert_into(case_docs::table)
+        .values((
+            case_docs::id.eq("c1"),
+            case_docs::archived.eq(true),
+            case_docs::is_public.eq(true),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the vetoed public row");
+    diesel::insert_into(filter_docs::table)
+        .values((
+            filter_docs::id.eq("f1"),
+            filter_docs::owner_id.eq("someone"),
+            filter_docs::reviewer_id.eq("someone_else"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the filtered row");
+    diesel::insert_into(filter_members::table)
+        .values((
+            filter_members::doc_id.eq("f1"),
+            filter_members::user_id.eq("app_reader"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+    diesel::insert_into(sentinel_docs::table)
+        .values((
+            sentinel_docs::id.eq("s1"),
+            sentinel_docs::owner_id.eq("system"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the sentinel-owned row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so each loss is reported
+    // as below threshold rather than silently absent.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "refused-spellings-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let (case_visible, filter_visible) = conn
+        .transaction::<(i64, i64), diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the reads around it stay typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            let case_visible = case_docs::table
+                .filter(case_docs::id.eq("c1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            let filter_visible = filter_docs::table
+                .filter(filter_docs::id.eq("f1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok((case_visible, filter_visible))
+        })
+        .expect("reading under row level security should not error");
+    let sentinel_visible = conn
+        .transaction::<i64, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE system").execute(conn)?;
+            sentinel_docs::table
+                .filter(sentinel_docs::id.eq("s1"))
+                .count()
+                .get_result::<i64>(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        case_visible, 0,
+        "the CASE veto denies the archived public row"
+    );
+    assert_eq!(
+        filter_visible, 0,
+        "owner and reviewer differ, so the filter denies"
+    );
+    assert_eq!(
+        sentinel_visible, 0,
+        "NULLIF hides the sentinel row from its principal"
+    );
+
+    let case_granted =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "case_docs:c1")
+            .await;
+    let filter_granted =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "filter_docs:f1")
+            .await;
+    let sentinel_granted =
+        support::openfga::check_allowed(&client, "user:system", "can_select", "sentinel_docs:s1")
+            .await;
+    assert_eq!(
+        (case_granted, filter_granted, sentinel_granted),
+        (false, false, false),
+        "OpenFGA granted rows PostgreSQL denies (CASE veto, guarded-row filter, NULLIF sentinel)"
+    );
+    assert!(
+        disclosed >= 3,
+        "falling closed on all three policies has to be reported, not silent"
+    );
+}
+
+/// Typed schema for the wildcard-union cases.

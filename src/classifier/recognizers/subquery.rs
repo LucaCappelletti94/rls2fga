@@ -2037,9 +2037,10 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
                     continue;
                 }
                 MembershipEqAnalysis::OuterCorrelation => {
-                    // Outer correlation predicates are implicit in tuple queries and
-                    // must not be copied to extra_predicate_sql.
-                    continue;
+                    // Neither side is the membership row's, so PostgreSQL filters
+                    // through the guarded row per hit. The tuple query reads only
+                    // the membership table and cannot carry that filter.
+                    return None;
                 }
                 MembershipEqAnalysis::NotRelevant => {}
             }

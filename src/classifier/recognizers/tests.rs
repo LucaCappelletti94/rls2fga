@@ -3527,14 +3527,14 @@ fn coalesce_wrapped_ownership_classified_as_p3_confidence_b() {
 }
 
 #[test]
-fn nullif_wrapped_ownership_classified_as_p3() {
+fn nullif_wrapped_ownership_refuses() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
     let expr = parse_expr("NULLIF(owner_id, '') = current_user");
     let classified = recognize_p3(&expr, &db, &registry);
     assert!(
-        matches!(&classified, Some(c) if matches!(&c.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id")),
-        "NULLIF-wrapped column should classify as P3, got: {classified:?}"
+        classified.is_none(),
+        "the NULLIF sentinel excludes a principal a raw-column grant would readmit, got: {classified:?}"
     );
 }
 
