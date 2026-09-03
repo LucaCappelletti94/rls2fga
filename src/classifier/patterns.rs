@@ -160,27 +160,38 @@ impl ResidualPredicates {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub(crate) fn sql_conjuncts(&self, include_requests: bool) -> impl Iterator<Item = &str> {
+    pub(crate) fn sql_conjuncts(
+        &self,
+        include_requests: bool,
+    ) -> impl Iterator<Item = &str> + Clone {
         self.0
             .iter()
             .filter(move |conjunct| include_requests || conjunct.request.is_none())
             .map(|conjunct| conjunct.sql.as_str())
     }
 
+    fn joined_sql(&self, include_requests: bool) -> Option<String> {
+        let mut conjuncts = self.sql_conjuncts(include_requests);
+        let first = conjuncts.next()?;
+        let capacity = first.len()
+            + conjuncts
+                .clone()
+                .map(|conjunct| 5 + conjunct.len())
+                .sum::<usize>();
+        let mut sql = String::with_capacity(capacity);
+        sql.push_str(first);
+        for conjunct in conjuncts {
+            sql.push_str(" AND ");
+            sql.push_str(conjunct);
+        }
+        Some(sql)
+    }
+
     /// The residual as the SQL filter the policy wrote, or [`None`] when
     /// there is none.
     #[must_use]
     pub fn sql(&self) -> Option<String> {
-        if self.0.is_empty() {
-            return None;
-        }
-        Some(
-            self.0
-                .iter()
-                .map(|conjunct| conjunct.sql.as_str())
-                .collect::<Vec<_>>()
-                .join(" AND "),
-        )
+        self.joined_sql(true)
     }
 
     /// One guard per conjunct, or [`None`] when any conjunct has no
@@ -217,13 +228,7 @@ impl ResidualPredicates {
     /// since those move into the condition. [`None`] when nothing is left to filter.
     #[must_use]
     pub fn sql_excluding_requests(&self) -> Option<String> {
-        let kept: Vec<&str> = self
-            .0
-            .iter()
-            .filter(|conjunct| conjunct.request.is_none())
-            .map(|conjunct| conjunct.sql.as_str())
-            .collect();
-        (!kept.is_empty()).then(|| kept.join(" AND "))
+        self.joined_sql(false)
     }
 
     /// The residual split into row guards and request-completed comparisons, or
@@ -252,11 +257,6 @@ pub struct ResidualDecision {
     /// Conjuncts the request completes, in policy order.
     pub requests: Vec<AttributeRequestPredicate>,
 }
-
-// The shape of each pattern, one named struct per variant.
-//
-// The fields live here rather than inline in `PatternClass`, so a recognizer builds one
-// value, an emitter takes one argument, and every field name exists in exactly one place.
 
 /// P1: Numeric role threshold: `role_level(user, resource) >= N`.
 #[derive(Debug, Clone, PartialEq)]
@@ -352,6 +352,8 @@ pub struct ExpandedFunction {
 pub struct BooleanFlag {
     /// Column controlling visibility.
     pub column: ColumnName,
+    /// Whether the `PostgreSQL` predicate also admits SQL NULL.
+    pub admits_null: bool,
 }
 
 /// P7: A relationship check AND an attribute guard.
@@ -511,6 +513,8 @@ pub struct UnclassifiedExpr {
 }
 
 /// Classified pattern for an expression.
+///
+/// Variants use named payloads shared by recognizers and emitters.
 ///
 /// `#[non_exhaustive]`: a new recognizer adds a variant, so matching this outside the
 /// crate needs a wildcard arm. Two variants were added in one session already.

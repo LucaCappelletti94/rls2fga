@@ -334,10 +334,10 @@ fn row_names_a_user<DB: DatabaseLike>(
     let Some(object_columns) = object_columns else {
         return false;
     };
-    let Some(primary_key) = resolve_row_identity(table, db) else {
+    let Some(row_identity) = resolve_row_identity(table, db) else {
         return false;
     };
-    if object_columns != primary_key {
+    if object_columns != row_identity {
         return false;
     }
     // The subject has to be a user the consumer can compare against, named by

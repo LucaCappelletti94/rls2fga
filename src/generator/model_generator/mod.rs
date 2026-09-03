@@ -7,8 +7,8 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    column_kind, composite_primary_key_columns, resolve_row_identity, row_uniquely_keys,
-    single_identity_column,
+    column_is_nullable, column_kind, composite_primary_key_columns, resolve_row_identity,
+    row_uniquely_keys, single_identity_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
 use crate::generator::ir::{
@@ -31,15 +31,15 @@ use crate::parser::names::{
     conditional_gate_relation_name, gate_condition_name, is_owner_like_column_name, lookup_table,
     lookup_table_id, membership_read_scope_relation_name, parent_type_from_fk_column,
     public_flag_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
-    row_presence_relation_name, stable_hex_suffix, stored_relation_name, table_id_has_column,
-    table_identity, yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
+    row_presence_relation_name, stored_relation_name, table_id_has_column, table_identity,
+    yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
 };
 use crate::types::{
-    ColumnKind, ColumnName, ConditionParameterName, RelationName, RequestComparison, TableId,
-    TranslationNote, TypeName,
+    stable_hex_suffix, ColumnKind, ColumnName, ConditionParameterName, RelationName,
+    RequestComparison, TableId, TranslationNote, TypeName,
 };
 
 /// Which relation a command reads, and how a policy's clauses reach it.
@@ -2366,9 +2366,9 @@ fn translate_pattern<DB: DatabaseLike>(
             "ownership tuples",
             ctx,
             table_plan,
-            |pk_cols, relation| TupleSource::DirectOwnership {
+            |identity_cols, relation| TupleSource::DirectOwnership {
                 table: source_table.clone(),
-                pk_cols,
+                identity_cols,
                 owner_col: column.clone(),
                 relation,
             },
@@ -2379,9 +2379,9 @@ fn translate_pattern<DB: DatabaseLike>(
             "array membership tuples",
             ctx,
             table_plan,
-            |pk_cols, relation| TupleSource::ArrayMembership {
+            |identity_cols, relation| TupleSource::ArrayMembership {
                 table: source_table.clone(),
-                pk_cols,
+                identity_cols,
                 array_col: column.clone(),
                 relation,
             },
@@ -2393,9 +2393,9 @@ fn translate_pattern<DB: DatabaseLike>(
                 "jsonb field ownership tuples",
                 ctx,
                 table_plan,
-                |pk_cols, relation| TupleSource::JsonbFieldOwnership {
+                |identity_cols, relation| TupleSource::JsonbFieldOwnership {
                     table: source_table.clone(),
-                    pk_cols,
+                    identity_cols,
                     column: column.clone(),
                     path: path.clone(),
                     relation,
@@ -2464,6 +2464,15 @@ fn translate_pattern<DB: DatabaseLike>(
             }
         }
         PatternClass::P6BooleanFlag(boolean_flag) => {
+            if boolean_flag.admits_null
+                && column_is_nullable(ctx.source_table, boolean_flag.column.as_str(), ctx.db)
+                    != Some(false)
+            {
+                notes.push(TranslationNote::NullableBooleanFlagNarrowed {
+                    policy: ctx.policy_name.to_string(),
+                    column: boolean_flag.column.clone(),
+                });
+            }
             emit_boolean_flag(boolean_flag, ctx, table_plan)
         }
         PatternClass::P7AbacAnd(abac_and) => {
@@ -2726,23 +2735,29 @@ fn resolve_principal_info<DB: DatabaseLike>(
     fallback_candidates: &[&str],
 ) -> Option<PrincipalInfo> {
     if let Some(table) = configured_table.and_then(|table| resolve_table_id(db, table)) {
-        let pk_col = if let Some(pk_col) = configured_pk_col {
-            if !table_id_has_column(db, &table, pk_col.as_str()) {
+        let identity_col = if let Some(identity_col) = configured_pk_col {
+            if !table_id_has_column(db, &table, identity_col.as_str()) {
                 return None;
             }
-            pk_col.clone()
+            identity_col.clone()
         } else {
             single_identity_column(&table, db)?
         };
-        return Some(PrincipalInfo { table, pk_col });
+        return Some(PrincipalInfo {
+            table,
+            identity_col,
+        });
     }
 
     for &candidate in fallback_candidates {
         let Some(table) = resolve_table_id(db, candidate) else {
             continue;
         };
-        if let Some(pk_col) = single_identity_column(&table, db) {
-            return Some(PrincipalInfo { table, pk_col });
+        if let Some(identity_col) = single_identity_column(&table, db) {
+            return Some(PrincipalInfo {
+                table,
+                identity_col,
+            });
         }
     }
 

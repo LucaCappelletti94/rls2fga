@@ -14,7 +14,7 @@ use rls2fga::types::{
 
 const CALLER: &str = "current_setting('app.user_id', true)";
 
-fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
+fn translate(db: &ParserDB) -> Translation {
     TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_current_user_setting_keys(["app.user_id"])

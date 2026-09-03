@@ -15,9 +15,21 @@ use crate::parser::names::{
 };
 use crate::types::ColumnName;
 
+/// Complete metadata for a role-threshold team membership join.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamMembershipConfig {
+    /// Table that stores team memberships.
+    pub table: String,
+    /// User column in the membership table.
+    pub user_col: ColumnName,
+    /// Team column in the membership table.
+    pub team_col: ColumnName,
+}
+
 /// Semantic classification of a SQL function body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)]
 pub enum FunctionSemantic {
     /// A role-threshold function that returns an integer role level.
@@ -38,15 +50,9 @@ pub enum FunctionSemantic {
         grant_resource_col: ColumnName,
         /// Column in `grant_table` storing the integer role level.
         grant_role_col: ColumnName,
-        /// Optional team-membership table for team-based grant resolution.
+        /// Optional team membership join.
         #[serde(default)]
-        team_membership_table: Option<String>,
-        /// User column in the team-membership table.
-        #[serde(default)]
-        team_membership_user_col: Option<ColumnName>,
-        /// Team column in the team-membership table.
-        #[serde(default)]
-        team_membership_team_col: Option<ColumnName>,
+        team_membership: Option<TeamMembershipConfig>,
         /// Optional user principal table used for ownership/grant subject resolution.
         #[serde(default)]
         user_table: Option<String>,
@@ -519,8 +525,7 @@ fn contains_current_user_keyword_token(sql: &str) -> bool {
     let mut prev_token: Option<String> = None;
     let mut prev_end = 0usize;
     scan_identifier_tokens(sql, |token, start, end| {
-        let is_accessor_keyword =
-            is_current_user_keyword_for_body_scan(token) && is_current_user_keyword_name(token);
+        let is_accessor_keyword = is_current_user_keyword_for_body_scan(token);
         let is_explicit_alias = prev_token.as_deref().is_some_and(|prev| prev == "as");
         let is_implicit_alias = is_accessor_keyword
             && prev_token
@@ -688,7 +693,9 @@ pub(crate) fn body_reads_effective_user(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessorInferenceSettings, FunctionSecurity, FunctionSemantic};
+    use super::{
+        AccessorInferenceSettings, FunctionSecurity, FunctionSemantic, TeamMembershipConfig,
+    };
     use crate::types::ColumnName;
     use alloc::collections::BTreeMap;
 
@@ -1182,9 +1189,11 @@ mod tests {
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
             grant_resource_col: ColumnName::from_stored("resource_id"),
             grant_role_col: ColumnName::from_stored("role_level"),
-            team_membership_table: Some("team_memberships".to_string()),
-            team_membership_user_col: Some(ColumnName::from_stored("user_id")),
-            team_membership_team_col: Some(ColumnName::from_stored("team_id")),
+            team_membership: Some(TeamMembershipConfig {
+                table: "team_memberships".to_string(),
+                user_col: ColumnName::from_stored("user_id"),
+                team_col: ColumnName::from_stored("team_id"),
+            }),
             user_table: Some("users".to_string()),
             user_pk_col: Some(ColumnName::from_stored("id")),
             team_table: Some("teams".to_string()),
@@ -1196,24 +1205,63 @@ mod tests {
             serde_json::from_str(&json).expect("semantic should deserialize");
 
         assert!(matches!(
-            parsed,
+            &parsed,
             FunctionSemantic::RoleThreshold {
-                team_membership_table: Some(ref table),
-                team_membership_user_col: Some(ref user_col),
-                team_membership_team_col: Some(ref team_col),
-                user_table: Some(ref user_table),
-                user_pk_col: Some(ref user_pk_col),
-                team_table: Some(ref team_table),
-                team_pk_col: Some(ref team_pk_col),
+                team_membership: Some(team_membership),
+                user_table: Some(user_table),
+                user_pk_col: Some(user_pk_col),
+                team_table: Some(team_table),
+                team_pk_col: Some(team_pk_col),
                 ..
-            } if table == "team_memberships"
-                && user_col == "user_id"
-                && team_col == "team_id"
+            } if team_membership.table == "team_memberships"
+                && team_membership.user_col == "user_id"
+                && team_membership.team_col == "team_id"
                 && user_table == "users"
                 && user_pk_col == "id"
                 && team_table == "teams"
                 && team_pk_col == "id"
         ));
+    }
+
+    #[test]
+    fn role_threshold_team_membership_is_all_or_nothing() {
+        let partial = r#"{
+  "kind": "role_threshold",
+  "user_param_index": 0,
+  "resource_param_index": 1,
+  "role_levels": {"viewer": 1},
+  "grant_table": "object_grants",
+  "grant_grantee_col": "grantee_id",
+  "grant_resource_col": "resource_id",
+  "grant_role_col": "role_level",
+  "team_membership": {
+    "table": "team_memberships",
+    "user_col": "user_id"
+  }
+}"#;
+
+        assert!(
+            serde_json::from_str::<FunctionSemantic>(partial).is_err(),
+            "a partial team membership configuration must be rejected"
+        );
+
+        let legacy = r#"{
+  "kind": "role_threshold",
+  "user_param_index": 0,
+  "resource_param_index": 1,
+  "role_levels": {"viewer": 1},
+  "grant_table": "object_grants",
+  "grant_grantee_col": "grantee_id",
+  "grant_resource_col": "resource_id",
+  "grant_role_col": "role_level",
+  "team_membership_table": "team_memberships",
+  "team_membership_user_col": "user_id",
+  "team_membership_team_col": "team_id"
+}"#;
+        assert!(
+            serde_json::from_str::<FunctionSemantic>(legacy).is_err(),
+            "the three independent options must not be accepted"
+        );
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn ownership_db() -> ParserDB {
     parse_schema(OWNERSHIP).expect("the schema should parse")
 }
 
-fn ownership_outputs(db: &ParserDB) -> Outputs<'_, ParserDB> {
+fn ownership_outputs(db: &ParserDB) -> Outputs {
     TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_registry_json(ACCESSOR_REGISTRY)

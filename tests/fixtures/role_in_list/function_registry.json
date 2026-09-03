@@ -8,8 +8,10 @@
     "grant_grantee_col": "grantee_owner_id",
     "grant_resource_col": "granted_owner_id",
     "grant_role_col": "role_id",
-    "team_membership_table": "team_members",
-    "team_membership_user_col": "user_id",
-    "team_membership_team_col": "team_id"
+    "team_membership": {
+      "table": "team_members",
+      "user_col": "user_id",
+      "team_col": "team_id"
+    }
   }
 }

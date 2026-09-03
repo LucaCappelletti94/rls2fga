@@ -343,7 +343,7 @@ fn derive_chain<DB: DatabaseLike>(
             if !same_table(db, table, guarded_table) || !links_out_of_its_own_row(entry, template) {
                 continue;
             }
-            links.push((entry.relation.clone(), template.subject_type.clone()));
+            links.push((entry.relation.clone(), template.subject_type.to_string()));
         }
     }
 
@@ -481,10 +481,10 @@ mod tests {
                 derivation: RecordDerivation::FromRow {
                     table: table.clone(),
                     template: Box::new(RecordTemplate {
-                        object_type: type_name.to_string(),
+                        object_type: TypeName::canonicalized(type_name),
                         object_key: ObjectKey::column("id"),
                         relation: RelationName::canonicalized(relation),
-                        subject_type: WellKnownTypes::default().user.to_string(),
+                        subject_type: WellKnownTypes::default().user,
                         subject_key: SubjectKey::column("user_id"),
                         context: None,
                     }),

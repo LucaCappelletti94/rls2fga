@@ -194,7 +194,7 @@ fn the_report_answers_for_every_statement_the_enum_declares() {
     );
 }
 
-fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
+fn translate(db: &ParserDB) -> Translation {
     TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_session_attributes([
@@ -208,7 +208,7 @@ fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
 
 fn report(sql: &str) -> Vec<ActionRelations> {
     let db: ParserDB = parse_schema(sql).expect("schema should parse");
-    translate(&db).action_relations()
+    translate(&db).action_relations().to_vec()
 }
 
 fn dsl(sql: &str) -> String {

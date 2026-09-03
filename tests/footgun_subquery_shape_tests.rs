@@ -188,6 +188,61 @@ fn a_sampled_membership_subquery_is_refused() {
     ]);
 }
 
+/// Sampling a joined source can drop a parent row despite its declared foreign key.
+#[test]
+fn a_sampled_p5_join_partner_is_refused() {
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY);
+CREATE TABLE parents(
+    id UUID PRIMARY KEY,
+    org_id UUID NOT NULL REFERENCES orgs(id),
+    owner_id TEXT NOT NULL
+);
+CREATE TABLE docs(id UUID PRIMARY KEY, parent_id UUID NOT NULL REFERENCES parents(id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM parents AS p
+        JOIN orgs AS o TABLESAMPLE BERNOULLI (10) ON o.id = p.org_id
+        WHERE p.id = docs.parent_id AND p.owner_id = current_user
+    )
+);
+",
+    );
+    let translator = translator(ConfidenceLevel::B);
+    let classified = translator.classify(&db);
+    let [policy] = classified.as_slice() else {
+        panic!("expected one policy");
+    };
+    let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &policy
+        .using_classification()
+        .expect("USING should classify")
+        .pattern
+    else {
+        panic!(
+            "TABLESAMPLE must refuse: {:#?}",
+            policy.using_classification()
+        );
+    };
+    assert!(
+        reason.contains("TABLESAMPLE"),
+        "the refusal must name TABLESAMPLE: {reason}"
+    );
+    let outputs = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert_eq!(
+        relation_definition(&outputs.model(), "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "a sampled join partner can remove a parent row:\n{}",
+        outputs.model()
+    );
+}
+
 /// A `WITH` clause binds a name inside the subquery, and that binding shadows the real
 /// table of the same name, so the `FROM` no longer names the table the analyzer resolves.
 ///

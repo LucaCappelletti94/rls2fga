@@ -1,7 +1,4 @@
-//! A schema-qualified user function sharing a builtin's terminal name must never be
-//! classified with the builtin's semantics. `pg_dump` spells builtins unqualified,
-//! so refusing other qualifications costs no dump coverage, while `pg_catalog`
-//! qualification is the builtin by definition.
+//! Only unqualified and `pg_catalog` qualified builtins receive builtin semantics.
 
 use rls2fga::classifier::patterns::{PatternClass, UnclassifiedExpr};
 use rls2fga::types::ConfidenceLevel;
@@ -45,11 +42,10 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
     );
 }
 
-/// The genuine spellings keep the condition: unqualified, and `pg_catalog` qualified,
-/// which is the builtin by definition.
+/// Unqualified and `pg_catalog` qualified clocks keep the condition.
 #[test]
 fn the_builtin_clock_spellings_keep_the_condition() {
-    for clock in ["now()", "pg_catalog.now()"] {
+    for clock in ["now()", "pg_catalog.now()", r#""pg_catalog".now()"#] {
         let sql = format!(
             "
 CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);

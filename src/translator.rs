@@ -25,7 +25,7 @@ use crate::generator::well_known::WellKnownTypes;
 use crate::output::formatter::{write_output, WriteError};
 use crate::output::report::build_report;
 use crate::parser::function_analyzer::AccessorInferenceSettings;
-use crate::parser::sql_parser::{DatabaseLike, ParserDB};
+use crate::parser::sql_parser::DatabaseLike;
 use crate::types::UnrestrictedTable;
 use crate::types::{
     ActionRelations, NoteSeverity, Record, RelationShapes, RowNaming, TranslationNote,
@@ -178,10 +178,7 @@ impl Translator {
     /// Plan a translation of `db`.
     ///
     /// Classification, planning, tuple queries, and relation shapes are each derived once.
-    pub fn translate<'a, DB: DatabaseLike>(
-        &self,
-        db: &'a DB,
-    ) -> Result<Translation<'a, DB>, PlanningError> {
+    pub fn translate<DB: DatabaseLike>(&self, db: &DB) -> Result<Translation, PlanningError> {
         let (classified, effective_registry) = self.classify_with_effective_registry(db);
         Translation::plan(
             classified,
@@ -213,6 +210,8 @@ struct DerivedOutputs {
     tuple_queries: Vec<TupleQuery>,
     relations: Vec<RelationShapes>,
     row_naming: Vec<RowNaming>,
+    action_relations: Vec<ActionRelations>,
+    unrestricted_tables: Vec<UnrestrictedTable>,
 }
 
 impl DerivedOutputs {
@@ -223,6 +222,8 @@ impl DerivedOutputs {
             tuple_queries: generated.queries,
             relations,
             row_naming: row_naming(plan, db),
+            action_relations: action_relations(plan, db),
+            unrestricted_tables: unrestricted_tables(db),
         }
     }
 }
@@ -233,20 +234,19 @@ impl DerivedOutputs {
 /// refusable: an expression nobody classified leaves the model denying what the
 /// database grants, and that has to be seen rather than discovered later.
 #[derive(Debug, Clone)]
-pub struct Translation<'a, DB: DatabaseLike = ParserDB> {
-    db: &'a DB,
+pub struct Translation {
     plan: SchemaPlan,
     derived: Arc<DerivedOutputs>,
     policies: Vec<ClassifiedPolicy>,
     min_confidence: ConfidenceLevel,
 }
 
-impl<'a, DB: DatabaseLike> Translation<'a, DB> {
+impl Translation {
     /// Plan a translation from policies already classified, which is how an oracle's
     /// answers reach the generators.
-    pub fn plan(
+    pub fn plan<DB: DatabaseLike>(
         policies: Vec<ClassifiedPolicy>,
-        db: &'a DB,
+        db: &DB,
         registry: &FunctionRegistry,
         min_confidence: ConfidenceLevel,
         settings: &GeneratorSettings,
@@ -256,7 +256,6 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
             build_filtered_schema_plan(&policies, db, registry, min_confidence, settings, &bounds)?;
         let derived = Arc::new(DerivedOutputs::build(&plan, &bounds, db));
         Ok(Self {
-            db,
             plan,
             derived,
             policies,
@@ -305,8 +304,8 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// Which relations exist depends on how a policy spelled its clauses, so deriving
     /// this from the emitted model is the case analysis it exists to remove.
     #[must_use]
-    pub fn action_relations(&self) -> Vec<ActionRelations> {
-        action_relations(&self.plan, self.db)
+    pub fn action_relations(&self) -> &[ActionRelations] {
+        &self.derived.action_relations
     }
 
     /// Every table the database restricts nothing on: row-level security is off on it, and
@@ -320,8 +319,8 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     ///
     /// Reported by table because the emitted model defines no type for such a table.
     #[must_use]
-    pub fn unrestricted_tables(&self) -> Vec<UnrestrictedTable> {
-        unrestricted_tables(self.db)
+    pub fn unrestricted_tables(&self) -> &[UnrestrictedTable] {
+        &self.derived.unrestricted_tables
     }
 
     /// The outputs, refused while any expression went unhandled.
@@ -330,7 +329,7 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     ///
     /// Returns the unhandled expressions, which is what a caller has to look at before
     /// trusting a model that denies what the database grants.
-    pub fn outputs(self) -> Result<Outputs<'a, DB>, UnhandledExpressions> {
+    pub fn outputs(self) -> Result<Outputs, UnhandledExpressions> {
         let unhandled: Vec<TranslationNote> = self.unhandled().cloned().collect();
         if unhandled.is_empty() {
             Ok(Outputs(self))
@@ -344,7 +343,7 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
     /// Say this deliberately. For every expression [`Translation::unhandled`] names,
     /// the model denies what the database grants.
     #[must_use]
-    pub fn outputs_accepting_gaps(self) -> Outputs<'a, DB> {
+    pub fn outputs_accepting_gaps(self) -> Outputs {
         Outputs(self)
     }
 }
@@ -355,15 +354,15 @@ impl<'a, DB: DatabaseLike> Translation<'a, DB> {
 /// unhandled, or [`Translation::outputs_accepting_gaps`], which is one visible line
 /// saying the caller took the narrower model on purpose.
 #[derive(Debug, Clone)]
-pub struct Outputs<'a, DB: DatabaseLike = ParserDB>(Translation<'a, DB>);
+pub struct Outputs(Translation);
 
-impl<'a, DB: DatabaseLike> Outputs<'a, DB> {
+impl Outputs {
     /// The translation these outputs were rendered from, for the analysis
     /// surface ([`Translation::relations`], [`Translation::row_naming`],
     /// [`Translation::action_relations`], [`Translation::unrestricted_tables`])
     /// without cloning before [`Translation::outputs`] consumes it.
     #[must_use]
-    pub fn translation(&self) -> &Translation<'a, DB> {
+    pub fn translation(&self) -> &Translation {
         &self.0
     }
 
@@ -563,6 +562,39 @@ CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
         assert!(!original.is_empty());
         assert!(core::ptr::eq(original.as_ptr(), repeated.as_ptr()));
         assert!(core::ptr::eq(original.as_ptr(), from_clone.as_ptr()));
+    }
+
+    #[test]
+    fn cloned_translations_share_action_and_unrestricted_storage() {
+        let db = parse_schema(&format!(
+            "{SCHEMA}\nCREATE TABLE open_docs(id UUID PRIMARY KEY);"
+        ))
+        .expect("schema parses");
+        let translation = TranslatorBuilder::new()
+            .build()
+            .translate(&db)
+            .expect("translation plans");
+        let cloned = translation.clone();
+
+        let actions = translation.action_relations();
+        let repeated_actions = translation.action_relations();
+        let cloned_actions = cloned.action_relations();
+        assert!(!actions.is_empty());
+        assert!(core::ptr::eq(actions.as_ptr(), repeated_actions.as_ptr()));
+        assert!(core::ptr::eq(actions.as_ptr(), cloned_actions.as_ptr()));
+
+        let unrestricted = translation.unrestricted_tables();
+        let repeated_unrestricted = translation.unrestricted_tables();
+        let cloned_unrestricted = cloned.unrestricted_tables();
+        assert!(!unrestricted.is_empty());
+        assert!(core::ptr::eq(
+            unrestricted.as_ptr(),
+            repeated_unrestricted.as_ptr()
+        ));
+        assert!(core::ptr::eq(
+            unrestricted.as_ptr(),
+            cloned_unrestricted.as_ptr()
+        ));
     }
     #[test]
     fn relation_shapes_reuse_rendered_query_descriptions() {

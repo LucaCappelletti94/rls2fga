@@ -20,7 +20,6 @@ use openfga_client::tonic::transport::Channel;
 use rls2fga::generator::json_model::AuthorizationModel;
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
-use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::RowDecision;
@@ -192,7 +191,7 @@ async fn every_fixture_schema_is_one_postgres_accepts() {
 /// Building the fact here by hand would compare the description against a second
 /// spelling of the mapping rather than against the one a consumer uses.
 fn records_from_sql(
-    outputs: &Outputs<'_, ParserDB>,
+    outputs: &Outputs,
     conn: &mut PgConnection,
     query: &TupleQuery,
 ) -> BTreeSet<Record> {
@@ -203,7 +202,7 @@ fn records_from_sql(
 
 /// Every row of `sql`, as the records it spells.
 fn records_of_sql(
-    outputs: &Outputs<'_, ParserDB>,
+    outputs: &Outputs,
     conn: &mut PgConnection,
     sql: &str,
     conditional: bool,
@@ -328,7 +327,7 @@ fn distinct_keys(
 /// exist`. What is under test is the SQL the description carries, not the wire
 /// form of the placeholder.
 fn records_from_bound_query(
-    outputs: &Outputs<'_, ParserDB>,
+    outputs: &Outputs,
     conn: &mut PgConnection,
     bound: &BoundQuery,
     key: &[String],
@@ -338,18 +337,18 @@ fn records_from_bound_query(
         .map(|value| format!("'{}'", value.replace('\'', "''")))
         .collect();
     // Highest placeholder first, so `$1` cannot eat the head of `$10`.
-    let mut sql = bound.sql.clone();
+    let mut sql = bound.sql().to_string();
     for (index, literal) in literals.iter().enumerate().rev() {
         sql = sql.replace(&format!("${}", index + 1), literal);
     }
     // The whole-table query and its bound replay have to agree on the context too, or a
     // consumer replaying a change would answer differently from the loader. The shape of
     // the result is read from the bound query alone, which is all a consumer holds.
-    records_of_sql(outputs, conn, &sql, bound.condition.is_some(), || {
+    records_of_sql(outputs, conn, &sql, bound.condition().is_some(), || {
         format!(
             "bound replay of {} {:?} = {}",
-            bound.table,
-            bound.key_columns,
+            bound.table(),
+            bound.key_columns(),
             literals.join(", ")
         )
     })
@@ -370,7 +369,7 @@ fn records_from_bound_query(
 /// table and every query bound to it is replayed together: one grant table replay per
 /// principal kind each answers for its own subjects, and only their union is the table.
 fn assert_bound_queries_account_for_every_record(
-    outputs: &Outputs<'_, ParserDB>,
+    outputs: &Outputs,
     conn: &mut PgConnection,
     query: &TupleQuery,
     bound_queries: &[BoundQuery],
@@ -386,17 +385,19 @@ fn assert_bound_queries_account_for_every_record(
     let mut by_table: BTreeMap<String, BTreeSet<Record>> = BTreeMap::new();
     for bound in bound_queries {
         assert_eq!(
-            bound.condition, query.condition,
+            bound.condition(),
+            query.condition.as_deref(),
             "{label}: the replay of {} claims a different projection from the load it \
              extends, so the two loaders decode the same rows differently:\n{}",
-            bound.table, bound.sql
+            bound.table(),
+            bound.sql()
         );
-        let keys = distinct_keys(conn, &bound.table, &bound.key_columns);
+        let keys = distinct_keys(conn, bound.table(), bound.key_columns());
         assert!(
             !keys.is_empty(),
             "{label}: no key values in {} {:?}, so the bound query is untested for {}",
-            bound.table,
-            bound.key_columns,
+            bound.table(),
+            bound.key_columns(),
             query.comment
         );
 
@@ -408,14 +409,14 @@ fn assert_bound_queries_account_for_every_record(
                 invented.is_empty(),
                 "{label}: the bound query on {} {:?} = {key:?} returned records the \
                  whole-table query does not: {invented:?}\n{}",
-                bound.table,
-                bound.key_columns,
-                bound.sql
+                bound.table(),
+                bound.key_columns(),
+                bound.sql()
             );
             assert_records_lie_in_the_declared_slice(bound, key, &bound_records, label);
             narrowed |= bound_records.len() < whole.len();
             by_table
-                .entry(bound.table.to_string())
+                .entry(bound.table().to_string())
                 .or_default()
                 .extend(bound_records);
         }
@@ -426,10 +427,10 @@ fn assert_bound_queries_account_for_every_record(
             narrowed || keys.len() == 1,
             "{label}: the bound query on {} {:?} returned every record for every one of \
              its {} keys, so it does not bind:\n{}",
-            bound.table,
-            bound.key_columns,
+            bound.table(),
+            bound.key_columns(),
             keys.len(),
-            bound.sql
+            bound.sql()
         );
     }
 
@@ -453,15 +454,16 @@ fn assert_records_lie_in_the_declared_slice(
     label: &str,
 ) {
     let values: Vec<&str> = key.iter().map(String::as_str).collect();
-    let slice = bound.scope.rendered_key(&values).unwrap_or_else(|error| {
+    let slice = bound.scope().rendered_key(&values).unwrap_or_else(|error| {
         panic!(
             "{label}: the replay of {} {:?} = {key:?} declares a slice its own key cannot \
              name: {error}",
-            bound.table, bound.key_columns
+            bound.table(),
+            bound.key_columns()
         )
     });
     for record in records {
-        let inside = match &bound.scope {
+        let inside = match bound.scope() {
             ReplayScope::Object { relations, .. } => {
                 record.object == slice && relations.contains(&record.relation)
             }
@@ -471,7 +473,7 @@ fn assert_records_lie_in_the_declared_slice(
                 ..
             } => {
                 record.subject == slice
-                    && record.relation == *relation
+                    && &record.relation == relation
                     && record.object.starts_with(&format!("{object_type}:"))
             }
         };
@@ -479,20 +481,20 @@ fn assert_records_lie_in_the_declared_slice(
             inside,
             "{label}: the replay of {} {:?} = {key:?} returned ({}, {}, {}) which lies outside \
              the slice {slice} its scope {:?} names:\n{}",
-            bound.table,
-            bound.key_columns,
+            bound.table(),
+            bound.key_columns(),
             record.subject,
             record.relation,
             record.object,
-            bound.scope,
-            bound.sql
+            bound.scope(),
+            bound.sql()
         );
     }
 }
 
 /// Compare both sides for every query the schema emits, and report what was covered.
 fn assert_descriptions_match_their_sql(
-    outputs: &Outputs<'_, ParserDB>,
+    outputs: &Outputs,
     conn: &mut PgConnection,
     queries: &[TupleQuery],
     label: &str,
@@ -523,9 +525,9 @@ fn assert_descriptions_match_their_sql(
                 // table a bound query reads has to appear in the list.
                 for query_side in bound {
                     assert!(
-                        description.tables.contains(&query_side.table),
+                        description.tables.contains(query_side.table()),
                         "{label}: {} is bound but absent from the table list {:?}: {}",
-                        query_side.table,
+                        query_side.table(),
                         description.tables,
                         query.comment
                     );
@@ -2342,8 +2344,8 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
         &GeneratorSettings::default(),
     )
     .expect("translation should plan");
-    let reported = planned.action_relations();
     let outputs = planned.outputs_accepting_gaps();
+    let reported = outputs.translation().action_relations();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
     for query in outputs.tuple_queries() {

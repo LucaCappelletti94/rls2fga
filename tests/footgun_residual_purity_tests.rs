@@ -26,7 +26,11 @@ CREATE TABLE public.doc_members (
     score INTEGER NOT NULL,
     tenant TEXT NOT NULL,
     granted_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ
+    local_at TIMESTAMP NOT NULL,
+    starts_at TIMETZ NOT NULL,
+    expires_at TIMESTAMPTZ,
+    qualified_at pg_catalog.timestamptz NOT NULL,
+    qualified_starts_at pg_catalog.timetz NOT NULL
 );
 ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON public.docs FOR SELECT USING (
@@ -125,6 +129,72 @@ fn a_literal_comparison_still_loads() {
     assert!(
         sql.contains("role = 'admin'"),
         "the row decides this one:\n{sql}"
+    );
+}
+
+/// An offset-less zoned literal is interpreted through the evaluating session.
+#[test]
+fn an_offsetless_zoned_literal_never_reaches_the_loader() {
+    for predicate in [
+        "m.granted_at < '2030-01-01 00:00:00'::timestamptz",
+        "m.granted_at < '2030-01-01 00:00:00'",
+        "m.starts_at < '09:00:00'::timetz",
+    ] {
+        let sql = member_query_sql(predicate);
+        assert!(
+            !sql.contains("2030-01-01") && !sql.contains("09:00:00"),
+            "the loader's time zone would interpret {predicate}:\n{sql}"
+        );
+    }
+}
+
+/// A schema-qualified spelling names the same zoned type.
+#[test]
+fn a_qualified_zoned_type_is_still_session_interpreted() {
+    for predicate in [
+        "m.qualified_at < '2030-01-01 00:00:00'",
+        "m.qualified_starts_at < '09:00:00'",
+    ] {
+        let sql = member_query_sql(predicate);
+        assert!(
+            !sql.contains("2030-01-01") && !sql.contains("09:00:00"),
+            "the loader's time zone would interpret {predicate}:\n{sql}"
+        );
+    }
+}
+
+/// A zone-naive literal gains the session zone when compared to a zoned column.
+#[test]
+fn a_zone_naive_literal_against_a_zoned_column_never_reaches_the_loader() {
+    let sql = member_query_sql("m.granted_at < TIMESTAMP '2030-01-01 00:00:00'");
+    assert!(
+        !sql.contains("2030-01-01"),
+        "the comparison coerces through the loader's time zone:\n{sql}"
+    );
+}
+
+/// An explicit offset makes the instant independent of the evaluating session.
+#[test]
+fn explicit_offset_literals_still_load() {
+    for predicate in [
+        "m.granted_at < '2030-01-01 00:00:00+02:00'::timestamptz",
+        "m.starts_at < '09:00:00+02:00'::timetz",
+    ] {
+        let sql = member_query_sql(predicate);
+        assert!(
+            sql.contains("+02:00"),
+            "the row and explicit offset decide {predicate}:\n{sql}"
+        );
+    }
+}
+
+/// A zone-naive literal stays deterministic against a zone-naive column.
+#[test]
+fn a_zone_naive_literal_against_a_zone_naive_column_still_loads() {
+    let sql = member_query_sql("m.local_at < TIMESTAMP '2030-01-01 00:00:00'");
+    assert!(
+        sql.contains("2030-01-01"),
+        "the row and wall-clock value decide this comparison:\n{sql}"
     );
 }
 

@@ -141,6 +141,14 @@ fn declared_column<'db, DB: DatabaseLike>(
         .find(|candidate| candidate.stored_column_name() == column)
 }
 
+pub(crate) fn column_is_nullable<DB: DatabaseLike>(
+    table: &TableId,
+    column: &str,
+    db: &DB,
+) -> Option<bool> {
+    declared_column(table, column, db).and_then(|column| column.is_nullable(db).ok())
+}
+
 const fn column_kind_from_scalar_family(family: Option<ScalarFamily>) -> ColumnKind {
     match family {
         Some(ScalarFamily::Bool) => ColumnKind::Bool,

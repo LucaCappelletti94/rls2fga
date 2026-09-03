@@ -85,7 +85,7 @@ impl RowValues for FuzzRow<'_> {
 }
 
 /// Render every output, and walk the records every shape describes.
-fn exercise(translation: Translation<'_>, sql: &str) {
+fn exercise(translation: Translation, sql: &str) {
     let unhandled = translation.unhandled().count();
     // The refusing door answers exactly when nothing went unhandled.
     assert_eq!(
@@ -122,7 +122,7 @@ fn exercise(translation: Translation<'_>, sql: &str) {
     black_box(outputs.report());
 }
 
-fn exercise_planned(result: Result<Translation<'_>, PlanningError>, sql: &str) {
+fn exercise_planned(result: Result<Translation, PlanningError>, sql: &str) {
     match result {
         Ok(translation) => exercise(translation, sql),
         Err(error) => {
@@ -145,9 +145,11 @@ const REGISTRY: &str = r#"{
     "grant_grantee_col": "grantee_owner_id",
     "grant_resource_col": "granted_owner_id",
     "grant_role_col": "role_id",
-    "team_membership_table": "team_members",
-    "team_membership_user_col": "user_id",
-    "team_membership_team_col": "team_id"
+    "team_membership": {
+      "table": "team_members",
+      "user_col": "user_id",
+      "team_col": "team_id"
+    }
   },
   "auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"},
   "auth_role": {"kind": "role_accessor", "returns": "text"}

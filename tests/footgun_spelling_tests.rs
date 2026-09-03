@@ -104,6 +104,34 @@ CREATE POLICY docs_owner ON Docs FOR SELECT USING (owner_id = current_user);
     );
 }
 
+/// A dotted column must not resolve as the table's ordinary identity column.
+#[test]
+fn generated_sql_does_not_split_dotted_column_names() {
+    let db = db_of(
+        r#"
+CREATE TABLE docs(id UUID PRIMARY KEY, "docs.id" TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_owner ON docs FOR SELECT USING ("docs.id" = current_user);
+"#,
+    );
+    let rendered = format_tuples(
+        translator(ConfidenceLevel::B)
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps()
+            .tuple_queries(),
+    );
+
+    assert!(
+        rendered.contains(r#"'user:' || CASE WHEN "docs.id"::text"#),
+        "the subject must use the dotted column as one identifier:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(r#""docs"."id""#),
+        "splitting the dotted column silently reads docs.id:\n{rendered}"
+    );
+}
+
 /// A quoted declaration keeps its case, and both spellings may name distinct
 /// columns of one table, so folding must follow the quoting.
 #[test]

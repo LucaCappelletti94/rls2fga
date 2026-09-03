@@ -590,6 +590,7 @@ pub fn recognize_p6<DB: DatabaseLike>(
             return Some(ClassifiedExpr {
                 pattern: PatternClass::P6BooleanFlag(BooleanFlag {
                     column: col_name.clone(),
+                    admits_null: false,
                 }),
                 confidence: p6_confidence(col_name.as_str(), registry),
             });
@@ -597,33 +598,23 @@ pub fn recognize_p6<DB: DatabaseLike>(
         return None;
     }
 
-    match expr {
-        Expr::IsTrue(inner) | Expr::IsNotFalse(inner) => {
-            let col_name = extract_column_name(inner)?;
-            if is_public_flag_column_name(col_name.as_str()) {
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag(BooleanFlag {
-                        column: col_name.clone(),
-                    }),
-                    confidence: p6_confidence(col_name.as_str(), registry),
-                });
-            }
-        }
-
-        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {
-            let col_name = extract_column_name(expr)?;
-            if is_public_flag_column_name(col_name.as_str()) {
-                return Some(ClassifiedExpr {
-                    pattern: PatternClass::P6BooleanFlag(BooleanFlag {
-                        column: col_name.clone(),
-                    }),
-                    confidence: p6_confidence(col_name.as_str(), registry),
-                });
-            }
-        }
-        _ => {}
+    let (inner, admits_null) = match expr {
+        Expr::IsTrue(inner) => (inner.as_ref(), false),
+        Expr::IsNotFalse(inner) => (inner.as_ref(), true),
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => (expr, false),
+        _ => return None,
+    };
+    let col_name = extract_column_name(inner)?;
+    if !is_public_flag_column_name(col_name.as_str()) {
+        return None;
     }
-    None
+    Some(ClassifiedExpr {
+        pattern: PatternClass::P6BooleanFlag(BooleanFlag {
+            column: col_name.clone(),
+            admits_null,
+        }),
+        confidence: p6_confidence(col_name.as_str(), registry),
+    })
 }
 
 /// Negated public-flag check: not expressible as static `OpenFGA` tuples.

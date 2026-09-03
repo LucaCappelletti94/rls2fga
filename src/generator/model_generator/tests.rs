@@ -4,6 +4,7 @@ use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaff
 use super::*;
 use crate::generator::well_known::{WellKnownTypes, TEAM_TYPE, USER_TYPE};
 use crate::parser::sql_parser::{parse_schema, DatabaseLike, ParserDB, PolicyLike};
+use crate::types::{BoundQuery, ColumnName, ReplayScope};
 
 fn table_id(name: &str) -> TableId {
     TableId::from_stored(None, name.to_string())
@@ -13,9 +14,11 @@ fn role_registry(role_levels: &str, include_team: bool) -> FunctionRegistry {
     let mut registry = FunctionRegistry::new();
     let team_fields = if include_team {
         r#",
-    "team_membership_table": "team_memberships",
-    "team_membership_user_col": "user_id",
-    "team_membership_team_col": "team_id""#
+    "team_membership": {
+      "table": "team_memberships",
+      "user_col": "user_id",
+      "team_col": "team_id"
+    }"#
     } else {
         ""
     };
@@ -1010,12 +1013,37 @@ fn role_registry_helper_covers_team_branch() {
     assert!(matches!(
         registry.get("role_level"),
         Some(FunctionSemantic::RoleThreshold {
-            team_membership_table: Some(_),
-            team_membership_user_col: Some(_),
-            team_membership_team_col: Some(_),
+            team_membership: Some(_),
             ..
         })
     ));
+}
+
+#[test]
+fn bound_query_deserialization_validates_placeholders() {
+    let query = BoundQuery::new(
+        table_id("docs"),
+        vec![ColumnName::from_stored("id")],
+        "SELECT * FROM docs WHERE id = $1".to_string(),
+        None,
+        ReplayScope::Object {
+            object_type: "docs".to_string(),
+            relations: vec![member_relation()],
+        },
+    )
+    .expect("the query is valid");
+
+    for sql in [
+        "SELECT * FROM docs",
+        "SELECT * FROM docs WHERE id = $1 AND tenant = $2",
+    ] {
+        let mut wire = serde_json::to_value(&query).expect("query should serialize");
+        wire["sql"] = serde_json::Value::String(sql.to_string());
+        assert!(
+            serde_json::from_value::<BoundQuery>(wire).is_err(),
+            "deserialization must reject invalid placeholders in {sql}"
+        );
+    }
 }
 
 #[test]
@@ -1149,7 +1177,7 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY, email TEXT);
     assert!(result.is_some());
     let pi = result.unwrap();
     assert_eq!(pi.table.to_string(), "accounts");
-    assert_eq!(pi.pk_col, "account_id");
+    assert_eq!(pi.identity_col, "account_id");
 }
 
 #[test]
@@ -1234,6 +1262,7 @@ fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
 
     let p6 = PatternClass::P6BooleanFlag(BooleanFlag {
         column: ColumnName::from_stored("is_public"),
+        admits_null: false,
     });
 
     let expr = pattern_to_expr_without_row_identity(
@@ -1306,13 +1335,12 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 
 #[test]
 fn resolve_principal_info_auto_resolves_pk_for_configured_table() {
-    // Configure table but no pk_col, should auto-resolve from PK
     let db = parse_schema(r"CREATE TABLE accounts(id UUID PRIMARY KEY, email TEXT);").unwrap();
     let result = resolve_principal_info(&db, Some("accounts"), None, &[]);
     assert!(result.is_some());
     let pi = result.unwrap();
     assert_eq!(pi.table.to_string(), "accounts");
-    assert_eq!(pi.pk_col, "id");
+    assert_eq!(pi.identity_col, "id");
 }
 
 #[test]
@@ -1398,10 +1426,8 @@ CREATE TABLE widgets(name TEXT, value INT);
     );
 }
 
-// populate_role_threshold_sources, pk_col is None
 #[test]
-fn populate_role_threshold_sources_emits_note_for_missing_pk_col() {
-    // Table without a PK or `id` column → pk_col will be None → line 1792
+fn populate_role_threshold_sources_emits_note_for_missing_identity() {
     let db = parse_schema(
         r"
 CREATE TABLE users(id UUID PRIMARY KEY);

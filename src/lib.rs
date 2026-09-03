@@ -68,6 +68,7 @@ pub(crate) mod no_std_prelude {
 /// use rls2fga::classifier::patterns::ConfidenceLevel;
 /// ```
 pub use rls2fga_types as types;
+pub use rls2fga_types::stable_hex_suffix;
 
 /// RLS expression classification: pattern matching, function registry, and confidence scoring.
 pub mod classifier;

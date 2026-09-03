@@ -96,7 +96,7 @@ CREATE POLICY d ON docs USING (
   event_id IN (SELECT event_id FROM event_members WHERE user_id = current_user));
 ";
 
-fn translate(db: &ParserDB) -> Translation<'_, ParserDB> {
+fn translate(db: &ParserDB) -> Translation {
     TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .build()
@@ -109,7 +109,7 @@ fn unrestricted(sql: &str) -> Vec<String> {
     let db: ParserDB = parse_schema(sql).expect("schema should parse");
     translate(&db)
         .unrestricted_tables()
-        .into_iter()
+        .iter()
         .map(|entry| entry.table.to_string())
         .collect()
 }
@@ -135,9 +135,9 @@ fn the_open_table_and_the_closed_one_are_answered_by_different_surfaces() {
     let translation = translate(&db);
     let reads: Vec<ActionAnswer> = translation
         .action_relations()
-        .into_iter()
+        .iter()
         .filter(|entry| entry.statement == ActionStatement::Select)
-        .map(|entry| entry.answer)
+        .map(|entry| entry.answer.clone())
         .collect();
     assert_eq!(
         reads.as_slice(),
@@ -175,7 +175,7 @@ fn every_type_answered_unrestricted_names_a_table_the_list_carries() {
         let translation = translate(&db);
         let listed: Vec<String> = translation
             .unrestricted_tables()
-            .into_iter()
+            .iter()
             .map(|entry| entry.table.to_string())
             .collect();
         let naming = translation.row_naming();
@@ -222,7 +222,7 @@ fn a_table_no_key_names_rows_of_is_reported_unrestricted() {
     assert_eq!(
         translation
             .unrestricted_tables()
-            .into_iter()
+            .iter()
             .map(|entry| entry.table.to_string())
             .collect::<Vec<String>>(),
         vec!["audit"]

@@ -45,7 +45,7 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         scope_note,
         missing_object_what,
     } = spec;
-    if let Some(pk_cols) = resolve_row_identity(source_table, db) {
+    if let Some(identity_cols) = resolve_row_identity(source_table, db) {
         let well_known = table_plan.well_known.clone();
         ensure_pg_role_relation(all_types, walked, &well_known);
         // The roles a scope admits are a fact about the policy, so they hang on one scope
@@ -75,7 +75,7 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         notes.push(scope_note);
         table_plan.add_source(TupleSource::PolicyScope {
             table: source_table.clone(),
-            pk_cols,
+            identity_cols,
             scope_relation: scope_relation.clone(),
             scope_type: well_known.pg_role_scope.to_string(),
             scope_object: scope_object.clone(),
@@ -295,7 +295,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     let db = ctx.db;
     let Some(FunctionSemantic::RoleThreshold {
         role_levels,
-        team_membership_table,
+        team_membership,
         grant_table,
         ..
     }) = registry.get(function_name)
@@ -315,12 +315,15 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         });
         return None;
     };
-    let team_membership_table = match team_membership_table {
-        Some(table) => {
-            let Some(table) = resolve_table_id(db, table) else {
+    let team_membership_table = match team_membership {
+        Some(membership) => {
+            let Some(table) = resolve_table_id(db, &membership.table) else {
                 notes.push(TranslationNote::ExpressionRefused {
                     policy: policy_name.to_string(),
-                    reason: format!("the team membership table '{table}' does not resolve"),
+                    reason: format!(
+                        "the team membership table '{}' does not resolve",
+                        membership.table
+                    ),
                 });
                 return None;
             };

@@ -40,7 +40,7 @@ fn parse(sql: &str) -> ParserDB {
     parse_schema(sql).expect("schema parses")
 }
 
-fn translation(db: &ParserDB) -> Translation<'_, ParserDB> {
+fn translation(db: &ParserDB) -> Translation {
     TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_session_attributes([SessionAttribute::setting(
@@ -52,7 +52,7 @@ fn translation(db: &ParserDB) -> Translation<'_, ParserDB> {
         .expect("translation plans")
 }
 
-fn below_threshold_notes(translation: &Translation<'_, ParserDB>) -> Vec<String> {
+fn below_threshold_notes(translation: &Translation) -> Vec<String> {
     translation
         .notes()
         .iter()
@@ -144,10 +144,10 @@ fn a_composite_key_membership_bound_query_binds_every_join_column() {
             _ => None,
         })
         .flatten()
-        .filter(|query| query.table.to_string() == "s2")
+        .filter(|query| query.table().to_string() == "s2")
         .map(|query| {
             query
-                .key_columns
+                .key_columns()
                 .iter()
                 .map(|column| column.as_str().to_string())
                 .collect()
