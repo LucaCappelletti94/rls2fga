@@ -3,11 +3,12 @@ use crate::no_std_prelude::*;
 use core::fmt::Write;
 
 use crate::classifier::patterns::{
-    AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag, CallerScalarEqualsConstant,
-    ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel, ConstantBool,
-    ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction, JsonbFieldOwnership,
-    MembershipInCallerSet, NumericThreshold, ParentInheritance, RoleNameInList,
-    RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
+    apply_threshold, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
+    CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
+    ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
+    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PolicyMode,
+    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
+    UncorrelatedMembership,
 };
 use crate::types::TranslationNote;
 
@@ -90,27 +91,27 @@ pub(crate) fn build_report(
     report
 }
 
-/// Enumerate the policy clauses excluded from the model and tuple output.
+/// Enumerate what the threshold excluded from the model and tuple output.
+///
+/// The partition is the model's own (`apply_threshold`), so a permissive `OR` whose
+/// strong arms survive lists only its dropped arms, never the clause whole.
 fn write_dropped_section(
     report: &mut String,
     policies: &[ClassifiedPolicy],
     min_confidence: ConfidenceLevel,
 ) {
-    let dropped: Vec<(&ClassifiedPolicy, &str, &ClassifiedExpr)> = policies
-        .iter()
-        .flat_map(|cp| {
-            [
-                ("USING", cp.using_classification.as_ref()),
-                ("WITH CHECK", cp.with_check_classification.as_ref()),
-            ]
-            .into_iter()
-            .filter_map(move |(label, classification)| {
-                classification
-                    .filter(|c| c.confidence < min_confidence)
-                    .map(|c| (cp, label, c))
-            })
-        })
-        .collect();
+    let mut dropped: Vec<(&ClassifiedPolicy, &str, ClassifiedExpr, bool)> = Vec::new();
+    for cp in policies {
+        let permissive = cp.mode() == PolicyMode::Permissive;
+        for (label, classification) in [
+            ("USING", cp.using_classification.as_ref()),
+            ("WITH CHECK", cp.with_check_classification.as_ref()),
+        ] {
+            let (kept, lost) = apply_threshold(classification, min_confidence, permissive);
+            let partial = kept.is_some();
+            dropped.extend(lost.into_iter().map(|expr| (cp, label, expr, partial)));
+        }
+    }
 
     if dropped.is_empty() {
         return;
@@ -123,14 +124,16 @@ fn write_dropped_section(
         report,
         "Excluded from the model and tuple output. A PERMISSIVE clause grants \
          nothing, so the model is narrower than the policy. A RESTRICTIVE clause \
-         becomes `no_access`, since PostgreSQL ANDs it onto every other policy."
+         becomes `no_access`, since PostgreSQL ANDs it onto every other policy. \
+         For an `OR`, only the listed arms are excluded."
     );
     let _ = writeln!(report);
 
-    for (cp, label, classification) in dropped {
+    for (cp, label, classification, partial) in dropped {
+        let survives = if partial { ", other arms survive" } else { "" };
         let _ = writeln!(
             report,
-            "- `{}` ({label}, {} {}, confidence {}): {}",
+            "- `{}` ({label}, {} {}, confidence {}{survives}): {}",
             md_escape(cp.name()),
             cp.mode(),
             cp.command(),
@@ -510,6 +513,67 @@ CREATE POLICY {name} ON docs USING (TRUE);
         assert!(
             check_row.ends_with("|  |"),
             "the second row leaves the cell empty, got: {check_row}"
+        );
+    }
+
+    /// A permissive OR mixing a strong arm with a weak one keeps the strong arm in the
+    /// model, so the report must list only the weak arm as excluded, and say the rest
+    /// survives. Claiming the whole clause is excluded tells a caller they have no
+    /// coverage while owner access is enforced.
+    #[test]
+    fn a_surviving_or_arm_is_not_reported_as_excluded() {
+        let sql = "
+CREATE TABLE docs(id uuid PRIMARY KEY, owner_id TEXT, meta TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user OR my_mystery(meta));
+";
+        let db = parse_schema(sql).expect("schema should parse");
+        let registry = crate::classifier::function_registry::FunctionRegistry::new();
+        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
+        let report = build_report(&[], &classified, ConfidenceLevel::B);
+        let section = report
+            .split("## Dropped Below")
+            .nth(1)
+            .expect("the dropped section exists");
+
+        assert!(
+            !section.contains("Or of 2 parts"),
+            "the clause is not excluded whole, one arm survives:\n{report}"
+        );
+        assert!(
+            section.contains("my_mystery"),
+            "the excluded arm is named:\n{report}"
+        );
+        assert!(
+            section.contains("other arms survive"),
+            "a partial drop says the rest stays in the model:\n{report}"
+        );
+    }
+
+    /// A clause below the bar with no surviving arm keeps its whole-clause entry.
+    #[test]
+    fn a_fully_dropped_clause_stays_reported() {
+        let sql = "
+CREATE TABLE docs(id uuid PRIMARY KEY, meta TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (my_mystery(meta));
+";
+        let db = parse_schema(sql).expect("schema should parse");
+        let registry = crate::classifier::function_registry::FunctionRegistry::new();
+        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
+        let report = build_report(&[], &classified, ConfidenceLevel::B);
+
+        assert!(
+            report.contains("## Dropped Below Confidence B"),
+            "the section exists:\n{report}"
+        );
+        assert!(
+            report.contains("my_mystery"),
+            "the dropped clause is named:\n{report}"
+        );
+        assert!(
+            !report.contains("other arms survive"),
+            "nothing survives, so no partial wording:\n{report}"
         );
     }
 }
