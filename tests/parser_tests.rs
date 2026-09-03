@@ -58,8 +58,8 @@ fn parse_emi_functions() {
 
     // sql-traits tracks all function references, not just CREATE FUNCTION statements.
     // Verify the two user-defined functions are present.
-    assert!(db.function("auth_current_user_id").is_some());
-    assert!(db.function("get_owner_role").is_some());
+    assert!(db.function(None, "auth_current_user_id").is_some());
+    assert!(db.function(None, "get_owner_role").is_some());
 }
 
 #[test]

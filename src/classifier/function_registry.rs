@@ -458,54 +458,42 @@ impl FunctionRegistry {
             .or_insert_with(|| semantic.clone());
     }
 
+    /// Memoize what each written spelling denotes, so a lookup needs no catalog.
+    ///
+    /// The search path walk itself belongs to the catalog, which resolves an
+    /// unqualified call and reports an ambiguous one rather than picking.
     fn prepare_function_resolution<DB: DatabaseLike>(&mut self, db: &DB) {
         self.function_resolution.clear();
-        let mut unqualified = BTreeMap::<FunctionKey, (usize, FunctionKey)>::new();
+        let canonical_key = |target: &TargetName<'_>| match target.schema() {
+            Some(_) => FunctionKey::from_target(target),
+            None => db.search_path().next().map_or_else(
+                || FunctionKey::from_target(target),
+                |(schema, quoted)| {
+                    FunctionKey::qualified(schema, quoted, target.name(), target.name_is_quoted())
+                },
+            ),
+        };
         for function in db.functions() {
             let target = function.target_name();
-            let raw = FunctionKey::from_target(&target);
-            let canonical = match target.schema() {
-                Some(_) => raw.clone(),
-                None => db.search_path().next().map_or_else(
-                    || raw.clone(),
-                    |(schema, quoted)| {
-                        FunctionKey::qualified(
-                            schema,
-                            quoted,
-                            target.name(),
-                            target.name_is_quoted(),
-                        )
-                    },
-                ),
-            };
-            self.function_resolution.insert(raw, canonical.clone());
+            let canonical = canonical_key(&target);
+            self.function_resolution
+                .insert(FunctionKey::from_target(&target), canonical.clone());
             self.function_resolution
                 .insert(canonical.clone(), canonical.clone());
 
-            let call = FunctionKey::unqualified(target.name(), target.name_is_quoted());
-            let rank = db.search_path().position(|(schema, quoted)| {
-                FunctionKey::qualified(schema, quoted, target.name(), target.name_is_quoted())
-                    == canonical
-            });
-            if let Some(rank) = rank {
-                match unqualified.entry(call) {
-                    alloc::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert((rank, canonical));
-                    }
-                    alloc::collections::btree_map::Entry::Occupied(mut entry)
-                        if rank < entry.get().0 =>
-                    {
-                        entry.insert((rank, canonical));
-                    }
-                    alloc::collections::btree_map::Entry::Occupied(_) => {}
-                }
+            let call = TargetName::new(target.name(), target.name_is_quoted());
+            let wins = db
+                .resolve_target_function(call)
+                .ok()
+                .flatten()
+                .is_some_and(|winner| canonical_key(&winner.target_name()) == canonical);
+            if wins {
+                self.function_resolution.insert(
+                    FunctionKey::unqualified(target.name(), target.name_is_quoted()),
+                    canonical,
+                );
             }
         }
-        self.function_resolution.extend(
-            unqualified
-                .into_iter()
-                .map(|(call, (_, target))| (call, target)),
-        );
 
         let configured = core::mem::take(&mut self.functions);
         let mut names = core::mem::take(&mut self.function_names);
