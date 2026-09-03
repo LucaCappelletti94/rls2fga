@@ -979,15 +979,15 @@ CREATE POLICY docs_d ON docs FOR DELETE USING (editor = current_user);
 /// `IS NOT FALSE` also admits NULL, while public-flag tuples include only TRUE rows.
 #[test]
 fn nullable_boolean_flag_narrowing_is_disclosed() {
-    let schema = |predicate: &str| {
+    let schema = |constraint: &str, predicate: &str| {
         format!(
-            "CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN);\n\
+            "CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN{constraint});\n\
              ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
              CREATE POLICY p ON docs FOR SELECT USING ({predicate});\n"
         )
     };
 
-    let db = db_of(&schema("is_public IS NOT FALSE"));
+    let db = db_of(&schema("", "is_public IS NOT FALSE"));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -999,7 +999,7 @@ fn nullable_boolean_flag_narrowing_is_disclosed() {
         .expect("the missing NULL rows must be disclosed");
     assert_eq!(note.severity(), NoteSeverity::Partial);
 
-    let db = db_of(&schema("is_public IS TRUE"));
+    let db = db_of(&schema("", "is_public IS TRUE"));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
@@ -1010,6 +1010,20 @@ fn nullable_boolean_flag_narrowing_is_disclosed() {
             .iter()
             .any(|note| note.subject() == "p" && note.severity() == NoteSeverity::Partial),
         "IS TRUE has no nullable narrowing: {:#?}",
+        outputs.notes()
+    );
+
+    let db = db_of(&schema(" NOT NULL", "is_public IS NOT FALSE"));
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| note.subject() == "p" && note.severity() == NoteSeverity::Partial),
+        "NOT NULL makes IS NOT FALSE exact: {:#?}",
         outputs.notes()
     );
 }

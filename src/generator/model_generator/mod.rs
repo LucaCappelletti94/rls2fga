@@ -7,8 +7,8 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    column_kind, composite_primary_key_columns, resolve_row_identity, row_uniquely_keys,
-    single_identity_column,
+    column_is_nullable, column_kind, composite_primary_key_columns, resolve_row_identity,
+    row_uniquely_keys, single_identity_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
 use crate::generator::ir::{
@@ -2464,7 +2464,10 @@ fn translate_pattern<DB: DatabaseLike>(
             }
         }
         PatternClass::P6BooleanFlag(boolean_flag) => {
-            if boolean_flag.admits_null {
+            if boolean_flag.admits_null
+                && column_is_nullable(ctx.source_table, boolean_flag.column.as_str(), ctx.db)
+                    != Some(false)
+            {
                 notes.push(TranslationNote::NullableBooleanFlagNarrowed {
                     policy: ctx.policy_name.to_string(),
                     column: boolean_flag.column.clone(),
