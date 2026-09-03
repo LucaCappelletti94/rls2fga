@@ -7,11 +7,13 @@ use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers::is_constantly_false;
 use crate::generator::db_lookup::{
-    column_kind, composite_primary_key_columns, resolve_pk_columns, row_uniquely_keys,
-    single_pk_column,
+    column_kind, composite_primary_key_columns, resolve_row_identity, row_uniquely_keys,
+    single_identity_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
-use crate::generator::ir::{GateContextColumn, MembershipGate, PrincipalInfo, TupleSource};
+use crate::generator::ir::{
+    ContextWitness, GateContextColumn, MembershipGate, PrincipalInfo, TupleSource,
+};
 use crate::generator::notes::SkippedTuples;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::tuple_generator::{resolve_bridge_columns, UnboundedColumns};
@@ -25,12 +27,12 @@ use crate::generator::well_known::{
 };
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
-    canonical_fga_type_name, clamp_relation_name, conditional_gate_relation_name,
-    gate_condition_name, is_owner_like_column_name, lookup_table, lookup_table_id,
-    membership_read_scope_relation_name, parent_type_from_fk_column, resolve_table_id,
-    role_limited_relation_name, role_scope_name, row_presence_relation_name, stable_hex_suffix,
-    stored_relation_name, table_id_has_column, table_identity, yielded_relation_name,
-    MAX_RELATION_RENAME_ATTEMPTS,
+    attribute_gate_relation_name, canonical_fga_type_name, clamp_relation_name,
+    conditional_gate_relation_name, gate_condition_name, is_owner_like_column_name, lookup_table,
+    lookup_table_id, membership_read_scope_relation_name, parent_type_from_fk_column,
+    public_flag_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
+    row_presence_relation_name, stable_hex_suffix, stored_relation_name, table_id_has_column,
+    table_identity, yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
@@ -270,6 +272,9 @@ pub(crate) struct TypePlan {
     pub table_tuple_sources: Vec<TupleSource>,
     /// Ownership column → its relation. Sharing one would union distinct principals.
     ownership_relations: BTreeMap<String, RelationName>,
+    /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
+    /// its own relation, so two keys must never share a name even on hash collision.
+    wildcard_gate_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
@@ -332,6 +337,7 @@ impl TypePlan {
             well_known: well_known.clone(),
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
+            wildcard_gate_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
             narrowed_relations: BTreeSet::new(),
@@ -391,6 +397,45 @@ impl TypePlan {
         let relation = RelationName::canonicalized(clamp_relation_name(name));
 
         self.ownership_relations
+            .insert(memo_key.to_string(), relation.clone());
+        relation
+    }
+
+    /// Relation carrying one wildcard gate's subjects, keyed by the gate's predicate.
+    ///
+    /// A memo hit shares the relation. A miss never adopts a name any other
+    /// definition holds, whatever its subjects, or two predicates' tuple sets would
+    /// union under one gate.
+    fn wildcard_gate_relation(&mut self, memo_key: &str, base: impl Into<String>) -> RelationName {
+        if let Some(existing) = self.wildcard_gate_relations.get(memo_key) {
+            return existing.clone();
+        }
+        let base = clamp_relation_name(base.into());
+        let taken = |name: &RelationName, plan: &Self| {
+            reserved_relation_subjects(name, &plan.well_known).is_some()
+                || generator_defines(name)
+                || plan.direct_relations.contains_key(name)
+                || plan.computed_relations.contains_key(name)
+        };
+        // Unbounded on purpose: exhausting a bounded loop would adopt a taken name and
+        // silently union two gates. Distinct counters give distinct names, and the
+        // taken set is finite, so the loop terminates.
+        let mut relation = RelationName::canonicalized(&base);
+        let mut counter = 0u32;
+        while taken(&relation, self) {
+            counter += 1;
+            let suffix = format!("_{counter}");
+            let head: String = base
+                .chars()
+                .take(MAX_RELATION_NAME_LEN - suffix.len())
+                .collect();
+            relation = RelationName::canonicalized(format!("{head}{suffix}"));
+        }
+        let wildcard = vec![DirectSubject::Wildcard(self.well_known.user.to_string())];
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert(wildcard);
+        self.wildcard_gate_relations
             .insert(memo_key.to_string(), relation.clone());
         relation
     }
@@ -872,7 +917,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
                 // Whether a row of this table can be named at all, which decides whether any tuple
                 // source can be emitted for it. Resolved once here rather than per policy.
-                let object_identifier = resolve_pk_columns(&source_table, db);
+                let object_identifier = resolve_row_identity(&source_table, db);
 
                 // UPDATE and DELETE name the row they change, so a denied read closes them.
                 // INSERT does not name a row, and the read is the gate itself.
@@ -1605,7 +1650,8 @@ fn note_request_contracts(
             // row or rides a member tuple.
             TupleSource::ConditionalAttributeGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
-            | TupleSource::HolderMembers { gate: Some(_), .. } => {
+            | TupleSource::HolderMembers { gate: Some(_), .. }
+            | TupleSource::MembershipShareMembers { .. } => {
                 contracts.insert((settings.request_time_parameter.to_string(), None, None));
             }
             _ => {}
@@ -1664,6 +1710,7 @@ fn source_carries_condition(source: &TupleSource) -> bool {
             | TupleSource::CallerSetShareGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
             | TupleSource::HolderMembers { gate: Some(_), .. }
+            | TupleSource::MembershipShareMembers { .. }
     )
 }
 
@@ -2148,16 +2195,6 @@ fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     UsersetExpr::Computed(deny_relation())
 }
 
-fn public_expr(table_plan: &mut TypePlan) -> UsersetExpr {
-    table_plan.ensure_direct(
-        public_relation(),
-        vec![DirectSubject::Wildcard(
-            table_plan.well_known.user.to_string(),
-        )],
-    );
-    UsersetExpr::Computed(public_relation())
-}
-
 fn combine_exprs(
     mut exprs: Vec<UsersetExpr>,
     wrapper: fn(Vec<UsersetExpr>) -> UsersetExpr,
@@ -2512,7 +2549,7 @@ fn row_identifier_budget<DB: DatabaseLike>(
     bounds: &UnboundedColumns,
     db: &DB,
 ) -> Option<usize> {
-    let key = resolve_pk_columns(source_table, db)?;
+    let key = resolve_row_identity(source_table, db)?;
     if !bounds.any_unbounded(source_table, &key) {
         return None;
     }
@@ -2574,7 +2611,7 @@ fn bridge_is_buildable<DB: DatabaseLike>(
         .iter()
         .find(|col| !table_id_has_column(db, source_table, col.as_str()));
     let reason = match missing {
-        Some(fk_col) if resolve_pk_columns(source_table, db).is_some() => {
+        Some(fk_col) if resolve_row_identity(source_table, db).is_some() => {
             SkippedTuples::BridgeColumnMissing {
                 table: source_table.clone(),
                 parent_type: parent_type.to_string(),
@@ -2695,7 +2732,7 @@ fn resolve_principal_info<DB: DatabaseLike>(
             }
             pk_col.clone()
         } else {
-            single_pk_column(&table, db)?
+            single_identity_column(&table, db)?
         };
         return Some(PrincipalInfo { table, pk_col });
     }
@@ -2704,7 +2741,7 @@ fn resolve_principal_info<DB: DatabaseLike>(
         let Some(table) = resolve_table_id(db, candidate) else {
             continue;
         };
-        if let Some(pk_col) = single_pk_column(&table, db) {
+        if let Some(pk_col) = single_identity_column(&table, db) {
             return Some(PrincipalInfo { table, pk_col });
         }
     }

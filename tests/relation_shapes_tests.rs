@@ -1325,7 +1325,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_status ON docs FOR SELECT USING (status > 'draft');
 ";
     let shapes = shapes_of(schema, "{}");
-    let gate = entry(&shapes, "docs", "public_viewer");
+    let gate = shapes
+        .iter()
+        .find(|entry| {
+            entry.type_name.as_str() == "docs"
+                && entry.relation.as_str().starts_with("public_where_status_")
+        })
+        .expect("the status gate should be reported");
     let [shape] = gate.shapes.as_slice() else {
         panic!("one attribute gate shape, got {:?}", gate.shapes);
     };

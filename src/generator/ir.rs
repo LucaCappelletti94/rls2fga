@@ -7,7 +7,7 @@
 use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
-use crate::generator::well_known::{member_relation, public_relation, WellKnownTypes};
+use crate::generator::well_known::{member_relation, WellKnownTypes};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::types::RequestComparison;
@@ -21,6 +21,17 @@ pub(crate) struct PrincipalInfo {
     pub pk_col: ColumnName,
 }
 
+/// Which value of a compressed column witnesses the comparison when several rows
+/// collapse into one fact. Sound either way, because the carried value is a real
+/// row's value. The direction decides completeness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ContextWitness {
+    /// `MAX`, exact for future comparisons and sound for equality.
+    Latest,
+    /// `MIN`, exact for past comparisons.
+    Earliest,
+}
+
 /// One condition-context entry a conditional membership tuple carries: the parameter
 /// name the row fills and the column its value is read from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -29,6 +40,8 @@ pub(crate) struct GateContextColumn {
     pub parameter: String,
     /// Column of the join table the value is read from.
     pub column: ColumnName,
+    /// The compressing aggregate's direction, unused where no compression happens.
+    pub witness: ContextWitness,
 }
 
 /// The condition a temporal membership tuple names, with every column its context
@@ -152,11 +165,12 @@ pub(crate) enum TupleSource {
         relation: RelationName,
     },
 
-    /// P6 public flag. Produces `(type:pk, public_viewer, user:*)` where the flag holds.
+    /// P6 public flag. Produces `(type:pk, relation, user:*)` where the flag holds.
     PublicFlag {
         table: TableId,
         pk_cols: Vec<ColumnName>,
         flag_col: ColumnName,
+        relation: RelationName,
     },
 
     /// A strict function's column arguments must be present before its body can grant.
@@ -168,11 +182,12 @@ pub(crate) enum TupleSource {
     },
 
     /// P9 attribute guard over a literal constant. Produces
-    /// `(type:pk, public_viewer, user:*)` for the rows the guard admits.
+    /// `(type:pk, relation, user:*)` for the rows the guard admits.
     AttributeGate {
         table: TableId,
         pk_cols: Vec<ColumnName>,
         predicate: AttributePredicate,
+        relation: RelationName,
     },
 
     /// P9 guard the service evaluates per check. Produces
@@ -244,14 +259,14 @@ pub(crate) enum TupleSource {
 
     /// Links a guarded row to each of its share objects, so a caller a share admits
     /// reaches the guarded row through the share. Produces
-    /// `(guarded_type:fk_col, relation, share_type:pk)` per share row, read from the join
-    /// table.
-    CallerSetShareBridge {
+    /// `(guarded_type:object_cols, relation, share_type:identity)` per share row, read
+    /// from the join table.
+    ShareBridge {
         join_table: TableId,
-        /// Primary key of `join_table`, which the share subject is keyed on.
-        pk_cols: Vec<ColumnName>,
-        /// Column of `join_table` naming the guarded row the share is on.
-        fk_col: ColumnName,
+        /// Declared row identity of `join_table`, which the share subject is keyed on.
+        identity_cols: Vec<ColumnName>,
+        /// Columns of `join_table` naming the guarded row the share is on.
+        object_cols: Vec<ColumnName>,
         /// The guarded table's own type, which the objects belong to.
         guarded_type: String,
         /// Synthetic type the share subjects belong to.
@@ -259,10 +274,32 @@ pub(crate) enum TupleSource {
         relation: RelationName,
     },
 
-    /// P10 constant `TRUE`. Produces `(type:pk, public_viewer, user:*)` for every row.
+    /// A membership row as its own witness object: the member is the subject and the
+    /// row's own clock values ride the tuple, so the condition is evaluated per row
+    /// exactly as `EXISTS` is. Produces
+    /// `(share_type:identity, relation, user:user_col, condition, context)` per row.
+    MembershipShareMembers {
+        join_table: TableId,
+        /// Declared row identity of `join_table`, keying each witness object.
+        identity_cols: Vec<ColumnName>,
+        user_col: ColumnName,
+        /// Synthetic type the witness objects belong to.
+        share_type: String,
+        /// The share type's member relation this policy's tuples feed. Minted per
+        /// condition, so two policies over one join table never collide their clocks.
+        relation: RelationName,
+        condition: String,
+        /// Residual filter on the membership row, requests excluded by the condition.
+        extra_predicates: ResidualPredicates,
+        /// Clock comparisons composed into the condition, one context column each.
+        context: Vec<GateContextColumn>,
+    },
+
+    /// P10 constant `TRUE`. Produces `(type:pk, relation, user:*)` for every row.
     ConstantTrue {
         table: TableId,
         pk_cols: Vec<ColumnName>,
+        relation: RelationName,
     },
 
     /// Links every row of a role-scoped table to the scope its policy declares. Produces
@@ -301,6 +338,17 @@ pub(crate) enum TupleSource {
         pk_cols: Vec<ColumnName>,
         relation: RelationName,
         holder_type: String,
+    },
+
+    /// Links the one holder object to each membership row's witness. Produces
+    /// `(holder_type:all, relation, share_type:identity)` per row.
+    HolderShares {
+        member_table: TableId,
+        /// Declared row identity of `member_table`, keying each witness subject.
+        identity_cols: Vec<ColumnName>,
+        holder_type: String,
+        share_type: String,
+        relation: RelationName,
     },
 
     /// Everyone listed in `member_table`, attached to the holder object.
@@ -425,6 +473,7 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         pk_cols: &'a [ColumnName],
         flag_col: &'a ColumnName,
+        relation: &'a RelationName,
     },
     RowPresenceGate {
         table: &'a TableId,
@@ -436,6 +485,7 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         pk_cols: &'a [ColumnName],
         predicate: &'a AttributePredicate,
+        relation: &'a RelationName,
     },
     ConditionalAttributeGate {
         table: &'a TableId,
@@ -466,17 +516,35 @@ pub(crate) enum TupleSourceKey<'a> {
         extra_predicates: ResidualSqlKey<'a>,
         temporal_context: &'a [GateContextColumn],
     },
-    CallerSetShareBridge {
+    ShareBridge {
         guarded_type: &'a str,
         join_table: &'a TableId,
-        pk_cols: &'a [ColumnName],
-        fk_col: &'a ColumnName,
+        identity_cols: &'a [ColumnName],
+        object_cols: &'a [ColumnName],
+        share_type: &'a str,
+        relation: &'a RelationName,
+    },
+    MembershipShareMembers {
+        join_table: &'a TableId,
+        identity_cols: &'a [ColumnName],
+        user_col: &'a ColumnName,
+        share_type: &'a str,
+        relation: &'a RelationName,
+        condition: &'a str,
+        extra_predicates: ResidualSqlKey<'a>,
+        context: &'a [GateContextColumn],
+    },
+    HolderShares {
+        member_table: &'a TableId,
+        identity_cols: &'a [ColumnName],
+        holder_type: &'a str,
         share_type: &'a str,
         relation: &'a RelationName,
     },
     ConstantTrue {
         table: &'a TableId,
         pk_cols: &'a [ColumnName],
+        relation: &'a RelationName,
     },
     PolicyScope {
         table: &'a TableId,
@@ -529,14 +597,16 @@ impl TupleSource {
             | Self::SessionAttributeGate { .. }
             | Self::ConstantTrue { .. }
             | Self::PolicyScope { .. }
-            | Self::HolderBridge { .. }
-            | Self::CallerSetShareBridge { .. } => true,
-            Self::PolicyScopeRoles { .. }
+            | Self::HolderBridge { .. } => true,
+            Self::ShareBridge { .. }
+            | Self::PolicyScopeRoles { .. }
             | Self::OwnerIdentity { .. }
             | Self::ExplicitGrants { .. }
             | Self::TeamMembership { .. }
             | Self::ExistsMembership { .. }
             | Self::CallerSetShareGate { .. }
+            | Self::MembershipShareMembers { .. }
+            | Self::HolderShares { .. }
             | Self::HolderMembers { .. }
             | Self::Skipped { .. } => false,
         }
@@ -558,7 +628,9 @@ impl TupleSource {
             | Self::RowPresenceGate { relation, .. }
             | Self::ConditionalAttributeGate { relation, .. }
             | Self::SessionAttributeGate { relation, .. }
-            | Self::CallerSetShareBridge { relation, .. }
+            | Self::PublicFlag { relation, .. }
+            | Self::AttributeGate { relation, .. }
+            | Self::ConstantTrue { relation, .. }
             | Self::HolderBridge { relation, .. } => own(relation),
             Self::OwnerIdentity {
                 owner_type,
@@ -573,6 +645,26 @@ impl TupleSource {
                 .iter()
                 .map(|(_, relation, _)| (owner_type.clone(), relation.clone()))
                 .collect(),
+            Self::ShareBridge {
+                guarded_type,
+                relation,
+                ..
+            } => vec![(guarded_type.clone(), relation.clone())],
+            Self::MembershipShareMembers {
+                share_type,
+                relation,
+                ..
+            }
+            | Self::CallerSetShareGate {
+                share_type,
+                relation,
+                ..
+            } => vec![(share_type.clone(), relation.clone())],
+            Self::HolderShares {
+                holder_type,
+                relation,
+                ..
+            } => vec![(holder_type.clone(), relation.clone())],
             Self::TeamMembership { .. } => {
                 vec![(well_known.team.to_string(), member_relation())]
             }
@@ -581,14 +673,6 @@ impl TupleSource {
             }
             Self::HolderMembers { holder_type, .. } => {
                 vec![(holder_type.clone(), member_relation())]
-            }
-            Self::CallerSetShareGate {
-                share_type,
-                relation,
-                ..
-            } => vec![(share_type.clone(), relation.clone())],
-            Self::PublicFlag { .. } | Self::AttributeGate { .. } | Self::ConstantTrue { .. } => {
-                own(&public_relation())
             }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
             Self::PolicyScopeRoles {
@@ -713,10 +797,12 @@ impl TupleSource {
                 table,
                 pk_cols,
                 flag_col,
+                relation,
             } => TupleSourceKey::PublicFlag {
                 table,
                 pk_cols,
                 flag_col,
+                relation,
             },
             Self::RowPresenceGate {
                 table,
@@ -733,10 +819,12 @@ impl TupleSource {
                 table,
                 pk_cols,
                 predicate,
+                relation,
             } => TupleSourceKey::AttributeGate {
                 table,
                 pk_cols,
                 predicate,
+                relation,
             },
             Self::ConditionalAttributeGate {
                 table,
@@ -799,24 +887,62 @@ impl TupleSource {
                 },
                 temporal_context,
             },
-            Self::CallerSetShareBridge {
+            Self::ShareBridge {
                 join_table,
-                pk_cols,
-                fk_col,
+                identity_cols,
+                object_cols,
                 guarded_type,
                 share_type,
                 relation,
-            } => TupleSourceKey::CallerSetShareBridge {
+            } => TupleSourceKey::ShareBridge {
                 guarded_type,
                 join_table,
-                pk_cols,
-                fk_col,
+                identity_cols,
+                object_cols,
                 share_type,
                 relation,
             },
-            Self::ConstantTrue { table, pk_cols } => {
-                TupleSourceKey::ConstantTrue { table, pk_cols }
-            }
+            Self::MembershipShareMembers {
+                join_table,
+                identity_cols,
+                user_col,
+                share_type,
+                relation,
+                condition,
+                extra_predicates,
+                context,
+            } => TupleSourceKey::MembershipShareMembers {
+                join_table,
+                identity_cols,
+                user_col,
+                share_type,
+                relation,
+                condition,
+                extra_predicates: ResidualSqlKey::excluding_requests(extra_predicates),
+                context,
+            },
+            Self::HolderShares {
+                member_table,
+                identity_cols,
+                holder_type,
+                share_type,
+                relation,
+            } => TupleSourceKey::HolderShares {
+                member_table,
+                identity_cols,
+                holder_type,
+                share_type,
+                relation,
+            },
+            Self::ConstantTrue {
+                table,
+                pk_cols,
+                relation,
+            } => TupleSourceKey::ConstantTrue {
+                table,
+                pk_cols,
+                relation,
+            },
             Self::PolicyScope {
                 table,
                 pk_cols,

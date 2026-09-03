@@ -121,8 +121,8 @@ fn compound_or_owner_or_public() {
     .expect("translation should plan")
     .outputs_accepting_gaps();
     assert!(
-        model.model().contains("owner or public_viewer"),
-        "Model should contain 'owner or public_viewer', got:\n{}",
+        model.model().contains("owner or public_when_is_public"),
+        "Model should contain 'owner or public_when_is_public', got:\n{}",
         model.model()
     );
 

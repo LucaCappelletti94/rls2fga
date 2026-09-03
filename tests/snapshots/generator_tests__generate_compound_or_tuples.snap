@@ -13,7 +13,7 @@ WHERE "owner_id" IS NOT NULL
 AND "id" IS NOT NULL;
 
 -- Public access flag (is_public)
-SELECT 'documents:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_viewer' AS relation, 'user:*' AS subject
+SELECT 'documents:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_when_is_public' AS relation, 'user:*' AS subject
 FROM "public"."documents"
 WHERE "id" IS NOT NULL
 AND "is_public" = TRUE;

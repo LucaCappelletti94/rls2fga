@@ -4,12 +4,12 @@ use crate::no_std_prelude::*;
 
 #[cfg(test)]
 use crate::classifier::patterns::{ClassifiedExpr, PatternClass};
-use crate::generator::db_lookup::resolve_pk_columns;
+use crate::generator::db_lookup::resolve_row_identity;
 use crate::generator::identity::{
     typed_name_literal, typed_name_sql, wildcard_subject_literal, MAX_OBJECT_NAME_CHARS,
     MAX_SUBJECT_NAME_BYTES,
 };
-use crate::generator::ir::{TupleSource, TupleSourceKey};
+use crate::generator::ir::{ContextWitness, TupleSource, TupleSourceKey};
 use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
 pub use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
@@ -1029,7 +1029,10 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 let column_sql = quote_sql_identifier(column.column.as_str());
                 let key_sql = quote_sql_string_literal(&column.parameter);
                 let carried = if gate.aggregate {
-                    format!("MAX({column_sql})")
+                    match column.witness {
+                        ContextWitness::Latest => format!("MAX({column_sql})"),
+                        ContextWitness::Earliest => format!("MIN({column_sql})"),
+                    }
                 } else {
                     column_sql.clone()
                 };
@@ -1152,22 +1155,26 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
         // Each share row links its guarded object to its own share object, so a caller a
         // share admits reaches the guarded row through the share.
-        TupleSource::CallerSetShareBridge {
+        TupleSource::ShareBridge {
             join_table,
-            pk_cols,
-            fk_col,
+            identity_cols,
+            object_cols,
             guarded_type,
             share_type,
             relation,
         } => {
             let join_table_sql = join_table.sql_name();
-            let fk_col_sql = quote_sql_identifier(fk_col.as_str());
-            let pk_parts = quoted_key_parts(pk_cols);
-            let object_sql = typed_name_sql(guarded_type, [fk_col_sql.as_str()]);
-            let subject_sql = typed_name_sql(share_type, pk_parts.iter().map(String::as_str));
-            let mut base = format!("{fk_col_sql} IS NOT NULL");
-            for (col, part) in pk_cols.iter().zip(&pk_parts) {
-                if col != fk_col {
+            let object_parts = quoted_key_parts(object_cols);
+            let identity_parts = quoted_key_parts(identity_cols);
+            let object_sql = typed_name_sql(guarded_type, object_parts.iter().map(String::as_str));
+            let subject_sql = typed_name_sql(share_type, identity_parts.iter().map(String::as_str));
+            let mut base = object_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .collect::<Vec<_>>()
+                .join("\nAND ");
+            for (col, part) in identity_cols.iter().zip(&identity_parts) {
+                if !object_cols.contains(col) {
                     let _ = write!(base, "\nAND {part} IS NOT NULL");
                 }
             }
@@ -1176,8 +1183,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 &object_sql,
                 Some(&subject_sql),
                 join_table,
-                core::slice::from_ref(fk_col),
-                pk_cols,
+                object_cols,
+                identity_cols,
                 names,
             );
             Some(TupleQuery {
@@ -1190,6 +1197,75 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 ),
                 description: None,
                 condition: None,
+                skipped: None,
+            })
+        }
+
+        // One tuple per membership row, keyed on the row's own identity, so the
+        // condition is evaluated per row exactly as `EXISTS` is: no aggregation.
+        TupleSource::MembershipShareMembers {
+            join_table,
+            identity_cols,
+            user_col,
+            share_type,
+            relation,
+            condition,
+            extra_predicates,
+            context,
+        } => {
+            let join_table_sql = join_table.sql_name();
+            let identity_parts = quoted_key_parts(identity_cols);
+            let user_col_sql = quote_sql_identifier(user_col.as_str());
+            let object_sql = typed_name_sql(share_type, identity_parts.iter().map(String::as_str));
+            let subject_sql = typed_name_sql(well_known.user.as_str(), [user_col_sql.as_str()]);
+            let base = identity_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .chain([format!("{user_col_sql} IS NOT NULL")])
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            let guards = join_row_is_nameable(
+                &base,
+                &object_sql,
+                Some(&subject_sql),
+                join_table,
+                identity_cols,
+                core::slice::from_ref(user_col),
+                names,
+            );
+            let mut context_sql = String::new();
+            let mut clauses: Vec<String> = extra_predicates
+                .sql_excluding_requests()
+                .into_iter()
+                .collect();
+            for (index, column) in context.iter().enumerate() {
+                let column_sql = quote_sql_identifier(column.column.as_str());
+                let key_sql = quote_sql_string_literal(&column.parameter);
+                if index > 0 {
+                    context_sql.push_str(", ");
+                }
+                let _ = write!(context_sql, "{key_sql}, {column_sql}");
+                clauses.push(format!("{column_sql} IS NOT NULL"));
+            }
+            let where_clause = if clauses.is_empty() {
+                format!("\nWHERE {guards}")
+            } else {
+                format!("\nWHERE {guards}\nAND ({})", clauses.join(" AND "))
+            };
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Each row of {join_table} as its own {share_type} witness, \
+                     evaluated by condition {condition}"
+                ),
+                sql: format!(
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
+                     {subject_sql} AS subject,\n\
+                     \x20 '{condition}' AS condition, \
+                     jsonb_build_object({context_sql}) AS context\n\
+                     FROM {join_table_sql}{where_clause};"
+                ),
+                description: None,
+                condition: Some(condition.clone()),
                 skipped: None,
             })
         }
@@ -1240,7 +1316,10 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 let column_sql = quote_sql_identifier(column.column.as_str());
                 let key_sql = quote_sql_string_literal(&column.parameter);
                 let carried = if gate.aggregate {
-                    format!("MAX({column_sql})")
+                    match column.witness {
+                        ContextWitness::Latest => format!("MAX({column_sql})"),
+                        ContextWitness::Earliest => format!("MIN({column_sql})"),
+                    }
                 } else {
                     column_sql.clone()
                 };
@@ -1298,6 +1377,48 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                      {subject_sql} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null};"
+                ),
+                description: None,
+                condition: None,
+                skipped: None,
+            })
+        }
+
+        // One link per membership row, so the holder resolves each row's witness.
+        TupleSource::HolderShares {
+            member_table,
+            identity_cols,
+            holder_type,
+            share_type,
+            relation,
+        } => {
+            let member_table_sql = member_table.sql_name();
+            let identity_parts = quoted_key_parts(identity_cols);
+            let object_sql = typed_name_literal(holder_type, HOLDER_OBJECT_ID);
+            let subject_sql = typed_name_sql(share_type, identity_parts.iter().map(String::as_str));
+            let base = identity_parts
+                .iter()
+                .map(|part| format!("{part} IS NOT NULL"))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            let guards = join_row_is_nameable(
+                &base,
+                &object_sql,
+                Some(&subject_sql),
+                member_table,
+                &[],
+                identity_cols,
+                names,
+            );
+            Some(TupleQuery {
+                comment: format!(
+                    "-- The {holder_type} holder links each {member_table} row's witness"
+                ),
+                sql: format!(
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
+                     {subject_sql} AS subject\n\
+                     FROM {member_table_sql}\n\
+                     WHERE {guards};"
                 ),
                 description: None,
                 condition: None,
@@ -1368,6 +1489,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             table,
             pk_cols,
             flag_col,
+            relation,
         } => {
             let (table_sql, object_sql, key_not_null) =
                 owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
@@ -1375,7 +1497,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             Some(TupleQuery {
                 comment: format!("-- Public access flag ({flag_col})"),
                 sql: format!(
-                    "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null}\n\
@@ -1419,6 +1541,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             table,
             pk_cols,
             predicate,
+            relation,
         } => {
             let (table_sql, object_sql, key_not_null) =
                 owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
@@ -1431,7 +1554,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     predicate.column
                 ),
                 sql: format!(
-                    "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null}\n\
@@ -1521,13 +1644,17 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             })
         }
 
-        TupleSource::ConstantTrue { table, pk_cols } => {
+        TupleSource::ConstantTrue {
+            table,
+            pk_cols,
+            relation,
+        } => {
             let (table_sql, object_sql, key_not_null) =
                 owner_object_sql(owner_type, table, pk_cols, only_own_rows, names);
             Some(TupleQuery {
                 comment: "-- Constant TRUE policy (all rows are visible)".to_string(),
                 sql: format!(
-                    "SELECT {object_sql} AS object, 'public_viewer' AS relation, \
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {wildcard_subject} AS subject\n\
                      FROM {table_sql}\n\
                      WHERE {key_not_null};"
@@ -1616,7 +1743,7 @@ pub(crate) fn resolve_bridge_columns<DB: DatabaseLike>(
     fk_cols: &[ColumnName],
     db: &DB,
 ) -> Option<(Vec<ColumnName>, Vec<ColumnName>)> {
-    let object_cols = resolve_pk_columns(table, db)?;
+    let object_cols = resolve_row_identity(table, db)?;
     fk_cols
         .iter()
         .all(|col| table_id_has_column(db, table, col.as_str()))

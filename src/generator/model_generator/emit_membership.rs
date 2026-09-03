@@ -34,13 +34,13 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // to the holder, so with no row identity there is nothing to hang it on, a
     // holder type minted here would outlive the expression that justified it,
     // and advice about the tuple SQL names a query nothing will emit.
-    let Some(pk_cols) = resolve_pk_columns(source_table, db) else {
+    let Some(pk_cols) = resolve_row_identity(source_table, db) else {
         skip_source_without_row_identity(table_plan, source_table, "membership holder tuples", db);
         return deny_expr(table_plan);
     };
 
     // Temporal comparisons on the member row move into the condition its member tuple
-    // names. Declared on this plan, referenced by name from the holder's member relation.
+    // names. Declared on this plan, referenced by name from wherever the member lives.
     let gate = declare_temporal_condition(
         extra_predicates,
         member_table,
@@ -49,12 +49,32 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         &ctx.settings.request_time_parameter,
         ctx.condition_parameters,
         db,
-    )
-    .map(|(condition, context)| MembershipGate {
-        condition,
-        context,
-        aggregate: !row_uniquely_keys(member_table, &[user_column], db),
-    });
+    );
+    // Several member rows per user only where the user column covers no declared
+    // identity, and then the clock must be evaluated per row.
+    let rows_unique = row_uniquely_keys(member_table, &[user_column], db);
+    let witness = match &gate {
+        Some((condition, context)) if !rows_unique => {
+            if let Some(identity_cols) = resolve_row_identity(member_table, db) {
+                Some((condition.clone(), context.clone(), identity_cols))
+            } else if context.len() == 1 {
+                // A single carried value is a real row's value, so compressing the
+                // rows stays sound and at worst incomplete.
+                None
+            } else {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!(
+                        "the rows of '{member_table}' have no declared identity, and \
+                         several clock comparisons cannot be compressed into one \
+                         fact without mixing rows"
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
+        }
+        _ => None,
+    };
 
     let announced = if gate.is_some() {
         extra_predicates.sql_excluding_requests()
@@ -72,6 +92,76 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     // policies reading the same table may share, and two reading different
     // ones must not pool their members.
     let holder_type = holder_type_name(member_table, table_types);
+    // Named after the type it points at, as the parent link is.
+    let holder_relation = table_plan.ensure_direct(
+        clamp_relation_name(holder_type.clone()),
+        vec![DirectSubject::Type(holder_type.clone())],
+    );
+    if let Some((condition, context, identity_cols)) = witness {
+        let share_type = share_type_name(member_table, table_types);
+        let member_rel = {
+            let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
+                TypePlan::new_with_well_known(&share_type, &table_plan.well_known)
+            });
+            share_plan.ensure_direct(
+                member_relation(),
+                vec![DirectSubject::ConditionalType {
+                    type_name: table_plan.well_known.user.to_string(),
+                    condition: condition.clone(),
+                }],
+            )
+        };
+        let share_source = TupleSource::MembershipShareMembers {
+            join_table: member_table.clone(),
+            identity_cols: identity_cols.clone(),
+            user_col: user_column.clone(),
+            share_type: share_type.clone(),
+            relation: member_rel.clone(),
+            condition,
+            extra_predicates: extra_predicates.clone(),
+            context,
+        };
+        table_plan.add_source(share_source.clone());
+        if let Some(share_plan) = all_types.get_mut(&share_type) {
+            share_plan.add_source(share_source);
+        }
+        let holder_plan = all_types
+            .entry(holder_type.clone())
+            .or_insert_with(|| TypePlan::new_with_well_known(&holder_type, &table_plan.well_known));
+        let link = holder_plan.ensure_direct(
+            clamp_relation_name(share_type.clone()),
+            vec![DirectSubject::Type(share_type.clone())],
+        );
+        let witness_member = holder_plan.ensure_computed(
+            format!("{share_type}_member"),
+            UsersetExpr::TupleToUserset {
+                tupleset: link.clone(),
+                computed: member_rel,
+            },
+        );
+        holder_plan.add_source(TupleSource::HolderShares {
+            member_table: member_table.clone(),
+            identity_cols,
+            holder_type: holder_type.clone(),
+            share_type,
+            relation: link,
+        });
+        table_plan.add_source(TupleSource::HolderBridge {
+            table: source_table.clone(),
+            pk_cols,
+            relation: holder_relation.clone(),
+            holder_type,
+        });
+        return UsersetExpr::TupleToUserset {
+            tupleset: holder_relation,
+            computed: witness_member,
+        };
+    }
+    let gate = gate.map(|(condition, context)| MembershipGate {
+        condition,
+        context,
+        aggregate: !rows_unique,
+    });
     ensure_member_type(all_types, &holder_type, &table_plan.well_known);
     if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
         holder_plan.add_direct_subject(
@@ -82,11 +172,6 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             },
         );
     }
-    // Named after the type it points at, as the parent link is.
-    let holder_relation = table_plan.ensure_direct(
-        clamp_relation_name(holder_type.clone()),
-        vec![DirectSubject::Type(holder_type.clone())],
-    );
     table_plan.add_source(TupleSource::HolderMembers {
         holder_type: holder_type.clone(),
         member_table: member_table.clone(),
@@ -195,12 +280,44 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         ctx.condition_parameters,
         db,
     );
-    let conditional_member = gate
-        .as_ref()
-        .map(|(condition, _)| DirectSubject::ConditionalType {
+    // Several rows can key one (parent, user) only where no declared identity of the
+    // join table is covered by the correlation, and then the clock must be evaluated
+    // per row: one witness object per membership row, exactly as `EXISTS` is.
+    let correlation_cols: Vec<&ColumnName> = pairs
+        .iter()
+        .map(|pair| &pair.join_column)
+        .chain([user_column])
+        .collect();
+    let rows_unique = row_uniquely_keys(join_table, &correlation_cols, db);
+    let witness = match &gate {
+        Some((condition, context)) if !rows_unique => {
+            if let Some(identity_cols) = resolve_row_identity(join_table, db) {
+                Some((condition.clone(), context.clone(), identity_cols))
+            } else if context.len() == 1 {
+                // A single carried value is a real row's value, so compressing the
+                // rows stays sound and at worst incomplete.
+                None
+            } else {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!(
+                        "the rows of '{join_table}' have no declared identity, and \
+                         several clock comparisons cannot be compressed into one \
+                         fact without mixing rows"
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
+        }
+        _ => None,
+    };
+    let conditional_member = match &gate {
+        Some((condition, _)) if witness.is_none() => Some(DirectSubject::ConditionalType {
             type_name: table_plan.well_known.user.to_string(),
             condition: condition.clone(),
-        });
+        }),
+        _ => None,
+    };
 
     // The relation is named after the parent type, but relation names have a
     // tighter length limit, so use the name the plan actually registered.
@@ -210,20 +327,30 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     );
     // This plan is outside `all_types` until the table build finishes, so a
     // self-referential membership registers `member` here before the post-pass trims it.
+    // The witness route registers no direct member: its access relation is computed
+    // over the share link, and a direct grant surface would sit unused.
     if parent_type == table_plan.type_name.as_str() {
-        table_plan.ensure_direct(
-            member_relation(),
-            vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
-        );
-        if let Some(subject) = &conditional_member {
-            table_plan.add_direct_subject(&member_relation(), subject.clone());
+        if witness.is_none() {
+            table_plan.ensure_direct(
+                member_relation(),
+                vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
+            );
+            if let Some(subject) = &conditional_member {
+                table_plan.add_direct_subject(&member_relation(), subject.clone());
+            }
         }
     } else {
-        ensure_member_type(all_types, &parent_type, &table_plan.well_known);
-        if let (Some(subject), Some(parent_plan)) =
-            (&conditional_member, all_types.get_mut(&parent_type))
-        {
-            parent_plan.add_direct_subject(&member_relation(), subject.clone());
+        if witness.is_none() {
+            ensure_member_type(all_types, &parent_type, &table_plan.well_known);
+            if let (Some(subject), Some(parent_plan)) =
+                (&conditional_member, all_types.get_mut(&parent_type))
+            {
+                parent_plan.add_direct_subject(&member_relation(), subject.clone());
+            }
+        } else {
+            all_types.entry(parent_type.clone()).or_insert_with(|| {
+                TypePlan::new_with_well_known(&parent_type, &table_plan.well_known)
+            });
         }
         // Only a declared reference names a table: the single-column fallback
         // derives the type from the column's name, and no row of any table is
@@ -258,6 +385,116 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         });
     }
 
+    if let Some((condition, context, identity_cols)) = witness {
+        let share_type = share_type_name(join_table, table_types);
+        let member_rel = {
+            let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
+                TypePlan::new_with_well_known(&share_type, &table_plan.well_known)
+            });
+            share_plan.ensure_direct(
+                member_relation(),
+                vec![DirectSubject::ConditionalType {
+                    type_name: table_plan.well_known.user.to_string(),
+                    condition: condition.clone(),
+                }],
+            )
+        };
+        let share_source = TupleSource::MembershipShareMembers {
+            join_table: join_table.clone(),
+            identity_cols: identity_cols.clone(),
+            user_col: user_column.clone(),
+            share_type: share_type.clone(),
+            relation: member_rel.clone(),
+            condition,
+            extra_predicates: extra_predicates.clone(),
+            context,
+        };
+        table_plan.add_source(share_source.clone());
+        if let Some(share_plan) = all_types.get_mut(&share_type) {
+            share_plan.add_source(share_source);
+        }
+        let fk_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.join_column.clone()).collect();
+        let (shares_link, witness_member) = if parent_type == table_plan.type_name.as_str() {
+            let link = table_plan.ensure_direct(
+                clamp_relation_name(share_type.clone()),
+                vec![DirectSubject::Type(share_type.clone())],
+            );
+            let witness_member = table_plan.ensure_computed(
+                format!("{share_type}_member"),
+                UsersetExpr::TupleToUserset {
+                    tupleset: link.clone(),
+                    computed: member_rel.clone(),
+                },
+            );
+            (link, witness_member)
+        } else {
+            let Some(parent_plan) = all_types.get_mut(&parent_type) else {
+                return deny_expr(table_plan);
+            };
+            let link = parent_plan.ensure_direct(
+                clamp_relation_name(share_type.clone()),
+                vec![DirectSubject::Type(share_type.clone())],
+            );
+            let witness_member = parent_plan.ensure_computed(
+                format!("{share_type}_member"),
+                UsersetExpr::TupleToUserset {
+                    tupleset: link.clone(),
+                    computed: member_rel.clone(),
+                },
+            );
+            (link, witness_member)
+        };
+        let bridge = TupleSource::ShareBridge {
+            join_table: join_table.clone(),
+            identity_cols,
+            object_cols: fk_cols,
+            guarded_type: parent_type.clone(),
+            share_type,
+            relation: shares_link,
+        };
+        // Attach the source to the plan that defines its guarded relation.
+        if parent_type == table_plan.type_name.as_str() {
+            table_plan.add_source(bridge);
+        } else if let Some(parent_plan) = all_types.get_mut(&parent_type) {
+            parent_plan.add_source(bridge);
+        }
+        table_plan.add_source(TupleSource::ParentBridge {
+            table: source_table.clone(),
+            fk_cols: outer_cols,
+            parent_type: parent_type.clone(),
+            relation: parent_relation.clone(),
+        });
+        let membership = UsersetExpr::TupleToUserset {
+            tupleset: parent_relation,
+            computed: witness_member,
+        };
+        if read_scope_roles.is_empty() {
+            return membership;
+        }
+        let scope_relation =
+            membership_read_scope_relation_name(&ctx.table_types.resolve(join_table));
+        register_pg_role_scope(
+            table_plan,
+            all_types,
+            notes,
+            source_table,
+            db,
+            RoleScopeSpec {
+                scope_relation: &scope_relation,
+                walked: &RolePrivilege::Usage.relation_name(),
+                role_names: &read_scope_roles,
+                scope_note: TranslationNote::MembershipReadScope {
+                    policy: policy_name.to_string(),
+                    join_table: join_table.clone(),
+                    roles: read_scope_roles.clone(),
+                    relation: scope_relation.clone(),
+                },
+                missing_object_what: "membership read scope tuples",
+            },
+        );
+        return scoped_policy_expr(membership, &scope_relation);
+    }
+
     // Membership rows: add to table_plan first (for correct ordering in IR renderer),
     // then also to the parent type's plan for semantic correctness (deduplicated).
     let membership_source = TupleSource::ExistsMembership {
@@ -266,15 +503,10 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         user_col: user_column.clone(),
         parent_type: parent_type.clone(),
         extra_predicates: extra_predicates.clone(),
-        gate: gate.map(|(condition, context)| {
-            let mut key_cols: Vec<&ColumnName> =
-                pairs.iter().map(|pair| &pair.join_column).collect();
-            key_cols.push(user_column);
-            MembershipGate {
-                condition,
-                context,
-                aggregate: !row_uniquely_keys(join_table, &key_cols, db),
-            }
+        gate: gate.map(|(condition, context)| MembershipGate {
+            condition,
+            context,
+            aggregate: !rows_unique,
         }),
     };
     table_plan.add_source(membership_source.clone());

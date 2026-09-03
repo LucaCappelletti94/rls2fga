@@ -12,7 +12,7 @@ Each `USING` and `WITH CHECK` expression is classified against the patterns belo
 > Not on crates.io yet, pending a `sqlparser` release with `no_std` fixes.
 
 > [!WARNING]
-> An attribute guard beside a relationship check (`owner_id = current_user AND status = 'published'`) translates only its relationship half. The guard becomes a `-- TODO` for your application. A guard standing on its own does translate.
+> An `IN` list guard beside a relationship check (`owner_id = current_user AND status IN ('active', 'pending')`) translates only its relationship half. The guard becomes a `-- TODO` for your application. A single-value guard beside a relationship (`owner_id = current_user AND status = 'published'`) and a guard standing on its own both translate.
 
 ## Usage
 

@@ -6015,9 +6015,10 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
 }
 
 /// The holder (uncorrelated) membership with an expiry over a member table with several
-/// rows per user: the clock rides an aggregated member tuple carrying the latest deadline.
-/// The aggregation is load-bearing: an expired reviewer row beside a live one must not
-/// deny, and one tuple per user is the only shape `OpenFGA` can hold on the one holder.
+/// rows per user and no declared identity: rows nothing names cannot become witnesses,
+/// so the single-comparison gate compresses to one member tuple carrying the latest
+/// deadline, which is sound because a real row holds that value. An expired reviewer
+/// row beside a live one must not deny.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn expiring_holder_membership_condition_parity_postgres18_and_openfga() {
@@ -7900,4 +7901,745 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
 struct HoldsRole {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     holds_role: bool,
+}
+
+/// Typed schema for the refused-spelling soundness case.
+mod refused_spelling_schema {
+    diesel::table! {
+        case_docs (id) {
+            id -> diesel::sql_types::Text,
+            archived -> diesel::sql_types::Bool,
+            is_public -> diesel::sql_types::Bool,
+        }
+    }
+
+    diesel::table! {
+        filter_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+            reviewer_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        filter_members (doc_id, user_id) {
+            doc_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+        }
+    }
+
+    diesel::table! {
+        sentinel_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Text,
+        }
+    }
+}
+
+/// Three spellings the classifier must refuse rather than widen: a CASE whose FALSE
+/// branch vetoes rows a later TRUE branch grants, a membership EXISTS filtered by an
+/// equality between two guarded-row columns, and a NULLIF sentinel exclusion.
+///
+/// Each table seeds exactly the row a wrong reading turned into a grant, and the pre-fix
+/// red run granted all three. `PostgreSQL` denies every probe, so `OpenFGA` must too.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn refused_spellings_fall_closed_parity_postgres18_and_openfga() {
+    use refused_spelling_schema::{case_docs, filter_docs, filter_members, sentinel_docs};
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE case_docs(id TEXT PRIMARY KEY, archived BOOLEAN NOT NULL, is_public BOOLEAN NOT NULL);
+CREATE TABLE filter_docs(id TEXT PRIMARY KEY, owner_id TEXT, reviewer_id TEXT);
+CREATE TABLE filter_members(doc_id TEXT REFERENCES filter_docs(id), user_id TEXT);
+CREATE TABLE sentinel_docs(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE case_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE filter_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sentinel_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY case_p ON case_docs FOR SELECT USING (
+  CASE WHEN archived THEN FALSE WHEN is_public THEN TRUE ELSE FALSE END
+);
+CREATE POLICY filter_p ON filter_docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM filter_members m
+    WHERE m.doc_id = filter_docs.id
+      AND m.user_id = current_user
+      AND filter_docs.owner_id = filter_docs.reviewer_id
+  )
+);
+CREATE POLICY sentinel_p ON sentinel_docs FOR SELECT USING (
+  NULLIF(owner_id, 'system') = current_user
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the refused-spelling schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON case_docs, filter_docs, filter_members TO app_reader;
+         CREATE ROLE system LOGIN;
+         GRANT SELECT ON sentinel_docs TO system;",
+    )
+    .expect("Failed to create the querying roles");
+    diesel::insert_into(case_docs::table)
+        .values((
+            case_docs::id.eq("c1"),
+            case_docs::archived.eq(true),
+            case_docs::is_public.eq(true),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the vetoed public row");
+    diesel::insert_into(filter_docs::table)
+        .values((
+            filter_docs::id.eq("f1"),
+            filter_docs::owner_id.eq("someone"),
+            filter_docs::reviewer_id.eq("someone_else"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the filtered row");
+    diesel::insert_into(filter_members::table)
+        .values((
+            filter_members::doc_id.eq("f1"),
+            filter_members::user_id.eq("app_reader"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+    diesel::insert_into(sentinel_docs::table)
+        .values((
+            sentinel_docs::id.eq("s1"),
+            sentinel_docs::owner_id.eq("system"),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the sentinel-owned row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so each loss is reported
+    // as below threshold rather than silently absent.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "refused-spellings-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let (case_visible, filter_visible) = conn
+        .transaction::<(i64, i64), diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the reads around it stay typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            let case_visible = case_docs::table
+                .filter(case_docs::id.eq("c1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            let filter_visible = filter_docs::table
+                .filter(filter_docs::id.eq("f1"))
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok((case_visible, filter_visible))
+        })
+        .expect("reading under row level security should not error");
+    let sentinel_visible = conn
+        .transaction::<i64, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE system").execute(conn)?;
+            sentinel_docs::table
+                .filter(sentinel_docs::id.eq("s1"))
+                .count()
+                .get_result::<i64>(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        case_visible, 0,
+        "the CASE veto denies the archived public row"
+    );
+    assert_eq!(
+        filter_visible, 0,
+        "owner and reviewer differ, so the filter denies"
+    );
+    assert_eq!(
+        sentinel_visible, 0,
+        "NULLIF hides the sentinel row from its principal"
+    );
+
+    let case_granted =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "case_docs:c1")
+            .await;
+    let filter_granted =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "filter_docs:f1")
+            .await;
+    let sentinel_granted =
+        support::openfga::check_allowed(&client, "user:system", "can_select", "sentinel_docs:s1")
+            .await;
+    assert_eq!(
+        (case_granted, filter_granted, sentinel_granted),
+        (false, false, false),
+        "OpenFGA granted rows PostgreSQL denies (CASE veto, guarded-row filter, NULLIF sentinel)"
+    );
+    assert!(
+        disclosed >= 3,
+        "falling closed on all three policies has to be reported, not silent"
+    );
+}
+
+/// Typed schema for the wildcard-union cases.
+mod wildcard_union_schema {
+    diesel::table! {
+        union_docs (id) {
+            id -> diesel::sql_types::Text,
+            is_public -> diesel::sql_types::Bool,
+        }
+    }
+}
+
+/// A permissive `USING (true)` beside `AS RESTRICTIVE USING (is_public)`: the barrier
+/// must hold, so only the flagged row is readable. A model sharing one wildcard
+/// relation between the two predicates grants both rows and fails the hidden half.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn restrictive_flag_pair_parity_postgres18_and_openfga() {
+    use wildcard_union_schema::union_docs;
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE union_docs(id TEXT PRIMARY KEY, is_public BOOLEAN NOT NULL);
+ALTER TABLE union_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON union_docs FOR SELECT USING (true);
+CREATE POLICY r ON union_docs AS RESTRICTIVE FOR SELECT USING (is_public);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the restrictive-pair schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON union_docs TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(union_docs::table)
+        .values(&vec![
+            (union_docs::id.eq("p1"), union_docs::is_public.eq(true)),
+            (union_docs::id.eq("h1"), union_docs::is_public.eq(false)),
+        ])
+        .execute(&mut conn)
+        .expect("Failed to seed the flagged and hidden rows");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    let outputs = planned.outputs().expect("every clause translates");
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "restrictive-flag-pair-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let visible = conn
+        .transaction::<Vec<String>, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            union_docs::table
+                .select(union_docs::id)
+                .order(union_docs::id)
+                .load(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        visible,
+        vec!["p1".to_string()],
+        "PostgreSQL applies the barrier, so only the flagged row is visible"
+    );
+
+    let flagged =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "union_docs:p1")
+            .await;
+    let hidden =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "union_docs:h1")
+            .await;
+    assert_eq!(
+        (flagged, hidden),
+        (true, false),
+        "the model must grant exactly the row PostgreSQL shows"
+    );
+}
+
+/// `FOR SELECT USING (is_public)` beside `FOR DELETE USING (true)`: the DELETE
+/// policy's unconditional tuples must not widen the flag-gated SELECT.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn cross_command_wildcard_parity_postgres18_and_openfga() {
+    use wildcard_union_schema::union_docs;
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE union_docs(id TEXT PRIMARY KEY, is_public BOOLEAN NOT NULL);
+ALTER TABLE union_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY s ON union_docs FOR SELECT USING (is_public);
+CREATE POLICY d ON union_docs FOR DELETE USING (true);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the cross-command schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT, DELETE ON union_docs TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(union_docs::table)
+        .values(&vec![
+            (union_docs::id.eq("p1"), union_docs::is_public.eq(true)),
+            (union_docs::id.eq("h1"), union_docs::is_public.eq(false)),
+        ])
+        .execute(&mut conn)
+        .expect("Failed to seed the flagged and hidden rows");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    let outputs = planned.outputs().expect("every clause translates");
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "cross-command-wildcard-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let visible = conn
+        .transaction::<Vec<String>, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            union_docs::table
+                .select(union_docs::id)
+                .order(union_docs::id)
+                .load(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        visible,
+        vec!["p1".to_string()],
+        "PostgreSQL shows only the flagged row to a plain read"
+    );
+    let select_flagged =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "union_docs:p1")
+            .await;
+    let select_hidden =
+        support::openfga::check_allowed(&client, "user:app_reader", "can_select", "union_docs:h1")
+            .await;
+    assert_eq!(
+        (select_flagged, select_hidden),
+        (true, false),
+        "the DELETE policy's unconditional tuples must not widen the flag-gated SELECT"
+    );
+}
+
+/// Typed schema for the computed-argument capture case.
+mod computed_argument_schema {
+    diesel::table! {
+        leveled_docs (id) {
+            id -> diesel::sql_types::Text,
+            level -> diesel::sql_types::Integer,
+        }
+    }
+
+    diesel::table! {
+        leveled_members (doc_id, user_id) {
+            doc_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+            level -> diesel::sql_types::Integer,
+            min_level -> diesel::sql_types::Integer,
+        }
+    }
+}
+
+/// `can_see(id, coalesce(level, 0))` evaluates `level` on the guarded row. A bare
+/// substitution lets the membership scan capture it, so the loader admits the row
+/// through the member's own `level` while `PostgreSQL` denies through the doc's.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn computed_argument_capture_parity_postgres18_and_openfga() {
+    use computed_argument_schema::{leveled_docs, leveled_members};
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE leveled_docs(id TEXT PRIMARY KEY, level INT NOT NULL);
+CREATE TABLE leveled_members(doc_id TEXT REFERENCES leveled_docs(id), user_id TEXT,
+  level INT NOT NULL, min_level INT NOT NULL);
+ALTER TABLE leveled_docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d TEXT, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM leveled_members m WHERE m.doc_id = d AND m.user_id = current_user AND m.min_level <= req)';
+CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the computed-argument schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON leveled_docs, leveled_members TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(leveled_docs::table)
+        .values((leveled_docs::id.eq("d1"), leveled_docs::level.eq(0)))
+        .execute(&mut conn)
+        .expect("Failed to seed the low-level doc");
+    // The poisoning row: the member's own `level` is high and `min_level` sits between
+    // the two, so the captured reading admits what the guarded row's level denies.
+    diesel::insert_into(leveled_members::table)
+        .values((
+            leveled_members::doc_id.eq("d1"),
+            leveled_members::user_id.eq("app_reader"),
+            leveled_members::level.eq(99),
+            leveled_members::min_level.eq(50),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so the loss is reported as
+    // below threshold rather than as an expression nobody classified.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "computed-argument-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let expected = conn
+        .transaction::<i64, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            leveled_docs::table
+                .filter(leveled_docs::id.eq("d1"))
+                .count()
+                .get_result::<i64>(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        expected, 0,
+        "the doc's own level is below min_level, so PostgreSQL denies"
+    );
+    let granted = support::openfga::check_allowed(
+        &client,
+        "user:app_reader",
+        "can_select",
+        "leveled_docs:d1",
+    )
+    .await;
+    assert!(
+        !granted,
+        "OpenFGA granted a row PostgreSQL denies: the argument's column was read off \
+         the membership row"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
+}
+
+/// Two future deadlines on a membership table whose rows are not uniquely keyed by
+/// `(doc, user)`: `PostgreSQL` grants only when one single row passes both comparisons
+/// at check time. Bob's two rows each pass one comparison and fail the other, so he is
+/// denied although each column's latest value alone would pass: a model compressing the
+/// rows per column grants him and fails this case in the over-grant direction, while
+/// Carol's one live row keeps the grant direction honest.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn two_deadline_witness_parity_postgres18_and_openfga() {
+    let postgres = support::containers::start_postgres().await;
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE members (
+    id INT PRIMARY KEY,
+    doc_id INT NOT NULL REFERENCES docs(id),
+    user_id TEXT NOT NULL,
+    trial_ends TIMESTAMPTZ NOT NULL,
+    support_ends TIMESTAMPTZ NOT NULL
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM members m
+        WHERE m.doc_id = docs.id AND m.user_id = current_user
+          AND m.trial_ends > now() AND m.support_ends > now()
+    )
+);
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the two-deadline schema");
+    conn.batch_execute(
+        "CREATE ROLE bob LOGIN; CREATE ROLE carol LOGIN; \
+         GRANT SELECT ON docs, members TO bob, carol;",
+    )
+    .expect("Failed to create the querying roles");
+    conn.batch_execute(
+        "INSERT INTO docs (id) VALUES (1), (2); \
+         INSERT INTO members (id, doc_id, user_id, trial_ends, support_ends) VALUES \
+            (1, 1, 'bob', now() + interval '10 days', now() - interval '10 days'), \
+            (2, 1, 'bob', now() - interval '10 days', now() + interval '10 days'), \
+            (3, 1, 'carol', now() + interval '10 days', now() + interval '10 days'), \
+            (4, 2, 'carol', now() + interval '10 days', now() - interval '10 days');",
+    )
+    .expect("Failed to seed the mixed-deadline rows");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "two-deadline-witness").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, all_tuple_writes(&mut conn, tuple_queries)).await;
+
+    let now = postgres_now(&mut conn);
+    let mut failures = Vec::new();
+    let mut granted = 0usize;
+    let mut denied = 0usize;
+    for role in ["bob", "carol"] {
+        let readable = readable_ids_as_role(&mut conn, role, "docs");
+        for id in [1, 2] {
+            let expected = readable.contains(&id);
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+            let actual = support::openfga::check_allowed_with_context(
+                &client,
+                &format!("user:{role}"),
+                "can_select",
+                &format!("docs:{id}"),
+                serde_json::json!({ "request_time": now }),
+            )
+            .await;
+            if expected != actual {
+                failures.push(format!(
+                    "docs:{id} for {role}: postgres={expected}, openfga={actual}"
+                ));
+            }
+        }
+    }
+    assert!(
+        granted > 0,
+        "no live pair grants, so the case proves nothing"
+    );
+    assert!(
+        denied > 0,
+        "nothing is denied, so granting everything would pass"
+    );
+    assert!(
+        failures.is_empty(),
+        "PostgreSQL/OpenFGA two-deadline parity mismatches:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Typed schema for the shadowed clock case.
+mod shadowed_clock_schema {
+    diesel::table! {
+        #[sql_name = "docs"]
+        shadow_docs (id) {
+            id -> diesel::sql_types::Integer,
+        }
+    }
+}
+
+/// A declared `app.now()` returning `'infinity'` shadows the clock, so the policy
+/// grants nothing: `expires_at > 'infinity'` holds for no row.
+///
+/// Reading the call as the builtin minted a `request_time` condition, which grants
+/// every unexpired row the database denies. The translation must fall closed instead,
+/// and say so.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn qualified_clock_shadow_parity_postgres18_and_openfga() {
+    let postgres = support::containers::start_postgres().await;
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+
+    let schema_sql = "
+CREATE SCHEMA app;
+CREATE FUNCTION app.now() RETURNS TIMESTAMPTZ LANGUAGE sql IMMUTABLE
+    AS $$SELECT 'infinity'::timestamptz$$;
+CREATE TABLE docs (id INT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the shadowed clock schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; \
+         GRANT USAGE ON SCHEMA app TO alice; \
+         GRANT SELECT ON docs TO alice; \
+         INSERT INTO docs (id, expires_at) VALUES (1, now() + interval '1 year');",
+    )
+    .expect("Failed to seed the unexpired row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_queries = outputs.tuple_queries();
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "qualified-clock-shadow").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    support::openfga::write_tuples(&client, all_tuple_writes(&mut conn, tuple_queries)).await;
+
+    let expected = conn
+        .transaction::<bool, diesel::result::Error, _>(|conn| {
+            diesel::sql_query("SET LOCAL ROLE alice").execute(conn)?;
+            let visible = shadowed_clock_schema::shadow_docs::table
+                .count()
+                .get_result::<i64>(conn)?;
+            Ok(visible > 0)
+        })
+        .expect("reading under row level security should not error");
+    let now = postgres_now(&mut conn);
+    let actual = support::openfga::check_allowed_with_context(
+        &client,
+        "user:alice",
+        "can_select",
+        "docs:1",
+        serde_json::json!({ "request_time": now }),
+    )
+    .await;
+
+    assert!(
+        !expected,
+        "no timestamp exceeds infinity, so PostgreSQL denies the unexpired row"
+    );
+    assert!(
+        !actual,
+        "OpenFGA granted a row PostgreSQL denies: `app.now()` was read as the clock"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
 }

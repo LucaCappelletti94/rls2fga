@@ -306,7 +306,7 @@ pub(crate) fn conjunct_reads_only_the_row(expr: &Expr, row_columns: &[String]) -
             ..
         } => pure(inner) && pure(pattern),
         Expr::Function(func) => {
-            let named = folded_function_name(func)
+            let named = builtin_function_name(func)
                 .is_some_and(|name| ROW_PURE_FUNCTIONS.contains(&name.as_str()));
             if !named {
                 return false;
@@ -569,7 +569,7 @@ fn is_well_known_temporal_function(expr: &Expr) -> bool {
     let Expr::Function(func) = unwrap_cast_or_nested(expr) else {
         return false;
     };
-    let name = folded_function_name(func);
+    let name = builtin_function_name(func);
     matches!(
         name.as_deref(),
         Some(

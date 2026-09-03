@@ -908,7 +908,7 @@ pub fn filter_policies_for_output(
 
             let (using_kept, using_dropped) =
                 apply_threshold(cp.using_classification.as_ref(), min_confidence, permissive);
-            filtered.using_filtered_at = using_dropped;
+            filtered.using_filtered_at = worst_confidence(&using_dropped);
             filtered.using_classification = using_kept;
 
             let (check_kept, check_dropped) = apply_threshold(
@@ -916,7 +916,7 @@ pub fn filter_policies_for_output(
                 min_confidence,
                 permissive,
             );
-            filtered.with_check_filtered_at = check_dropped;
+            filtered.with_check_filtered_at = worst_confidence(&check_dropped);
             filtered.with_check_classification = check_kept;
 
             if filtered.using_classification.is_some()
@@ -933,28 +933,34 @@ pub fn filter_policies_for_output(
         .collect()
 }
 
-/// What survives the caller's bar, and the grade of the worst thing that did not.
+/// Grade of the worst dropped expression, `None` when nothing dropped.
+fn worst_confidence(dropped: &[ClassifiedExpr]) -> Option<ConfidenceLevel> {
+    dropped.iter().map(|expr| expr.confidence).min()
+}
+
+/// What survives the caller's bar, and the expressions that did not.
 ///
 /// For a permissive clause the bar applies to each arm of an `OR` rather than to the
 /// clause as a whole, so one weak arm no longer takes the strong ones with it and one
 /// `OR` policy lands where two policies land. The clause's own grade is never compared,
 /// which matters twice: it is capped at B, so an `OR` of two grade A arms would
-/// otherwise die at the strictest bar with nothing weak anywhere.
-fn apply_threshold(
+/// otherwise die at the strictest bar with nothing weak anywhere. The report reads the
+/// same partition, so what it calls excluded is exactly what the model excluded.
+pub(crate) fn apply_threshold(
     classification: Option<&ClassifiedExpr>,
     min_confidence: ConfidenceLevel,
     permissive: bool,
-) -> (Option<ClassifiedExpr>, Option<ConfidenceLevel>) {
+) -> (Option<ClassifiedExpr>, Vec<ClassifiedExpr>) {
     let Some(classification) = classification else {
-        return (None, None);
+        return (None, Vec::new());
     };
     if permissive {
         return filter_or_arms(classification, min_confidence);
     }
     if classification.confidence >= min_confidence {
-        (Some(classification.clone()), None)
+        (Some(classification.clone()), Vec::new())
     } else {
-        (None, Some(classification.confidence))
+        (None, vec![classification.clone()])
     }
 }
 
@@ -966,36 +972,34 @@ fn apply_threshold(
 fn filter_or_arms(
     expr: &ClassifiedExpr,
     min_confidence: ConfidenceLevel,
-) -> (Option<ClassifiedExpr>, Option<ConfidenceLevel>) {
+) -> (Option<ClassifiedExpr>, Vec<ClassifiedExpr>) {
     let PatternClass::P8Composite(Composite {
         op: BoolOp::Or,
         parts,
     }) = &expr.pattern
     else {
         return if expr.confidence >= min_confidence {
-            (Some(expr.clone()), None)
+            (Some(expr.clone()), Vec::new())
         } else {
-            (None, Some(expr.confidence))
+            (None, vec![expr.clone()])
         };
     };
 
     let mut kept: Vec<ClassifiedExpr> = Vec::new();
-    let mut worst_dropped: Option<ConfidenceLevel> = None;
+    let mut lost: Vec<ClassifiedExpr> = Vec::new();
     for part in parts {
         let (survivor, dropped) = filter_or_arms(part, min_confidence);
         if let Some(survivor) = survivor {
             kept.push(survivor);
         }
-        if let Some(grade) = dropped {
-            worst_dropped = Some(worst_dropped.map_or(grade, |worst| core::cmp::min(worst, grade)));
-        }
+        lost.extend(dropped);
     }
 
     match kept.len() {
-        0 => (None, worst_dropped),
+        0 => (None, lost),
         // One survivor is that arm, not a union of one. Keeping the wrapper would cap its
         // grade at B, which is the difference between this and two separate policies.
-        1 => (kept.pop(), worst_dropped),
+        1 => (kept.pop(), lost),
         _ => {
             let confidence = composite_confidence(kept.iter());
             (
@@ -1006,7 +1010,7 @@ fn filter_or_arms(
                     }),
                     confidence,
                 }),
-                worst_dropped,
+                lost,
             )
         }
     }

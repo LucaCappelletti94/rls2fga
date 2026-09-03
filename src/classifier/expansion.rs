@@ -372,7 +372,19 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
             let qualifier = stored_ident_name(qualifier);
             scan.scope_names.iter().any(|name| *name == qualifier)
         }),
-        _ => false,
+        Expr::Value(_) => false,
+        // A computed argument carries the same hazards through its inner references.
+        // A query-bearing one is left for the substitution loop's own refusal.
+        wrapped => {
+            !contains_query(wrapped) && {
+                let columns = argument_columns(wrapped);
+                (columns.has_bare_column && scan.scope_names.contains(&outer_stored))
+                    || columns
+                        .qualifiers
+                        .iter()
+                        .any(|qualifier| scan.scope_names.iter().any(|name| name == qualifier))
+            }
+        }
     });
     if capture_prone {
         return Some(refused(format!(
@@ -381,18 +393,27 @@ pub(crate) fn expand_function_call<DB: DatabaseLike>(
              scope"
         )));
     }
-    let replacements: Vec<Expr> = call_args
-        .iter()
-        .map(|arg| match arg {
+    let mut replacements: Vec<Expr> = Vec::with_capacity(call_args.len());
+    for arg in &call_args {
+        let replacement = match arg {
             Expr::Identifier(column) => {
                 let mut parts = outer_parts.clone();
                 parts.push(column.clone());
                 Expr::CompoundIdentifier(parts)
             }
             Expr::CompoundIdentifier(_) | Expr::Value(_) => arg.clone(),
-            wrapped => Expr::Nested(Box::new(wrapped.clone())),
-        })
-        .collect();
+            wrapped => {
+                let Some(qualified) = qualify_argument_columns(wrapped, &outer_parts) else {
+                    return Some(refused(format!(
+                        "Argument '{wrapped}' of '{function_name}' contains a subquery, \
+                         whose scopes cannot be told apart from the policy's"
+                    )));
+                };
+                Expr::Nested(Box::new(qualified))
+            }
+        };
+        replacements.push(replacement);
+    }
 
     let null_short_circuits = !matches!(
         function.null_input_behavior(),
@@ -661,6 +682,96 @@ fn qualifier_idents(table: &str) -> Vec<Ident> {
     }
 }
 
+/// The identifier shapes a computed argument carries, for the capture guard.
+struct ArgumentColumns {
+    /// A bare non-keyword identifier, which is the policy table's column.
+    has_bare_column: bool,
+    /// Stored first parts of qualified references, which a body scope may claim.
+    qualifiers: Vec<String>,
+}
+
+fn argument_columns(expr: &Expr) -> ArgumentColumns {
+    struct Collect(ArgumentColumns);
+    impl Visitor for Collect {
+        type Break = ();
+        fn post_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            match expr {
+                Expr::Identifier(ident) => {
+                    let keyword = ident.quote_style.is_none()
+                        && crate::parser::names::is_current_user_keyword_name(&ident.value);
+                    if !keyword {
+                        self.0.has_bare_column = true;
+                    }
+                }
+                Expr::CompoundIdentifier(parts) => {
+                    if let Some(qualifier) = parts.first() {
+                        self.0
+                            .qualifiers
+                            .push(stored_ident_name(qualifier).into_owned());
+                    }
+                }
+                _ => {}
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut collector = Collect(ArgumentColumns {
+        has_bare_column: false,
+        qualifiers: Vec::new(),
+    });
+    let _ = expr.visit(&mut collector);
+    collector.0
+}
+/// Whether the computed argument's expression contains a subquery.
+fn contains_query(expr: &Expr) -> bool {
+    struct FindsQuery(bool);
+    impl Visitor for FindsQuery {
+        type Break = ();
+        fn pre_visit_query(&mut self, _query: &sqlparser::ast::Query) -> ControlFlow<Self::Break> {
+            self.0 = true;
+            ControlFlow::Break(())
+        }
+    }
+    let mut finder = FindsQuery(false);
+    let _ = expr.visit(&mut finder);
+    finder.0
+}
+
+/// Rewrite each bare column of a computed argument into the policy table's own
+/// reference, the bare-argument arm's exact substitution, so the body's scopes
+/// cannot capture it. An unquoted current-user keyword stays: qualifying it would
+/// turn the keyword into a column read.
+///
+/// `None` when the expression contains a subquery, whose inner scopes cannot be
+/// told apart from the caller's without re-implementing name resolution.
+fn qualify_argument_columns(expr: &Expr, outer_parts: &[Ident]) -> Option<Expr> {
+    struct Qualify<'a> {
+        outer_parts: &'a [Ident],
+    }
+    impl VisitorMut for Qualify<'_> {
+        type Break = ();
+        fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+            if let Expr::Identifier(ident) = &*expr {
+                let keyword = ident.quote_style.is_none()
+                    && crate::parser::names::is_current_user_keyword_name(&ident.value);
+                if !keyword {
+                    let mut parts = self.outer_parts.to_vec();
+                    parts.push(ident.clone());
+                    *expr = Expr::CompoundIdentifier(parts);
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    if contains_query(expr) {
+        return None;
+    }
+    let mut rewritten = expr.clone();
+    let mut qualify = Qualify { outer_parts };
+    let _ = VisitMut::visit(&mut rewritten, &mut qualify);
+    Some(rewritten)
+}
+
 fn call_argument_column(arg: &Expr, table: &str) -> Option<ColumnName> {
     let column = match arg {
         Expr::Identifier(column) => column,
@@ -873,5 +984,54 @@ impl VisitorMut for Substitute<'_> {
             *expr = replacement;
         }
         ControlFlow::Continue(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::expr::parse_expr_for_tests as parse_expr;
+
+    fn outer() -> Vec<Ident> {
+        qualifier_idents("docs")
+    }
+
+    #[test]
+    fn a_bare_column_in_a_computed_argument_qualifies() {
+        let rewritten = qualify_argument_columns(&parse_expr("coalesce(level, 0)"), &outer())
+            .expect("no subquery, so the rewrite succeeds");
+        assert_eq!(rewritten.to_string(), "coalesce(docs.level, 0)");
+    }
+
+    #[test]
+    fn a_current_user_keyword_in_a_computed_argument_stays() {
+        // `current_user` parses as a no-argument function and never reaches the
+        // rewrite. `current_role` parses as a bare identifier, so it is the spelling
+        // the keyword skip protects.
+        for spelling in ["current_user::text", "current_role::text"] {
+            let rewritten = qualify_argument_columns(&parse_expr(spelling), &outer())
+                .expect("no subquery, so the rewrite succeeds");
+            assert_eq!(
+                rewritten.to_string().to_lowercase(),
+                spelling.to_lowercase(),
+                "`{spelling}` must stay unqualified"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quoted_current_user_column_still_qualifies() {
+        let rewritten = qualify_argument_columns(&parse_expr("\"current_user\"::text"), &outer())
+            .expect("no subquery, so the rewrite succeeds");
+        assert_eq!(rewritten.to_string(), "docs.\"current_user\"::TEXT");
+    }
+
+    #[test]
+    fn a_subquery_in_a_computed_argument_refuses() {
+        assert_eq!(
+            qualify_argument_columns(&parse_expr("(SELECT max(level) FROM other)"), &outer()),
+            None,
+            "a subquery's inner scopes cannot be told apart from the caller's"
+        );
     }
 }

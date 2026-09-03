@@ -47,6 +47,155 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = app_user_id());
     );
 }
 
+/// Extract the relation each wildcard tuple query writes, paired with whether the
+/// query is gated by a row predicate beyond the key `NOT NULL` guards.
+fn wildcard_query_relations(db: &rls2fga::parser::sql_parser::ParserDB) -> Vec<(String, bool)> {
+    let translation = translator(ConfidenceLevel::B)
+        .translate(db)
+        .expect("translation should plan");
+    let outputs = translation.outputs_accepting_gaps();
+    outputs
+        .tuple_queries()
+        .iter()
+        .filter(|query| query.sql.contains("user:*"))
+        .map(|query| {
+            let relation = query
+                .sql
+                .split(" AS relation")
+                .next()
+                .and_then(|head| head.rsplit('\'').nth(1))
+                .expect("every tuple query names its relation")
+                .to_string();
+            let gated = query.sql.lines().any(|line| {
+                line.starts_with("AND ")
+                    && !line.contains("IS NOT NULL")
+                    && !line.contains("length(")
+            });
+            (relation, gated)
+        })
+        .collect()
+}
+
+/// One ungated and one gated wildcard query, located by shape rather than order.
+fn one_ungated_and_one_gated(queries: &[(String, bool)]) -> (String, String) {
+    let ungated: Vec<&String> = queries
+        .iter()
+        .filter(|(_, gated)| !gated)
+        .map(|(relation, _)| relation)
+        .collect();
+    let gated: Vec<&String> = queries
+        .iter()
+        .filter(|(_, gated)| *gated)
+        .map(|(relation, _)| relation)
+        .collect();
+    let ([everyone], [flagged]) = (ungated.as_slice(), gated.as_slice()) else {
+        panic!("expected one ungated and one gated wildcard query, got: {queries:?}");
+    };
+    ((*everyone).clone(), (*flagged).clone())
+}
+
+/// A permissive `USING (true)` loads a wildcard for every row. If the RESTRICTIVE
+/// flag barrier grants through the same relation, those tuples satisfy it and the
+/// barrier vanishes.
+#[test]
+fn a_restrictive_flag_barrier_survives_a_permissive_true() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN NOT NULL DEFAULT false);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY p ON docs FOR SELECT USING (true);
+         CREATE POLICY r ON docs AS RESTRICTIVE FOR SELECT USING (is_public);",
+    );
+    let queries = wildcard_query_relations(&db);
+    let (everyone, flagged) = one_ungated_and_one_gated(&queries);
+    assert_ne!(
+        everyone, flagged,
+        "the unconditional tuples must not satisfy the flag barrier's relation"
+    );
+}
+
+/// `USING (true)` on DELETE must not widen the flag-gated SELECT: the two commands
+/// grant through different predicates, so they need different relations.
+#[test]
+fn a_cross_command_true_does_not_widen_the_flag_gated_select() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN NOT NULL DEFAULT false);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY s ON docs FOR SELECT USING (is_public);
+         CREATE POLICY d ON docs FOR DELETE USING (true);",
+    );
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    let dsl = translation.outputs_accepting_gaps().model();
+    let can_select = relation_definition(&dsl, "docs", "can_select").expect("can_select defined");
+    let can_delete = relation_definition(&dsl, "docs", "can_delete").expect("can_delete defined");
+    assert_ne!(
+        can_select, can_delete,
+        "SELECT is flag-gated and DELETE is unconditional, so one relation cannot serve both:\n{dsl}"
+    );
+    let queries = wildcard_query_relations(&db);
+    let (everyone, flagged) = one_ungated_and_one_gated(&queries);
+    assert_eq!(
+        can_select.as_str(),
+        flagged.as_str(),
+        "SELECT must grant only through the flag-gated relation"
+    );
+    // DELETE keeps its unconditional grant, intersected with the read the crate's
+    // read-gating contract requires (naming a row to change means reading it).
+    assert_eq!(
+        can_delete,
+        format!("{everyone} and can_select"),
+        "DELETE grants through the unconditional relation intersected with the read"
+    );
+}
+
+/// The same flag predicate on two commands loads identical tuples, so sharing one
+/// relation and one query is correct and the dedup must survive the split.
+#[test]
+fn the_same_flag_on_two_commands_shares_one_relation_and_one_query() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, is_public BOOLEAN NOT NULL DEFAULT false);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY s ON docs FOR SELECT USING (is_public);
+         CREATE POLICY d ON docs FOR DELETE USING (is_public);",
+    );
+    let translation = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan");
+    let dsl = translation.outputs_accepting_gaps().model();
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select"),
+        relation_definition(&dsl, "docs", "can_delete"),
+        "one predicate, one relation, whatever the command:\n{dsl}"
+    );
+    let queries = wildcard_query_relations(&db);
+    assert_eq!(
+        queries.len(),
+        1,
+        "identical predicates dedup to one query, got: {queries:?}"
+    );
+}
+
+/// Two attribute guards inside one OR policy admit different row sets, so each
+/// needs its own relation or the wider guard's tuples satisfy the narrower arm.
+#[test]
+fn two_guards_in_one_or_policy_mint_two_distinct_gates() {
+    let db = db_of(
+        "CREATE TABLE docs(id UUID PRIMARY KEY, status TEXT, priority INTEGER);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY p ON docs FOR SELECT
+           USING (status = 'published' OR priority >= 3);",
+    );
+    let queries = wildcard_query_relations(&db);
+    let [(first, true), (second, true)] = queries.as_slice() else {
+        panic!("expected two gated wildcard queries, got: {queries:?}");
+    };
+    assert_ne!(
+        first, second,
+        "each guard admits a different row set, so the relations must differ"
+    );
+}
+
 /// A RESTRICTIVE clause is a barrier, so a conjunct the model cannot express has to
 /// keep denying.
 #[test]
@@ -502,7 +651,7 @@ fn a_jsonb_or_array_attribute_guard_keeps_the_relationship_it_guards() {
             "can_select",
         )
         .as_deref(),
-        Some("owner and public_viewer"),
+        Some("owner and public_where_status_131bc6df"),
         "a plain column literal is row data the tuples carry"
     );
 
@@ -584,9 +733,10 @@ fn an_attribute_guard_over_a_literal_grants_the_rows_it_admits() {
     let (flag_dsl, flag_tuples) = translation(&schema("is_public = TRUE"));
     assert_eq!(
         relation_definition(&flag_dsl, "articles", "can_select").as_deref(),
-        Some("public_viewer"),
-        "guard precondition: the boolean flag must grant the wildcard:\n{flag_dsl}"
+        Some("public_when_is_public"),
+        "guard precondition: the boolean flag must grant the wildcard through its own gate:\n{flag_dsl}"
     );
+    let mut minted: Vec<(&str, String)> = Vec::new();
 
     for (clause, expected_sql) in [
         ("status = 'published'", "AND \"status\" = 'published';"),
@@ -596,15 +746,13 @@ fn an_attribute_guard_over_a_literal_grants_the_rows_it_admits() {
         ("3 <= priority", "AND \"priority\" >= 3;"),
     ] {
         let (dsl, tuples) = translation(&schema(clause));
-        assert_eq!(
-            relation_definition(&dsl, "articles", "can_select").as_deref(),
-            Some("public_viewer"),
-            "`{clause}` is decided by the row, so it grants like the flag:\n{dsl}"
+        let select = relation_definition(&dsl, "articles", "can_select")
+            .expect("articles defines can_select");
+        assert!(
+            select.starts_with("public_where_"),
+            "`{clause}` is decided by the row, so it grants through its own gate, got `{select}`:\n{dsl}"
         );
-        assert_eq!(
-            dsl, flag_dsl,
-            "`{clause}` must produce the same model as the flag it generalises"
-        );
+        minted.push((clause, select));
         assert!(
             tuples.contains(expected_sql),
             "`{clause}` must qualify rows in SQL, got:\n{tuples}"
@@ -616,6 +764,21 @@ fn an_attribute_guard_over_a_literal_grants_the_rows_it_admits() {
             "`{clause}` must emit one query, like the flag:\n{tuples}"
         );
     }
+    // The reversed spelling normalizes column-first, so both mint one gate.
+    let straight = minted
+        .iter()
+        .find(|(clause, _)| *clause == "priority >= 3")
+        .map(|(_, name)| name.clone())
+        .expect("the straight spelling is in the list");
+    let reversed = minted
+        .iter()
+        .find(|(clause, _)| *clause == "3 <= priority")
+        .map(|(_, name)| name.clone())
+        .expect("the reversed spelling is in the list");
+    assert_eq!(
+        straight, reversed,
+        "two spellings of one predicate must share one gate"
+    );
 }
 
 /// The wildcard is only correct because the compared value is a literal constant. A

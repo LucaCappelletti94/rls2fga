@@ -29,10 +29,10 @@ fn multi_policy_table_combines_patterns_for_select() {
     assert!(
         model
             .model()
-            .contains("define can_select: author or public_viewer")
+            .contains("define can_select: author or public_where_status_131bc6df")
             || model
                 .model()
-                .contains("define can_select: public_viewer or author"),
+                .contains("define can_select: public_where_status_131bc6df or author"),
         "expected composed select permission, got:\n{}",
         model.model()
     );
@@ -74,10 +74,10 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
     assert!(
         model
             .model()
-            .contains("define can_select: owner and public_viewer")
+            .contains("define can_select: owner and public_when_is_public")
             || model
                 .model()
-                .contains("define can_select: public_viewer and owner"),
+                .contains("define can_select: public_when_is_public and owner"),
         "restrictive policy should intersect with permissive policy, got:\n{}",
         model.model()
     );
@@ -317,8 +317,8 @@ fn json_and_dsl_are_semantically_aligned_for_composite() {
         .expect("documents should have relations in json");
     assert!(rels.contains_key("owner"), "json missing owner relation");
     assert!(
-        rels.contains_key("public_viewer"),
-        "json missing public_viewer relation"
+        rels.contains_key("public_when_is_public"),
+        "json missing the flag's gate relation"
     );
     assert!(
         rels.contains_key("can_select"),

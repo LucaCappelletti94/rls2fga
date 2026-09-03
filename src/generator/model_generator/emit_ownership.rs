@@ -24,7 +24,7 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
         ownership,
         vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
     );
-    let Some(pk_cols) = resolve_pk_columns(ctx.source_table, ctx.db) else {
+    let Some(pk_cols) = resolve_row_identity(ctx.source_table, ctx.db) else {
         skip_source_without_row_identity(table_plan, ctx.source_table, missing_what, ctx.db);
         return deny_expr(table_plan);
     };
@@ -32,7 +32,37 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
     UsersetExpr::Computed(relation)
 }
 
-/// The public wildcard a boolean flag opens, and the tuples that carry it.
+/// Structural identity of a boolean flag gate: every P6 spelling loads `col = TRUE`.
+fn flag_gate_key(column: &ColumnName) -> String {
+    format!("flag:{}:{}", column.as_str().len(), column.as_str())
+}
+
+/// Structural identity of a literal attribute gate, never its display SQL.
+///
+/// `None` for a variant this build cannot name stably, which falls closed rather
+/// than minting a gate whose key could collide with another predicate's.
+fn attribute_gate_key(predicate: &AttributePredicate) -> Option<String> {
+    let column = predicate.column.as_str();
+    let value = match &predicate.value {
+        AttributeLiteral::Text(text) => format!("t{}:{text}", text.len()),
+        AttributeLiteral::Number(number) => format!("n{}:{number}", number.len()),
+        AttributeLiteral::Boolean(value) => format!("b:{value}"),
+        _ => return None,
+    };
+    let operator = match predicate.operator {
+        AttributeOperator::Eq => "eq",
+        AttributeOperator::NotEq => "ne",
+        AttributeOperator::Gt => "gt",
+        AttributeOperator::GtEq => "ge",
+        AttributeOperator::Lt => "lt",
+        AttributeOperator::LtEq => "le",
+        _ => return None,
+    };
+    Some(format!("attr:{}:{column}:{operator}:{value}", column.len()))
+}
+
+/// The wildcard a boolean flag opens, gated by its own relation, and the tuples that
+/// carry it.
 pub(crate) fn emit_boolean_flag<DB: DatabaseLike>(
     boolean_flag: &BooleanFlag,
     ctx: &PatternCtx<'_, DB>,
@@ -41,17 +71,21 @@ pub(crate) fn emit_boolean_flag<DB: DatabaseLike>(
     let BooleanFlag { column } = boolean_flag;
     let db = ctx.db;
     let source_table = ctx.source_table;
-    if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
-        table_plan.add_source(TupleSource::PublicFlag {
-            table: source_table.clone(),
-            pk_cols,
-            flag_col: column.clone(),
-        });
-    } else {
+    let Some(pk_cols) = resolve_row_identity(source_table, db) else {
         skip_source_without_row_identity(table_plan, source_table, "public-flag tuples", db);
         return deny_expr(table_plan);
-    }
-    public_expr(table_plan)
+    };
+    let relation = table_plan.wildcard_gate_relation(
+        &flag_gate_key(column),
+        public_flag_relation_name(column.as_str()),
+    );
+    table_plan.add_source(TupleSource::PublicFlag {
+        table: source_table.clone(),
+        pk_cols,
+        flag_col: column.clone(),
+        relation: relation.clone(),
+    });
+    UsersetExpr::Computed(relation)
 }
 
 /// Emit the wildcard only for rows whose strict-function arguments are present.
@@ -61,7 +95,7 @@ pub(crate) fn emit_row_presence_gate<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
 ) -> UsersetExpr {
     let source_table = ctx.source_table;
-    let Some(pk_cols) = resolve_pk_columns(source_table, ctx.db) else {
+    let Some(pk_cols) = resolve_row_identity(source_table, ctx.db) else {
         skip_source_without_row_identity(
             table_plan,
             source_table,
@@ -124,17 +158,30 @@ pub(crate) fn emit_attribute_condition<DB: DatabaseLike>(
     // A caller-derived one would grant everyone access to rows scoped to one
     // caller, so it arrives here as `None` and keeps falling closed.
     if let Some(predicate) = predicate {
-        if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
+        // A predicate whose key cannot be named stably falls through to the
+        // standalone-attribute refusal below rather than minting a collidable gate.
+        if let Some(key) = attribute_gate_key(predicate) {
+            let Some(pk_cols) = resolve_row_identity(source_table, db) else {
+                skip_source_without_row_identity(
+                    table_plan,
+                    source_table,
+                    "attribute-gate tuples",
+                    db,
+                );
+                return deny_expr(table_plan);
+            };
+            let relation = table_plan.wildcard_gate_relation(
+                &key,
+                attribute_gate_relation_name(predicate.column.as_str(), &key),
+            );
             table_plan.add_source(TupleSource::AttributeGate {
                 table: source_table.clone(),
                 pk_cols,
                 predicate: predicate.clone(),
+                relation: relation.clone(),
             });
-        } else {
-            skip_source_without_row_identity(table_plan, source_table, "attribute-gate tuples", db);
-            return deny_expr(table_plan);
+            return UsersetExpr::Computed(relation);
         }
-        return public_expr(table_plan);
     }
     notes.push(TranslationNote::StandaloneAttributePolicy {
         policy: policy_name.to_string(),
@@ -159,16 +206,22 @@ pub(crate) fn emit_constant_bool<DB: DatabaseLike>(
     let db = ctx.db;
     let source_table = ctx.source_table;
     if *value {
-        if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
-            table_plan.add_source(TupleSource::ConstantTrue {
-                table: source_table.clone(),
-                pk_cols,
-            });
-        } else {
+        let Some(pk_cols) = resolve_row_identity(source_table, db) else {
             skip_source_without_row_identity(table_plan, source_table, "constant-TRUE tuples", db);
             return deny_expr(table_plan);
-        }
-        public_expr(table_plan)
+        };
+        let relation = table_plan.ensure_direct(
+            public_relation(),
+            vec![DirectSubject::Wildcard(
+                table_plan.well_known.user.to_string(),
+            )],
+        );
+        table_plan.add_source(TupleSource::ConstantTrue {
+            table: source_table.clone(),
+            pk_cols,
+            relation: relation.clone(),
+        });
+        UsersetExpr::Computed(relation)
     } else {
         deny_expr(table_plan)
     }

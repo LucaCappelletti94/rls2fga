@@ -45,7 +45,7 @@ pub(crate) fn register_pg_role_scope<DB: DatabaseLike>(
         scope_note,
         missing_object_what,
     } = spec;
-    if let Some(pk_cols) = resolve_pk_columns(source_table, db) {
+    if let Some(pk_cols) = resolve_row_identity(source_table, db) {
         let well_known = table_plan.well_known.clone();
         ensure_pg_role_relation(all_types, walked, &well_known);
         // The roles a scope admits are a fact about the policy, so they hang on one scope
@@ -341,7 +341,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
     // Before any minting: without a row identity or a column to read the owner from, no row
     // can point at its owner, so the ladder is unreachable and a type minted here would
     // outlive the rule that justified it.
-    if resolve_pk_columns(source_table, db).is_none() {
+    if resolve_row_identity(source_table, db).is_none() {
         return refuse(
             table_plan,
             SkippedTuples::NoBridge {

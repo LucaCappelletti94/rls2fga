@@ -16,7 +16,7 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeMap;
 
-use crate::generator::db_lookup::{column_kind, resolve_pk_columns};
+use crate::generator::db_lookup::{column_kind, resolve_row_identity};
 use crate::generator::model_generator::{SchemaPlan, TypePlan};
 use crate::parser::names::table_identity;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
@@ -25,7 +25,7 @@ use crate::types::{ColumnName, ColumnRead, ObjectKey, RowNaming, TableId, ValueS
 /// The type a table's rows are named by, and the columns that key them.
 fn named_by<DB: DatabaseLike>(type_plan: &TypePlan, db: &DB) -> Option<(String, Vec<ColumnName>)> {
     let table = type_plan.source_table.as_ref()?;
-    let columns = resolve_pk_columns(table, db)?;
+    let columns = resolve_row_identity(table, db)?;
     Some((type_plan.type_name.to_string(), columns))
 }
 

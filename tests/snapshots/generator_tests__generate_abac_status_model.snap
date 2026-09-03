@@ -13,13 +13,13 @@ type ownables
   relations
     define no_access: [nobody]
     define owner_id: [owner_grants_owner]
-    define public_viewer: [user:*]
+    define public_where_status_75289b56: [user:*]
     define can_delete: no_access
     define can_insert: no_access
     define can_select: no_access
     define can_select_for_update: can_update
-    define can_update: role_editor from owner_id and public_viewer and can_select
-    define can_update_without_reading: role_editor from owner_id and public_viewer
+    define can_update: role_editor from owner_id and public_where_status_75289b56 and can_select
+    define can_update_without_reading: role_editor from owner_id and public_where_status_75289b56
 
 type owner_grants_owner
   relations

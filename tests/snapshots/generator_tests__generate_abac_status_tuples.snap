@@ -19,7 +19,7 @@ WHERE "id" IS NOT NULL
 AND "owner_id" IS NOT NULL;
 
 -- Attribute gate (status = 'active')
-SELECT 'ownables:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_viewer' AS relation, 'user:*' AS subject
+SELECT 'ownables:' || CASE WHEN "id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "id"::text ELSE '~' || encode(convert_to("id"::text, 'UTF8'), 'hex') END AS object, 'public_where_status_75289b56' AS relation, 'user:*' AS subject
 FROM "public"."ownables"
 WHERE "id" IS NOT NULL
 AND "status" = 'active';
