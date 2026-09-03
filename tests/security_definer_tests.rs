@@ -469,6 +469,127 @@ CREATE POLICY members_self ON doc_members FOR SELECT USING (is_member(doc_id));
     );
 }
 
+/// A computed argument is evaluated in the policy's scope, so its columns must reach
+/// the body as the guarded table's own references. Substituted bare, the body's scan
+/// captures them and the loader reads the membership row where `PostgreSQL` reads the
+/// guarded row.
+#[test]
+fn a_computed_arguments_column_is_not_captured_by_the_body_scope() {
+    for argument in ["(level)::int", "coalesce(level, 0)"] {
+        let sql = format!(
+            r"
+CREATE TABLE docs(id UUID PRIMARY KEY, level INT);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT, level INT, min_level INT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d UUID, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_user AND m.min_level <= req)';
+CREATE POLICY p ON docs FOR SELECT USING (can_see(id, {argument}));
+"
+        );
+        let db = db_of(&sql);
+        let classified = translator(ConfidenceLevel::B).classify(&db);
+        let policy = classified.first().expect("one policy");
+        let c = policy.using_classification().expect("USING classifies");
+        assert!(
+            c.confidence < ConfidenceLevel::B,
+            "`{argument}`: the residual would read the loader's own `level`, so the \
+             shape must fall below the threshold, got {:?} at {}",
+            c.pattern,
+            c.confidence
+        );
+    }
+}
+
+/// A computed argument whose expression carries no column stays pure under
+/// substitution, so the shape keeps translating.
+#[test]
+fn a_pure_literal_computed_argument_still_translates() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, level INT);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT, level INT, min_level INT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d UUID, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_user AND m.min_level <= req)';
+CREATE POLICY p ON docs FOR SELECT USING (can_see(id, 1 + 2));
+";
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(&inner.pattern, PatternClass::P4ExistsMembership(_))
+        ),
+        "a columnless computed argument must keep the membership, got {pattern:?}"
+    );
+}
+
+/// A cast-wrapped `current_user` argument is the keyword, not a column: qualifying it
+/// would turn it into a column read and lose the caller comparison.
+#[test]
+fn a_cast_wrapped_current_user_argument_still_reaches_the_user_column() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d UUID, u TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = u)';
+CREATE POLICY p ON docs FOR SELECT USING (can_see(id, current_user::text));
+";
+    let pattern = docs_using_pattern(sql);
+    assert!(
+        matches!(
+            &pattern,
+            PatternClass::ExpandedFunction(ExpandedFunction { inner, .. })
+                if matches!(&inner.pattern, PatternClass::P4ExistsMembership(_))
+        ),
+        "the keyword must survive substitution unqualified, got {pattern:?}"
+    );
+}
+
+/// The body aliases its scan with the guarded table's name, so the bare argument's
+/// qualified spelling cannot be spoken from inside: it must refuse. The computed
+/// argument beside it rides along; its own proof is the lone-argument test below.
+#[test]
+fn an_alias_hiding_scan_refuses_the_bare_arguments_capture() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, level INT);
+CREATE TABLE doc_members(doc_id UUID REFERENCES docs(id), user_id TEXT, min_level INT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d UUID, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members AS docs WHERE docs.doc_id = d AND docs.user_id = current_user AND docs.min_level <= req)';
+CREATE POLICY p ON docs FOR SELECT USING (can_see(id, coalesce(level, 0)));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("captured by the body's own scope"),
+        "the alias claims the outer table's name, got: {reason}"
+    );
+}
+
+/// The capture refusal must fire off the computed argument itself: with no bare
+/// argument beside it, the wrapped column is the only route into the hiding scope.
+#[test]
+fn a_lone_computed_argument_still_triggers_the_capture_refusal() {
+    let sql = r"
+CREATE TABLE docs(id UUID PRIMARY KEY, level INT);
+CREATE TABLE doc_members(doc_id UUID, user_id TEXT, min_level INT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION cleared(req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members AS docs WHERE docs.min_level <= req AND docs.user_id = current_user)';
+CREATE POLICY p ON docs FOR SELECT USING (cleared(coalesce(level, 0)));
+";
+    let reason = docs_refusal_reason(sql);
+    assert!(
+        reason.contains("captured by the body's own scope"),
+        "the alias claims the outer table's name, got: {reason}"
+    );
+}
+
 /// Probe A end to end at the model level: both tables grant through the
 /// definer, the membership table's rows keyed by their own doc.
 #[test]

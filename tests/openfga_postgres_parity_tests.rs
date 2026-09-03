@@ -8107,3 +8107,141 @@ CREATE POLICY sentinel_p ON sentinel_docs FOR SELECT USING (
 }
 
 /// Typed schema for the wildcard-union cases.
+mod computed_argument_schema {
+    diesel::table! {
+        leveled_docs (id) {
+            id -> diesel::sql_types::Text,
+            level -> diesel::sql_types::Integer,
+        }
+    }
+
+    diesel::table! {
+        leveled_members (doc_id, user_id) {
+            doc_id -> diesel::sql_types::Text,
+            user_id -> diesel::sql_types::Text,
+            level -> diesel::sql_types::Integer,
+            min_level -> diesel::sql_types::Integer,
+        }
+    }
+}
+
+/// `can_see(id, coalesce(level, 0))` evaluates `level` on the guarded row. A bare
+/// substitution lets the membership scan capture it, so the loader admits the row
+/// through the member's own `level` while `PostgreSQL` denies through the doc's.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn computed_argument_capture_parity_postgres18_and_openfga() {
+    use computed_argument_schema::{leveled_docs, leveled_members};
+
+    let postgres = support::containers::start_postgres().await;
+
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r"
+CREATE TABLE leveled_docs(id TEXT PRIMARY KEY, level INT NOT NULL);
+CREATE TABLE leveled_members(doc_id TEXT REFERENCES leveled_docs(id), user_id TEXT,
+  level INT NOT NULL, min_level INT NOT NULL);
+ALTER TABLE leveled_docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d TEXT, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM leveled_members m WHERE m.doc_id = d AND m.user_id = current_user AND m.min_level <= req)';
+CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)));
+";
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the computed-argument schema");
+    conn.batch_execute(
+        "CREATE ROLE app_reader LOGIN;
+         GRANT SELECT ON leveled_docs, leveled_members TO app_reader;",
+    )
+    .expect("Failed to create the querying role");
+    diesel::insert_into(leveled_docs::table)
+        .values((leveled_docs::id.eq("d1"), leveled_docs::level.eq(0)))
+        .execute(&mut conn)
+        .expect("Failed to seed the low-level doc");
+    // The poisoning row: the member's own `level` is high and `min_level` sits between
+    // the two, so the captured reading admits what the guarded row's level denies.
+    diesel::insert_into(leveled_members::table)
+        .values((
+            leveled_members::doc_id.eq("d1"),
+            leveled_members::user_id.eq("app_reader"),
+            leveled_members::level.eq(99),
+            leveled_members::min_level.eq(50),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the membership row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let planned = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan");
+    // Falling closed is a choice the caller's threshold made, so the loss is reported as
+    // below threshold rather than as an expression nobody classified.
+    let disclosed = planned
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::BelowThreshold)
+        .count();
+    let outputs = planned.outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "computed-argument-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let expected = conn
+        .transaction::<i64, diesel::result::Error, _>(|conn| {
+            // The DSL has no role switch, and the read around it stays typed.
+            diesel::sql_query("SET LOCAL ROLE app_reader").execute(conn)?;
+            leveled_docs::table
+                .filter(leveled_docs::id.eq("d1"))
+                .count()
+                .get_result::<i64>(conn)
+        })
+        .expect("reading under row level security should not error");
+    assert_eq!(
+        expected, 0,
+        "the doc's own level is below min_level, so PostgreSQL denies"
+    );
+    let granted = support::openfga::check_allowed(
+        &client,
+        "user:app_reader",
+        "can_select",
+        "leveled_docs:d1",
+    )
+    .await;
+    assert!(
+        !granted,
+        "OpenFGA granted a row PostgreSQL denies: the argument's column was read off \
+         the membership row"
+    );
+    assert!(
+        disclosed > 0,
+        "falling closed on this policy has to be reported, not silent"
+    );
+}
+
+/// Two future deadlines on a membership table whose rows are not uniquely keyed by
+/// `(doc, user)`: `PostgreSQL` grants only when one single row passes both comparisons
+/// at check time. Bob's two rows each pass one comparison and fail the other, so he is
+/// denied although each column's latest value alone would pass: a model compressing the
+/// rows per column grants him and fails this case in the over-grant direction, while
+/// Carol's one live row keeps the grant direction honest.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
