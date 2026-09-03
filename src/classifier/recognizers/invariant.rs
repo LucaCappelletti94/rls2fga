@@ -22,7 +22,7 @@ use crate::classifier::function_registry::FunctionRegistry;
 use crate::generator::unrestricted::restricts_nothing_by_any_route;
 use crate::parser::names::{
     builtin_function_name, is_current_user_keyword_name, lookup_table, stored_ident_name,
-    table_identity,
+    stored_relation_name, table_identity,
 };
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
 use crate::types::TableId;
@@ -113,14 +113,19 @@ impl Visitor for RelationNames {
         let TableFactor::Table {
             name,
             args: None,
+            version: None,
+            sample: None,
+            json_path: None,
             with_hints,
             partitions,
+            index_hints,
+            with_ordinality: false,
             ..
         } = factor
         else {
             return ControlFlow::Break(());
         };
-        if !with_hints.is_empty() || !partitions.is_empty() {
+        if !with_hints.is_empty() || !partitions.is_empty() || !index_hints.is_empty() {
             return ControlFlow::Break(());
         }
         self.0.insert(name.to_string());
@@ -167,11 +172,10 @@ fn answer_depends_on_the_asker(
             // anything about who is asking and `pg_dump` writes both around everything.
             match unwrap_cast_or_nested(expr) {
                 Expr::Identifier(ident) => {
-                    let name = stored_ident_name(ident);
                     if ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value) {
                         return ControlFlow::Break(());
                     }
-                    if self.zoned.contains(name.as_ref()) {
+                    if self.zoned.contains(stored_ident_name(ident).as_ref()) {
                         return ControlFlow::Break(());
                     }
                 }
@@ -192,8 +196,17 @@ fn answer_depends_on_the_asker(
                         return ControlFlow::Break(());
                     }
                 }
-                Expr::CompoundIdentifier(_)
-                | Expr::UnaryOp { .. }
+                // A qualifier changes nothing about which column this is, so the zone
+                // check reads the terminal part exactly as it reads a bare name.
+                Expr::CompoundIdentifier(parts) => {
+                    if parts
+                        .last()
+                        .is_some_and(|part| self.zoned.contains(stored_ident_name(part).as_ref()))
+                    {
+                        return ControlFlow::Break(());
+                    }
+                }
+                Expr::UnaryOp { .. }
                 | Expr::BinaryOp { .. }
                 | Expr::IsNull(_)
                 | Expr::IsNotNull(_)
@@ -248,7 +261,7 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
 ) -> bool {
     struct GuardedReference<'a, DB> {
         db: &'a DB,
-        enclosing: [Option<&'a str>; 3],
+        enclosing: &'a BTreeSet<String>,
         membership_columns: &'a [String],
         /// What each entered query binds. Empty while the walk is still on the conjunct
         /// itself, whose scope the caller has already checked.
@@ -291,7 +304,7 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
                     if self.shared(qualifier.as_ref(), |scope| &scope.names) {
                         return ControlFlow::Continue(());
                     }
-                    if self.enclosing.contains(&Some(qualifier.as_ref())) {
+                    if self.enclosing.contains(qualifier.as_ref()) {
                         return ControlFlow::Break(());
                     }
                 }
@@ -312,14 +325,15 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
         }
     }
 
+    let enclosing: BTreeSet<String> = [Some(scope.table), scope.alias, Some(scope.guarded_table)]
+        .into_iter()
+        .flatten()
+        .map(stored_relation_name)
+        .collect();
     conjunct
         .visit(&mut GuardedReference {
             db,
-            enclosing: [
-                Some(relation_part(scope.table)),
-                scope.alias,
-                Some(relation_part(scope.guarded_table)),
-            ],
+            enclosing: &enclosing,
             membership_columns: scope.columns,
             scopes: Vec::new(),
         })
@@ -351,7 +365,7 @@ fn query_scope<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<QueryScope> {
             };
             let spelling = name.to_string();
             let table = lookup_table(db, &spelling)?;
-            scope.names.insert(relation_part(&spelling).to_string());
+            scope.names.insert(stored_relation_name(&spelling));
             if let Some(alias) = alias {
                 scope
                     .names
@@ -367,14 +381,6 @@ fn query_scope<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<QueryScope> {
         }
     }
     Some(scope)
-}
-
-/// The relation a written table name denotes, without its schema.
-fn relation_part(spelling: &str) -> &str {
-    spelling
-        .rsplit_once('.')
-        .map_or(spelling, |(_, name)| name)
-        .trim_matches('"')
 }
 
 /// Rewrite each relation reference to the identity the catalog carries, spelled as the

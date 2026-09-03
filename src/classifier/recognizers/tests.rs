@@ -1560,6 +1560,105 @@ fn a_residual_whose_subquery_reads_the_caller_is_refused() {
     );
 }
 
+/// A zoned column reads the session's own time zone wherever a zone-less value stands
+/// beside it, and qualifying the column changes nothing about that.
+#[test]
+fn a_residual_comparing_a_qualified_zoned_column_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE windows(opens_at TIMESTAMPTZ);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (
+                   SELECT count(*) FROM windows w WHERE w.opens_at > '2020-01-01'
+                 )
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "the session's time zone decides the comparison, qualifier or not"
+    );
+}
+
+/// `TABLESAMPLE` reads a sample of the rows rather than the rows, so the loader's sample
+/// and the caller's need not be the same one.
+#[test]
+fn a_residual_sampling_its_relation_is_refused() {
+    let db = papers_schema("");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT avg(weight) FROM paper_shares TABLESAMPLE BERNOULLI (50))
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "a sample is not the relation the flag was proven about"
+    );
+}
+
+/// A relation name may carry a dot of its own, and splitting the rendered spelling on it
+/// would name a table nobody declared, which is how a reach for the guarded row escapes.
+#[test]
+fn a_residual_correlating_to_a_dotted_guarded_table_is_refused() {
+    let db = parse_schema(
+        r#"
+CREATE TABLE "papers.v1"(id UUID PRIMARY KEY, category TEXT);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers(cutoff INT, category TEXT);
+"#,
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                r#"EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = "papers.v1".id
+                 AND s.viewer = current_user
+                 AND s.weight > (
+                   SELECT max(cutoff) FROM tiers WHERE category = "papers.v1".category
+                 )
+             )"#
+            ),
+            &db,
+            &registry,
+            r#""papers.v1""#,
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "the generated query scans the membership table alone, whatever the name contains"
+    );
+}
+
 /// An unnamed function's body may read anything and may answer per call, so it is not
 /// proven by proving the relations in the text.
 #[test]
