@@ -3982,9 +3982,7 @@ async fn shared_paper_parity_postgres18_and_openfga() {
     );
 }
 
-/// Seeded so one viewer holds both a share the average admits and one it excludes, and so
-/// a third caller holds none. A model that ignored the aggregate would grant `alice` paper
-/// 3 as well, and one that dropped the membership would grant nobody anything.
+/// One viewer holds both a share the average admits and one it excludes.
 const SEEDED_WEIGHTED_SHARES: [(i32, &str, i32); 3] =
     [(1, "alice", 50), (2, "bob", 30), (3, "alice", 1)];
 
@@ -4007,13 +4005,10 @@ fn weighted_papers_visible_to(conn: &mut PgConnection, user_id: Option<&str>) ->
     seen
 }
 
-/// Upstream connetto R86 against both services: a membership qualified by an average over
-/// the whole share table.
+/// A membership qualified by an average over the whole share table, against both
+/// services.
 ///
-/// The residual is decided by rows the granted row does not name, and translates only
-/// because `paper_shares` carries no row security, so the loader's average is every
-/// caller's. Running the generated query on PostgreSQL is also what proves the relation
-/// the residual names inside its subquery is spelled so the database resolves it.
+/// Running the generated query is also what proves its nested relation resolves.
 #[tokio::test]
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn cross_row_residual_parity_postgres18_and_openfga() {

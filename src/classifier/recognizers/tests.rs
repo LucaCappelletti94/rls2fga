@@ -882,10 +882,7 @@ fn recognize_p4_fails_closed_for_derived_join_unqualified_extra_predicate() {
     );
 }
 
-/// An extra predicate whose subquery reads a table the database filters rows on would be
-/// precomputed from the loader's view of that table, while `PostgreSQL` evaluates the
-/// policy as the caller and applies that table's own read rules. A single-table tuple
-/// query cannot carry the caller's view of a second table.
+/// A guarded third table would be precomputed from the loader's view of it.
 #[test]
 fn recognize_p4_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -915,8 +912,7 @@ ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
     );
 }
 
-/// The holder shape carries the same extras, so a guarded third-table subquery in an
-/// uncorrelated membership fails closed there too.
+/// The holder shape carries the same extras.
 #[test]
 fn uncorrelated_membership_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -945,8 +941,7 @@ ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
     );
 }
 
-/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite, so a guarded
-/// third table fails closed there too.
+/// The `IN` and `= ANY` spellings reach the analyzer through the rewrite.
 #[test]
 fn recognize_p4_in_subquery_fails_closed_for_extra_predicate_reading_a_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -983,8 +978,7 @@ ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
     );
 }
 
-/// The `IN` spelling reaches the same resolver, so an unrestricted third table translates
-/// there too rather than only through `EXISTS`.
+/// The `IN` spelling reaches the same resolver.
 #[test]
 fn recognize_p4_in_subquery_allows_an_unrestricted_third_table_in_a_subquery() {
     let db = parse_schema(
@@ -1309,8 +1303,7 @@ CREATE TABLE s7(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
         "the reason names the respelling, got: {reason}"
     );
 }
-/// A subquery inside a residual is decided by the table's contents when the loader runs,
-/// so a relation the loader and the caller can read differently refuses.
+/// A relation the loader and the caller can read differently refuses.
 #[test]
 fn recognize_p4_refuses_an_extra_predicate_subquery_over_the_join_table() {
     let db = parse_schema(
@@ -1339,8 +1332,7 @@ ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
     );
 }
 
-/// The schema the exemption tests share: the guarded table, an open share table, and a
-/// second open table a residual can reach for.
+/// The guarded table, an open share table and a second open table.
 fn papers_schema(extra: &str) -> ParserDB {
     parse_schema(&format!(
         r"
@@ -1353,8 +1345,7 @@ CREATE TABLE tiers(cutoff INT);
     .expect("schema should parse")
 }
 
-/// The R86 shape: membership qualified by beating the average weight across the whole
-/// share table.
+/// Membership qualified by beating the average weight of the whole share table.
 fn average_weight_membership() -> Expr {
     parse_expr(
         "EXISTS (
@@ -1388,8 +1379,7 @@ fn recognized_residual_sql(db: &ParserDB, expr: &Expr) -> String {
         .expect("the residual rides the tuple query")
 }
 
-/// Upstream obligation 1: row security off on every relation the residual reads means the
-/// loader's one answer is every caller's.
+/// Row security off on every relation read means one answer serves every caller.
 #[test]
 fn a_residual_over_an_unrestricted_relation_is_recognized() {
     let db = papers_schema("");
@@ -1400,8 +1390,7 @@ fn a_residual_over_an_unrestricted_relation_is_recognized() {
     );
 }
 
-/// Upstream obligation 2: the same policy refuses once the share table filters rows,
-/// because then the loader reads it as itself and the caller does not.
+/// The same policy refuses once the share table filters rows.
 #[test]
 fn a_residual_over_a_row_secured_relation_is_refused() {
     let db = papers_schema("ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;");
@@ -1419,8 +1408,7 @@ fn a_residual_over_a_row_secured_relation_is_refused() {
     );
 }
 
-/// Upstream obligation 3: a policy on a relation that never enabled row security is inert,
-/// so it cannot make any read differ.
+/// A policy on a relation that never enabled row security is inert.
 #[test]
 fn a_residual_over_a_relation_with_an_inert_policy_is_recognized() {
     let db = papers_schema(
@@ -1433,8 +1421,7 @@ fn a_residual_over_a_relation_with_an_inert_policy_is_recognized() {
     );
 }
 
-/// Upstream obligation 4: `FORCE` subjects the owner once row security is on and activates
-/// nothing by itself.
+/// `FORCE` activates nothing by itself.
 #[test]
 fn a_residual_over_a_forced_but_disabled_relation_is_recognized() {
     let db = papers_schema("ALTER TABLE paper_shares FORCE ROW LEVEL SECURITY;");
@@ -1445,8 +1432,7 @@ fn a_residual_over_a_forced_but_disabled_relation_is_recognized() {
     );
 }
 
-/// The exemption is about the relations read, not about which table the membership scans,
-/// so a residual reaching a third open relation is translatable too.
+/// The exemption is about the relations read, not about which table is scanned.
 #[test]
 fn a_residual_reading_a_third_unrestricted_relation_is_recognized() {
     let db = papers_schema("");
@@ -1468,10 +1454,40 @@ fn a_residual_reading_a_third_unrestricted_relation_is_recognized() {
     );
 }
 
-/// A partition child inherits its root's read rules, and a read through the root applies
-/// them, so the child's own cleared flag proves nothing.
+/// A partition read directly is filtered by its own flag, never by its root's.
 #[test]
-fn a_residual_over_a_child_of_a_row_secured_root_is_refused() {
+fn a_residual_over_a_child_of_a_row_secured_root_is_recognized() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE weights(weight INT, region TEXT) PARTITION BY LIST (region);
+CREATE TABLE weights_eu PARTITION OF weights FOR VALUES IN ('eu');
+ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
+",
+    )
+    .expect("schema should parse");
+    let sql = recognized_residual_sql(
+        &db,
+        &parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (SELECT avg(weight) FROM weights_eu)
+             )",
+        ),
+    );
+    assert!(
+        sql.contains("weights_eu"),
+        "the partition is read under its own flag, got: {sql}"
+    );
+}
+
+/// The root's own flag still governs a query naming the root.
+#[test]
+fn a_residual_over_a_row_secured_root_is_refused() {
     let db = parse_schema(
         r"
 CREATE TABLE papers(id UUID PRIMARY KEY);
@@ -1491,7 +1507,7 @@ ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
                FROM paper_shares s
                WHERE s.paper_id = papers.id
                  AND s.viewer = current_user
-                 AND s.weight > (SELECT avg(weight) FROM weights_eu)
+                 AND s.weight > (SELECT avg(weight) FROM weights)
              )"
             ),
             &db,
@@ -1500,12 +1516,11 @@ ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
             &ExpansionState::new()
         )
         .is_none(),
-        "the root's policies filter the child's rows through the root"
+        "the root carries the policies the query naming it reads under"
     );
 }
 
-/// Nothing is proven about a relation the catalog does not carry, and views are not carried
-/// at all.
+/// Nothing is proven about a relation the catalog does not carry.
 #[test]
 fn a_residual_naming_an_unresolvable_relation_is_refused() {
     let db = papers_schema("");
@@ -1531,8 +1546,7 @@ fn a_residual_naming_an_unresolvable_relation_is_refused() {
     );
 }
 
-/// Row security is not the only way an answer can depend on who is asking: the residual can
-/// simply read the caller.
+/// Row security is not the only way an answer can depend on who is asking.
 #[test]
 fn a_residual_whose_subquery_reads_the_caller_is_refused() {
     let db = papers_schema("");
@@ -1560,8 +1574,7 @@ fn a_residual_whose_subquery_reads_the_caller_is_refused() {
     );
 }
 
-/// A zoned column reads the session's own time zone wherever a zone-less value stands
-/// beside it, and qualifying the column changes nothing about that.
+/// A qualifier does not exempt a zoned column from the session's time zone.
 #[test]
 fn a_residual_comparing_a_qualified_zoned_column_is_refused() {
     let db = parse_schema(
@@ -1596,8 +1609,141 @@ CREATE TABLE windows(opens_at TIMESTAMPTZ);
     );
 }
 
-/// `TABLESAMPLE` reads a sample of the rows rather than the rows, so the loader's sample
-/// and the caller's need not be the same one.
+/// A session setting decides a date's rendering and an inexact number's sum.
+#[test]
+fn a_residual_reading_a_session_rendered_column_is_refused() {
+    for (column, residual) in [
+        (
+            "published_on DATE",
+            "(SELECT max(published_on::text) FROM tiers)",
+        ),
+        ("cutoff DOUBLE PRECISION", "(SELECT avg(cutoff) FROM tiers)"),
+    ] {
+        let db = parse_schema(&format!(
+            r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers({column});
+"
+        ))
+        .expect("schema should parse");
+        let registry = FunctionRegistry::new();
+        assert!(
+            recognize_p4(
+                &parse_expr(&format!(
+                    "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight::text > {residual}
+             )"
+                )),
+                &db,
+                &registry,
+                "papers",
+                &ExpansionState::new()
+            )
+            .is_none(),
+            "{column} is not answered alike for every caller"
+        );
+    }
+}
+
+/// An exact numeric cast is the same number whoever computes it.
+#[test]
+fn a_residual_casting_between_exact_numbers_is_recognized() {
+    let db = papers_schema("");
+    let sql = recognized_residual_sql(
+        &db,
+        &parse_expr(
+            "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND (s.weight)::numeric > (SELECT avg(weight) FROM paper_shares)
+             )",
+        ),
+    );
+    assert!(
+        sql.contains("avg(weight)"),
+        "the dumped cast keeps the exemption, got: {sql}"
+    );
+}
+
+/// A bare name two joined relations both carry binds to neither.
+#[test]
+fn a_residual_naming_a_column_two_joined_relations_share_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
+CREATE TABLE tiers(cutoff INT, band TEXT);
+CREATE TABLE bands(band TEXT, floor INT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND s.weight > (
+                   SELECT max(cutoff) FROM tiers, bands WHERE band = 'gold'
+                 )
+             )"
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "an ambiguous name is bound by neither relation"
+    );
+}
+
+/// An alias carrying a dot still names the membership scan.
+#[test]
+fn a_residual_correlating_through_a_dotted_alias_is_refused() {
+    let db = parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY, category TEXT);
+CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT, category TEXT);
+CREATE TABLE tiers(cutoff INT);
+",
+    )
+    .expect("schema should parse");
+    let registry = FunctionRegistry::new();
+    assert!(
+        recognize_p4(
+            &parse_expr(
+                r#"EXISTS (
+               SELECT 1
+               FROM paper_shares "m.v"
+               WHERE "m.v".paper_id = papers.id
+                 AND "m.v".viewer = current_user
+                 AND "m.v".weight > (
+                   SELECT max(cutoff) FROM tiers WHERE cutoff < "m.v".category
+                 )
+             )"#
+            ),
+            &db,
+            &registry,
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "the generated query gives the scan no alias, whatever the alias contains"
+    );
+}
+
+/// A sample is not the relation the flag was proven about.
 #[test]
 fn a_residual_sampling_its_relation_is_refused() {
     let db = papers_schema("");
@@ -1623,8 +1769,7 @@ fn a_residual_sampling_its_relation_is_refused() {
     );
 }
 
-/// A relation name may carry a dot of its own, and splitting the rendered spelling on it
-/// would name a table nobody declared, which is how a reach for the guarded row escapes.
+/// A guarded table whose name carries a dot is still the guarded table.
 #[test]
 fn a_residual_correlating_to_a_dotted_guarded_table_is_refused() {
     let db = parse_schema(
@@ -1659,8 +1804,7 @@ CREATE TABLE tiers(cutoff INT, category TEXT);
     );
 }
 
-/// An unnamed function's body may read anything and may answer per call, so it is not
-/// proven by proving the relations in the text.
+/// An unplaceable function's body may read anything.
 #[test]
 fn a_residual_calling_an_unknown_function_is_refused() {
     let db = papers_schema("");
@@ -1686,8 +1830,7 @@ fn a_residual_calling_an_unknown_function_is_refused() {
     );
 }
 
-/// `LIMIT` picks a row per evaluation rather than per identity, so the loader's pick and
-/// the caller's need not agree even where both read the same open relation.
+/// `LIMIT` picks a row per evaluation rather than per identity.
 #[test]
 fn a_residual_whose_subquery_limits_its_rows_is_refused() {
     let db = papers_schema("");
@@ -1713,9 +1856,7 @@ fn a_residual_whose_subquery_limits_its_rows_is_refused() {
     );
 }
 
-/// The nested relation reaches the generated SQL inside the residual's text, so it has to
-/// be spelled the way the query spells the table it scans. Left as the policy wrote it, it
-/// would resolve through whatever `search_path` the loader happens to hold.
+/// The nested relation is spelled the way the scan spells its own table.
 #[test]
 fn a_recognized_residual_qualifies_its_nested_relation() {
     let db = papers_schema("");
@@ -1726,9 +1867,7 @@ fn a_recognized_residual_qualifies_its_nested_relation() {
     );
 }
 
-/// The exemption widens which relations a residual may read, never which expressions the
-/// crate can evaluate: a conjunct reading no relation at all still has to be one the row
-/// decides.
+/// The exemption widens which relations may be read, not which expressions.
 #[test]
 fn a_relation_free_residual_the_row_cannot_decide_is_still_refused() {
     let db = papers_schema("");
@@ -1754,8 +1893,7 @@ fn a_relation_free_residual_the_row_cannot_decide_is_still_refused() {
     );
 }
 
-/// The policy's subquery sits inside the guarded row's scope too, and the generated query
-/// does not, so a nested reference to the guarded table names nothing there.
+/// The generated query does not scan the guarded table a nested reference names.
 #[test]
 fn a_residual_correlating_to_the_guarded_row_is_refused() {
     let db = parse_schema(
@@ -1790,9 +1928,7 @@ CREATE TABLE tiers(cutoff INT, category TEXT);
     );
 }
 
-/// The same reach without a qualifier: with the name absent from both the nested relation
-/// and the membership row, `PostgreSQL` binds it to the guarded row, which the generated
-/// query does not scan.
+/// A bare name only the guarded row carries binds outward.
 #[test]
 fn a_residual_binding_a_bare_column_to_the_guarded_row_is_refused() {
     let db = parse_schema(
@@ -1825,8 +1961,7 @@ CREATE TABLE tiers(cutoff INT);
     );
 }
 
-/// A bare name the membership row carries is a different matter: both the policy and the
-/// generated query resolve it to that row, so the correlation survives and translates.
+/// A bare name the membership row carries resolves alike in both queries.
 #[test]
 fn a_residual_correlating_to_the_membership_row_is_recognized() {
     let db = parse_schema(

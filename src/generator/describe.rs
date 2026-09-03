@@ -147,11 +147,8 @@ fn rendered(query: &TupleQuery) -> Option<&TupleQuery> {
 
 /// The description for a residual only SQL can evaluate.
 ///
-/// A residual reading no relation moves only with the changed row, so the replay is keyed
-/// on that row's slice. One reading a relation is not keyed at all: its value moves with
-/// rows no key names, so replaying one slice would answer that slice and leave the others
-/// carrying grants the database has withdrawn. Such a shape reads its relations too, and
-/// says so, since a consumer refuses a table its change stream does not carry.
+/// A residual reading a relation moves with rows no key names, so no key narrows its
+/// replay and the table list has to name those relations too.
 fn residual_description(
     query: &TupleQuery,
     table: &TableId,

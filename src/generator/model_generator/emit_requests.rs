@@ -4,6 +4,7 @@
 //! a condition rather than in the tuple's subject. Also the conditions an attribute guard needs
 //! when the value is one only the request knows.
 
+use super::emit_membership::announce_residual;
 use super::*;
 
 /// Mint the relation, the condition and the tuple source a declared request-scoped
@@ -489,17 +490,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     )
     .unwrap_or_default();
 
-    let announced = if temporal.is_empty() {
-        extra_predicates.sql()
-    } else {
-        extra_predicates.sql_excluding_requests()
-    };
-    if let Some(extra) = announced {
-        notes.push(TranslationNote::MembershipExtraPredicate {
-            policy: policy_name.to_string(),
-            predicate: extra,
-        });
-    }
+    announce_residual(extra_predicates, !temporal.is_empty(), policy_name, notes);
 
     let mut expression = format!("{row_parameter} in {request_parameter}");
     let mut parameters = vec![

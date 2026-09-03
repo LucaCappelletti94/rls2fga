@@ -3705,8 +3705,7 @@ fn unqualified_table_declaration_does_not_produce_search_path_dependent_sql() {
     }
 }
 
-/// A membership qualified by a whole-table aggregate over relations the database filters
-/// nothing on.
+/// A membership qualified by a whole-table aggregate over open relations.
 const CROSS_ROW_RESIDUAL: &str = "
 CREATE TABLE users (id TEXT PRIMARY KEY);
 CREATE TABLE papers (id TEXT PRIMARY KEY);
@@ -3720,10 +3719,8 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
     AND s.weight > (SELECT max(cutoff) FROM tiers)));
 ";
 
-/// `RecordDescription::tables` promises every table the query reads, and a consumer
-/// refuses a table its change stream does not carry. A residual reaching another relation
-/// puts that relation's rows into the answer, so leaving it unnamed makes the consumer
-/// believe a stream it does not watch cannot move these records.
+/// A consumer refuses a table its change stream does not carry, so every table the
+/// query reads has to be named.
 #[test]
 fn a_cross_row_residual_names_every_relation_it_reads() {
     let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
@@ -3740,10 +3737,8 @@ fn a_cross_row_residual_names_every_relation_it_reads() {
     );
 }
 
-/// The aggregate is global, so inserting one share can move records for papers whose own
-/// shares never changed. A replay narrowed to the changed row's paper answers that paper
-/// and leaves the rest standing, which withholds nothing but keeps grants the database no
-/// longer allows. The description has to say no key narrows it.
+/// A global aggregate moves records for papers whose own shares never changed, so no
+/// key narrows the replay.
 #[test]
 fn a_cross_row_residual_refuses_a_keyed_replay() {
     let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
@@ -3771,9 +3766,7 @@ fn a_cross_row_residual_refuses_a_keyed_replay() {
     }
 }
 
-/// The exemption is proven against the schema as translated, so a relation that gains row
-/// security later invalidates it. The disclosure has to name which relations the proof
-/// rests on, or a consumer cannot know what to watch.
+/// The disclosure names the relations the proof rests on, or nothing can be watched.
 #[test]
 fn a_cross_row_residual_discloses_the_relations_its_proof_rests_on() {
     let (db, registry) = parsed(CROSS_ROW_RESIDUAL, "{}");
@@ -3800,5 +3793,49 @@ fn a_cross_row_residual_discloses_the_relations_its_proof_rests_on() {
             .iter()
             .all(|note| !matches!(note, TranslationNote::MembershipExtraPredicate { .. })),
         "one residual is disclosed once, by the note that names its proof"
+    );
+}
+
+/// The same residual reached through the caller's declared set.
+const CALLER_SET_CROSS_ROW: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY);
+CREATE TABLE paper_shares (
+  paper_id INT REFERENCES papers(id),
+  viewer TEXT,
+  weight INT,
+  PRIMARY KEY (paper_id, viewer)
+);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+#[test]
+fn a_caller_set_membership_discloses_the_relations_its_proof_rests_on() {
+    let (db, registry) = parsed_with_session_attributes(
+        CALLER_SET_CROSS_ROW,
+        r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
+    );
+    let notes = translation(&db, &registry, &GeneratorSettings::default())
+        .outputs_accepting_gaps()
+        .notes()
+        .to_vec();
+    let disclosure = notes
+        .iter()
+        .find_map(|note| match note {
+            TranslationNote::MembershipResidualReadsUnrestrictedTables { tables, .. } => {
+                Some(tables.clone())
+            }
+            _ => None,
+        })
+        .expect("the exemption is disclosed on the caller-set route too");
+    let named: BTreeSet<String> = disclosure.iter().map(ToString::to_string).collect();
+    assert!(
+        named.contains("tiers"),
+        "the relation the proof rests on is named, got {named:?}"
     );
 }

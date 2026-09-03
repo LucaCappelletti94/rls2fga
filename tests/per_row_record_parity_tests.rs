@@ -562,9 +562,8 @@ fn assert_descriptions_match_their_sql(
                 records += expected.len();
                 continue;
             }
-            // No key narrows this one, so there is no bound query to compare and the
-            // carried query has to be the whole one. What ties it to the table list is
-            // that the list names exactly the relations the query reads.
+            // No key narrows this one, so the carried query has to be the whole one and
+            // the table list has to name what it reads.
             RecordDerivation::WholeShape {
                 query: whole,
                 condition,
@@ -784,8 +783,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
     );
 }
 
-/// Weights straddling their own average, so the residual admits some shares and refuses
-/// others, and so the query the description carries has something to be wrong about.
+/// Weights straddling their own average, so the residual admits some and refuses others.
 const CROSS_ROW_SEED: &str = "
 INSERT INTO papers (id, owner) VALUES (1, 'owner'), (2, 'owner'), (3, 'owner');
 INSERT INTO paper_shares (paper_id, viewer, weight) VALUES
@@ -794,12 +792,7 @@ INSERT INTO paper_shares (paper_id, viewer, weight) VALUES
     (3, 'alice', 1);
 ";
 
-/// The shape no key narrows: a membership qualified by an average over the whole share
-/// table.
-///
-/// Nothing else in this file produces it, and the derivation it carries is the one a
-/// consumer must not narrow, so leaving it uncovered would leave the replay contract
-/// stated and unchecked.
+/// The shape no key narrows, which nothing else in this file produces.
 #[tokio::test]
 #[ignore = "requires Docker: starts a PostgreSQL 18 container"]
 async fn a_cross_row_residual_description_matches_its_own_sql() {
@@ -2637,4 +2630,89 @@ impl RowValues for EmptyRow {
     fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
         RowCell::Absent
     }
+}
+
+/// Row security filters a read by the policies of the relation the query names alone,
+/// which is why the residual exemption asks only that relation's flag.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_partition_is_filtered_by_the_relation_the_query_names() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(
+        "CREATE TABLE parted(id int, region text) PARTITION BY LIST (region); \
+         CREATE TABLE parted_eu PARTITION OF parted FOR VALUES IN ('eu'); \
+         CREATE TABLE inh_parent(id int, tag text); \
+         CREATE TABLE inh_child(extra text) INHERITS (inh_parent); \
+         INSERT INTO parted VALUES (1,'eu'),(2,'eu'); \
+         INSERT INTO inh_parent VALUES (1,'a'); \
+         INSERT INTO inh_child VALUES (2,'b','x'); \
+         CREATE ROLE probe; \
+         GRANT SELECT ON parted, parted_eu, inh_parent, inh_child TO probe;",
+    )
+    .expect("failed to build the inheritance shapes");
+
+    let counted = |conn: &mut PgConnection, relation: &str| -> usize {
+        let mut rows = 0;
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            conn.batch_execute("SET LOCAL ROLE probe")?;
+            rows = rows_returned(conn, &format!("SELECT 1 FROM {relation}"));
+            Err::<(), _>(diesel::result::Error::RollbackTransaction)
+        })
+        .ok();
+        rows
+    };
+
+    // Guarding the ancestor. A query naming the descendant is unaffected by it.
+    conn.batch_execute(
+        "ALTER TABLE parted ENABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_parent ENABLE ROW LEVEL SECURITY; \
+         CREATE POLICY p_parted ON parted FOR SELECT USING (false); \
+         CREATE POLICY p_inh ON inh_parent FOR SELECT USING (false);",
+    )
+    .expect("failed to guard the ancestors");
+    assert_eq!(
+        counted(&mut conn, "parted"),
+        0,
+        "the root's own policy filters a read naming the root"
+    );
+    assert_eq!(
+        counted(&mut conn, "parted_eu"),
+        2,
+        "a read naming the partition is not filtered by the root's policy"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_parent"),
+        0,
+        "the parent's own policy filters a read naming the parent"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_child"),
+        1,
+        "a read naming the inheriting child is not filtered by the parent's policy"
+    );
+
+    // The mirror: guarding the descendant leaves a read naming the ancestor unfiltered,
+    // so a relation whose own flag is off is open however its descendants are guarded.
+    conn.batch_execute(
+        "DROP POLICY p_parted ON parted; \
+         DROP POLICY p_inh ON inh_parent; \
+         ALTER TABLE parted DISABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_parent DISABLE ROW LEVEL SECURITY; \
+         ALTER TABLE parted_eu ENABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_child ENABLE ROW LEVEL SECURITY; \
+         CREATE POLICY p_eu ON parted_eu FOR SELECT USING (false); \
+         CREATE POLICY p_child ON inh_child FOR SELECT USING (false);",
+    )
+    .expect("failed to guard the descendants");
+    assert_eq!(
+        counted(&mut conn, "parted"),
+        2,
+        "a read naming the root is not filtered by the partition's policy"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_parent"),
+        2,
+        "a read naming the parent is not filtered by the child's policy"
+    );
 }

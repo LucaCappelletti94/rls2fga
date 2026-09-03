@@ -776,10 +776,8 @@ fn dollar_quote_end(bytes: &[u8], mut index: usize) -> Option<usize> {
 /// downstream can rediscover it from the SQL: one query is keyed on the object it moves,
 /// another on the subject it grants to, and the two reconcile against different reads.
 ///
-/// This names the family; the key narrows it to one member. A
-/// [`BoundQuery`] carries that key, and
-/// [`RecordDerivation::WholeShape`] carries none, where the family
-/// itself is the slice.
+/// This names the family, and a [`BoundQuery`] key narrows it to one member;
+/// [`RecordDerivation::WholeShape`] carries no key, so the family is the slice.
 ///
 /// Whole only as **this shape** states it: a consumer reconciling the slice must first
 /// establish that no other shape states facts in the same slice, or the reconciliation
@@ -886,12 +884,10 @@ pub enum RecordDerivation {
         reason: String,
     },
     /// The records depend on rows the changed row does not name, so no key narrows the
-    /// query: a change to any table it reads is answered by running all of it, and the
-    /// result is the whole truth for `scope`.
+    /// query and the whole of it answers a change to any table it reads.
     ///
-    /// A whole-table aggregate is this. Its value moves when any row of the relation it
-    /// reads moves, which can admit or withdraw records keyed on rows that never changed,
-    /// so replaying the changed row's slice would leave those standing.
+    /// A whole-table aggregate can admit or withdraw records keyed on rows that never
+    /// changed, which a narrowed replay would leave standing.
     WholeShape {
         /// The query, taking no key and carrying no placeholder.
         query: String,

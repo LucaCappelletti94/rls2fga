@@ -1,14 +1,11 @@
 //! Whether a residual conjunct answers every caller alike.
 //!
-//! The loader answers the tuple query once, as itself, so a conjunct the membership row
-//! does not decide is safe to precompute exactly when it asks a question whose answer does
-//! not depend on who asks. Every relation it reads showing every row to everybody, and
-//! nothing in it reading the caller, the session or the clock, is that condition. Anything
-//! else keeps refusing.
+//! The loader answers once, as itself, so precomputing is safe only where the answer does
+//! not depend on who asks.
 
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use core::ops::ControlFlow;
 use sqlparser::ast::{
     Expr, Ident, ObjectName, ObjectNamePart, Query, SetExpr, TableFactor, Value, Visit, VisitMut,
@@ -16,10 +13,10 @@ use sqlparser::ast::{
 };
 
 use super::attribute::ROW_PURE_FUNCTIONS;
-use super::subquery::{session_zoned_columns, set_limiting_clause};
+use super::subquery::set_limiting_clause;
 use super::unwrap_cast_or_nested;
 use crate::classifier::function_registry::FunctionRegistry;
-use crate::generator::unrestricted::restricts_nothing_by_any_route;
+use crate::generator::unrestricted::row_level_security_is_off;
 use crate::parser::names::{
     builtin_function_name, is_current_user_keyword_name, lookup_table, stored_ident_name,
     stored_relation_name, table_identity,
@@ -29,16 +26,13 @@ use crate::types::TableId;
 
 /// Aggregates whose value the rows decide without their order.
 ///
-/// `array_agg` and `string_agg` are deliberately absent: they answer per row order, which
-/// no unordered scan fixes, so the loader's answer and the caller's need not agree.
+/// `array_agg` and `string_agg` are absent: they answer per row order.
 const ORDER_FREE_AGGREGATES: &[&str] = &[
     "avg", "bool_and", "bool_or", "count", "every", "max", "min", "sum",
 ];
 
-/// The scopes a membership subquery resolves its names through.
-///
-/// The generated query keeps every one of them but the guarded table, which is why the
-/// guarded table is named here rather than assumed away.
+/// The scopes a membership subquery resolves its names through, the guarded table being
+/// the one the generated query drops.
 pub(crate) struct MembershipScope<'a> {
     /// The membership table, as the policy spells it.
     pub(crate) table: &'a str,
@@ -53,10 +47,8 @@ pub(crate) struct MembershipScope<'a> {
 /// The relations `conjunct` reads, proven to answer every caller alike, or [`None`] where
 /// no such proof holds.
 ///
-/// An empty list means it reads no relation, which is the residual the row or the request
-/// decides and which the caller grades as before. A non-empty list is the exemption: the
-/// conjunct is rewritten to name each relation as the catalog carries it, so the generated
-/// query reads the proven relation rather than whatever the loader's `search_path` reaches.
+/// Empty where it reads none, which the caller still judges as before. Non-empty rewrites
+/// each relation to the identity the catalog carries, so no `search_path` decides it.
 pub(crate) fn residual_relations<DB: DatabaseLike>(
     conjunct: &mut Expr,
     db: Option<&DB>,
@@ -72,22 +64,18 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     }
     let db = db?;
     let mut relations = BTreeSet::new();
-    // A comparison spanning one of these reads the session's own time zone, which the
-    // relations say nothing about, so naming one refuses.
-    let mut zoned: BTreeSet<String> = lookup_table(db, scope.table)
-        .map(|table| session_zoned_columns(table, db))
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+    let mut session_decided: BTreeSet<String> = lookup_table(db, scope.table)
+        .map(|table| session_decided_columns(table, db))
+        .unwrap_or_default();
     for name in &names.0 {
         let table = lookup_table(db, name)?;
-        if !restricts_nothing_by_any_route(table, db) {
+        if !row_level_security_is_off(table, db) {
             return None;
         }
         relations.insert(table_identity(table));
-        zoned.extend(session_zoned_columns(table, db));
+        session_decided.extend(session_decided_columns(table, db));
     }
-    if answer_depends_on_the_asker(conjunct, registry, &zoned) {
+    if answer_depends_on_the_asker(conjunct, registry, &session_decided) {
         return None;
     }
     if reaches_the_guarded_row(conjunct, db, scope) {
@@ -99,10 +87,47 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     Some(relations.into_iter().collect())
 }
 
+/// Columns a session setting decides the value or the rendering of.
+///
+/// A temporal one reads the session's zone and date style; an inexact number reads its
+/// printed precision and the order the rows were summed in.
+fn session_decided_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> BTreeSet<String> {
+    table
+        .columns(db)
+        .into_iter()
+        .flatten()
+        .filter(|column| type_is_session_decided(&column.data_type(db)))
+        .map(|column| column.stored_column_name().into_owned())
+        .collect()
+}
+
+/// Type families a session setting decides the value or the rendering of.
+const SESSION_DECIDED_TYPES: &[&str] = &[
+    "date",
+    "double",
+    "float",
+    "interval",
+    "real",
+    "time",
+    "timestamp",
+];
+
+fn type_is_session_decided(data_type: &str) -> bool {
+    let lowered = data_type.to_ascii_lowercase();
+    let terminal = lowered
+        .rsplit('.')
+        .next()
+        .unwrap_or(&lowered)
+        .trim_matches('"');
+    SESSION_DECIDED_TYPES
+        .iter()
+        .any(|family| terminal.starts_with(family))
+}
+
 /// Every relation named in a `FROM`, refusing anything but a plain table reference.
 ///
-/// A derived table, a table function or a `LATERAL` item reads rows this cannot place, and
-/// an unplaced read is not a proven one.
+/// A sample, a version, a derived table or a table function reads rows no flag was proven
+/// about.
 #[derive(Default)]
 struct RelationNames(BTreeSet<String>);
 
@@ -135,32 +160,24 @@ impl Visitor for RelationNames {
 
 /// Whether anything in `conjunct` can answer one caller differently from another.
 ///
-/// An allow-list throughout. A function passes only when it is named among the row-pure
-/// scalars or the order-free aggregates, carries no window, and the deployment declared it
-/// no accessor semantics, since a name this cannot place may read the caller from a body
-/// the schema never showed. Every other kind of expression passes only by appearing below.
-///
-/// A cast passes, because `pg_dump` writes one around every comparison and the two
-/// spellings of one policy have to classify alike. What a cast could read that the
-/// relations do not fix is the session's time zone, so a column carrying one refuses
-/// instead, whether or not a cast stands beside it.
+/// An allow-list throughout, so an unlisted expression or an unplaceable function refuses.
+/// Casts pass because `pg_dump` writes them around every comparison and both spellings of
+/// one policy must classify alike; what they could read is refused by column instead.
 fn answer_depends_on_the_asker(
     conjunct: &Expr,
     registry: &FunctionRegistry,
-    zoned: &BTreeSet<String>,
+    session_decided: &BTreeSet<String>,
 ) -> bool {
     struct AskerDependence<'a> {
         registry: &'a FunctionRegistry,
-        /// Columns whose value the evaluating session's time zone decides.
-        zoned: &'a BTreeSet<String>,
+        session_decided: &'a BTreeSet<String>,
     }
 
     impl Visitor for AskerDependence<'_> {
         type Break = ();
 
         fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
-            // A limit answers per evaluation rather than per identity, so the loader's row
-            // and the caller's need not be the same row.
+            // A limit answers per evaluation, not per identity.
             if set_limiting_clause(query).is_some() {
                 return ControlFlow::Break(());
             }
@@ -168,14 +185,16 @@ fn answer_depends_on_the_asker(
         }
 
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
-            // A cast or a parenthesis is peeled by the one peeler, since neither says
-            // anything about who is asking and `pg_dump` writes both around everything.
+            // Neither a cast nor a parenthesis says who is asking.
             match unwrap_cast_or_nested(expr) {
                 Expr::Identifier(ident) => {
                     if ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value) {
                         return ControlFlow::Break(());
                     }
-                    if self.zoned.contains(stored_ident_name(ident).as_ref()) {
+                    if self
+                        .session_decided
+                        .contains(stored_ident_name(ident).as_ref())
+                    {
                         return ControlFlow::Break(());
                     }
                 }
@@ -196,13 +215,12 @@ fn answer_depends_on_the_asker(
                         return ControlFlow::Break(());
                     }
                 }
-                // A qualifier changes nothing about which column this is, so the zone
-                // check reads the terminal part exactly as it reads a bare name.
+                // A qualifier changes nothing about which column this is.
                 Expr::CompoundIdentifier(parts) => {
-                    if parts
-                        .last()
-                        .is_some_and(|part| self.zoned.contains(stored_ident_name(part).as_ref()))
-                    {
+                    if parts.last().is_some_and(|part| {
+                        self.session_decided
+                            .contains(stored_ident_name(part).as_ref())
+                    }) {
                         return ControlFlow::Break(());
                     }
                 }
@@ -236,24 +254,18 @@ fn answer_depends_on_the_asker(
     }
 
     conjunct
-        .visit(&mut AskerDependence { registry, zoned })
+        .visit(&mut AskerDependence {
+            registry,
+            session_decided,
+        })
         .is_break()
 }
 
 /// Whether a nested query reaches the guarded row for any of its references.
 ///
-/// A name resolves through the query's own relations, then each enclosing query's, then
-/// the membership scan, then the guarded row. The generated query keeps every one of
-/// those but the last: it scans the membership table alone and under no alias. So a name
-/// that only the guarded row can supply binds to it in the policy and to nothing in the
-/// generated query, which is a different question.
-///
-/// Resolution is by scope, never by spelling. A nested scan of the membership table
-/// qualifies its own columns with that table's name, which `pg_dump` writes out in full,
-/// and that names the nested scan rather than the enclosing one. Only a qualifier no
-/// entered scope binds is judged against the enclosing names, and refusing there is also
-/// why stripping would not help: stripping it would resolve the name to the nested scan
-/// and turn a correlation into a comparison of a row with itself.
+/// The generated query scans the membership table alone and under no alias, so a name only
+/// the guarded row supplies binds to nothing there. Resolution is by scope, never by
+/// spelling, since a nested scan qualifies its own columns with its own table's name.
 fn reaches_the_guarded_row<DB: DatabaseLike>(
     conjunct: &Expr,
     db: &DB,
@@ -269,9 +281,9 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
     }
 
     impl<DB: DatabaseLike> GuardedReference<'_, DB> {
-        /// Whether a name resolves in a scope both queries have.
-        fn shared(&self, name: &str, pick: impl Fn(&QueryScope) -> &BTreeSet<String>) -> bool {
-            self.scopes.iter().any(|scope| pick(scope).contains(name))
+        /// Whether a qualifier resolves to a relation a scope both queries have binds.
+        fn binds_relation(&self, name: &str) -> bool {
+            self.scopes.iter().any(|scope| scope.names.contains(name))
         }
     }
 
@@ -294,14 +306,13 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
             match expr {
                 Expr::CompoundIdentifier(parts) => {
-                    // The relation is the part before the column, so a schema-qualified
-                    // spelling names it second from the end as a bare one names it first.
+                    // The relation is the part before the column.
                     let Some(qualifier) = parts.len().checked_sub(2).and_then(|at| parts.get(at))
                     else {
                         return ControlFlow::Continue(());
                     };
                     let qualifier = stored_ident_name(qualifier);
-                    if self.shared(qualifier.as_ref(), |scope| &scope.names) {
+                    if self.binds_relation(qualifier.as_ref()) {
                         return ControlFlow::Continue(());
                     }
                     if self.enclosing.contains(qualifier.as_ref()) {
@@ -310,12 +321,15 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
                 }
                 Expr::Identifier(ident) if !self.scopes.is_empty() => {
                     let name = stored_ident_name(ident);
-                    let shared = self.shared(name.as_ref(), |scope| &scope.columns)
+                    let bound = self
+                        .scopes
+                        .iter()
+                        .any(|scope| scope.binds_column(name.as_ref()))
                         || self
                             .membership_columns
                             .iter()
                             .any(|column| column == name.as_ref());
-                    if !shared {
+                    if !bound {
                         return ControlFlow::Break(());
                     }
                 }
@@ -325,11 +339,12 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
         }
     }
 
-    let enclosing: BTreeSet<String> = [Some(scope.table), scope.alias, Some(scope.guarded_table)]
+    // The alias is already stored, so parsing it again would split a dotted one.
+    let mut enclosing: BTreeSet<String> = [scope.table, scope.guarded_table]
         .into_iter()
-        .flatten()
         .map(stored_relation_name)
         .collect();
+    enclosing.extend(scope.alias.map(ToString::to_string));
     conjunct
         .visit(&mut GuardedReference {
             db,
@@ -345,8 +360,15 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
 struct QueryScope {
     /// The relation names and aliases a qualifier can resolve against here.
     names: BTreeSet<String>,
-    /// The columns those relations carry.
-    columns: BTreeSet<String>,
+    /// How many of those relations carry each column name. A name two of them carry binds
+    /// to neither, and `PostgreSQL` refuses the query rather than choosing.
+    columns: BTreeMap<String, usize>,
+}
+
+impl QueryScope {
+    fn binds_column(&self, name: &str) -> bool {
+        self.columns.get(name) == Some(&1)
+    }
 }
 
 fn query_scope<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<QueryScope> {
@@ -355,7 +377,7 @@ fn query_scope<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<QueryScope> {
     };
     let mut scope = QueryScope {
         names: BTreeSet::new(),
-        columns: BTreeSet::new(),
+        columns: BTreeMap::new(),
     };
     for item in &select.from {
         for factor in core::iter::once(&item.relation).chain(item.joins.iter().map(|j| &j.relation))
@@ -371,13 +393,12 @@ fn query_scope<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<QueryScope> {
                     .names
                     .insert(stored_ident_name(&alias.name).into_owned());
             }
-            scope.columns.extend(
-                table
-                    .columns(db)
-                    .into_iter()
-                    .flatten()
-                    .map(|column| column.stored_column_name().into_owned()),
-            );
+            for column in table.columns(db).into_iter().flatten() {
+                *scope
+                    .columns
+                    .entry(column.stored_column_name().into_owned())
+                    .or_default() += 1;
+            }
         }
     }
     Some(scope)

@@ -7,12 +7,10 @@ use super::*;
 
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
-/// Disclose the residual the membership carries, naming what an exemption rests on.
+/// Disclose the residual, naming the relations an exemption rests on.
 ///
-/// A residual reading relations was translated only because the database filters none of
-/// their rows, and that proof is against the schema as translated, so the disclosure names
-/// them. `gated` drops the conjuncts the clock already took into the condition.
-fn announce_residual(
+/// `gated` drops the conjuncts the clock already took into the condition.
+pub(super) fn announce_residual(
     extra_predicates: &ResidualPredicates,
     gated: bool,
     policy_name: &str,

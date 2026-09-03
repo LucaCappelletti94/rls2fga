@@ -473,12 +473,8 @@ pub enum TranslationNote {
         /// The extra predicate, as written.
         predicate: String,
     },
-    /// A residual the membership row does not decide was translated because every relation
-    /// it reads shows every row to everybody.
-    ///
-    /// The proof is against the schema as translated. A relation that gains row security
-    /// later makes the loader's answer the loader's own, and the translation has to be
-    /// redone.
+    /// A residual the row does not decide was translated because every relation it reads
+    /// shows every row to everybody, which the schema as translated is the proof of.
     MembershipResidualReadsUnrestrictedTables {
         /// Policy holding the check.
         policy: String,
