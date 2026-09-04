@@ -485,3 +485,252 @@ CREATE POLICY inherit ON child_docs FOR SELECT USING (EXISTS (
     }
     assert_agrees(&case, &run);
 }
+
+/// A caller identified by the ordinary session setting.
+fn app_reader() -> Vec<Principal> {
+    vec![Principal::with_setting(
+        "app_reader",
+        "app_reader",
+        "app.current_user_id",
+        "app_reader",
+    )]
+}
+
+/// Ported from `qualified_registry_identity_parity_postgres18_and_openfga`.
+///
+/// `other.uid()` is not the accessor the registry names, so the policy is not an
+/// ownership check and the shape falls closed.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_qualified_call_is_not_the_declared_accessor() {
+    let case = ParityCase::reading(
+        "runner-qualified-registry-identity",
+        r"
+CREATE SCHEMA auth;
+CREATE SCHEMA other;
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION auth.uid() RETURNS TEXT LANGUAGE sql AS
+    'SELECT current_setting(''app.current_user_id'', true)';
+CREATE FUNCTION other.uid() RETURNS TEXT LANGUAGE sql AS
+    'SELECT ''nobody''';
+CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
+",
+        &[
+            "INSERT INTO docs(id, owner_id) VALUES ('d1', 'app_reader')",
+            "CREATE ROLE app_reader LOGIN; GRANT SELECT ON docs TO app_reader",
+        ],
+        app_reader(),
+    )
+    .with_registry(r#"{"auth.uid": {"kind": "current_user_accessor", "returns": "text"}}"#);
+    let run = support::parity::run_disclosing(&case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "docs:d1",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// Ported from `function_local_search_path_parity_postgres18_and_openfga`.
+///
+/// The function sets its own `search_path`, so the membership table it reads is the one
+/// that path names, not the caller's.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_function_local_search_path_picks_the_membership_table() {
+    let case = ParityCase::reading(
+        "runner-function-local-search-path",
+        r"
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE a.doc_members(
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES public.docs(id),
+    user_id TEXT NOT NULL
+);
+CREATE TABLE b.doc_members(
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES public.docs(id),
+    user_id TEXT NOT NULL
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION public.is_member(d TEXT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO b, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM doc_members m WHERE m.doc_id = d AND m.user_id = current_setting(''app.current_user_id'', true))';
+CREATE POLICY docs_select ON docs FOR SELECT USING (public.is_member(id));
+SET search_path TO a, public;
+",
+        &[
+            "INSERT INTO public.docs(id) VALUES ('d1');
+             INSERT INTO b.doc_members(id, doc_id, user_id) VALUES ('m1', 'd1', 'app_reader')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT USAGE ON SCHEMA b TO app_reader;
+             GRANT SELECT ON docs, b.doc_members TO app_reader",
+        ],
+        app_reader(),
+    );
+    let run = support::parity::run(&case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "docs:d1",
+        ActionStatement::Select,
+        true,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `resolved_membership_table_parity_postgres18_and_openfga`.
+///
+/// Two schemas hold a table of the same name and the policy names it unqualified, which
+/// the catalog cannot place, so nothing is granted on a guess.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn an_unplaceable_membership_table_grants_nothing() {
+    let case = ParityCase::reading(
+        "runner-resolved-membership-table",
+        r"
+CREATE SCHEMA app;
+CREATE TABLE public.docs(id TEXT PRIMARY KEY);
+CREATE TABLE app.memberships(doc_id TEXT NOT NULL, user_id TEXT NOT NULL);
+CREATE TABLE public.memberships(doc_id TEXT NOT NULL, user_id TEXT NOT NULL);
+CREATE ROLE app_reader LOGIN;
+GRANT USAGE ON SCHEMA app TO app_reader;
+GRANT SELECT ON public.docs, app.memberships, public.memberships TO app_reader;
+SET search_path TO app, public;
+ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_member ON public.docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m
+        WHERE m.doc_id = docs.id
+          AND m.user_id = current_setting('app.current_user_id', true)));
+INSERT INTO public.docs VALUES ('d1');
+INSERT INTO app.memberships VALUES ('d1', 'other_user');
+INSERT INTO public.memberships VALUES ('d1', 'app_reader');
+",
+        &[],
+        app_reader(),
+    );
+    let run = support::parity::run(&case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "docs:d1",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `restrictive_flag_pair_parity_postgres18_and_openfga`.
+///
+/// A blanket permissive read beside a RESTRICTIVE flag: only the flagged row is visible,
+/// which the model can only express with a relation per predicate.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_restrictive_flag_narrows_a_blanket_read() {
+    let case = ParityCase::reading(
+        "runner-restrictive-flag-pair",
+        r"
+CREATE TABLE union_docs(id TEXT PRIMARY KEY, is_public BOOLEAN NOT NULL);
+ALTER TABLE union_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON union_docs FOR SELECT USING (true);
+CREATE POLICY r ON union_docs AS RESTRICTIVE FOR SELECT USING (is_public);
+",
+        &[
+            "INSERT INTO union_docs(id, is_public) VALUES ('p1', TRUE), ('h1', FALSE)",
+            "CREATE ROLE app_reader LOGIN; GRANT SELECT ON union_docs TO app_reader",
+        ],
+        vec![Principal::as_role("app_reader", "app_reader")],
+    );
+    let run = support::parity::run(&case).await;
+    for (row, visible) in [("p1", true), ("h1", false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_reader",
+            &format!("union_docs:{row}"),
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `cross_command_wildcard_parity_postgres18_and_openfga`.
+///
+/// A blanket DELETE beside a flag-gated SELECT: the wildcard the DELETE needs must not
+/// widen the read.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_blanket_delete_does_not_widen_the_read() {
+    let case = ParityCase::reading(
+        "runner-cross-command-wildcard",
+        r"
+CREATE TABLE union_docs(id TEXT PRIMARY KEY, is_public BOOLEAN NOT NULL);
+ALTER TABLE union_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY s ON union_docs FOR SELECT USING (is_public);
+CREATE POLICY d ON union_docs FOR DELETE USING (true);
+",
+        &[
+            "INSERT INTO union_docs(id, is_public) VALUES ('p1', TRUE), ('h1', FALSE)",
+            "CREATE ROLE app_reader LOGIN; GRANT SELECT, DELETE ON union_docs TO app_reader",
+        ],
+        vec![Principal::as_role("app_reader", "app_reader")],
+    );
+    let run = support::parity::run(&case).await;
+    for (row, visible) in [("p1", true), ("h1", false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_reader",
+            &format!("union_docs:{row}"),
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `qualified_clock_shadow_parity_postgres18_and_openfga`.
+///
+/// `app.now()` is a declared function, not the builtin clock, so a temporal condition
+/// against the request clock would answer a different question.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_shadowed_clock_is_not_the_request_clock() {
+    let case = ParityCase::reading(
+        "runner-qualified-clock-shadow",
+        "
+CREATE SCHEMA app;
+CREATE FUNCTION app.now() RETURNS TIMESTAMPTZ LANGUAGE sql IMMUTABLE
+    AS $$SELECT 'infinity'::timestamptz$$;
+CREATE TABLE docs (id INT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
+",
+        &[
+            "INSERT INTO docs (id, expires_at) VALUES (1, now() + interval '1 year')",
+            "CREATE ROLE alice LOGIN;
+             GRANT USAGE ON SCHEMA app TO alice;
+             GRANT SELECT ON docs TO alice",
+        ],
+        vec![Principal::as_role("alice", "alice").with_clock()],
+    );
+    let run = support::parity::run_disclosing(&case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "docs:1",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_no_over_grant(&case, &run);
+}

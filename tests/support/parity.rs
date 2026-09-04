@@ -39,6 +39,8 @@ pub(crate) struct Principal {
     pub(crate) context: serde_json::Value,
     /// `pg_role` memberships the caller holds, which no tuple query can know.
     pub(crate) pg_roles: Vec<String>,
+    /// Whether every check carries the database's clock as `request_time`.
+    pub(crate) carries_request_time: bool,
 }
 
 impl Principal {
@@ -50,6 +52,7 @@ impl Principal {
             session: vec![(key.to_string(), value.to_string())],
             context: serde_json::json!({}),
             pg_roles: Vec::new(),
+            carries_request_time: false,
         }
     }
 
@@ -61,7 +64,17 @@ impl Principal {
             session: Vec::new(),
             context: serde_json::json!({}),
             pg_roles: Vec::new(),
+            carries_request_time: false,
         }
+    }
+
+    /// The same caller, whose checks carry the database's clock.
+    ///
+    /// A condition against the request clock needs it, and reading it from the same
+    /// database the rows came from is what keeps the two sides asking about one instant.
+    pub(crate) fn with_clock(mut self) -> Self {
+        self.carries_request_time = true;
+        self
     }
 
     /// The same caller, holding `roles`.
@@ -240,6 +253,12 @@ struct JsonRow {
 }
 
 #[derive(QueryableByName)]
+struct Instant {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    instant: String,
+}
+
+#[derive(QueryableByName)]
 struct Counted {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     rows: i64,
@@ -406,6 +425,7 @@ async fn openfga_allows(
     client: &openfga::Client,
     answers: &[ActionRelations],
     principal: &Principal,
+    context: &serde_json::Value,
     object: &Object,
     statement: ActionStatement,
 ) -> Option<bool> {
@@ -429,7 +449,7 @@ async fn openfga_allows(
                     &format!("user:{}", principal.subject),
                     judgement.relation.as_str(),
                     &object.name,
-                    principal.context.clone(),
+                    context.clone(),
                 )
                 .await;
                 if !granted {
@@ -548,6 +568,11 @@ pub(crate) async fn run_with(
     }
     openfga::write_tuples(&client, writes).await;
 
+    let clock: Instant =
+        diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
+            .get_result(&mut conn)
+            .expect("reading now() should succeed");
+
     let mut observations = Vec::new();
     for principal in &case.principals {
         for object in &objects {
@@ -556,8 +581,17 @@ pub(crate) async fn run_with(
                 else {
                     continue;
                 };
+                let mut context = principal.context.clone();
+                if principal.carries_request_time {
+                    if let Some(object) = context.as_object_mut() {
+                        object.insert(
+                            "request_time".to_string(),
+                            serde_json::Value::String(clock.instant.clone()),
+                        );
+                    }
+                }
                 let Some(openfga) =
-                    openfga_allows(&client, &answers, principal, object, statement).await
+                    openfga_allows(&client, &answers, principal, &context, object, statement).await
                 else {
                     continue;
                 };
