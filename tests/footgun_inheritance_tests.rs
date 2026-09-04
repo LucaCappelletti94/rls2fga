@@ -1020,3 +1020,147 @@ CREATE POLICY shares_insert ON paper_shares FOR INSERT WITH CHECK (
         "no operator is asked for a wildcard tuple no rule reads"
     );
 }
+
+/// A partition read directly is filtered by its own policies alone, and a partition of a
+/// protected root has none.
+///
+/// `PostgreSQL` applies a parent's policies to rows reached *through* the parent. Measured
+/// on 18: a read of the root filters, a read of the partition returns every row to every
+/// caller. The model has one answer per row, the filtered one, so the operator has to be
+/// told that a direct read is not the read the model answers for.
+#[test]
+fn a_partition_of_a_protected_root_discloses_its_direct_read() {
+    let db = db_of(
+        "
+CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL,
+                     PRIMARY KEY (id, region)) PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu');
+CREATE TABLE events_us PARTITION OF events FOR VALUES IN ('us');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY events_visible ON events FOR SELECT USING (tenant = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    let disclosed: Vec<&TranslationNote> = outputs
+        .notes()
+        .iter()
+        .filter(|note| {
+            matches!(
+                note,
+                TranslationNote::PartitionReadDirectlyIsUnfiltered { .. }
+            )
+        })
+        .collect();
+    assert_eq!(
+        disclosed.len(),
+        2,
+        "each partition is a route the model does not answer for, got {:#?}",
+        outputs.notes()
+    );
+    for partition in ["events_eu", "events_us"] {
+        // The partition first and the root second: swapping them would tell the operator to
+        // protect the table that already carries the policies.
+        assert!(
+            disclosed.iter().any(|note| note
+                .to_string()
+                .starts_with(&format!("'{partition}' is a partition of 'events',"))),
+            "the note names the partition, then its root: {disclosed:#?}"
+        );
+    }
+
+    // Not the crate falling short: the database itself does not filter that read, which is
+    // how an exempt principal is reported too.
+    for note in disclosed {
+        assert!(
+            !note.severity().diverges_from_database(),
+            "the database is the permissive side here, so nothing is claimed to diverge"
+        );
+    }
+}
+
+/// A subpartition is as directly readable as a partition, and the policies sit further up.
+///
+/// `PostgreSQL` applies the policies of the table a read names, so a leaf two levels down
+/// is filtered by nothing whether its own parent carries policies or not. Looking one level
+/// up finds an unprotected middle table and reports nothing at all, which is the route the
+/// note exists to name.
+#[test]
+fn a_subpartition_of_a_protected_root_discloses_its_direct_read() {
+    let db = db_of(
+        "
+CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL, day DATE NOT NULL,
+                     PRIMARY KEY (id, region, day)) PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu') PARTITION BY RANGE (day);
+CREATE TABLE events_eu_2026 PARTITION OF events_eu
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY events_visible ON events FOR SELECT USING (tenant = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    let disclosed: Vec<String> = outputs
+        .notes()
+        .iter()
+        .filter(|note| {
+            matches!(
+                note,
+                TranslationNote::PartitionReadDirectlyIsUnfiltered { .. }
+            )
+        })
+        .map(ToString::to_string)
+        .collect();
+    // The middle table and the leaf are both readable by name, and the note names the
+    // ancestor that carries the policies rather than the nearest one.
+    for partition in ["events_eu", "events_eu_2026"] {
+        assert!(
+            disclosed
+                .iter()
+                .any(|note| note.starts_with(&format!("'{partition}' is a partition of 'events',"))),
+            "nothing discloses the direct read of '{partition}': {disclosed:#?}"
+        );
+    }
+}
+
+/// A partition of a root that restricts nothing is already reported as unrestricted, so it
+/// needs no second note.
+#[test]
+fn a_partition_of_an_open_root_is_not_disclosed_twice() {
+    let db = db_of(
+        "
+CREATE TABLE events (id TEXT, region TEXT NOT NULL, PRIMARY KEY (id, region))
+    PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu');
+CREATE TABLE guarded(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE guarded ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON guarded FOR SELECT USING (owner_id = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert!(
+        !outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::PartitionReadDirectlyIsUnfiltered { .. }
+        )),
+        "nothing restricts these rows by any route, which the unrestricted report covers"
+    );
+    assert!(
+        outputs
+            .translation()
+            .unrestricted_tables()
+            .iter()
+            .any(|entry| entry.table.name() == "events_eu"),
+        "the partition of an open root is an unrestricted table"
+    );
+}

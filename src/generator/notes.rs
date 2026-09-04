@@ -2,7 +2,7 @@
 
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::types::{ColumnName, TableId};
+use crate::types::{ColumnName, TableId, TypeName};
 
 /// Why a tuple query was not emitted, and the two comment lines that stand in its place in
 /// the loader's script.
@@ -47,7 +47,7 @@ pub enum SkippedTuples {
         /// Table the bridge starts from.
         table: TableId,
         /// Type the bridge points at.
-        parent_type: String,
+        parent_type: TypeName,
         /// Which identity the generator looked for.
         reason: String,
     },
@@ -61,7 +61,7 @@ pub enum SkippedTuples {
         /// Table the bridge starts from.
         table: TableId,
         /// Type the bridge points at.
-        parent_type: String,
+        parent_type: TypeName,
         /// Column the policy joins on, which the schema does not declare.
         fk_col: ColumnName,
     },

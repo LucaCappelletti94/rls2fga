@@ -75,7 +75,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         }],
     );
@@ -202,7 +202,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     let relation = table_plan.ensure_direct(
         conditional_gate_relation_name(policy_name),
         vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         }],
     );
@@ -407,7 +407,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     membership_in_caller_set: &MembershipInCallerSet,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -530,13 +530,13 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let share_type = share_type_name(join_table, ctx.table_types);
     let (gate_relation, condition) = {
         let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
-            TypePlan::new_with_well_known(&share_type, &ctx.settings.well_known)
+            TypePlan::new_with_well_known(share_type.clone(), &ctx.settings.well_known)
         });
         let condition = declare_condition(share_plan, policy_name, spec);
         let gate_relation = share_plan.ensure_direct(
             conditional_gate_relation_name(policy_name),
             vec![DirectSubject::ConditionalWildcard {
-                type_name: ctx.settings.well_known.user.to_string(),
+                type_name: ctx.settings.well_known.user.clone(),
                 condition: condition.clone(),
             }],
         );
@@ -569,9 +569,9 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         share_plan.add_source(gate_source.clone());
     }
 
-    let guarded_type = table_plan.type_name.to_string();
+    let guarded_type = table_plan.type_name.clone();
     let link_relation = table_plan.ensure_direct(
-        clamp_relation_name(share_type.clone()),
+        clamp_relation_name(share_type.to_string()),
         vec![DirectSubject::Type(share_type.clone())],
     );
     table_plan.add_source(gate_source);

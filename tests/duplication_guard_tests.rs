@@ -779,6 +779,144 @@ fn quoting_an_identifier_for_sql_has_a_single_source_of_truth() {
     );
 }
 
+/// One place turns a database value into the name of an object.
+///
+/// The row evaluator and the tuple SQL must agree about it byte for byte, or a replay
+/// writes facts about an object nobody checks. The Rust and SQL renderings are compared by
+/// the per-row parity suite; this is what stops a second Rust rendering existing for it to
+/// disagree with.
+#[test]
+fn the_identity_encoder_has_a_single_source_of_truth() {
+    for name in [
+        "encode_part",
+        "encode_identity",
+        "hex_digit",
+        "is_spelled_verbatim",
+        "object_name_fits",
+        "subject_name_fits",
+    ] {
+        let definitions = fn_definitions(name);
+        assert_eq!(definitions, 1, "expected one `{name}`, found {definitions}");
+    }
+
+    for constant in [
+        "SAFE_PUNCTUATION: &str",
+        "ESCAPE_MARKER: char",
+        "PART_SEPARATOR: char",
+        "MAX_OBJECT_NAME_CHARS: usize",
+        "MAX_SUBJECT_NAME_BYTES: usize",
+        "WILDCARD_SUBJECT_ID: &str",
+    ] {
+        let declarations = count_all(constant);
+        assert_eq!(
+            declarations, 1,
+            "expected one `{constant}`, found {declarations}"
+        );
+    }
+}
+
+/// One place decides what a schema name canonicalizes to, and it decides the whole
+/// answer.
+///
+/// The reserved-word prefix used to be applied where a type was *defined*, after
+/// collisions had been resolved against the unprefixed name, so two tables could collapse
+/// onto one type and a cross-type reference could name a type the model never declared.
+/// `TypeName::canonicalized` is idempotent on this function's output, which is what lets
+/// the record templates re-wrap a name the generator already decided.
+#[test]
+fn a_type_name_is_decided_in_one_place() {
+    let deciders = fn_definitions("canonical_fga_type_name");
+    assert_eq!(
+        deciders, 1,
+        "expected one type-name canonicalizer, found {deciders}"
+    );
+
+    // The reserved-word and leading-digit prefix is `TypeName`'s rule. A second site
+    // applying it is how the definition and the reference came to disagree.
+    let prefixers = count_excluding(&["types/src/identifiers.rs"], "\"t_");
+    assert_eq!(
+        prefixers, 0,
+        "the type-name prefix is TypeName's rule, found {prefixers} applying it elsewhere"
+    );
+}
+
+/// A type name is stored as a `TypeName`, never as a bare string.
+///
+/// Relation names have carried `RelationName` since the types crate was split out, while
+/// type names travelled as `String` beside them, so a table spelling could be handed to a
+/// field expecting a type. That is how a reference came to name a type the model never
+/// declared. Carrying the newtype also removes the re-wrapping in the record templates, so
+/// the idempotence of the canonicalizer stops being load-bearing.
+///
+/// Stored fields only. A function that renders a name as text, or looks one up by its
+/// rendered form, takes `&str` on purpose: `dsl::bare`, `TableTypes::spelling_of`,
+/// `Recursion::blocked_targets` and `gate_condition_name`.
+#[test]
+fn a_type_name_is_stored_as_a_type_name() {
+    // Named rather than matched by suffix: `return_type` and `data_type` are SQL types,
+    // which are strings and stay strings.
+    for field in [
+        "type_name",
+        "object_type",
+        "subject_type",
+        "owner_type",
+        "parent_type",
+        "guarded_type",
+        "share_type",
+        "holder_type",
+        "scope_type",
+        "user_type",
+        "through_type",
+    ] {
+        let stringly = count_all(&format!("{field}: String,"));
+        assert_eq!(
+            stringly, 0,
+            "a type name is stored as TypeName, found {stringly} declared `{field}: String`"
+        );
+    }
+
+    // Exempt: `names.rs` holds the canonicalizer and `well_known.rs` names the five
+    // generator types from literals. Everywhere else already holds a decided name.
+    let rewraps = count_excluding(
+        &["src/parser/names.rs", "src/generator/well_known.rs"],
+        "TypeName::canonicalized(",
+    );
+    assert_eq!(
+        rewraps, 0,
+        "a decided type name is carried, not canonicalized again, found {rewraps} rewrapping"
+    );
+}
+
+/// SQL text is read by the lexer the crate already depends on.
+///
+/// A hand-rolled scanner has to re-decide dollar quoting, nested comments, escaped quotes
+/// and quoted identifiers, and it read an unterminated literal as empty rather than as a
+/// body nobody can read. `sqlparser`'s tokenizer answers all of it and fails loudly.
+#[test]
+fn reading_sql_text_goes_through_the_lexer() {
+    for name in [
+        "sanitize_sql_for_keyword_scan",
+        "scan_identifier_tokens",
+        "parse_dollar_quote_delimiter",
+        "is_dollar_tag_char",
+        "is_dollar_tag_start_char",
+        "next_non_whitespace_char",
+    ] {
+        let definitions = fn_definitions(name);
+        assert_eq!(
+            definitions, 0,
+            "`{name}` re-decides what the lexer already decides, found {definitions}"
+        );
+    }
+
+    // Exempt: `function_analyzer.rs` is the one module that lexes a body.
+    let lexers = count_excluding(&["src/parser/function_analyzer.rs"], "Tokenizer::new(");
+    assert_eq!(
+        lexers, 0,
+        "one module lexes a function body, found {lexers} more"
+    );
+}
+
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.

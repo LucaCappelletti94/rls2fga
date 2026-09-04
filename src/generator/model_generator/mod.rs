@@ -101,19 +101,19 @@ pub(crate) const OPENFGA_SCHEMA_VERSION: &str = "1.1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DirectSubject {
-    Type(String),
-    Wildcard(String),
+    Type(TypeName),
+    Wildcard(TypeName),
     /// A wildcard every tuple of which carries a condition, so the grant holds only
     /// while the condition evaluates true at check time.
     ConditionalWildcard {
-        type_name: String,
+        type_name: TypeName,
         condition: String,
     },
     /// A directly related type every tuple of which carries a condition, so a named
     /// subject grants only while the condition evaluates true at check time. The member
     /// tuple a temporal membership emits is one.
     ConditionalType {
-        type_name: String,
+        type_name: TypeName,
         condition: String,
     },
 }
@@ -138,7 +138,7 @@ impl DirectSubject {
     /// The type a tupleset walk resolves this subject to, `None` for a wildcard,
     /// which cannot be walked. A condition restricts which tuples exist, not which
     /// type they name, so a conditional subject resolves like a plain one.
-    fn resolved_type_name(&self) -> Option<&str> {
+    fn resolved_type_name(&self) -> Option<&TypeName> {
         match self {
             Self::Type(name)
             | Self::ConditionalType {
@@ -151,7 +151,7 @@ impl DirectSubject {
     /// The DSL spelling inside a type restriction list.
     pub(super) fn dsl_text(&self) -> String {
         match self {
-            Self::Type(name) => name.clone(),
+            Self::Type(name) => name.to_string(),
             Self::Wildcard(name) => format!("{name}:*"),
             Self::ConditionalWildcard {
                 type_name,
@@ -304,13 +304,13 @@ fn reserved_relation_subjects(
     well_known: &WellKnownTypes,
 ) -> Option<Vec<DirectSubject>> {
     if *relation == deny_relation() {
-        Some(vec![DirectSubject::Type(well_known.nobody.to_string())])
+        Some(vec![DirectSubject::Type(well_known.nobody.clone())])
     } else if *relation == member_relation() || *relation == owner_user_relation() {
-        Some(vec![DirectSubject::Type(well_known.user.to_string())])
+        Some(vec![DirectSubject::Type(well_known.user.clone())])
     } else if *relation == public_relation() {
-        Some(vec![DirectSubject::Wildcard(well_known.user.to_string())])
+        Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
     } else if *relation == owner_team_relation() {
-        Some(vec![DirectSubject::Type(well_known.team.to_string())])
+        Some(vec![DirectSubject::Type(well_known.team.clone())])
     } else {
         None
     }
@@ -325,13 +325,13 @@ fn generator_defines(relation: &RelationName) -> bool {
 }
 
 impl TypePlan {
-    fn new(type_name: impl Into<String>) -> Self {
+    fn new(type_name: TypeName) -> Self {
         Self::new_with_well_known(type_name, &WellKnownTypes::default())
     }
 
-    fn new_with_well_known(type_name: impl Into<String>, well_known: &WellKnownTypes) -> Self {
+    fn new_with_well_known(type_name: TypeName, well_known: &WellKnownTypes) -> Self {
         Self {
-            type_name: TypeName::canonicalized(type_name.into()),
+            type_name,
             direct_relations: BTreeMap::new(),
             computed_relations: BTreeMap::new(),
             well_known: well_known.clone(),
@@ -372,7 +372,7 @@ impl TypePlan {
                 || plan.direct_relations.contains_key(&name)
                 || plan.computed_relations.contains_key(&name)
         };
-        let name = if taken(&base, self) {
+        let name = if taken(base.as_str(), self) {
             let fallback = format!("owner_{}", canonical_fga_type_name(name_source));
             if taken(&fallback, self) {
                 let hashed = format!("{fallback}_{}", stable_hex_suffix(memo_key));
@@ -392,7 +392,7 @@ impl TypePlan {
                 fallback
             }
         } else {
-            base
+            base.to_string()
         };
         let relation = RelationName::canonicalized(clamp_relation_name(name));
 
@@ -431,7 +431,7 @@ impl TypePlan {
                 .collect();
             relation = RelationName::canonicalized(format!("{head}{suffix}"));
         }
-        let wildcard = vec![DirectSubject::Wildcard(self.well_known.user.to_string())];
+        let wildcard = vec![DirectSubject::Wildcard(self.well_known.user.clone())];
         self.direct_relations
             .entry(relation.clone())
             .or_insert(wildcard);
@@ -574,7 +574,7 @@ pub enum PlanningError {
         /// Setting that chose that type name.
         setting: &'static str,
         /// The type name both sides tried to use.
-        type_name: String,
+        type_name: TypeName,
     },
     /// Two request sources were configured under one condition parameter.
     #[error("condition parameter `{parameter}` aliases request sources `{first}` and `{second}`")]
@@ -810,16 +810,16 @@ fn inheritance_children<DB: DatabaseLike>(db: &DB) -> BTreeMap<TableId, Vec<Tabl
 /// `all_types` for the table currently being built is discarded by the put-back, which is on the
 /// trap list twice, and the closure's two arguments say which of the two to reach for.
 fn with_table_plan<R>(
-    all_types: &mut BTreeMap<String, TypePlan>,
-    type_name: &str,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    type_name: &TypeName,
     well_known: &WellKnownTypes,
-    build: impl FnOnce(&mut TypePlan, &mut BTreeMap<String, TypePlan>) -> R,
+    build: impl FnOnce(&mut TypePlan, &mut BTreeMap<TypeName, TypePlan>) -> R,
 ) -> R {
     let mut plan = all_types
         .remove(type_name)
-        .unwrap_or_else(|| TypePlan::new_with_well_known(type_name, well_known));
+        .unwrap_or_else(|| TypePlan::new_with_well_known(type_name.clone(), well_known));
     let out = build(&mut plan, all_types);
-    all_types.insert(type_name.to_string(), plan);
+    all_types.insert(type_name.clone(), plan);
     out
 }
 
@@ -832,7 +832,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     scope: TypeScope<'_>,
 ) -> Result<SchemaPlan, PlanningError> {
     let condition_parameters = ConditionParameterAllocator::new(settings, registry)?;
-    let mut all_types: BTreeMap<String, TypePlan> = BTreeMap::new();
+    let mut all_types: BTreeMap<TypeName, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
 
@@ -858,7 +858,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
     // Types a policy may have narrowed that no name resolved to. Applied after the
     // loop, since a bearer may be built after the group that named it.
-    let mut unresolved_losses: BTreeMap<String, BTreeSet<RelationName>> = BTreeMap::new();
+    let mut unresolved_losses: BTreeMap<TypeName, BTreeSet<RelationName>> = BTreeMap::new();
 
     for (source_table_name, table_policies) in by_table {
         // Only RLS-enabled tables that resolve against the schema get a type. A name
@@ -887,7 +887,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         let Some(canonical_table_name) = table_types.get(&source_table) else {
             continue;
         };
-        let canonical_table_name = canonical_table_name.to_string();
+        let canonical_table_name = canonical_table_name.clone();
 
         with_table_plan(
             &mut all_types,
@@ -913,7 +913,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
                 // A clause reading a table whose policies loop cannot be planned, so PostgreSQL
                 // raises rather than filtering and every command that clause feeds must deny.
-                let recursive_targets = recursion.blocked_targets(&canonical_table_name);
+                let recursive_targets = recursion.blocked_targets(canonical_table_name.as_str());
 
                 // Whether a row of this table can be named at all, which decides whether any tuple
                 // source can be emitted for it. Resolved once here rather than per policy.
@@ -1040,9 +1040,9 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     }
 
     all_types
-        .entry(settings.well_known.user.to_string())
+        .entry(settings.well_known.user.clone())
         .or_insert_with(|| {
-            TypePlan::new_with_well_known(settings.well_known.user.as_str(), &settings.well_known)
+            TypePlan::new_with_well_known(settings.well_known.user.clone(), &settings.well_known)
         });
 
     simplify_redundant_select_gates(&mut all_types);
@@ -1062,16 +1062,16 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
         .any(|plan| plan.direct_relations.contains_key(&deny_relation()))
     {
         all_types
-            .entry(settings.well_known.nobody.to_string())
+            .entry(settings.well_known.nobody.clone())
             .or_insert_with(|| {
                 TypePlan::new_with_well_known(
-                    settings.well_known.nobody.as_str(),
+                    settings.well_known.nobody.clone(),
                     &settings.well_known,
                 )
             });
     }
 
-    let types = ordered_types(all_types, settings.well_known.user.as_str());
+    let types = ordered_types(all_types, &settings.well_known.user);
     let conditions = surviving_conditions(&types);
 
     Ok(SchemaPlan {
@@ -1094,7 +1094,7 @@ struct TableBuild<'a, DB: DatabaseLike> {
     /// The plan being built, out of the map for the duration.
     plan: &'a mut TypePlan,
     /// Every other type, which minting a parent or a holder reaches.
-    other_types: &'a mut BTreeMap<String, TypePlan>,
+    other_types: &'a mut BTreeMap<TypeName, TypePlan>,
     /// Everything the translation has to say.
     notes: &'a mut Vec<TranslationNote>,
     /// Which membership tables a caller can read, answered once each.
@@ -1536,7 +1536,7 @@ fn scar_unfillable_grants<DB: DatabaseLike>(
     plan: &TypePlan,
     notes: &mut Vec<TranslationNote>,
     source_table: &TableId,
-    type_name: &str,
+    type_name: &TypeName,
     bounds: &UnboundedColumns,
     db: &DB,
 ) {
@@ -1565,7 +1565,7 @@ fn scar_unfillable_grants<DB: DatabaseLike>(
     }
     // The same reading, for a bridge whose column the schema does not have: the row
     // is nameable, so it is a different loss and says so.
-    let unbridged: BTreeSet<(String, ColumnName)> = plan
+    let unbridged: BTreeSet<(TypeName, ColumnName)> = plan
         .table_tuple_sources
         .iter()
         .filter_map(|source| match source {
@@ -1667,8 +1667,11 @@ fn note_request_contracts(
 }
 
 /// The plans in emission order, caller type first and the rest by name.
-fn ordered_types(mut all_types: BTreeMap<String, TypePlan>, user_type: &str) -> Vec<TypePlan> {
-    let mut type_names: Vec<String> = all_types.keys().cloned().collect();
+fn ordered_types(
+    mut all_types: BTreeMap<TypeName, TypePlan>,
+    user_type: &TypeName,
+) -> Vec<TypePlan> {
+    let mut type_names: Vec<TypeName> = all_types.keys().cloned().collect();
     type_names.sort();
     if let Some(pos) = type_names.iter().position(|n| n == user_type) {
         let user = type_names.remove(pos);
@@ -1715,10 +1718,10 @@ fn source_carries_condition(source: &TupleSource) -> bool {
 }
 
 fn prune_plain_subjects_fed_only_by_gated_sources(
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     well_known: &WellKnownTypes,
 ) {
-    let mut all_gated: BTreeMap<(String, RelationName), bool> = BTreeMap::new();
+    let mut all_gated: BTreeMap<(TypeName, RelationName), bool> = BTreeMap::new();
     for plan in all_types.values() {
         for source in &plan.table_tuple_sources {
             let carries_condition = source_carries_condition(source);
@@ -1790,6 +1793,37 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
                 owner: table.owner(db).ok().flatten().map(str::to_string),
             });
         }
+        // A read naming the partition applies the partition's policies, which a partition
+        // of a protected root has none of. Reported rather than folded into the
+        // unrestricted tables: those show every row by every route, and these rows are
+        // filtered through the root, which is the route the model answers for.
+        if table.has_row_level_security(db) == Ok(false) {
+            if let Some(root) = protecting_partition_root(table, db) {
+                notes.push(TranslationNote::PartitionReadDirectlyIsUnfiltered {
+                    table: table_identity(table),
+                    root: table_identity(root),
+                });
+            }
+        }
+    }
+}
+
+/// The nearest ancestor whose policies filter a read through it, if any.
+///
+/// A read names one table and `PostgreSQL` applies that table's policies, so a partition
+/// several levels down is filtered by nothing while the policies sit at the top. Walking
+/// only one level up finds an unprotected middle table and reports nothing, which leaves
+/// the leaf's direct read undisclosed.
+fn protecting_partition_root<'db, DB: DatabaseLike>(
+    table: &'db DB::Table,
+    db: &'db DB,
+) -> Option<&'db DB::Table> {
+    let mut current = table.partition_root(db).ok()??;
+    loop {
+        if current.has_row_level_security(db) == Ok(true) {
+            return Some(current);
+        }
+        current = current.partition_root(db).ok()??;
     }
 }
 
@@ -1799,15 +1833,15 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
 /// reading different ones cannot pool their members. Disambiguated against the table
 /// types, which are all assigned before any policy is translated, so a schema that
 /// happens to declare a table by this name keeps it.
-fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> String {
+fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> TypeName {
     let base = canonical_fga_type_name(&format!("{member_table}_holder"));
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
-        return format!(
+        return canonical_fga_type_name(&format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(member_table))
-        );
+            stable_hex_suffix(table_types.resolve(member_table).as_str())
+        ));
     }
     base
 }
@@ -1824,7 +1858,7 @@ fn owner_type_name(
     function_name: &str,
     registry: &FunctionRegistry,
     table_types: &TableTypes,
-) -> String {
+) -> TypeName {
     let base = canonical_fga_type_name(&format!("{grant_table}_owner"));
     let one_function = registry
         .functions
@@ -1835,7 +1869,7 @@ fn owner_type_name(
     if one_function && !table_types.claims(&base) {
         return base;
     }
-    format!("{base}_{}", stable_hex_suffix(function_name))
+    canonical_fga_type_name(&format!("{base}_{}", stable_hex_suffix(function_name)))
 }
 
 /// The type standing for the share rows of a caller-set membership on `join_table`.
@@ -1843,27 +1877,25 @@ fn owner_type_name(
 /// One per join table, so two policies sharing it agree and two over different tables do
 /// not pool their rows. Disambiguated against the table types, which are all assigned
 /// before any policy is translated, so a schema declaring this name keeps it.
-fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> String {
+fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
     let base = canonical_fga_type_name(&format!("{join_table}_share"));
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
-        return format!(
+        return canonical_fga_type_name(&format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(join_table))
-        );
+            stable_hex_suffix(table_types.resolve(join_table).as_str())
+        ));
     }
     base
 }
 
 /// Every `(type, relation)` a permission can consult. Anything unresolved counts as
 /// reachable, since dropping a needed query would narrow the model.
-pub(crate) fn grantable_relations(types: &[TypePlan]) -> BTreeSet<(String, RelationName)> {
-    let by_name: BTreeMap<&str, &TypePlan> = types
-        .iter()
-        .map(|plan| (plan.type_name.as_str(), plan))
-        .collect();
-    let mut reached: BTreeSet<(String, RelationName)> = BTreeSet::new();
+pub(crate) fn grantable_relations(types: &[TypePlan]) -> BTreeSet<(TypeName, RelationName)> {
+    let by_name: BTreeMap<&TypeName, &TypePlan> =
+        types.iter().map(|plan| (&plan.type_name, plan)).collect();
+    let mut reached: BTreeSet<(TypeName, RelationName)> = BTreeSet::new();
     for plan in types {
         for action in action_relations().chain(derived_action_relations()) {
             let Some(expr) = plan.computed_relations.get(&action) else {
@@ -1886,10 +1918,11 @@ fn types_bearing_name<DB: DatabaseLike>(
     db: &DB,
     named: &str,
     table_types: &TableTypes,
-) -> Vec<String> {
+) -> Vec<TypeName> {
     db.tables()
         .filter(|table| stored_relation_name(named) == table.stored_table_name())
-        .filter_map(|table| table_types.by_identity.get(&table_identity(table)).cloned())
+        .filter_map(|table| table_types.by_identity.get(&table_identity(table)))
+        .cloned()
         .collect()
 }
 
@@ -2029,9 +2062,9 @@ struct TypeOwner {
 
 #[derive(Default)]
 struct TableTypes {
-    by_identity: BTreeMap<TableId, String>,
-    owners: BTreeMap<String, TypeOwner>,
-    reserved: BTreeMap<String, &'static str>,
+    by_identity: BTreeMap<TableId, TypeName>,
+    owners: BTreeMap<TypeName, TypeOwner>,
+    reserved: BTreeMap<TypeName, &'static str>,
 }
 
 impl TableTypes {
@@ -2040,22 +2073,29 @@ impl TableTypes {
             reserved: well_known
                 .reserved()
                 .into_iter()
-                .map(|(setting, type_name)| (type_name.to_string(), setting))
+                .map(|(setting, type_name)| (type_name.clone(), setting))
                 .collect(),
             ..Self::default()
         }
     }
 
     /// Whether a table or reserved generator type already holds this type name.
-    fn claims(&self, type_name: &str) -> bool {
+    fn claims(&self, type_name: &TypeName) -> bool {
         self.owners.contains_key(type_name) || self.reserved.contains_key(type_name)
     }
 
-    /// The schema identity of the table holding this type.
-    fn spelling(&self, type_name: &str) -> String {
+    /// The schema identity of the table holding this type, found by its rendered name.
+    ///
+    /// By name rather than by `TypeName`, because the read graph carries the names the
+    /// model declares.
+    fn spelling_of(&self, type_name: &str) -> String {
         self.owners
-            .get(type_name)
-            .map_or_else(|| type_name.to_string(), |owner| owner.identity.to_string())
+            .iter()
+            .find(|(name, _)| name.as_str() == type_name)
+            .map_or_else(
+                || type_name.to_string(),
+                |(_, owner)| owner.identity.to_string(),
+            )
     }
 }
 
@@ -2110,24 +2150,27 @@ impl TableTypes {
                 return Err(PlanningError::ReservedTypeName {
                     table: spelling.clone(),
                     setting,
-                    type_name: base,
+                    type_name: base.clone(),
                 });
             }
             let assigned = match types.owners.get(&base) {
                 Some(prior) => {
-                    let disambiguated = format!("{base}_{}", stable_hex_suffix(&spelling));
+                    let disambiguated = canonical_fga_type_name(&format!(
+                        "{base}_{}",
+                        stable_hex_suffix(&spelling)
+                    ));
                     if let Some(setting) = types.reserved.get(&disambiguated) {
                         return Err(PlanningError::ReservedTypeName {
                             table: spelling.clone(),
                             setting,
-                            type_name: disambiguated,
+                            type_name: disambiguated.clone(),
                         });
                     }
                     notes.push(TranslationNote::TypeNameCollision {
                         spelling: identity.clone(),
                         prior: prior.identity.clone(),
-                        canonical: base.clone(),
-                        renamed: disambiguated.clone(),
+                        canonical: base.to_string(),
+                        renamed: disambiguated.to_string(),
                     });
                     disambiguated
                 }
@@ -2145,15 +2188,15 @@ impl TableTypes {
     }
 
     /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
-    fn get(&self, table: &TableId) -> Option<&str> {
-        self.by_identity.get(table).map(String::as_str)
+    fn get(&self, table: &TableId) -> Option<&TypeName> {
+        self.by_identity.get(table)
     }
 
     /// Type of `table`, deriving one when it has none: a parent without RLS still
     /// needs a type for the child to point at. The derived name steps aside when
     /// another table already owns it, so the child cannot inherit that table's
     /// permissions.
-    fn resolve(&self, table: &TableId) -> String {
+    fn resolve(&self, table: &TableId) -> TypeName {
         if let Some(assigned) = self.by_identity.get(table) {
             return assigned.clone();
         }
@@ -2161,7 +2204,7 @@ impl TableTypes {
         let base = canonical_fga_type_name(&spelling);
         match self.owners.get(&base) {
             Some(owner) if owner.identity != *table => {
-                format!("{base}_{}", stable_hex_suffix(&spelling))
+                canonical_fga_type_name(&format!("{base}_{}", stable_hex_suffix(&spelling)))
             }
             _ => base,
         }
@@ -2188,9 +2231,7 @@ fn dedup_notes_added_since(notes: &mut Vec<TranslationNote>, start: usize) {
 fn deny_expr(table_plan: &mut TypePlan) -> UsersetExpr {
     table_plan.ensure_direct(
         deny_relation(),
-        vec![DirectSubject::Type(
-            table_plan.well_known.nobody.to_string(),
-        )],
+        vec![DirectSubject::Type(table_plan.well_known.nobody.clone())],
     );
     UsersetExpr::Computed(deny_relation())
 }
@@ -2221,7 +2262,7 @@ fn pattern_to_expr(
     pattern: &PatternClass,
     policy_name: &str,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     registry: &FunctionRegistry,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
@@ -2244,7 +2285,7 @@ fn pattern_to_expr_without_row_identity(
     pattern: &PatternClass,
     policy_name: &str,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     registry: &FunctionRegistry,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
@@ -2265,7 +2306,7 @@ fn pattern_to_expr_against(
     pattern: &PatternClass,
     policy_name: &str,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     registry: &FunctionRegistry,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
@@ -2348,7 +2389,7 @@ fn translate_pattern<DB: DatabaseLike>(
     pattern: &PatternClass,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -2554,7 +2595,7 @@ fn translate_pattern<DB: DatabaseLike>(
 /// grows and two tables of the same schema can have different numbers.
 fn row_identifier_budget<DB: DatabaseLike>(
     source_table: &TableId,
-    type_name: &str,
+    type_name: &TypeName,
     bounds: &UnboundedColumns,
     db: &DB,
 ) -> Option<usize> {
@@ -2562,7 +2603,7 @@ fn row_identifier_budget<DB: DatabaseLike>(
     if !bounds.any_unbounded(source_table, &key) {
         return None;
     }
-    MAX_OBJECT_NAME_CHARS.checked_sub(type_name.chars().count() + 1)
+    MAX_OBJECT_NAME_CHARS.checked_sub(type_name.as_str().chars().count() + 1)
 }
 
 /// Explain why `source_table` has no usable `OpenFGA` object identifier.
@@ -2610,7 +2651,7 @@ fn bridge_is_buildable<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     source_table: &TableId,
     fk_cols: &[ColumnName],
-    parent_type: &str,
+    parent_type: &TypeName,
     db: &DB,
 ) -> bool {
     if resolve_bridge_columns(source_table, fk_cols, db).is_some() {
@@ -2623,13 +2664,13 @@ fn bridge_is_buildable<DB: DatabaseLike>(
         Some(fk_col) if resolve_row_identity(source_table, db).is_some() => {
             SkippedTuples::BridgeColumnMissing {
                 table: source_table.clone(),
-                parent_type: parent_type.to_string(),
+                parent_type: parent_type.clone(),
                 fk_col: fk_col.clone(),
             }
         }
         _ => SkippedTuples::NoBridge {
             table: source_table.clone(),
-            parent_type: parent_type.to_string(),
+            parent_type: parent_type.clone(),
             reason: missing_object_identifier_reason(source_table, db),
         },
     };
@@ -2638,39 +2679,39 @@ fn bridge_is_buildable<DB: DatabaseLike>(
 }
 
 fn ensure_member_type(
-    all_types: &mut BTreeMap<String, TypePlan>,
-    type_name: &str,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    type_name: &TypeName,
     well_known: &WellKnownTypes,
 ) {
     let entry = all_types
-        .entry(type_name.to_string())
-        .or_insert_with(|| TypePlan::new_with_well_known(type_name, well_known));
+        .entry(type_name.clone())
+        .or_insert_with(|| TypePlan::new_with_well_known(type_name.clone(), well_known));
     entry.ensure_direct(
         member_relation(),
-        vec![DirectSubject::Type(well_known.user.to_string())],
+        vec![DirectSubject::Type(well_known.user.clone())],
     );
 }
 
 /// Give `pg_role` a relation holding one kind of role membership, for an operator to load.
 fn ensure_pg_role_relation(
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     relation: &RelationName,
     well_known: &WellKnownTypes,
 ) {
     all_types
-        .entry(well_known.pg_role.to_string())
-        .or_insert_with(|| TypePlan::new_with_well_known(well_known.pg_role.as_str(), well_known))
+        .entry(well_known.pg_role.clone())
+        .or_insert_with(|| TypePlan::new_with_well_known(well_known.pg_role.clone(), well_known))
         .ensure_direct(
             relation.clone(),
-            vec![DirectSubject::Type(well_known.user.to_string())],
+            vec![DirectSubject::Type(well_known.user.clone())],
         );
 }
 
 /// Bind a parent type to the table whose rows it names, in the spelling the plan groups
 /// tables under, so an entry the loop writes and one a parent reference writes agree.
 fn bind_row_source<DB: DatabaseLike>(
-    all_types: &mut BTreeMap<String, TypePlan>,
-    type_name: &str,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    type_name: &TypeName,
     table: &TableId,
     _db: &DB,
 ) {

@@ -102,11 +102,11 @@ pub(crate) enum TupleSource {
     /// not X owns a row.
     OwnerIdentity {
         /// Type the owner identities belong to.
-        owner_type: String,
+        owner_type: TypeName,
         principal_table: TableId,
         principal_identity_col: ColumnName,
         /// `user` or `team`.
-        subject_type: String,
+        subject_type: TypeName,
         relation: RelationName,
     },
 
@@ -115,7 +115,7 @@ pub(crate) enum TupleSource {
     /// case. Reads no guarded table: a grant is a fact about the owner it names.
     ExplicitGrants {
         /// Type the granted owner identities belong to.
-        owner_type: String,
+        owner_type: TypeName,
         grant_table: TableId,
         /// Column of `grant_table` holding the integer role level.
         grant_role_col: ColumnName,
@@ -144,7 +144,7 @@ pub(crate) enum TupleSource {
         fk_cols: Vec<ColumnName>,
         user_col: ColumnName,
         /// Resolved from the table the columns reference, not from their names.
-        parent_type: String,
+        parent_type: TypeName,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
@@ -159,7 +159,7 @@ pub(crate) enum TupleSource {
         table: TableId,
         /// Columns of `table` naming the parent, in the parent key's order.
         fk_cols: Vec<ColumnName>,
-        parent_type: String,
+        parent_type: TypeName,
         /// Named after `parent_type` but subject to the shorter relation-name limit,
         /// so the two can differ.
         relation: RelationName,
@@ -236,7 +236,7 @@ pub(crate) enum TupleSource {
         /// its own object.
         identity_cols: Vec<ColumnName>,
         /// Synthetic type the share objects belong to.
-        share_type: String,
+        share_type: TypeName,
         relation: RelationName,
         condition: String,
         /// Condition parameter the share row supplies.
@@ -268,9 +268,9 @@ pub(crate) enum TupleSource {
         /// Columns of `join_table` naming the guarded row the share is on.
         object_cols: Vec<ColumnName>,
         /// The guarded table's own type, which the objects belong to.
-        guarded_type: String,
+        guarded_type: TypeName,
         /// Synthetic type the share subjects belong to.
-        share_type: String,
+        share_type: TypeName,
         relation: RelationName,
     },
 
@@ -284,7 +284,7 @@ pub(crate) enum TupleSource {
         identity_cols: Vec<ColumnName>,
         user_col: ColumnName,
         /// Synthetic type the witness objects belong to.
-        share_type: String,
+        share_type: TypeName,
         /// The share type's member relation this policy's tuples feed. Minted per
         /// condition, so two policies over one join table never collide their clocks.
         relation: RelationName,
@@ -313,7 +313,7 @@ pub(crate) enum TupleSource {
         identity_cols: Vec<ColumnName>,
         scope_relation: RelationName,
         /// Synthetic type the scope objects belong to.
-        scope_type: String,
+        scope_type: TypeName,
         /// Object id standing for this policy's scope.
         scope_object: String,
     },
@@ -325,7 +325,7 @@ pub(crate) enum TupleSource {
     /// the guarded table instead tied the fact to that table having rows, and made every row
     /// of it look like a reason the fact exists.
     PolicyScopeRoles {
-        scope_type: String,
+        scope_type: TypeName,
         scope_object: String,
         relation: RelationName,
         pg_role: String,
@@ -337,7 +337,7 @@ pub(crate) enum TupleSource {
         table: TableId,
         identity_cols: Vec<ColumnName>,
         relation: RelationName,
-        holder_type: String,
+        holder_type: TypeName,
     },
 
     /// Links the one holder object to each membership row's witness. Produces
@@ -346,14 +346,14 @@ pub(crate) enum TupleSource {
         member_table: TableId,
         /// Declared row identity of `member_table`, keying each witness subject.
         identity_cols: Vec<ColumnName>,
-        holder_type: String,
-        share_type: String,
+        holder_type: TypeName,
+        share_type: TypeName,
         relation: RelationName,
     },
 
     /// Everyone listed in `member_table`, attached to the holder object.
     HolderMembers {
-        holder_type: String,
+        holder_type: TypeName,
         member_table: TableId,
         user_col: ColumnName,
         extra_predicates: ResidualPredicates,
@@ -373,22 +373,42 @@ pub(crate) struct ResidualSqlKey<'a> {
 }
 
 impl ResidualSqlKey<'_> {
-    fn all(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
+    /// The residual as it identifies a rendered query.
+    ///
+    /// A gated source moves its request-completed conjuncts into the condition, so the
+    /// query filters on what remains and two such sources differing only there render one
+    /// statement. One constructor rather than the rule spelled per arm, because a key
+    /// finer than the query emits one statement twice and a key coarser than it drops one
+    /// of two different ones, and nothing else would notice either.
+    fn of(predicates: &ResidualPredicates, gated: Gated) -> ResidualSqlKey<'_> {
         ResidualSqlKey {
             predicates,
-            include_requests: true,
-        }
-    }
-
-    fn excluding_requests(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
-        ResidualSqlKey {
-            predicates,
-            include_requests: false,
+            include_requests: gated == Gated::No,
         }
     }
 
     fn conjuncts(&self) -> impl Iterator<Item = &str> {
         self.predicates.sql_conjuncts(self.include_requests)
+    }
+}
+
+/// Whether a source's request-completed conjuncts are answered by its condition.
+///
+/// Named rather than a bare `bool`, so a call site says which way round it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gated {
+    Yes,
+    No,
+}
+
+impl Gated {
+    /// Gated exactly when the source carries something that re-evaluates the request.
+    fn when(gated: bool) -> Self {
+        if gated {
+            Self::Yes
+        } else {
+            Self::No
+        }
     }
 }
 
@@ -434,14 +454,14 @@ pub(crate) enum TupleSourceKey<'a> {
         relation: &'a RelationName,
     },
     OwnerIdentity {
-        owner_type: &'a str,
+        owner_type: &'a TypeName,
         principal_table: &'a TableId,
         principal_identity_col: &'a ColumnName,
-        subject_type: &'a str,
+        subject_type: &'a TypeName,
         relation: &'a RelationName,
     },
     ExplicitGrants {
-        owner_type: &'a str,
+        owner_type: &'a TypeName,
         grant_table: &'a TableId,
         grant_role_col: &'a ColumnName,
         grant_grantee_col: &'a ColumnName,
@@ -459,14 +479,14 @@ pub(crate) enum TupleSourceKey<'a> {
         join_table: &'a TableId,
         fk_cols: &'a [ColumnName],
         user_col: &'a ColumnName,
-        parent_type: &'a str,
+        parent_type: &'a TypeName,
         extra_predicates: ResidualSqlKey<'a>,
         gate: Option<&'a MembershipGate>,
     },
     ParentBridge {
         table: &'a TableId,
         fk_cols: &'a [ColumnName],
-        parent_type: &'a str,
+        parent_type: &'a TypeName,
         relation: &'a RelationName,
     },
     PublicFlag {
@@ -505,7 +525,7 @@ pub(crate) enum TupleSourceKey<'a> {
         comparison: RequestComparison,
     },
     CallerSetShareGate {
-        share_type: &'a str,
+        share_type: &'a TypeName,
         join_table: &'a TableId,
         identity_cols: &'a [ColumnName],
         member_col: &'a ColumnName,
@@ -517,18 +537,18 @@ pub(crate) enum TupleSourceKey<'a> {
         temporal_context: &'a [GateContextColumn],
     },
     ShareBridge {
-        guarded_type: &'a str,
+        guarded_type: &'a TypeName,
         join_table: &'a TableId,
         identity_cols: &'a [ColumnName],
         object_cols: &'a [ColumnName],
-        share_type: &'a str,
+        share_type: &'a TypeName,
         relation: &'a RelationName,
     },
     MembershipShareMembers {
         join_table: &'a TableId,
         identity_cols: &'a [ColumnName],
         user_col: &'a ColumnName,
-        share_type: &'a str,
+        share_type: &'a TypeName,
         relation: &'a RelationName,
         condition: &'a str,
         extra_predicates: ResidualSqlKey<'a>,
@@ -537,8 +557,8 @@ pub(crate) enum TupleSourceKey<'a> {
     HolderShares {
         member_table: &'a TableId,
         identity_cols: &'a [ColumnName],
-        holder_type: &'a str,
-        share_type: &'a str,
+        holder_type: &'a TypeName,
+        share_type: &'a TypeName,
         relation: &'a RelationName,
     },
     ConstantTrue {
@@ -550,11 +570,11 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         identity_cols: &'a [ColumnName],
         scope_relation: &'a RelationName,
-        scope_type: &'a str,
+        scope_type: &'a TypeName,
         scope_object: &'a str,
     },
     PolicyScopeRoles {
-        scope_type: &'a str,
+        scope_type: &'a TypeName,
         scope_object: &'a str,
         relation: &'a RelationName,
         pg_role: &'a str,
@@ -563,10 +583,10 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
-        holder_type: &'a str,
+        holder_type: &'a TypeName,
     },
     HolderMembers {
-        holder_type: &'a str,
+        holder_type: &'a TypeName,
         member_table: &'a TableId,
         user_col: &'a ColumnName,
         extra_predicates: ResidualSqlKey<'a>,
@@ -618,8 +638,8 @@ impl TupleSource {
         &self,
         owner_type: &TypeName,
         well_known: &WellKnownTypes,
-    ) -> Vec<(String, RelationName)> {
-        let own = |relation: &RelationName| vec![(owner_type.to_string(), relation.clone())];
+    ) -> Vec<(TypeName, RelationName)> {
+        let own = |relation: &RelationName| vec![(owner_type.clone(), relation.clone())];
         match self {
             Self::DirectOwnership { relation, .. }
             | Self::ArrayMembership { relation, .. }
@@ -666,7 +686,7 @@ impl TupleSource {
                 ..
             } => vec![(holder_type.clone(), relation.clone())],
             Self::TeamMembership { .. } => {
-                vec![(well_known.team.to_string(), member_relation())]
+                vec![(well_known.team.clone(), member_relation())]
             }
             Self::ExistsMembership { parent_type, .. } => {
                 vec![(parent_type.clone(), member_relation())]
@@ -775,11 +795,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
-                extra_predicates: if gate.is_some() {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                } else {
-                    ResidualSqlKey::all(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
             Self::ParentBridge {
@@ -849,7 +865,10 @@ impl TupleSource {
                 row_parameter,
                 request_parameter,
                 comparison,
-                ..
+                // The caller's contract, which the notes carry off the plan's own sources.
+                // Named rather than elided, so a field added here has to be decided about.
+                setting_key: _,
+                separator: _,
             } => TupleSourceKey::SessionAttributeGate {
                 table,
                 identity_cols,
@@ -870,7 +889,8 @@ impl TupleSource {
                 request_parameter,
                 extra_predicates,
                 temporal_context,
-                ..
+                setting_key: _,
+                separator: _,
             } => TupleSourceKey::CallerSetShareGate {
                 share_type,
                 join_table,
@@ -880,11 +900,10 @@ impl TupleSource {
                 condition,
                 row_parameter,
                 request_parameter,
-                extra_predicates: if temporal_context.is_empty() {
-                    ResidualSqlKey::all(extra_predicates)
-                } else {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(
+                    extra_predicates,
+                    Gated::when(!temporal_context.is_empty()),
+                ),
                 temporal_context,
             },
             Self::ShareBridge {
@@ -918,7 +937,8 @@ impl TupleSource {
                 share_type,
                 relation,
                 condition,
-                extra_predicates: ResidualSqlKey::excluding_requests(extra_predicates),
+                // Its condition is not optional, so the request is always answered there.
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::Yes),
                 context,
             },
             Self::HolderShares {
@@ -988,11 +1008,7 @@ impl TupleSource {
                 holder_type,
                 member_table,
                 user_col,
-                extra_predicates: if gate.is_some() {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                } else {
-                    ResidualSqlKey::all(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
             Self::Skipped { reason } => TupleSourceKey::Skipped { reason },
@@ -1003,16 +1019,18 @@ impl TupleSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::patterns::ResidualPredicate;
+    use crate::classifier::patterns::{AttributeRequestPredicate, RequestValue, ResidualPredicate};
     use crate::generator::well_known::owner_user_relation;
+    use rls2fga_types::AttributeOperator;
 
     fn table(name: &str) -> TableId {
         TableId::from_stored(None, name.to_string())
     }
 
     fn grants(owner_type: &str, grant_table: &str) -> TupleSource {
+        let owner_type = &TypeName::canonicalized(owner_type);
         TupleSource::ExplicitGrants {
-            owner_type: owner_type.to_string(),
+            owner_type: owner_type.clone(),
             grant_table: table(grant_table),
             grant_role_col: ColumnName::from_stored("role"),
             grant_grantee_col: ColumnName::from_stored("grantee"),
@@ -1048,10 +1066,10 @@ mod tests {
     #[test]
     fn dedup_key_separates_owner_identities_by_namespace_and_principal() {
         let identity = |owner_type: &str, principal: &str| TupleSource::OwnerIdentity {
-            owner_type: owner_type.to_string(),
+            owner_type: TypeName::canonicalized(owner_type),
             principal_table: table(principal),
             principal_identity_col: ColumnName::from_stored("id"),
-            subject_type: "user".to_string(),
+            subject_type: TypeName::canonicalized("user"),
             relation: owner_user_relation(),
         };
         assert_eq!(
@@ -1093,7 +1111,7 @@ mod tests {
             join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
-            parent_type: "projects".to_string(),
+            parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1101,7 +1119,7 @@ mod tests {
             join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("member_id"),
-            parent_type: "projects".to_string(),
+            parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1109,7 +1127,7 @@ mod tests {
             join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
-            parent_type: "projects".to_string(),
+            parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
                 sql: "role = 'admin'".to_string(),
                 guard: None,
@@ -1171,6 +1189,141 @@ mod tests {
         assert_ne!(
             with_principal("users").dedup_key(),
             with_principal("people").dedup_key()
+        );
+    }
+
+    /// A conjunct the row settles, and one the request completes.
+    fn conjunct(sql: &str, from_request: bool) -> ResidualPredicate {
+        ResidualPredicate {
+            sql: sql.to_string(),
+            guard: None,
+            request: from_request.then(|| AttributeRequestPredicate {
+                column: ColumnName::from_stored("expires_at"),
+                operator: AttributeOperator::Gt,
+                request_value: RequestValue::StatementTimestamp,
+                offset: None,
+            }),
+            relations: Vec::new(),
+        }
+    }
+
+    /// A gated source renders its residual without the request-completed conjuncts, so
+    /// two of them differing only there render one query and have to key as one.
+    ///
+    /// The key and the renderer decide this separately, and nothing else would notice them
+    /// disagreeing: a key finer than the query emits the same statement twice, and a key
+    /// coarser than the query drops one of two different ones.
+    #[test]
+    fn dedup_key_drops_a_request_conjunct_exactly_where_the_query_does() {
+        let gate = MembershipGate {
+            condition: "unexpired".to_string(),
+            context: vec![GateContextColumn {
+                parameter: "expires_at".to_string(),
+                column: ColumnName::from_stored("expires_at"),
+                witness: ContextWitness::Latest,
+            }],
+            aggregate: false,
+        };
+        // The same row-settled conjunct either way, and one request-completed conjunct
+        // beside it, which is what a gate takes over.
+        let membership = |gate: Option<MembershipGate>, request_conjunct: bool| {
+            let mut residual = vec![conjunct("role = 'editor'", false)];
+            if request_conjunct {
+                residual.push(conjunct("expires_at > now()", true));
+            }
+            TupleSource::ExistsMembership {
+                join_table: table("members"),
+                fk_cols: vec![ColumnName::from_stored("doc_id")],
+                user_col: ColumnName::from_stored("user_id"),
+                parent_type: TypeName::canonicalized("docs"),
+                extra_predicates: ResidualPredicates::new(residual),
+                gate: gate.clone(),
+            }
+        };
+
+        assert_eq!(
+            membership(Some(gate.clone()), true).dedup_key(),
+            membership(Some(gate.clone()), false).dedup_key(),
+            "the gate re-evaluates the request conjunct, so it does not identify the query"
+        );
+        assert_ne!(
+            membership(None, true).dedup_key(),
+            membership(None, false).dedup_key(),
+            "without a gate the conjunct filters in the query, so it identifies it"
+        );
+    }
+
+    /// A share gate keyed on its own row always carries a request value, and its residual
+    /// still filters in the query until a clock joins it.
+    #[test]
+    fn dedup_key_follows_the_share_gate_clock_rather_than_its_request_parameter() {
+        let share = |clock: bool, request_conjunct: bool| TupleSource::CallerSetShareGate {
+            join_table: table("shares"),
+            identity_cols: vec![ColumnName::from_stored("id")],
+            share_type: TypeName::canonicalized("shares"),
+            relation: owner_user_relation(),
+            condition: "in_set".to_string(),
+            row_parameter: "member".to_string(),
+            member_col: ColumnName::from_stored("viewer"),
+            request_parameter: "subjects".to_string(),
+            setting_key: "app.subjects".to_string(),
+            separator: Some(",".to_string()),
+            extra_predicates: ResidualPredicates::new({
+                let mut residual = vec![conjunct("role = 'editor'", false)];
+                if request_conjunct {
+                    residual.push(conjunct("expires_at > now()", true));
+                }
+                residual
+            }),
+            temporal_context: if clock {
+                vec![GateContextColumn {
+                    parameter: "expires_at".to_string(),
+                    column: ColumnName::from_stored("expires_at"),
+                    witness: ContextWitness::Latest,
+                }]
+            } else {
+                Vec::new()
+            },
+        };
+
+        assert_eq!(
+            share(true, true).dedup_key(),
+            share(true, false).dedup_key(),
+            "the clock moved the comparison into the condition"
+        );
+        assert_ne!(
+            share(false, true).dedup_key(),
+            share(false, false).dedup_key(),
+            "with no clock the residual filters in the query, requests and all"
+        );
+    }
+
+    /// The two fields the key leaves out, stated rather than elided.
+    ///
+    /// Neither reaches the query or the relation shapes: they name the caller's contract,
+    /// which the notes carry from the plan's own sources. Two gates differing only there
+    /// render one query and are one key.
+    #[test]
+    fn dedup_key_ignores_the_caller_contract_fields() {
+        let gate = |setting_key: &str, separator: Option<&str>| TupleSource::SessionAttributeGate {
+            table: table("docs"),
+            identity_cols: vec![ColumnName::from_stored("id")],
+            relation: owner_user_relation(),
+            condition: "in_set".to_string(),
+            row_parameter: RowParameter::Column {
+                parameter: "owner".to_string(),
+                column: ColumnName::from_stored("owner"),
+            },
+            request_parameter: "subjects".to_string(),
+            setting_key: setting_key.to_string(),
+            separator: separator.map(str::to_string),
+            comparison: RequestComparison::CallerSetHolds,
+        };
+
+        assert_eq!(
+            gate("app.subjects", Some(",")).dedup_key(),
+            gate("app.teams", Some(";")).dedup_key(),
+            "the setting key and its separator name the contract, not the query"
         );
     }
 }

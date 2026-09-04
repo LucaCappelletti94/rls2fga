@@ -17,7 +17,7 @@ use crate::generator::well_known::{
 };
 use crate::parser::names::{table_id_has_column, table_identity};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
-use crate::types::{ColumnName, RelationName, TableId};
+use crate::types::{ColumnName, RelationName, TableId, TypeName};
 use crate::types::{Record, RecordContextValue, RecordDescription};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
@@ -115,14 +115,14 @@ pub enum TupleRowError {
     /// The type defines no such relation.
     UnknownRelation {
         /// Type the object names.
-        type_name: String,
+        type_name: TypeName,
         /// Relation the row names.
         relation: String,
     },
     /// The relation is computed from others, so no tuple is written on it.
     RelationTakesNoTuples {
         /// Type the object names.
-        type_name: String,
+        type_name: TypeName,
         /// Relation the row names.
         relation: String,
     },
@@ -137,7 +137,7 @@ pub enum TupleRowError {
     /// service itself refuses.
     RelationGrantsNobody {
         /// Type the object names.
-        type_name: String,
+        type_name: TypeName,
         /// Relation the row names.
         relation: String,
     },
@@ -146,7 +146,7 @@ pub enum TupleRowError {
     /// the model does not.
     ConditionMismatch {
         /// Type the object names.
-        type_name: String,
+        type_name: TypeName,
         /// Relation the row names.
         relation: String,
         /// The condition the row named, absent where it named none.
@@ -226,12 +226,12 @@ pub(crate) fn record_from_tuple_row(
         // a row naming it is a mistake rather than a fact. Refusing here closes the crate's
         // own door as well as the service's.
         return Err(TupleRowError::RelationGrantsNobody {
-            type_name: object_type.to_string(),
+            type_name: type_plan.type_name.clone(),
             relation: row.relation.to_string(),
         });
     }
     let Some((relation, subjects)) = type_plan.direct_relations.get_key_value(row.relation) else {
-        let type_name = object_type.to_string();
+        let type_name = type_plan.type_name.clone();
         let relation = row.relation.to_string();
         return Err(if type_plan.computed_relations.contains_key(row.relation) {
             TupleRowError::RelationTakesNoTuples {
@@ -250,19 +250,19 @@ pub(crate) fn record_from_tuple_row(
         object: row.object.to_string(),
         relation: relation.clone(),
         subject: row.subject.to_string(),
-        context: row_context(&row, object_type, relation, subjects)?,
+        context: row_context(&row, &type_plan.type_name, relation, subjects)?,
     })
 }
 
 /// The context the row carries, once the relation is known to accept it.
 fn row_context(
     row: &TupleRow<'_>,
-    object_type: &str,
+    object_type: &TypeName,
     relation: &RelationName,
     subjects: &[DirectSubject],
 ) -> Result<Option<RecordContextValue>, TupleRowError> {
     let mismatch = |named: Option<&str>| TupleRowError::ConditionMismatch {
-        type_name: object_type.to_string(),
+        type_name: object_type.clone(),
         relation: relation.to_string(),
         named: named.map(ToString::to_string),
     };
@@ -316,7 +316,7 @@ fn context_entries(context: &str) -> Option<BTreeMap<String, String>> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RenderedSourceKey<'a> {
-    owner: Option<(&'a str, bool)>,
+    owner: Option<(&'a TypeName, bool)>,
     source: TupleSourceKey<'a>,
 }
 
@@ -328,7 +328,7 @@ pub(crate) struct GeneratedTupleQueries<'a> {
 
 pub(crate) fn rendered_source_key<'a>(
     source: &'a TupleSource,
-    owner_type: &'a str,
+    owner_type: &'a TypeName,
     only_own_rows: bool,
 ) -> RenderedSourceKey<'a> {
     RenderedSourceKey {
@@ -357,7 +357,7 @@ pub(crate) fn generate_tuple_queries_from_plan<'plan, DB: DatabaseLike>(
             }
             let key = rendered_source_key(
                 source,
-                type_plan.type_name.as_str(),
+                &type_plan.type_name,
                 type_plan.reads_only_its_own_rows,
             );
             if descriptions.contains_key(&key) {
@@ -365,7 +365,7 @@ pub(crate) fn generate_tuple_queries_from_plan<'plan, DB: DatabaseLike>(
             }
             let Some(query) = render_tuple_source(
                 source,
-                type_plan.type_name.as_str(),
+                &type_plan.type_name,
                 type_plan.reads_only_its_own_rows,
                 &plan.well_known,
                 NameContext::new(bounds),
@@ -390,7 +390,7 @@ pub(crate) fn generate_tuple_queries_from_plan<'plan, DB: DatabaseLike>(
 struct ObjectSource<'a> {
     table: &'a TableId,
     /// `OpenFGA` type the objects belong to.
-    type_name: &'a str,
+    type_name: &'a TypeName,
     /// Columns supplying the object identifier, in declared order.
     identity_cols: &'a [ColumnName],
     /// Read `FROM ONLY`, keeping inheritance children's rows out.
@@ -482,7 +482,7 @@ fn subject_fits(
 /// Derive the three values every owner-type match arm needs from the same inputs.
 /// Returns `(table_sql, object_sql, key_not_null)`.
 fn owner_object_sql(
-    owner_type: &str,
+    owner_type: &TypeName,
     table: &TableId,
     identity_cols: &[ColumnName],
     only_own_rows: bool,
@@ -587,7 +587,7 @@ fn render_ownership_tuple_source(
     object: ObjectSource<'_>,
     owner_col: &ColumnName,
     relation: &RelationName,
-    subject_prefix: &str,
+    subject_prefix: &TypeName,
     comment: String,
     owner_filter: Option<(&TableId, &ColumnName)>,
     names: NameContext<'_>,
@@ -686,7 +686,7 @@ fn sanitize_tuple_query(mut query: TupleQuery) -> TupleQuery {
 /// a name from `table` files one table's tuples under a colliding table's type.
 fn render_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
-    owner_type: &str,
+    owner_type: &TypeName,
     only_own_rows: bool,
     well_known: &WellKnownTypes,
     names: NameContext<'_>,
@@ -711,13 +711,13 @@ fn render_tuple_source<DB: DatabaseLike>(
 
 pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
     source: &TupleSource,
-    owner_type: &str,
+    owner_type: &TypeName,
     only_own_rows: bool,
     well_known: &WellKnownTypes,
     names: NameContext<'_>,
     db: &DB,
 ) -> Option<TupleQuery> {
-    let wildcard_subject = wildcard_subject_literal(well_known.user.as_str());
+    let wildcard_subject = wildcard_subject_literal(&well_known.user);
     match source {
         TupleSource::DirectOwnership {
             table,
@@ -733,7 +733,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             },
             owner_col,
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             format!("-- User ownership ({owner_col} references users)"),
             None,
             names,
@@ -746,7 +746,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             relation,
         } => {
             let array_col_sql = quote_sql_identifier(array_col.as_str());
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [ARRAY_ELEMENT_ALIAS]);
+            let subject_sql = typed_name_sql(&well_known.user, [ARRAY_ELEMENT_ALIAS]);
             let (table_sql, object_sql, nameable) =
                 owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_guard =
@@ -776,7 +776,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
         } => {
             let field_sql = render_jsonb_path(&quote_sql_identifier(column.as_str()), path)?;
             let field_operand = format!("({field_sql})");
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [field_operand.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [field_operand.as_str()]);
             let (table_sql, object_sql, nameable) =
                 owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let subject_guard =
@@ -858,8 +858,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             );
 
             let grantee_ref = format!("og.{grant_grantee_col_sql}");
-            let user_subject_sql = typed_name_sql(well_known.user.as_str(), [grantee_ref.as_str()]);
-            let team_subject_sql = typed_name_sql(well_known.team.as_str(), [grantee_ref.as_str()]);
+            let user_subject_sql = typed_name_sql(&well_known.user, [grantee_ref.as_str()]);
+            let team_subject_sql = typed_name_sql(&well_known.team, [grantee_ref.as_str()]);
             let owner_ref = format!("og.{grant_resource_col_sql}");
             let object_sql = typed_name_sql(granted_type, [owner_ref.as_str()]);
             let mut subject_joins: Vec<String> = Vec::new();
@@ -945,8 +945,8 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let membership_table_sql = membership_table.sql_name();
             let team_col_sql = quote_sql_identifier(team_col.as_str());
             let user_col_sql = quote_sql_identifier(user_col.as_str());
-            let object_sql = typed_name_sql(well_known.team.as_str(), [team_col_sql.as_str()]);
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [user_col_sql.as_str()]);
+            let object_sql = typed_name_sql(&well_known.team, [team_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let team_guards = join_row_is_nameable(
                 "",
                 &object_sql,
@@ -991,7 +991,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 .collect::<Vec<_>>()
                 .join(" AND ");
             let object_sql = typed_name_sql(parent_type, fk_parts.iter().map(String::as_str));
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [user_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let null_guards = join_row_is_nameable(
                 &null_guards,
                 &object_sql,
@@ -1219,7 +1219,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let identity_parts = quoted_key_parts(identity_cols);
             let user_col_sql = quote_sql_identifier(user_col.as_str());
             let object_sql = typed_name_sql(share_type, identity_parts.iter().map(String::as_str));
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [user_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let base = identity_parts
                 .iter()
                 .map(|part| format!("{part} IS NOT NULL"))
@@ -1282,7 +1282,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let member_table_sql = member_table.sql_name();
             let user_col_sql = quote_sql_identifier(user_col.as_str());
             let object_sql = typed_name_literal(holder_type, HOLDER_OBJECT_ID);
-            let subject_sql = typed_name_sql(well_known.user.as_str(), [user_col_sql.as_str()]);
+            let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let user_col_sql_guard = subject_fits_guard(
                 &subject_sql,
                 member_table,
@@ -1702,7 +1702,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             pg_role,
         } => {
             let object_sql = typed_name_literal(scope_type, scope_object);
-            let subject_sql = typed_name_literal(well_known.pg_role.as_str(), pg_role);
+            let subject_sql = typed_name_literal(&well_known.pg_role, pg_role);
             Some(TupleQuery {
                 comment: format!(
                     "-- Scope {scope_object} admits PostgreSQL role '{pg_role}', which the \
@@ -1841,8 +1841,8 @@ mod tests {
             user_col: ColumnName::from_stored("user_id"),
         };
         assert_eq!(
-            rendered_source_key(&shared, "docs", false),
-            rendered_source_key(&shared, "memos", true)
+            rendered_source_key(&shared, &TypeName::canonicalized("docs"), false),
+            rendered_source_key(&shared, &TypeName::canonicalized("memos"), true)
         );
 
         let owned = TupleSource::DirectOwnership {
@@ -1852,12 +1852,12 @@ mod tests {
             relation: RelationName::canonicalized("owner"),
         };
         assert_ne!(
-            rendered_source_key(&owned, "docs", false),
-            rendered_source_key(&owned, "memos", false)
+            rendered_source_key(&owned, &TypeName::canonicalized("docs"), false),
+            rendered_source_key(&owned, &TypeName::canonicalized("memos"), false)
         );
         assert_ne!(
-            rendered_source_key(&owned, "docs", false),
-            rendered_source_key(&owned, "docs", true)
+            rendered_source_key(&owned, &TypeName::canonicalized("docs"), false),
+            rendered_source_key(&owned, &TypeName::canonicalized("docs"), true)
         );
     }
 
@@ -2596,7 +2596,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         // Build the IR directly and call render_tuple_source.
         // Both user_principal and team_principal are None → fail-closed path.
         let source = TupleSource::ExplicitGrants {
-            owner_type: "doc_grants_owner".to_string(),
+            owner_type: TypeName::canonicalized("doc_grants_owner"),
             grant_table: table("doc_grants"),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2614,7 +2614,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             let bounds = UnboundedColumns::resolve(&db);
             render_tuple_source(
                 &source,
-                "docs",
+                &TypeName::canonicalized("docs"),
                 false,
                 &WellKnownTypes::default(),
                 NameContext::new(&bounds),
@@ -2644,7 +2644,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
         let source = TupleSource::ExplicitGrants {
-            owner_type: "doc_grants_owner".to_string(),
+            owner_type: TypeName::canonicalized("doc_grants_owner"),
             grant_table: table("doc_grants"),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2665,7 +2665,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             let bounds = UnboundedColumns::resolve(&db);
             render_tuple_source(
                 &source,
-                "docs",
+                &TypeName::canonicalized("docs"),
                 false,
                 &WellKnownTypes::default(),
                 NameContext::new(&bounds),
@@ -2690,7 +2690,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
         let source = TupleSource::ExplicitGrants {
-            owner_type: "doc_grants_owner".to_string(),
+            owner_type: TypeName::canonicalized("doc_grants_owner"),
             grant_table: table("doc_grants"),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2714,7 +2714,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             let bounds = UnboundedColumns::resolve(&db);
             render_tuple_source(
                 &source,
-                "docs",
+                &TypeName::canonicalized("docs"),
                 false,
                 &WellKnownTypes::default(),
                 NameContext::new(&bounds),
@@ -2742,7 +2742,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         let well_known = WellKnownTypes::new("user", "group", "pg_role", "pg_role_scope", "nobody")
             .expect("valid well-known types");
         let source = TupleSource::ExplicitGrants {
-            owner_type: "doc".to_string(),
+            owner_type: TypeName::canonicalized("doc"),
             grant_table: table("doc_grants"),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2763,7 +2763,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             let bounds = UnboundedColumns::resolve(&db);
             render_tuple_source(
                 &source,
-                "doc",
+                &TypeName::canonicalized("doc"),
                 false,
                 &well_known,
                 NameContext::new(&bounds),
@@ -2788,7 +2788,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
         let source = TupleSource::ExplicitGrants {
-            owner_type: "doc".to_string(),
+            owner_type: TypeName::canonicalized("doc"),
             grant_table: table("doc_grants"),
             grant_role_col: ColumnName::from_stored("role_level"),
             grant_grantee_col: ColumnName::from_stored("grantee_id"),
@@ -2809,7 +2809,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             let bounds = UnboundedColumns::resolve(&db);
             render_tuple_source(
                 &source,
-                "doc",
+                &TypeName::canonicalized("doc"),
                 false,
                 &WellKnownTypes::default(),
                 NameContext::new(&bounds),

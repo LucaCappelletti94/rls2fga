@@ -174,8 +174,22 @@ pub(crate) fn assert_model_is_internally_consistent(
         })
         .collect();
 
+    let mut names = std::collections::BTreeSet::new();
+    for definition in &json.type_definitions {
+        assert!(
+            names.insert(definition.type_name.as_str()),
+            "the model declares '{}' twice, which OpenFGA refuses as a duplicate type",
+            definition.type_name
+        );
+    }
+
     for definition in &json.type_definitions {
         for (relation, userset) in definition.relations.iter().flatten() {
+            assert!(
+                !matches!(relation.as_str(), "self" | "this"),
+                "{}#{relation} is a relation name OpenFGA reserves",
+                definition.type_name
+            );
             check_userset_references(
                 &declared,
                 &json.type_definitions,
@@ -183,6 +197,20 @@ pub(crate) fn assert_model_is_internally_consistent(
                 relation.as_str(),
                 userset,
             );
+        }
+        for (relation, metadata) in definition
+            .metadata
+            .iter()
+            .flat_map(|metadata| &metadata.relations)
+        {
+            for reference in &metadata.directly_related_user_types {
+                assert!(
+                    declared.contains_key(reference.type_name.as_str()),
+                    "{}#{relation} admits '{}', which the model does not define",
+                    definition.type_name,
+                    reference.type_name
+                );
+            }
         }
     }
 }
@@ -213,7 +241,7 @@ pub(crate) fn targets_of(
         .flat_map(|definition| definition.metadata.iter())
         .filter_map(|metadata| metadata.relations.get(tupleset))
         .flat_map(|relation| &relation.directly_related_user_types)
-        .map(|reference| reference.type_name.clone())
+        .map(|reference| reference.type_name.to_string())
         .collect()
 }
 

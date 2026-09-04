@@ -22,7 +22,7 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
     let ownership = table_plan.ownership_relation(memo_key, name_source);
     let relation = table_plan.ensure_direct(
         ownership,
-        vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
+        vec![DirectSubject::Type(table_plan.well_known.user.clone())],
     );
     let Some(identity_cols) = resolve_row_identity(ctx.source_table, ctx.db) else {
         skip_source_without_row_identity(table_plan, ctx.source_table, missing_what, ctx.db);
@@ -106,9 +106,7 @@ pub(crate) fn emit_row_presence_gate<DB: DatabaseLike>(
     };
     let relation = table_plan.ensure_direct(
         row_presence_relation_name(columns),
-        vec![DirectSubject::Wildcard(
-            table_plan.well_known.user.to_string(),
-        )],
+        vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())],
     );
     table_plan.add_source(TupleSource::RowPresenceGate {
         table: source_table.clone(),
@@ -212,9 +210,7 @@ pub(crate) fn emit_constant_bool<DB: DatabaseLike>(
         };
         let relation = table_plan.ensure_direct(
             public_relation(),
-            vec![DirectSubject::Wildcard(
-                table_plan.well_known.user.to_string(),
-            )],
+            vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())],
         );
         table_plan.add_source(TupleSource::ConstantTrue {
             table: source_table.clone(),

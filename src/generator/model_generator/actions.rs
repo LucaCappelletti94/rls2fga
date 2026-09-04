@@ -473,7 +473,7 @@ pub(crate) fn fill_uncovered_actions_with_deny(table_plan: &mut TypePlan) -> Vec
 /// Answer for `INSERT ... ON CONFLICT ... DO UPDATE`, which updates the conflicting
 /// row and so needs the UPDATE policies too. Runs once the actions are final, and
 /// is left out wherever it would add no requirement to `can_insert`.
-pub(crate) fn define_upsert_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn define_upsert_relations(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     for plan in all_types.values_mut() {
         let Some(insert) = plan.computed_relations.get(&can_insert_relation()) else {
             continue;
@@ -500,7 +500,7 @@ pub(crate) fn define_upsert_relations(all_types: &mut BTreeMap<String, TypePlan>
 /// `USING` clause as well as the `SELECT` policies. That is the `USING` half where
 /// the two `UPDATE` clauses differ, and `can_update` itself where they agree or
 /// where nothing admits an update. Runs once the actions are final.
-pub(crate) fn define_locking_read_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn define_locking_read_relations(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     for plan in all_types.values_mut() {
         if !plan.computed_relations.contains_key(&can_update_relation()) {
             continue;
@@ -523,7 +523,7 @@ pub(crate) fn define_locking_read_relations(all_types: &mut BTreeMap<String, Typ
 /// Every type carries `can_update_without_reading`, because an action relation nobody
 /// defined reads as "the consumer decides". Where no rule admits an update it points at
 /// `can_update`, which is already the denial.
-pub(crate) fn define_blanket_update_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn define_blanket_update_relations(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     for plan in all_types.values_mut() {
         if plan
             .computed_relations

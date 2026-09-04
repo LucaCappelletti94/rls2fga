@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::types::{stable_hex_suffix, ColumnName, RelationName, TableId};
+use crate::types::{stable_hex_suffix, ColumnName, RelationName, TableId, TypeName};
 
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
@@ -77,9 +77,13 @@ pub fn is_current_user_keyword_name(name: &str) -> bool {
 
 pub use sql_traits::utils::identifier_resolution::{builtin_function_name, folded_function_name};
 
-/// Canonicalize a SQL object name to `[a-z0-9_]`, keeping the terminal relation
-/// when schema-qualified. Falls back to `resource` when nothing survives.
-pub fn canonical_fga_type_name(name: &str) -> String {
+/// Canonicalize a SQL object name to the type name the model declares, keeping the
+/// terminal relation when schema-qualified. Falls back to `resource` when nothing
+/// survives.
+///
+/// The whole answer, reserved names included, so a caller that references the result and a
+/// caller that defines it cannot end up with two spellings.
+pub fn canonical_fga_type_name(name: &str) -> TypeName {
     let relation = parse_target(name).map_or_else(
         || unquote_identifier(name.trim()).to_string(),
         |target| target.name().to_string(),
@@ -106,22 +110,14 @@ pub fn canonical_fga_type_name(name: &str) -> String {
         }
     }
 
-    let trimmed = normalized.trim_matches('_').to_string();
-    let canonical = if trimmed.is_empty() {
-        "resource".to_string()
+    let trimmed = normalized.trim_matches('_');
+    // A leading digit and a reserved word are both `TypeName`'s rules, applied here so
+    // this is the only place a type name is decided.
+    TypeName::canonicalized(if trimmed.is_empty() {
+        "resource"
     } else {
         trimmed
-    };
-
-    if canonical
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_digit())
-    {
-        return format!("t_{canonical}");
-    }
-
-    canonical
+    })
 }
 
 /// `OpenFGA` rejects a relation name longer than this.
@@ -173,7 +169,7 @@ pub fn role_scope_name(privilege: &str, roles: &[String]) -> RelationName {
     exact.dedup();
     let canonical: Vec<String> = exact
         .iter()
-        .map(|role| canonical_fga_type_name(role))
+        .map(|role| canonical_fga_type_name(role).to_string())
         .collect();
     let base = canonical_fga_type_name(&format!("{privilege}_{}", canonical.join("_")));
     let key = if exact == canonical {
@@ -275,7 +271,7 @@ fn scope_relation_name(prefix: &str, key: &str) -> RelationName {
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.
-pub fn parent_type_from_fk_column(fk_column: &str) -> String {
+pub fn parent_type_from_fk_column(fk_column: &str) -> TypeName {
     canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column))
 }
 
@@ -630,7 +626,7 @@ mod tests {
             "\u{65e5}\u{672c}",
         ] {
             assert!(
-                !canonical_fga_type_name(name).is_empty(),
+                !canonical_fga_type_name(name).as_str().is_empty(),
                 "canonical_fga_type_name({name:?}) must name something"
             );
         }

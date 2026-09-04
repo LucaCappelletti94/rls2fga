@@ -1,6 +1,7 @@
 //! Parser-independent output contracts and row evaluation.
 //!
-//! Unchecked `OpenFGA` names are internal.
+//! A type or relation name cannot be built from an unresolved spelling. Object and subject
+//! names are strings, encoded in one place by [`identity`].
 //!
 //! ```compile_fail
 //! use rls2fga_types::{RelationName, TypeName};
@@ -27,7 +28,12 @@ extern crate alloc;
 
 mod action_relations;
 mod identifiers;
-mod identity;
+/// One place a database value becomes the name of an object.
+///
+/// `OpenFGA` refuses some values outright and silently reinterprets others, so every name
+/// either side of the pipeline renders passes through here. A second spelling anywhere
+/// reintroduces the drift this exists to close.
+pub mod identity;
 mod notes;
 mod patterns;
 mod records;

@@ -316,7 +316,7 @@ impl ObjectKey {
     /// so this refuses instead.
     pub(crate) fn render<R: RowValues + ?Sized>(
         &self,
-        object_type: &str,
+        object_type: &TypeName,
         row: &R,
     ) -> Result<Option<String>, RecordError> {
         match self.evaluate(object_type, row) {
@@ -326,7 +326,7 @@ impl ObjectKey {
         }
     }
 
-    fn evaluate<R: RowValues + ?Sized>(&self, object_type: &str, row: &R) -> Eval<String> {
+    fn evaluate<R: RowValues + ?Sized>(&self, object_type: &TypeName, row: &R) -> Eval<String> {
         let mut values = Vec::with_capacity(self.parts.len());
         for part in &self.parts {
             match single_value(part, row) {
@@ -437,7 +437,7 @@ impl SubjectKey {
     /// target accepts.
     pub fn render<R: RowValues + ?Sized>(
         &self,
-        subject_type: &str,
+        subject_type: &TypeName,
         row: &R,
     ) -> Result<Vec<String>, RecordError> {
         match self.evaluate(subject_type, row) {
@@ -447,7 +447,11 @@ impl SubjectKey {
         }
     }
 
-    fn evaluate<R: RowValues + ?Sized>(&self, subject_type: &str, row: &R) -> Eval<Vec<String>> {
+    fn evaluate<R: RowValues + ?Sized>(
+        &self,
+        subject_type: &TypeName,
+        row: &R,
+    ) -> Eval<Vec<String>> {
         if self.wildcard {
             return Eval::Value(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
         }
@@ -787,18 +791,18 @@ pub enum ReplayScope {
     /// Every fact `relations` state about objects of `object_type`.
     Object {
         /// Type the object belongs to.
-        object_type: String,
+        object_type: TypeName,
         /// The relations this query's rows can carry.
         relations: Vec<RelationName>,
     },
     /// Every fact `relation` grants on `object_type` rows to subjects of `subject_type`.
     Subject {
         /// Type the subject belongs to.
-        subject_type: String,
+        subject_type: TypeName,
         /// Relation the facts grant through.
         relation: RelationName,
         /// Type of the objects the facts are about.
-        object_type: String,
+        object_type: TypeName,
     },
 }
 
@@ -1021,10 +1025,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         }
     }
 
-    let object = match template
-        .object_key
-        .evaluate(template.object_type.as_str(), row)
-    {
+    let object = match template.object_key.evaluate(&template.object_type, row) {
         Eval::Value(object) => object,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
@@ -1059,10 +1060,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         None => None,
     };
 
-    let subjects = match template
-        .subject_key
-        .evaluate(template.subject_type.as_str(), row)
-    {
+    let subjects = match template.subject_key.evaluate(&template.subject_type, row) {
         Eval::Value(subjects) => subjects,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
@@ -1478,6 +1476,11 @@ fn trim_leading_zeroes(digits: &mut String) {
 mod tests {
     use super::*;
 
+    /// A type name, since `render` takes the checked form.
+    fn named(name: &str) -> TypeName {
+        TypeName::canonicalized(name)
+    }
+
     use alloc::collections::BTreeMap;
 
     fn member_relation() -> RelationName {
@@ -1547,7 +1550,7 @@ mod tests {
         ]);
         let row = Row::of(&[("paper_id", "1"), ("viewer", "a|b")]);
         assert_eq!(
-            key.render("paper_shares", &row).unwrap(),
+            key.render(&named("paper_shares"), &row).unwrap(),
             Some("paper_shares:1|~617c62".to_string())
         );
     }
@@ -1560,7 +1563,7 @@ mod tests {
         ]);
         let row = Row::of(&[("paper_id", "1")]);
         assert_eq!(
-            key.render("paper_shares", &row),
+            key.render(&named("paper_shares"), &row),
             Err(RecordError::ColumnAbsent("viewer".to_string()))
         );
     }
@@ -1574,7 +1577,7 @@ mod tests {
         let row = TimestampTzRow("2026-01-01T01:00:00+01:00");
 
         assert_eq!(
-            key.render("readings", &row),
+            key.render(&named("readings"), &row),
             Err(RecordError::ColumnUndecodable("observed_at".to_string()))
         );
     }
@@ -1659,7 +1662,7 @@ mod tests {
         let key = ObjectKey::column("id");
         let row = Row::of(&[("id", &"a".repeat(300))]);
         assert_eq!(
-            key.render("docs", &row),
+            key.render(&named("docs"), &row),
             Err(RecordError::RowCannotBeNamed(305))
         );
     }
@@ -1670,8 +1673,8 @@ mod tests {
         // type and not another.
         let key = ObjectKey::column("id");
         let row = Row::of(&[("id", &"a".repeat(250))]);
-        assert!(key.render("d", &row).unwrap().is_some());
-        assert!(key.render("a_much_longer_type_name", &row).is_err());
+        assert!(key.render(&named("d"), &row).unwrap().is_some());
+        assert!(key.render(&named("a_much_longer_type_name"), &row).is_err());
     }
 
     #[test]
@@ -1679,14 +1682,14 @@ mod tests {
         let key = SubjectKey::column("owner");
         let row = Row::of(&[("owner", "alice smith")]);
         assert_eq!(
-            key.render("user", &row).unwrap(),
+            key.render(&named("user"), &row).unwrap(),
             vec!["user:~616c69636520736d697468".to_string()]
         );
 
         // Bytes, not characters: two-byte runes spend the budget twice as fast.
         let long = Row::of(&[("owner", &"e".repeat(600))]);
         assert!(matches!(
-            key.render("user", &long),
+            key.render(&named("user"), &long),
             Err(RecordError::RowCannotBeNamed(_))
         ));
     }
@@ -1700,11 +1703,11 @@ mod tests {
         // set to non-ASCII is what would make it live, and this is the test that notices.
         let awkward = Row::of(&[("id", "caf\u{e9} \u{1f600}"), ("owner", "\u{5317}\u{4eac}")]);
         let object = ObjectKey::column("id")
-            .render("docs", &awkward)
+            .render(&named("docs"), &awkward)
             .unwrap()
             .expect("the row names its object");
         let subjects = SubjectKey::column("owner")
-            .render("user", &awkward)
+            .render(&named("user"), &awkward)
             .unwrap();
 
         assert!(object.is_ascii(), "object rendered non-ASCII: {object}");
@@ -1721,11 +1724,15 @@ mod tests {
         // is live. Both numbers were measured against v1.11.6.
         let long = Row::of(&[("id", &"a".repeat(300)), ("owner", &"a".repeat(300))]);
         assert!(
-            ObjectKey::column("id").render("docs", &long).is_err(),
+            ObjectKey::column("id")
+                .render(&named("docs"), &long)
+                .is_err(),
             "an object is capped at 256 including its type"
         );
         assert!(
-            SubjectKey::column("owner").render("user", &long).is_ok(),
+            SubjectKey::column("owner")
+                .render(&named("user"), &long)
+                .is_ok(),
             "a subject is capped at 512, so the same value fits"
         );
     }
@@ -1736,11 +1743,15 @@ mod tests {
         // string a spelling of its own rather than leave the name unspellable.
         let row = Row::of(&[("id", ""), ("owner", "")]);
         assert_eq!(
-            ObjectKey::column("id").render("docs", &row).unwrap(),
+            ObjectKey::column("id")
+                .render(&named("docs"), &row)
+                .unwrap(),
             Some("docs:~".to_string())
         );
         assert_eq!(
-            SubjectKey::column("owner").render("user", &row).unwrap(),
+            SubjectKey::column("owner")
+                .render(&named("user"), &row)
+                .unwrap(),
             vec!["user:~".to_string()]
         );
     }
@@ -1752,7 +1763,9 @@ mod tests {
         // write and answers allowed for an unrelated user.
         let row = Row::of(&[("owner", "*")]);
         assert_eq!(
-            SubjectKey::column("owner").render("user", &row).unwrap(),
+            SubjectKey::column("owner")
+                .render(&named("user"), &row)
+                .unwrap(),
             vec!["user:~2a".to_string()]
         );
     }
@@ -1760,7 +1773,7 @@ mod tests {
     #[test]
     fn an_object_slice_renders_its_key_as_a_row_would() {
         let scope = ReplayScope::Object {
-            object_type: "readings".to_string(),
+            object_type: named("readings"),
             relations: vec![member_relation()],
         };
         // Compound keys join with the same separator, and a value carrying the
@@ -1776,9 +1789,9 @@ mod tests {
     #[test]
     fn a_subject_slice_renders_its_one_key_value() {
         let scope = ReplayScope::Subject {
-            subject_type: "user".to_string(),
+            subject_type: named("user"),
             relation: member_relation(),
-            object_type: "docs".to_string(),
+            object_type: named("docs"),
         };
         assert_eq!(scope.rendered_key(&["alice"]).unwrap(), "user:alice");
         assert_eq!(
@@ -1791,9 +1804,9 @@ mod tests {
     #[test]
     fn a_subject_slice_refuses_a_compound_key() {
         let scope = ReplayScope::Subject {
-            subject_type: "user".to_string(),
+            subject_type: named("user"),
             relation: member_relation(),
-            object_type: "docs".to_string(),
+            object_type: named("docs"),
         };
         assert_eq!(
             scope.rendered_key(&["a", "b"]),
@@ -1805,7 +1818,7 @@ mod tests {
     fn an_oversize_slice_key_refuses_rather_than_shortening() {
         let long = "x".repeat(600);
         let scope = ReplayScope::Object {
-            object_type: "docs".to_string(),
+            object_type: named("docs"),
             relations: vec![member_relation()],
         };
         assert!(matches!(
@@ -2293,7 +2306,7 @@ mod tests {
             .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
             .with_cell("user_id", RowCell::Text(Cow::Borrowed("u|1")));
         assert_eq!(
-            composite.render("account", &row).unwrap(),
+            composite.render(&named("account"), &row).unwrap(),
             vec!["account:t1|~757c31".to_string()]
         );
 
@@ -2301,7 +2314,9 @@ mod tests {
             .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
             .with_cell("user_id", RowCell::Null);
         assert_eq!(
-            composite.render("account", &null_composite).unwrap(),
+            composite
+                .render(&named("account"), &null_composite)
+                .unwrap(),
             Vec::<String>::new()
         );
 
@@ -2309,7 +2324,7 @@ mod tests {
             .with_cell("tenant_id", RowCell::Text(Cow::Borrowed("t1")))
             .with_cell("user_id", RowCell::Text(Cow::Owned("x".repeat(600))));
         assert!(matches!(
-            composite.render("account", &long_composite),
+            composite.render(&named("account"), &long_composite),
             Err(RecordError::RowCannotBeNamed(_))
         ));
 
@@ -2324,7 +2339,7 @@ mod tests {
             ]),
         );
         assert_eq!(
-            list_subject.render("user", &list_row).unwrap(),
+            list_subject.render(&named("user"), &list_row).unwrap(),
             vec![
                 "user:alice".to_string(),
                 "user:~626f6220736d697468".to_string()
@@ -2336,25 +2351,25 @@ mod tests {
             RowList::Values(vec![RowCell::Null, RowCell::Null]),
         );
         assert_eq!(
-            list_subject.render("user", &empty_list).unwrap(),
+            list_subject.render(&named("user"), &empty_list).unwrap(),
             Vec::<String>::new()
         );
 
         let null_list = FullRow::default().with_list("editors", RowList::Null);
         assert_eq!(
-            list_subject.render("user", &null_list).unwrap(),
+            list_subject.render(&named("user"), &null_list).unwrap(),
             Vec::<String>::new()
         );
 
         let undecodable_list = FullRow::default().with_list("editors", RowList::Undecodable);
         assert_eq!(
-            list_subject.render("user", &undecodable_list),
+            list_subject.render(&named("user"), &undecodable_list),
             Err(RecordError::ColumnUndecodable("editors".to_string()))
         );
 
         let absent_list = FullRow::default();
         assert_eq!(
-            list_subject.render("user", &absent_list),
+            list_subject.render(&named("user"), &absent_list),
             Err(RecordError::ColumnAbsent("editors".to_string()))
         );
 
@@ -2363,7 +2378,7 @@ mod tests {
             RowList::Values(vec![RowCell::Integer(Cow::Borrowed("1"))]),
         );
         assert!(matches!(
-            list_subject.render("user", &mismatched_list),
+            list_subject.render(&named("user"), &mismatched_list),
             Err(RecordError::ColumnTypeMismatch { .. })
         ));
 
@@ -2378,7 +2393,7 @@ mod tests {
             ))]),
         );
         assert_eq!(
-            zoned_list.render("instant", &bad_zone),
+            zoned_list.render(&named("instant"), &bad_zone),
             Err(RecordError::ColumnUndecodable("instants".to_string()))
         );
     }
@@ -2393,22 +2408,22 @@ mod tests {
 
         let absent = FullRow::default();
         assert_eq!(
-            object_key.render("docs", &absent),
+            object_key.render(&named("docs"), &absent),
             Err(RecordError::ColumnAbsent("meta".to_string()))
         );
 
         let null = FullRow::default().with_json("meta", RowCell::Null);
-        assert_eq!(object_key.render("docs", &null).unwrap(), None);
+        assert_eq!(object_key.render(&named("docs"), &null).unwrap(), None);
 
         let undecodable = FullRow::default().with_json("meta", RowCell::Undecodable);
         assert_eq!(
-            object_key.render("docs", &undecodable),
+            object_key.render(&named("docs"), &undecodable),
             Err(RecordError::ColumnUndecodable("meta".to_string()))
         );
 
         let owner = FullRow::default().with_json("meta", RowCell::Text(Cow::Borrowed("alice")));
         assert_eq!(
-            object_key.render("docs", &owner).unwrap(),
+            object_key.render(&named("docs"), &owner).unwrap(),
             Some("docs:alice".to_string())
         );
 
@@ -2417,7 +2432,7 @@ mod tests {
             RowCell::TimestampTz(Cow::Borrowed("2026-01-01T01:00:00+01:00")),
         );
         assert_eq!(
-            object_key.render("docs", &bad_zone),
+            object_key.render(&named("docs"), &bad_zone),
             Err(RecordError::ColumnUndecodable("meta".to_string()))
         );
     }
@@ -2481,7 +2496,7 @@ mod tests {
             )
             .with_cell("user_id", RowCell::Text(Cow::Borrowed("alice")));
         assert_eq!(
-            composite.render("account", &bad_zone),
+            composite.render(&named("account"), &bad_zone),
             Err(RecordError::ColumnUndecodable("seen_at".to_string()))
         );
 
@@ -2490,7 +2505,7 @@ mod tests {
             RowCell::TimestampTz(Cow::Borrowed("2026-01-01T00:00:00Z")),
         );
         assert_eq!(
-            composite.render("account", &missing_rest),
+            composite.render(&named("account"), &missing_rest),
             Err(RecordError::ColumnAbsent("user_id".to_string()))
         );
 
@@ -2713,7 +2728,7 @@ mod tests {
     #[test]
     fn bound_queries_enforce_the_key_placeholder_set() {
         let scope = ReplayScope::Object {
-            object_type: "docs".to_string(),
+            object_type: named("docs"),
             relations: vec![member_relation()],
         };
         let valid = BoundQuery::new(

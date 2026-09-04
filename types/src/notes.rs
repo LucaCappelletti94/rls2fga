@@ -7,7 +7,7 @@
 //! what the database says.
 
 use crate::prelude::*;
-use crate::{ColumnName, RelationName, TableId};
+use crate::{ColumnName, RelationName, TableId, TypeName};
 use crate::{ConfidenceLevel, RolePrivilege};
 use alloc::borrow::Cow;
 use core::fmt;
@@ -413,7 +413,7 @@ pub enum TranslationNote {
         #[serde(with = "table_id_as_str")]
         table: TableId,
         /// Type the bridge would have pointed at.
-        parent_type: String,
+        parent_type: TypeName,
         /// Column the bridge would have read, absent from `table`.
         column: ColumnName,
     },
@@ -534,6 +534,20 @@ pub enum TranslationNote {
         /// Role carrying `BYPASSRLS`.
         role: String,
     },
+    /// A partition whose rows a direct read leaves unfiltered.
+    ///
+    /// `PostgreSQL` applies a parent's policies to rows reached through the parent, so a
+    /// partition queried by name is filtered by its own policies alone, and a partition of
+    /// a protected root has none. The model answers for the row, so it answers for the read
+    /// through the root and not for this one.
+    PartitionReadDirectlyIsUnfiltered {
+        /// Partition a reader can name.
+        #[serde(with = "table_id_as_str")]
+        table: TableId,
+        /// Root carrying the policies that a read through it applies.
+        #[serde(with = "table_id_as_str")]
+        root: TableId,
+    },
     /// A table whose owner is exempt from its own policies, which is the default.
     TableOwnerBypassesPolicies {
         /// Table that does not force row level security on its owner.
@@ -561,9 +575,9 @@ impl TranslationNote {
             | Self::RowsCannotBeNamed { .. }
             | Self::BridgeColumnMissing { .. }
             | Self::PolicyBoundToDdlTimeRole { .. } => NoteSeverity::Unhandled,
-            Self::RoleBypassesPolicies { .. } | Self::TableOwnerBypassesPolicies { .. } => {
-                NoteSeverity::Exempt
-            }
+            Self::RoleBypassesPolicies { .. }
+            | Self::TableOwnerBypassesPolicies { .. }
+            | Self::PartitionReadDirectlyIsUnfiltered { .. } => NoteSeverity::Exempt,
             Self::CoveringPoliciesBelowThreshold { .. } | Self::ClauseBelowThreshold { .. } => {
                 NoteSeverity::BelowThreshold
             }
@@ -606,6 +620,9 @@ impl TranslationNote {
                 table: spelling, ..
             }
             | Self::TableOwnerBypassesPolicies {
+                table: spelling, ..
+            }
+            | Self::PartitionReadDirectlyIsUnfiltered {
                 table: spelling, ..
             }
             | Self::InheritanceParentReadsOwnRowsOnly {
@@ -935,6 +952,13 @@ impl fmt::Display for TranslationNote {
                 f,
                 "Role '{role}' has BYPASSRLS, so every policy is skipped for it and the \
                  model answers for nobody connecting as that role"
+            ),
+            Self::PartitionReadDirectlyIsUnfiltered { table, root } => write!(
+                f,
+                "'{table}' is a partition of '{root}', which carries the policies, so a read \
+                 naming '{table}' is filtered by nothing. The model answers for a read \
+                 through '{root}'. ALTER TABLE '{table}' ENABLE ROW LEVEL SECURITY and give \
+                 it the same policies, or revoke access to it"
             ),
             Self::TableOwnerBypassesPolicies { table, owner } => {
                 let who = owner.as_ref().map_or_else(

@@ -135,7 +135,7 @@ fn a_relation_the_model_does_not_define_is_refused() {
             ..owner_row()
         }),
         Err(TupleRowError::UnknownRelation {
-            type_name: "docs".to_string(),
+            type_name: rls2fga::types::TypeName::canonicalized("docs"),
             relation: "editor".to_string(),
         })
     );
@@ -152,7 +152,7 @@ fn a_computed_relation_takes_no_tuples() {
             ..owner_row()
         }),
         Err(TupleRowError::RelationTakesNoTuples {
-            type_name: "docs".to_string(),
+            type_name: rls2fga::types::TypeName::canonicalized("docs"),
             relation: "can_select".to_string(),
         }),
         "can_select is computed from owner, so a tuple on it is a mistake the server also refuses"
@@ -236,7 +236,7 @@ fn a_condition_on_a_relation_that_names_none_is_refused() {
             ..owner_row()
         }),
         Err(TupleRowError::ConditionMismatch {
-            type_name: "docs".to_string(),
+            type_name: rls2fga::types::TypeName::canonicalized("docs"),
             relation: "owner".to_string(),
             named: Some("tenant_matches".to_string()),
         }),
@@ -413,7 +413,7 @@ fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
             condition: None,
         }),
         Err(TupleRowError::ConditionMismatch {
-            type_name: "documents".to_string(),
+            type_name: rls2fga::types::TypeName::canonicalized("documents"),
             relation: relation.to_string(),
             named: None,
         }),

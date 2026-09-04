@@ -37,7 +37,7 @@ pub(crate) fn sorted_role_relation_names(
 
     let mut base_counts: BTreeMap<String, usize> = BTreeMap::new();
     for (name, _) in &pairs {
-        let base = canonical_fga_type_name(name);
+        let base = canonical_fga_type_name(name).to_string();
         *base_counts.entry(base).or_insert(0) += 1;
     }
 
@@ -45,7 +45,7 @@ pub(crate) fn sorted_role_relation_names(
     let mut out = Vec::with_capacity(pairs.len());
 
     for (name, level) in pairs {
-        let base = canonical_fga_type_name(&name);
+        let base = canonical_fga_type_name(&name).to_string();
         let mut token = if base_counts.get(&base).copied().unwrap_or(0) > 1 {
             format!("{base}_{}", stable_hex_suffix(&name))
         } else {
