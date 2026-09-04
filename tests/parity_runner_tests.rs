@@ -7,6 +7,8 @@
 
 #![cfg(all(not(target_os = "windows"), feature = "client"))]
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use rls2fga::types::{ActionAnswer, ActionStatement};
@@ -14,6 +16,23 @@ use rls2fga::types::{ActionAnswer, ActionStatement};
 mod support;
 
 use support::parity::{assert_agrees, Cluster, Mutations, ParityCase, Principal};
+
+/// One case, ready to run, beside the name a failure reports.
+type Case = (&'static str, Pin<Box<dyn Future<Output = ()> + Send>>);
+
+/// Every case, named from the function that is it.
+///
+/// One list rather than a list beside a mirror of it: the count a failure reports and the
+/// cases that ran cannot disagree, and adding a case is one edit.
+macro_rules! cases {
+    ($cluster:expr, [$($name:ident),+ $(,)?]) => {{
+        let cases: Vec<Case> = vec![$((
+            stringify!($name),
+            Box::pin($name(Arc::clone(&$cluster))),
+        )),+];
+        cases
+    }};
+}
 
 /// Every case, one at a time against one container pair.
 ///
@@ -25,654 +44,91 @@ use support::parity::{assert_agrees, Cluster, Mutations, ParityCase, Principal};
 #[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
 async fn every_parity_case_agrees() {
     let cluster = Arc::new(Cluster::start().await);
+    let cases = cases![
+        cluster,
+        [
+            the_runner_agrees_on_direct_ownership,
+            the_runner_agrees_on_membership,
+            the_runner_agrees_on_a_role_scoped_restriction,
+            both_one_sided_cases_pass,
+            the_runner_finds_a_planted_divergence,
+            an_update_candidate_exercises_with_check,
+            a_nested_protected_read_denies_on_both_sides,
+            a_split_function_owner_does_not_bypass_row_level_security,
+            a_strict_function_hides_the_null_row,
+            a_reserved_name_collision_keeps_two_types,
+            a_reserved_parent_is_referenced_by_its_defined_name,
+            a_qualified_call_is_not_the_declared_accessor,
+            a_function_local_search_path_picks_the_membership_table,
+            an_unplaceable_membership_table_grants_nothing,
+            a_restrictive_flag_narrows_a_blanket_read,
+            a_blanket_delete_does_not_widen_the_read,
+            a_shadowed_clock_is_not_the_request_clock,
+            an_update_policy_without_using_updates_nothing,
+            a_locking_read_applies_the_update_policy,
+            an_altered_policy_is_read_as_altered,
+            folded_identifiers_name_one_table,
+            two_owner_columns_grant_independently,
+            an_uncorrelated_membership_admits_every_row,
+            a_parent_key_subquery_inherits_the_parents_rule,
+            a_correlated_column_membership_compares_the_named_columns,
+            a_read_and_a_write_are_judged_separately,
+            an_aliased_quoted_guard_falls_closed,
+            mutually_recursive_policies_return_no_row,
+            a_partition_is_named_after_its_root,
+            a_composite_foreign_key_membership_joins_on_both_columns,
+            a_joined_inner_rule_drops_the_unjoined_row,
+            a_quoted_role_is_a_different_role,
+            a_declared_session_set_grants_beside_the_owner,
+            an_array_and_a_jsonb_field_name_the_caller,
+            a_clock_guard_holds_on_a_zoned_and_a_dated_column,
+            a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name,
+            a_composite_key_share_stays_within_its_tenant,
+            a_caller_role_residual_falls_closed,
+            a_computed_argument_is_not_captured_by_the_body,
+            a_failed_case_leaves_no_role_behind,
+            a_role_scoped_membership_read_gates_the_parent,
+            a_noinherit_member_of_a_scoped_role_reads_nothing,
+            a_shared_paper_reads_through_either_arm,
+            a_token_claim_list_grants_by_membership,
+            one_shared_grant_ladder_answers_two_thresholds,
+            three_refused_spellings_fall_closed,
+            a_missing_session_setting_is_not_a_denial,
+            a_request_time_guard_holds_at_two_instants,
+            a_grace_period_keeps_its_offset,
+            an_expiring_share_leaves_the_owner_arm_alone,
+            an_expiring_share_keeps_its_grace_period,
+            an_expiring_membership_row_gates_its_own_document,
+            an_expiring_holder_row_admits_the_caller_to_everything,
+            a_definer_wrapper_answers_for_a_caller_without_the_grant,
+            a_restrictive_policy_binds_only_its_role,
+            one_policy_name_on_two_tables_keeps_two_comparisons,
+            two_viewers_of_one_paper_load_and_union,
+            two_expiring_viewers_of_one_paper_gate_independently,
+            two_deadlines_need_one_witnessing_row,
+            a_clock_gated_record_replays_from_its_own_row,
+            a_share_record_replays_onto_another_types_object,
+            a_role_ladder_answers_four_thresholds,
+            an_insert_that_reads_back_applies_the_select_policy,
+            an_upsert_applies_the_update_policy_too,
+            every_exact_support_case_agrees,
+            a_missing_statement_answer_fails_the_case,
+            a_row_the_model_cannot_name_fails_the_case,
+            a_declared_write_stays_on_its_own_table,
+            a_mutation_spelling_resolves_to_exactly_one_table,
+        ]
+    ];
+    let total = cases.len();
+
     let mut failures = Vec::new();
-    let total = CASES.len();
-
-    if let Err(joined) =
-        tokio::spawn(the_runner_agrees_on_direct_ownership(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "the_runner_agrees_on_direct_ownership: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(the_runner_agrees_on_membership(Arc::clone(&cluster))).await {
-        failures.push(format!(
-            "the_runner_agrees_on_membership: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(the_runner_agrees_on_a_role_scoped_restriction(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "the_runner_agrees_on_a_role_scoped_restriction: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(both_one_sided_cases_pass(Arc::clone(&cluster))).await {
-        failures.push(format!(
-            "both_one_sided_cases_pass: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(the_runner_finds_a_planted_divergence(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "the_runner_finds_a_planted_divergence: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_update_candidate_exercises_with_check(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_update_candidate_exercises_with_check: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_nested_protected_read_denies_on_both_sides(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_nested_protected_read_denies_on_both_sides: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_split_function_owner_does_not_bypass_row_level_security(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_split_function_owner_does_not_bypass_row_level_security: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(a_strict_function_hides_the_null_row(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_strict_function_hides_the_null_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_reserved_name_collision_keeps_two_types(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_reserved_name_collision_keeps_two_types: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_reserved_parent_is_referenced_by_its_defined_name(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_reserved_parent_is_referenced_by_its_defined_name: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_qualified_call_is_not_the_declared_accessor(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_qualified_call_is_not_the_declared_accessor: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_function_local_search_path_picks_the_membership_table(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_function_local_search_path_picks_the_membership_table: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_unplaceable_membership_table_grants_nothing(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_unplaceable_membership_table_grants_nothing: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_restrictive_flag_narrows_a_blanket_read(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_restrictive_flag_narrows_a_blanket_read: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_blanket_delete_does_not_widen_the_read(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_blanket_delete_does_not_widen_the_read: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_shadowed_clock_is_not_the_request_clock(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_shadowed_clock_is_not_the_request_clock: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_update_policy_without_using_updates_nothing(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_update_policy_without_using_updates_nothing: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_locking_read_applies_the_update_policy(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_locking_read_applies_the_update_policy: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(an_altered_policy_is_read_as_altered(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "an_altered_policy_is_read_as_altered: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(folded_identifiers_name_one_table(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "folded_identifiers_name_one_table: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(two_owner_columns_grant_independently(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "two_owner_columns_grant_independently: {}",
-            panic_message(joined)
-        ));
+    for (name, case) in cases {
+        // Each case in its own task, so a panic fails that case, names it, and leaves the
+        // rest to run.
+        if let Err(joined) = tokio::spawn(case).await {
+            failures.push(format!("{name}: {}", panic_message(joined)));
+        }
     }
 
-    if let Err(joined) = tokio::spawn(an_uncorrelated_membership_admits_every_row(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_uncorrelated_membership_admits_every_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_parent_key_subquery_inherits_the_parents_rule(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_parent_key_subquery_inherits_the_parents_rule: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_correlated_column_membership_compares_the_named_columns(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_correlated_column_membership_compares_the_named_columns: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_read_and_a_write_are_judged_separately(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_read_and_a_write_are_judged_separately: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(an_aliased_quoted_guard_falls_closed(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "an_aliased_quoted_guard_falls_closed: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(mutually_recursive_policies_return_no_row(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "mutually_recursive_policies_return_no_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(a_partition_is_named_after_its_root(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_partition_is_named_after_its_root: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_composite_foreign_key_membership_joins_on_both_columns(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_composite_foreign_key_membership_joins_on_both_columns: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_joined_inner_rule_drops_the_unjoined_row(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_joined_inner_rule_drops_the_unjoined_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_quoted_role_is_a_different_role(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_quoted_role_is_a_different_role: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_declared_session_set_grants_beside_the_owner(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_declared_session_set_grants_beside_the_owner: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_array_and_a_jsonb_field_name_the_caller(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_array_and_a_jsonb_field_name_the_caller: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_clock_guard_holds_on_a_zoned_and_a_dated_column(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_clock_guard_holds_on_a_zoned_and_a_dated_column: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(
-        a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name(Arc::clone(&cluster)),
-    )
-    .await
-    {
-        failures.push(format!(
-            "a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_composite_key_share_stays_within_its_tenant(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_composite_key_share_stays_within_its_tenant: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(a_caller_role_residual_falls_closed(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_caller_role_residual_falls_closed: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_computed_argument_is_not_captured_by_the_body(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_computed_argument_is_not_captured_by_the_body: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(a_failed_case_leaves_no_role_behind(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_failed_case_leaves_no_role_behind: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_role_scoped_membership_read_gates_the_parent(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_role_scoped_membership_read_gates_the_parent: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_noinherit_member_of_a_scoped_role_reads_nothing(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_noinherit_member_of_a_scoped_role_reads_nothing: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_shared_paper_reads_through_either_arm(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_shared_paper_reads_through_either_arm: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_token_claim_list_grants_by_membership(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_token_claim_list_grants_by_membership: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(one_shared_grant_ladder_answers_two_thresholds(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "one_shared_grant_ladder_answers_two_thresholds: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(three_refused_spellings_fall_closed(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "three_refused_spellings_fall_closed: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_missing_session_setting_is_not_a_denial(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_missing_session_setting_is_not_a_denial: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_request_time_guard_holds_at_two_instants(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_request_time_guard_holds_at_two_instants: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_grace_period_keeps_its_offset(Arc::clone(&cluster))).await {
-        failures.push(format!(
-            "a_grace_period_keeps_its_offset: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_expiring_share_leaves_the_owner_arm_alone(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_expiring_share_leaves_the_owner_arm_alone: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_expiring_share_keeps_its_grace_period(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_expiring_share_keeps_its_grace_period: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_expiring_membership_row_gates_its_own_document(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "an_expiring_membership_row_gates_its_own_document: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_expiring_holder_row_admits_the_caller_to_everything(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "an_expiring_holder_row_admits_the_caller_to_everything: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_definer_wrapper_answers_for_a_caller_without_the_grant(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_definer_wrapper_answers_for_a_caller_without_the_grant: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_restrictive_policy_binds_only_its_role(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_restrictive_policy_binds_only_its_role: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(one_policy_name_on_two_tables_keeps_two_comparisons(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "one_policy_name_on_two_tables_keeps_two_comparisons: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(two_viewers_of_one_paper_load_and_union(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "two_viewers_of_one_paper_load_and_union: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(two_expiring_viewers_of_one_paper_gate_independently(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "two_expiring_viewers_of_one_paper_gate_independently: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(two_deadlines_need_one_witnessing_row(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "two_deadlines_need_one_witnessing_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_clock_gated_record_replays_from_its_own_row(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_clock_gated_record_replays_from_its_own_row: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_share_record_replays_onto_another_types_object(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_share_record_replays_onto_another_types_object: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) =
-        tokio::spawn(a_role_ladder_answers_four_thresholds(Arc::clone(&cluster))).await
-    {
-        failures.push(format!(
-            "a_role_ladder_answers_four_thresholds: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_insert_that_reads_back_applies_the_select_policy(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "an_insert_that_reads_back_applies_the_select_policy: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(an_upsert_applies_the_update_policy_too(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "an_upsert_applies_the_update_policy_too: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(every_exact_support_case_agrees(Arc::clone(&cluster))).await {
-        failures.push(format!(
-            "every_exact_support_case_agrees: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_missing_statement_answer_fails_the_case(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_missing_statement_answer_fails_the_case: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_row_the_model_cannot_name_fails_the_case(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_row_the_model_cannot_name_fails_the_case: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_declared_write_stays_on_its_own_table(Arc::clone(
-        &cluster,
-    )))
-    .await
-    {
-        failures.push(format!(
-            "a_declared_write_stays_on_its_own_table: {}",
-            panic_message(joined)
-        ));
-    }
-    if let Err(joined) = tokio::spawn(a_mutation_spelling_resolves_to_exactly_one_table(
-        Arc::clone(&cluster),
-    ))
-    .await
-    {
-        failures.push(format!(
-            "a_mutation_spelling_resolves_to_exactly_one_table: {}",
-            panic_message(joined)
-        ));
-    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -680,79 +136,6 @@ async fn every_parity_case_agrees() {
         failures.join("\n")
     );
 }
-
-/// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 69] = [
-    "the_runner_agrees_on_direct_ownership",
-    "the_runner_agrees_on_membership",
-    "the_runner_agrees_on_a_role_scoped_restriction",
-    "both_one_sided_cases_pass",
-    "the_runner_finds_a_planted_divergence",
-    "an_update_candidate_exercises_with_check",
-    "a_nested_protected_read_denies_on_both_sides",
-    "a_split_function_owner_does_not_bypass_row_level_security",
-    "a_strict_function_hides_the_null_row",
-    "a_reserved_name_collision_keeps_two_types",
-    "a_reserved_parent_is_referenced_by_its_defined_name",
-    "a_qualified_call_is_not_the_declared_accessor",
-    "a_function_local_search_path_picks_the_membership_table",
-    "an_unplaceable_membership_table_grants_nothing",
-    "a_restrictive_flag_narrows_a_blanket_read",
-    "a_blanket_delete_does_not_widen_the_read",
-    "a_shadowed_clock_is_not_the_request_clock",
-    "an_update_policy_without_using_updates_nothing",
-    "a_locking_read_applies_the_update_policy",
-    "an_altered_policy_is_read_as_altered",
-    "folded_identifiers_name_one_table",
-    "two_owner_columns_grant_independently",
-    "an_uncorrelated_membership_admits_every_row",
-    "a_parent_key_subquery_inherits_the_parents_rule",
-    "a_correlated_column_membership_compares_the_named_columns",
-    "a_read_and_a_write_are_judged_separately",
-    "an_aliased_quoted_guard_falls_closed",
-    "mutually_recursive_policies_return_no_row",
-    "a_partition_is_named_after_its_root",
-    "a_composite_foreign_key_membership_joins_on_both_columns",
-    "a_joined_inner_rule_drops_the_unjoined_row",
-    "a_quoted_role_is_a_different_role",
-    "a_declared_session_set_grants_beside_the_owner",
-    "an_array_and_a_jsonb_field_name_the_caller",
-    "a_clock_guard_holds_on_a_zoned_and_a_dated_column",
-    "a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name",
-    "a_composite_key_share_stays_within_its_tenant",
-    "a_caller_role_residual_falls_closed",
-    "a_computed_argument_is_not_captured_by_the_body",
-    "a_failed_case_leaves_no_role_behind",
-    "a_role_scoped_membership_read_gates_the_parent",
-    "a_noinherit_member_of_a_scoped_role_reads_nothing",
-    "a_shared_paper_reads_through_either_arm",
-    "a_token_claim_list_grants_by_membership",
-    "one_shared_grant_ladder_answers_two_thresholds",
-    "three_refused_spellings_fall_closed",
-    "a_missing_session_setting_is_not_a_denial",
-    "a_request_time_guard_holds_at_two_instants",
-    "a_grace_period_keeps_its_offset",
-    "an_expiring_share_leaves_the_owner_arm_alone",
-    "an_expiring_share_keeps_its_grace_period",
-    "an_expiring_membership_row_gates_its_own_document",
-    "an_expiring_holder_row_admits_the_caller_to_everything",
-    "a_definer_wrapper_answers_for_a_caller_without_the_grant",
-    "a_restrictive_policy_binds_only_its_role",
-    "one_policy_name_on_two_tables_keeps_two_comparisons",
-    "two_viewers_of_one_paper_load_and_union",
-    "two_expiring_viewers_of_one_paper_gate_independently",
-    "two_deadlines_need_one_witnessing_row",
-    "a_clock_gated_record_replays_from_its_own_row",
-    "a_share_record_replays_onto_another_types_object",
-    "a_role_ladder_answers_four_thresholds",
-    "an_insert_that_reads_back_applies_the_select_policy",
-    "an_upsert_applies_the_update_policy_too",
-    "every_exact_support_case_agrees",
-    "a_missing_statement_answer_fails_the_case",
-    "a_row_the_model_cannot_name_fails_the_case",
-    "a_declared_write_stays_on_its_own_table",
-    "a_mutation_spelling_resolves_to_exactly_one_table",
-];
 
 /// The message a panicking case left, so a failure reads like a test failure.
 fn panic_message(joined: tokio::task::JoinError) -> String {
