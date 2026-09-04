@@ -722,10 +722,6 @@ async fn openfga_allows(
     }
 }
 
-/// Apply the case, translate it, load the tuples, and compare every pair.
-///
-/// `doctor` sees the translation's own statement answers before they are used, which is
-/// how a test plants a divergence the runner has to find.
 /// Which property a case is asserting.
 ///
 /// The notes come from the translator under test, so they cannot be the pass condition.
@@ -883,6 +879,10 @@ pub(crate) async fn run_with(
     outcome
 }
 
+/// Apply the case, translate it, load the tuples, and compare every pair.
+///
+/// `doctor` sees the translation's own statement answers before they are used, which is
+/// how a test plants a divergence the runner has to find.
 async fn run_in(
     conn: &mut PgConnection,
     cluster: &Cluster,
@@ -891,6 +891,44 @@ async fn run_in(
     expectation: Class,
     doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
 ) -> Run {
+    apply_case(conn, case);
+    let (planned, disclosed) = plan_case(case, expectation);
+
+    let answers = doctor(planned.action_relations().to_vec());
+    let naming = planned.row_naming().to_vec();
+    let outputs = planned.outputs_accepting_gaps();
+
+    let objects = objects(conn, &naming, &case.not_read_directly);
+    let tuples = if case.loading_from_rows {
+        tuples_replaying_pure_queries(conn, case, outputs.tuple_queries(), &objects)
+    } else {
+        super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries())
+    };
+    let client = provision(cluster, case, &outputs.json_model(), &tuples).await;
+
+    let clock: Instant =
+        diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
+            .get_result(&mut *conn)
+            .expect("reading now() should succeed");
+    let model = Model {
+        client: &client,
+        answers: &answers,
+        case,
+    };
+    let mutations = resolved_mutations(case, &naming);
+
+    let mut observations =
+        compare_every_pair(cluster, database, &model, &objects, &mutations, &clock).await;
+    observations
+        .extend(compare_at_future_instant(conn, case, &model, &objects, &observations).await);
+    Run {
+        observations,
+        disclosures: disclosed,
+    }
+}
+
+/// Put the case's schema and rows in the database it was given.
+fn apply_case(conn: &mut PgConnection, case: &ParityCase) {
     for sql in &case.prelude {
         conn.batch_execute(sql)
             .unwrap_or_else(|error| panic!("{}: prelude {sql}: {error}", case.name));
@@ -901,7 +939,10 @@ async fn run_in(
         conn.batch_execute(sql)
             .unwrap_or_else(|error| panic!("{}: seed {sql}: {error}", case.name));
     }
+}
 
+/// Translate the case, and hold it to the class it declared.
+fn plan_case(case: &ParityCase, expectation: Class) -> (Translation, Vec<Disclosure>) {
     let (classified, db, registry) = super::classify_with(
         &case.schema,
         case.registry_json.as_deref(),
@@ -921,6 +962,15 @@ async fn run_in(
         .filter(|note| note.severity().diverges_from_database())
         .map(licence_of)
         .collect();
+    hold_to_class(case, expectation, &disclosed);
+    (planned, disclosed)
+}
+
+/// Refuse a case belonging to the other property.
+///
+/// Agreement is the wrong question where the translation says it diverges, and disclosure
+/// is the wrong question where it says nothing.
+fn hold_to_class(case: &ParityCase, expectation: Class, disclosed: &[Disclosure]) {
     match expectation {
         Class::Exact => assert!(
             disclosed.is_empty(),
@@ -928,7 +978,7 @@ async fn run_in(
              question. Outside the exactly supported class the property is disclosure, not \
              equality:\n{}",
             case.name,
-            sentences(&disclosed)
+            sentences(disclosed)
         ),
         Class::Disclosed => assert!(
             !disclosed.is_empty(),
@@ -937,21 +987,21 @@ async fn run_in(
             case.name
         ),
     }
-    let answers = doctor(planned.action_relations().to_vec());
-    let naming = planned.row_naming().to_vec();
-    let outputs = planned.outputs_accepting_gaps();
-    let model = outputs.json_model();
+}
 
-    let objects = objects(conn, &naming, &case.not_read_directly);
-    let tuples = if case.loading_from_rows {
-        tuples_replaying_pure_queries(conn, case, outputs.tuple_queries(), &objects)
-    } else {
-        super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries())
-    };
-
+/// Write the model and its tuples to a store of this case's own.
+///
+/// A model whose condition is malformed is refused outright, so the write is itself an
+/// assertion about what was generated.
+async fn provision(
+    cluster: &Cluster,
+    case: &ParityCase,
+    model: &rls2fga::generator::json_model::AuthorizationModel,
+    tuples: &[super::LoadedTuple],
+) -> openfga::Client {
     let mut service = openfga::connect(cluster.grpc_port).await;
     let store_id = openfga::create_store(&mut service, &case.name).await;
-    let model_id = openfga::write_authorization_model(&mut service, &store_id, &model).await;
+    let model_id = openfga::write_authorization_model(&mut service, &store_id, model).await;
     let client = service.into_client(&store_id, &model_id);
 
     let mut writes: Vec<_> = tuples
@@ -967,6 +1017,8 @@ async fn run_in(
             None => openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject),
         })
         .collect();
+    // Role membership lives outside the policy tables, so no generated query can produce it
+    // and the case says which roles a caller holds.
     for principal in &case.principals {
         for role in &principal.pg_roles {
             writes.push(openfga::make_tuple(
@@ -977,29 +1029,29 @@ async fn run_in(
         }
     }
     openfga::write_tuples(&client, writes).await;
+    client
+}
 
-    let clock: Instant =
-        diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
-            .get_result(&mut *conn)
-            .expect("reading now() should succeed");
-
-    let mutations = resolved_mutations(case, &naming);
-    let model = Model {
-        client: &client,
-        answers: &answers,
-        case,
-    };
-
+/// Ask both sides about every caller, every object and every statement.
+async fn compare_every_pair(
+    cluster: &Cluster,
+    database: &str,
+    model: &Model<'_>,
+    objects: &[Object],
+    mutations: &BTreeMap<String, &Mutations>,
+    clock: &Instant,
+) -> Vec<Mismatch> {
+    let case = model.case;
     let mut observations = Vec::new();
     for principal in &case.principals {
         // A connection of its own, because a caller that set nothing is a real state and a
-        // shared one cannot spell it. Setting a custom key defines it for the whole
-        // session, so after one caller sets `app.who` the next reads it back as the empty
-        // string rather than finding it unset, and the answers would depend on the order
-        // the callers were declared in.
+        // shared one cannot spell it. Setting a custom key defines it for the whole session,
+        // so after one caller sets `app.who` the next reads it back as the empty string
+        // rather than finding it unset, and the answers would depend on the order the
+        // callers were declared in.
         let mut owned = super::containers::connect_postgres_with_retry(&cluster.url(database));
         let conn = &mut owned;
-        for object in &objects {
+        for object in objects {
             for statement in COMPARED {
                 let candidate = mutations.get(&object.table).copied();
                 let Some(postgres) =
@@ -1007,19 +1059,10 @@ async fn run_in(
                 else {
                     continue;
                 };
-                let mut context = principal.context.clone();
-                if principal.carries_request_time {
-                    if let Some(object) = context.as_object_mut() {
-                        object.insert(
-                            "request_time".to_string(),
-                            serde_json::Value::String(clock.instant.clone()),
-                        );
-                    }
-                }
                 let Some(openfga) = openfga_allows(
-                    &model,
+                    model,
                     principal,
-                    &context,
+                    &asked_context(principal, clock),
                     object,
                     statement,
                     candidate.is_some_and(|mutations| mutations.check_neutral),
@@ -1039,13 +1082,21 @@ async fn run_in(
             }
         }
     }
+    observations
+}
 
-    let later = compare_at_future_instant(conn, case, &model, &objects, &observations).await;
-    observations.extend(later);
-    Run {
-        observations,
-        disclosures: disclosed,
+/// The context a check carries, with the database's clock where the caller needs it.
+fn asked_context(principal: &Principal, clock: &Instant) -> serde_json::Value {
+    let mut context = principal.context.clone();
+    if principal.carries_request_time {
+        if let Some(entries) = context.as_object_mut() {
+            entries.insert(
+                "request_time".to_string(),
+                serde_json::Value::String(clock.instant.clone()),
+            );
+        }
     }
+    context
 }
 
 /// Apply the case and compare every pair, taking the translation's answers as they are.
