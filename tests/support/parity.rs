@@ -95,6 +95,15 @@ pub(crate) struct Mutations {
     pub(crate) update_set: Option<String>,
     /// Column list and values an `INSERT` attempts, such as `("id") VALUES ('new')`.
     pub(crate) insert: Option<String>,
+    /// Whether the change touches no column any policy reads.
+    ///
+    /// The tuples state facts about rows the database holds, so a judgement about the row
+    /// a write would produce normally has nothing to read. Where the change cannot alter
+    /// any policy's decision the resulting row's facts are the existing row's, and the
+    /// question can be asked of the object that exists. Declared by the case because it is
+    /// a claim about the schema, and false by default so the runner declines rather than
+    /// guessing.
+    pub(crate) check_neutral: bool,
 }
 
 /// One case, as data.
@@ -240,6 +249,13 @@ impl std::fmt::Display for Mismatch {
 }
 
 /// The statements the runner compares, in the order a failure reports them.
+///
+/// `UpdateWithoutWhere` is absent and cannot be added by asking harder. A blanket update
+/// reads nothing to choose rows, which is the whole point of it, so learning which rows it
+/// reached means reading them, and `RETURNING` reads columns, which brings the `SELECT`
+/// policies back. Measured that way every write-only row reports as unreached. Comparing it
+/// needs a different measurement, such as the affected-row count against the number of
+/// objects the model grants, which is an aggregate rather than a pair.
 const COMPARED: [ActionStatement; 4] = [
     ActionStatement::Select,
     ActionStatement::SelectForUpdate,
@@ -409,16 +425,29 @@ fn postgres_allows(
     });
     match answered {
         Ok(granted) => Some(granted),
-        // A write `WITH CHECK` refuses raises, and that is a denial, as is a locking read
-        // the caller lacks the `UPDATE` privilege for. A plain read never raises under
-        // row-level security, so an error there is a case that granted no privilege or
-        // named no column, and reporting it as a denial would hide the mistake.
+        // Row-level security raises on exactly one thing when reading: a policy that
+        // expands into itself. The read returns no row, so it is a denial, and the model
+        // has to deny too.
+        Err(error) if reads_as_a_policy_refusal(&error) => Some(false),
+        // Otherwise a plain read never raises, so an error is a case that granted no
+        // privilege or named no column, and calling it a denial would hide the mistake.
         Err(error) if statement == ActionStatement::Select => panic!(
             "{}: reading {table} as {} raised, which row-level security never does: {error}",
             case.name, principal.login_role
         ),
+        // A write the check refuses raises, and that is a denial.
         Err(_) => Some(false),
     }
+}
+
+/// Whether `error` is row-level security refusing rather than the case being wrong.
+///
+/// `42P17`, a policy that expands into itself. Matched on the message because diesel does
+/// not surface the code, and narrowly, so a privilege error or an absent column still
+/// reports rather than reading as a denial.
+fn reads_as_a_policy_refusal(error: &diesel::result::Error) -> bool {
+    matches!(error, diesel::result::Error::DatabaseError(_, info)
+        if info.message().contains("infinite recursion detected in policy"))
 }
 
 /// Whether the model grants `principal` the statement on `object`.
@@ -429,6 +458,7 @@ async fn openfga_allows(
     context: &serde_json::Value,
     object: &Object,
     statement: ActionStatement,
+    check_neutral: bool,
 ) -> Option<bool> {
     let type_name = object.name.split_once(':')?.0;
     let entry = answers
@@ -442,7 +472,7 @@ async fn openfga_allows(
                 // The tuples state facts about rows the database holds, so a judgement
                 // about the row a write would produce has nothing to read. Answering it
                 // needs that row's records, which is not this runner's job yet.
-                if judgement.version == RowVersion::Resulting {
+                if judgement.version == RowVersion::Resulting && !check_neutral {
                     return None;
                 }
                 let granted = openfga::check_allowed_with_context(
@@ -684,8 +714,18 @@ async fn run_in(
                         );
                     }
                 }
-                let Some(openfga) =
-                    openfga_allows(&client, &answers, principal, &context, object, statement).await
+                let Some(openfga) = openfga_allows(
+                    &client,
+                    &answers,
+                    principal,
+                    &context,
+                    object,
+                    statement,
+                    case.mutations
+                        .values()
+                        .any(|mutations| mutations.check_neutral),
+                )
+                .await
                 else {
                     continue;
                 };

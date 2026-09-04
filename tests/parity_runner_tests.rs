@@ -228,6 +228,64 @@ async fn every_parity_case_agrees() {
         ));
     }
 
+    if let Err(joined) = tokio::spawn(an_uncorrelated_membership_admits_every_row(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_uncorrelated_membership_admits_every_row: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_parent_key_subquery_inherits_the_parents_rule(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_parent_key_subquery_inherits_the_parents_rule: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_correlated_column_membership_compares_the_named_columns(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_correlated_column_membership_compares_the_named_columns: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_read_and_a_write_are_judged_separately(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_read_and_a_write_are_judged_separately: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(an_aliased_quoted_guard_falls_closed(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "an_aliased_quoted_guard_falls_closed: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(mutually_recursive_policies_return_no_row(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "mutually_recursive_policies_return_no_row: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -237,7 +295,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 22] = [
+const CASES: [&str; 28] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -260,6 +318,12 @@ const CASES: [&str; 22] = [
     "an_altered_policy_is_read_as_altered",
     "folded_identifiers_name_one_table",
     "two_owner_columns_grant_independently",
+    "an_uncorrelated_membership_admits_every_row",
+    "a_parent_key_subquery_inherits_the_parents_rule",
+    "a_correlated_column_membership_compares_the_named_columns",
+    "a_read_and_a_write_are_judged_separately",
+    "an_aliased_quoted_guard_falls_closed",
+    "mutually_recursive_policies_return_no_row",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -496,8 +560,11 @@ CREATE POLICY docs_update ON docs FOR UPDATE
         .writing(
             "docs",
             Mutations {
+                // `owner_id = owner_id` leaves the value the policy reads unchanged, so
+                // the resulting row decides as the existing one does.
                 update_set: Some("owner_id = owner_id".to_string()),
                 insert: None,
+                check_neutral: true,
             },
         );
     let kept = support::parity::run(&cluster, &keeps_owner).await;
@@ -514,6 +581,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
             Mutations {
                 update_set: Some("owner_id = 'somebody_else'".to_string()),
                 insert: None,
+                check_neutral: false,
             },
         );
     let given = support::parity::run(&cluster, &gives_away).await;
@@ -1005,6 +1073,7 @@ async fn an_update_policy_without_using_updates_nothing(cluster: Arc<Cluster>) {
         Mutations {
             update_set: Some("owner_id = owner_id".to_string()),
             insert: None,
+            check_neutral: true,
         },
     );
     let run = support::parity::run(&cluster, &case).await;
@@ -1173,6 +1242,318 @@ async fn two_owner_columns_grant_independently(cluster: Arc<Cluster>) {
             ActionStatement::Select,
             visible,
         );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// The accessor these inline schemas declare.
+const ACCESSOR: &str =
+    r#"{"auth_current_user_id": {"kind":"current_user_accessor","returns":"text"}}"#;
+
+/// Ported from `uncorrelated_membership_parity_postgres18_and_openfga`.
+///
+/// A membership check naming no column of the guarded table admits every row, and two
+/// membership rows for one member are one fact, not two.
+#[allow(clippy::too_many_lines)]
+async fn an_uncorrelated_membership_admits_every_row(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-uncorrelated-membership",
+        "
+CREATE TABLE staff (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_staff ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM staff WHERE staff.user_id = auth_current_user_id()));
+",
+        &[
+            // Two rows for one member, so a holder written per membership row rather than
+            // per member shows up as a duplicate.
+            "INSERT INTO staff(id, user_id) VALUES ('s-1', 'alice'), ('s-2', 'alice');
+             INSERT INTO docs(id) VALUES ('d-1'), ('d-2'), ('d-3')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON docs, staff TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    for row in ["d-1", "d-2", "d-3"] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("docs:{row}"),
+            ActionStatement::Select,
+            true,
+        );
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "bob",
+            &format!("docs:{row}"),
+            ActionStatement::Select,
+            false,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `parent_key_in_subquery_parity_postgres18_and_openfga`.
+///
+/// `parent_id IN (SELECT id FROM parent_docs WHERE ...)` is the parent's own rule reached
+/// through the key, so the child inherits it.
+async fn a_parent_key_subquery_inherits_the_parents_rule(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-parent-key-in-subquery",
+        "
+CREATE TABLE parent_docs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL);
+CREATE TABLE doc_links (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL REFERENCES parent_docs(id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE parent_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parent_docs_owner ON parent_docs FOR SELECT
+    USING (owner_id = auth_current_user_id());
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id FROM parent_docs WHERE owner_id = auth_current_user_id()));
+",
+        &[
+            "INSERT INTO parent_docs(id, owner_id) VALUES ('p-alice', 'alice'), ('p-bob', 'bob');
+             INSERT INTO doc_links(id, parent_id)
+                 VALUES ('l-alice', 'p-alice'), ('l-bob', 'p-bob')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON parent_docs, doc_links TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, own, other) in [("alice", "l-alice", "l-bob"), ("bob", "l-bob", "l-alice")] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &format!("doc_links:{own}"),
+            ActionStatement::Select,
+            true,
+        );
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &format!("doc_links:{other}"),
+            ActionStatement::Select,
+            false,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `correlated_column_membership_parity_postgres18_and_openfga`.
+///
+/// The subquery projects `status` and the outer column is `sku`, so the comparison is not
+/// the one a key-shaped read would make.
+async fn a_correlated_column_membership_compares_the_named_columns(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-correlated-column-membership",
+        "
+CREATE TABLE orders (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, status TEXT NOT NULL);
+CREATE TABLE line_items (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(id),
+    sku TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE line_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY line_items_visible ON line_items FOR SELECT
+    USING (sku IN (SELECT status FROM orders WHERE customer_id = auth_current_user_id()));
+",
+        &[
+            // Each caller owns one order status, and each line item carries the other
+            // caller's status in its own `status` column.
+            "INSERT INTO orders(id, customer_id, status) VALUES
+                 ('o-alice', 'alice', 'WIDGET'), ('o-bob', 'bob', 'GADGET');
+             INSERT INTO line_items(id, order_id, sku, status) VALUES
+                 ('li-alice', 'o-alice', 'WIDGET', 'GADGET'),
+                 ('li-bob', 'o-bob', 'GADGET', 'WIDGET')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON orders, line_items TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "line_items:li-alice",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "line_items:li-bob",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `blanket_update_parity_postgres18_and_openfga`.
+///
+/// The read and the write are judged by different columns, so a row readable to one
+/// caller is writable to another.
+async fn a_read_and_a_write_are_judged_separately(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-blanket-update",
+        "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    reader_user_id TEXT NOT NULL REFERENCES users(id),
+    writer_user_id TEXT NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_read ON notes FOR SELECT USING (reader_user_id = auth_current_user_id());
+CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_current_user_id());
+",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, reader_user_id, writer_user_id, body) VALUES
+                 ('bu-both', 'alice', 'alice', 'original'),
+                 ('bu-write-only', 'bob', 'alice', 'original'),
+                 ('bu-read-only', 'alice', 'bob', 'original'),
+                 ('bu-neither', 'bob', 'bob', 'original')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR)
+    .writing(
+        "notes",
+        Mutations {
+            // `body` is read by no policy, so the resulting row decides as the
+            // existing one does.
+            update_set: Some("body = 'changed'".to_string()),
+            insert: None,
+            check_neutral: true,
+        },
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // A `WHERE` reads the row, so an `UPDATE` naming rows needs the read as well as the
+    // write, which is why the row the caller may write but not read updates nothing. The
+    // blanket form, which the original case asserted from its seed rather than measuring,
+    // is not compared: see `COMPARED` in the runner for why it cannot be.
+    for (row, readable, writable) in [
+        ("bu-both", true, true),
+        ("bu-write-only", false, false),
+        ("bu-read-only", true, false),
+        ("bu-neither", false, false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::Select,
+            readable,
+        );
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::Update,
+            writable,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `aliased_quoted_guard_parity_postgres18_and_openfga`.
+///
+/// The guard reads the outer table's own column through its quoted name, which is not a
+/// membership condition, so the shape falls closed.
+async fn an_aliased_quoted_guard_falls_closed(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-aliased-quoted-guard",
+        r#"
+CREATE TABLE "M"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE members(doc_id TEXT REFERENCES "M"(id), owner_id TEXT);
+ALTER TABLE "M" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY m_owner ON "M" FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM members m
+    WHERE m.doc_id = "M".id
+      AND "M".owner_id = current_user
+  )
+);
+"#,
+        &[
+            r#"INSERT INTO "M"(id, owner_id) VALUES ('d1', 'other_owner');
+               INSERT INTO members(doc_id, owner_id) VALUES ('d1', 'app_reader')"#,
+            r#"CREATE ROLE app_reader LOGIN; GRANT SELECT ON "M", members TO app_reader"#,
+        ],
+        vec![Principal::as_role("app_reader", "app_reader")],
+    );
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "m:d1",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// Ported from `read_recursion_parity_postgres18_and_openfga`.
+///
+/// Two policies each reading the other: `PostgreSQL` raises `42P17` on every read of
+/// either, so no row is returned and the model must grant nothing.
+async fn mutually_recursive_policies_return_no_row(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-read-recursion",
+        "read_recursion",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO folders(id, owner_id) VALUES ('f-alice', 'alice'), ('f-bob', 'bob');
+             INSERT INTO notes(id, owner_id, folder_id) VALUES
+                 ('n-alice', 'alice', 'f-alice'), ('n-bob', 'bob', 'f-bob');
+             UPDATE folders SET note_id = 'n-alice' WHERE id = 'f-alice';
+             UPDATE folders SET note_id = 'n-bob' WHERE id = 'f-bob'",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON users, notes, folders TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // Every read raises, so the database returns nothing to anybody.
+    for subject in ["alice", "bob"] {
+        for object in ["notes:n-alice", "folders:f-alice"] {
+            support::parity::assert_postgres(
+                &case,
+                &run,
+                subject,
+                object,
+                ActionStatement::Select,
+                false,
+            );
+        }
     }
     assert_agrees(&case, &run);
 }
