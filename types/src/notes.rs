@@ -478,7 +478,7 @@ pub enum TranslationNote {
     MembershipResidualReadsUnrestrictedTables {
         /// Policy holding the check.
         policy: String,
-        /// The residual, as written.
+        /// The residual, its relations spelled as the catalog carries them.
         predicate: String,
         /// The relations the proof rests on.
         #[serde(with = "table_id_vec_as_str")]

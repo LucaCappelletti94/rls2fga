@@ -3839,3 +3839,43 @@ fn a_caller_set_membership_discloses_the_relations_its_proof_rests_on() {
         "the relation the proof rests on is named, got {named:?}"
     );
 }
+
+/// A temporal conjunct beside a cross-row one still yields the unnarrowed derivation, since
+/// no clock gate forms while a conjunct neither the row nor the request decides remains.
+const MIXED_CROSS_ROW: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY);
+CREATE TABLE paper_shares (
+  paper_id INT REFERENCES papers(id),
+  viewer TEXT,
+  weight INT,
+  expires_at TIMESTAMPTZ,
+  PRIMARY KEY (paper_id, viewer)
+);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = current_user
+    AND s.expires_at > now()
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+#[test]
+fn a_temporal_conjunct_beside_a_cross_row_one_keeps_the_unnarrowed_derivation() {
+    let shapes = shapes_of(MIXED_CROSS_ROW, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    for shape in &member.shapes {
+        assert!(
+            matches!(shape.derivation, RecordDerivation::WholeShape { .. }),
+            "a cross-row conjunct forbids a row-derived record, got {:?}",
+            shape.derivation
+        );
+        assert!(
+            shape.tables.iter().any(|table| table.name() == "tiers"),
+            "the relation the residual reads is named, got {:?}",
+            shape.tables
+        );
+    }
+    assert!(!member.shapes.is_empty(), "the membership reports a shape");
+}

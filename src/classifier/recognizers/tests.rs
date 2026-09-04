@@ -4412,3 +4412,147 @@ fn is_constantly_false_propagates_over_the_boolean_tree() {
         );
     }
 }
+
+/// The schema the review's cases share: a guarded column the membership lacks, an inexact
+/// column, and two zoned columns.
+fn review_schema() -> ParserDB {
+    parse_schema(
+        r"
+CREATE TABLE papers(id UUID PRIMARY KEY, band INT);
+CREATE TABLE paper_shares(
+  paper_id UUID,
+  viewer TEXT,
+  weight DOUBLE PRECISION,
+  opens_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ
+);
+CREATE TABLE tiers(cutoff INT, price NUMERIC, rate DOUBLE PRECISION, published_on DATE);
+",
+    )
+    .expect("schema should parse")
+}
+
+fn review_membership(residual: &str) -> Expr {
+    parse_expr(&format!(
+        "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND {residual}
+             )"
+    ))
+}
+
+fn review_refuses(residual: &str) -> bool {
+    recognize_p4(
+        &review_membership(residual),
+        &review_schema(),
+        &FunctionRegistry::new(),
+        "papers",
+        &ExpansionState::new(),
+    )
+    .is_none()
+}
+
+/// A binding resolves a name the catalog would resolve differently, and the crate already
+/// refuses every one on the membership subquery.
+#[test]
+fn a_residual_binding_its_own_names_is_refused() {
+    assert!(
+        review_refuses(
+            "s.cutoff > (WITH tiers AS (SELECT 0 AS cutoff) SELECT max(cutoff) FROM tiers)"
+        ),
+        "a binding shadowing a relation is not the relation the proof was taken on"
+    );
+}
+
+/// A name only the guarded row supplies binds outward at the conjunct's own level too.
+#[test]
+fn a_residual_binding_a_bare_guarded_column_at_its_own_level_is_refused() {
+    assert!(
+        review_refuses("band > (SELECT max(cutoff) FROM tiers)"),
+        "the generated query scans the membership table alone"
+    );
+}
+
+/// A cast to a temporal type reads the session's zone and date style, literal or not.
+#[test]
+fn a_residual_casting_to_a_temporal_type_is_refused() {
+    assert!(
+        review_refuses(
+            "s.weight > (SELECT count(*) FROM tiers \
+             WHERE 'now'::timestamptz > '2026-01-01 00:00+00'::timestamptz)"
+        ),
+        "a clock-valued literal outlives the tuple it was baked into"
+    );
+}
+
+/// Rendering a temporal column as text reads the session's date style.
+#[test]
+fn a_residual_casting_a_temporal_column_to_text_is_refused() {
+    assert!(
+        review_refuses("s.viewer > (SELECT max(published_on::text) FROM tiers)"),
+        "the date style decides the rendering"
+    );
+}
+
+/// Summing floating point is not associative, whether the type comes from the column or
+/// from a cast.
+#[test]
+fn a_residual_summing_inexact_numbers_is_refused() {
+    for residual in [
+        "s.weight > (SELECT sum(price::double precision) FROM tiers)",
+        "s.weight > (SELECT avg(rate) FROM tiers)",
+    ] {
+        assert!(
+            review_refuses(residual),
+            "parallel aggregation may order the partial sums differently: {residual}"
+        );
+    }
+}
+
+/// A comparison between a zoned column and a zone-less literal is completed by the
+/// session's own zone.
+#[test]
+fn a_residual_comparing_a_zoned_column_to_a_literal_is_refused() {
+    assert!(
+        review_refuses(
+            "s.viewer > (SELECT count(*)::text FROM tiers WHERE cutoff > 1) \
+             AND s.opens_at > '2026-01-01 00:00'"
+        ),
+        "the session's zone completes the literal"
+    );
+}
+
+/// Both operands stored, so the comparison is between two absolute instants and neither
+/// side is the session's to decide.
+#[test]
+fn a_residual_comparing_two_stored_columns_is_recognized() {
+    let db = review_schema();
+    let sql = recognized_residual_sql(
+        &db,
+        &review_membership(
+            "s.opens_at < s.expires_at AND s.weight > (SELECT max(cutoff) FROM tiers)",
+        ),
+    );
+    assert!(
+        sql.contains("opens_at < expires_at"),
+        "a comparison of two stored instants is decided by the rows, got: {sql}"
+    );
+}
+
+/// An inexact column compared against a literal is the stored value against a constant,
+/// which every caller reads alike.
+#[test]
+fn a_residual_comparing_an_inexact_column_to_a_literal_is_recognized() {
+    let db = review_schema();
+    let sql = recognized_residual_sql(
+        &db,
+        &review_membership("s.weight > 3 AND s.weight > (SELECT max(cutoff) FROM tiers)"),
+    );
+    assert!(
+        sql.contains("weight > 3"),
+        "a stored number against a constant needs no session, got: {sql}"
+    );
+}

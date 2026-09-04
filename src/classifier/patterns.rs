@@ -119,12 +119,12 @@ pub struct TemporalOffset {
 
 /// One residual conjunct on a membership row.
 ///
-/// The SQL spelling is kept verbatim, so the query the generator renders is
-/// exactly what the policy wrote, whether or not the structure beside it
-/// exists.
+/// The SQL is the policy's own spelling but for the names the generator has to resolve, so
+/// the query it renders reads what the policy meant under any `search_path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidualPredicate {
-    /// The conjunct as SQL, join-table qualifiers already stripped.
+    /// The conjunct as SQL, join-table qualifiers stripped and any relation it reads
+    /// spelled as the catalog carries it.
     pub sql: String,
     /// The conjunct as structure, when a row image alone decides it.
     pub guard: Option<ResidualGuard>,

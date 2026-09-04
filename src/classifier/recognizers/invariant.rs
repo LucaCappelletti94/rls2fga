@@ -12,8 +12,8 @@ use sqlparser::ast::{
     Visitor, VisitorMut,
 };
 
-use super::attribute::ROW_PURE_FUNCTIONS;
-use super::subquery::set_limiting_clause;
+use super::attribute::{attribute_operator, ROW_PURE_FUNCTIONS};
+use super::subquery::{query_binds_its_own_names, set_limiting_clause};
 use super::unwrap_cast_or_nested;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::generator::unrestricted::row_level_security_is_off;
@@ -64,18 +64,19 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     }
     let db = db?;
     let mut relations = BTreeSet::new();
-    let mut session_decided: BTreeSet<String> = lookup_table(db, scope.table)
-        .map(|table| session_decided_columns(table, db))
-        .unwrap_or_default();
+    let mut columns = SessionColumns::default();
+    if let Some(table) = lookup_table(db, scope.table) {
+        columns.extend(table, db);
+    }
     for name in &names.0 {
         let table = lookup_table(db, name)?;
         if !row_level_security_is_off(table, db) {
             return None;
         }
         relations.insert(table_identity(table));
-        session_decided.extend(session_decided_columns(table, db));
+        columns.extend(table, db);
     }
-    if answer_depends_on_the_asker(conjunct, registry, &session_decided) {
+    if answer_depends_on_the_asker(conjunct, registry, &columns) {
         return None;
     }
     if reaches_the_guarded_row(conjunct, db, scope) {
@@ -87,41 +88,75 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     Some(relations.into_iter().collect())
 }
 
-/// Columns a session setting decides the value or the rendering of.
-///
-/// A temporal one reads the session's zone and date style; an inexact number reads its
-/// printed precision and the order the rows were summed in.
-fn session_decided_columns<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> BTreeSet<String> {
-    table
-        .columns(db)
-        .into_iter()
-        .flatten()
-        .filter(|column| type_is_session_decided(&column.data_type(db)))
-        .map(|column| column.stored_column_name().into_owned())
-        .collect()
+/// The columns whose type leaves part of a value to the evaluating session.
+#[derive(Default)]
+struct SessionColumns {
+    /// Read against the session's zone and printed in its date style.
+    temporal: BTreeSet<String>,
+    /// Printed to a configured precision and summed in whatever order the rows arrive.
+    inexact: BTreeSet<String>,
 }
 
-/// Type families a session setting decides the value or the rendering of.
-const SESSION_DECIDED_TYPES: &[&str] = &[
-    "date",
-    "double",
-    "float",
-    "interval",
-    "real",
-    "time",
-    "timestamp",
-];
+impl SessionColumns {
+    fn extend<DB: DatabaseLike>(&mut self, table: &DB::Table, db: &DB) {
+        for column in table.columns(db).into_iter().flatten() {
+            let data_type = column.data_type(db);
+            let name = || column.stored_column_name().into_owned();
+            if type_is_temporal(&data_type) {
+                self.temporal.insert(name());
+            }
+            if type_is_inexact(&data_type) {
+                self.inexact.insert(name());
+            }
+        }
+    }
 
-fn type_is_session_decided(data_type: &str) -> bool {
+    /// Whether `expr` names one of `family` anywhere.
+    fn named_in(expr: &Expr, family: &BTreeSet<String>) -> bool {
+        struct Named<'a>(&'a BTreeSet<String>);
+
+        impl Visitor for Named<'_> {
+            type Break = ();
+
+            fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+                let named = match expr {
+                    Expr::Identifier(ident) => Some(stored_ident_name(ident)),
+                    Expr::CompoundIdentifier(parts) => parts.last().map(stored_ident_name),
+                    _ => None,
+                };
+                if named.is_some_and(|name| self.0.contains(name.as_ref())) {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            }
+        }
+
+        expr.visit(&mut Named(family)).is_break()
+    }
+}
+
+/// Type families the session's zone or date style decides part of.
+const TEMPORAL_TYPES: &[&str] = &["date", "interval", "time", "timestamp"];
+
+/// Type families whose addition is not associative, so a sum answers per row order.
+const INEXACT_TYPES: &[&str] = &["double", "float", "real"];
+
+fn type_is_temporal(data_type: &str) -> bool {
+    type_family_is(data_type, TEMPORAL_TYPES)
+}
+
+fn type_is_inexact(data_type: &str) -> bool {
+    type_family_is(data_type, INEXACT_TYPES)
+}
+
+fn type_family_is(data_type: &str, families: &[&str]) -> bool {
     let lowered = data_type.to_ascii_lowercase();
     let terminal = lowered
         .rsplit('.')
         .next()
         .unwrap_or(&lowered)
         .trim_matches('"');
-    SESSION_DECIDED_TYPES
-        .iter()
-        .any(|family| terminal.starts_with(family))
+    families.iter().any(|family| terminal.starts_with(family))
 }
 
 /// Every relation named in a `FROM`, refusing anything but a plain table reference.
@@ -161,40 +196,66 @@ impl Visitor for RelationNames {
 /// Whether anything in `conjunct` can answer one caller differently from another.
 ///
 /// An allow-list throughout, so an unlisted expression or an unplaceable function refuses.
-/// Casts pass because `pg_dump` writes them around every comparison and both spellings of
-/// one policy must classify alike; what they could read is refused by column instead.
+/// Types carry the rest: a cast or a column whose type the session decides part of refuses,
+/// while two stored values compared against each other do not.
 fn answer_depends_on_the_asker(
     conjunct: &Expr,
     registry: &FunctionRegistry,
-    session_decided: &BTreeSet<String>,
+    columns: &SessionColumns,
 ) -> bool {
     struct AskerDependence<'a> {
         registry: &'a FunctionRegistry,
-        session_decided: &'a BTreeSet<String>,
+        columns: &'a SessionColumns,
+    }
+
+    impl AskerDependence<'_> {
+        fn spans_a_temporal_column_and_a_literal(&self, left: &Expr, right: &Expr) -> bool {
+            let literal = |expr: &Expr| matches!(unwrap_cast_or_nested(expr), Expr::Value(_));
+            let temporal = |expr: &Expr| SessionColumns::named_in(expr, &self.columns.temporal);
+            (temporal(left) && literal(right)) || (temporal(right) && literal(left))
+        }
     }
 
     impl Visitor for AskerDependence<'_> {
         type Break = ();
 
         fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
-            // A limit answers per evaluation, not per identity.
-            if set_limiting_clause(query).is_some() {
+            // A limit answers per evaluation, not per identity, and a binding resolves a
+            // name against something the catalog never saw.
+            if set_limiting_clause(query).is_some() || query_binds_its_own_names(query) {
                 return ControlFlow::Break(());
             }
             ControlFlow::Continue(())
         }
 
         fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            // A cast to a type the session decides part of, or over a column of one, reads
+            // that setting however the value got there.
+            if let Expr::Cast {
+                expr: inner,
+                data_type,
+                ..
+            } = expr
+            {
+                let rendered = data_type.to_string();
+                if type_is_temporal(&rendered)
+                    || type_is_inexact(&rendered)
+                    || SessionColumns::named_in(inner, &self.columns.temporal)
+                    || SessionColumns::named_in(inner, &self.columns.inexact)
+                {
+                    return ControlFlow::Break(());
+                }
+            }
+            // A zone-less value beside a zoned column is completed by the session's zone.
+            if let Some((left, right)) = comparison_operands(expr) {
+                if self.spans_a_temporal_column_and_a_literal(left, right) {
+                    return ControlFlow::Break(());
+                }
+            }
             // Neither a cast nor a parenthesis says who is asking.
             match unwrap_cast_or_nested(expr) {
                 Expr::Identifier(ident) => {
                     if ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value) {
-                        return ControlFlow::Break(());
-                    }
-                    if self
-                        .session_decided
-                        .contains(stored_ident_name(ident).as_ref())
-                    {
                         return ControlFlow::Break(());
                     }
                 }
@@ -214,17 +275,16 @@ fn answer_depends_on_the_asker(
                     if func.over.is_some() || self.registry.get(&name).is_some() {
                         return ControlFlow::Break(());
                     }
-                }
-                // A qualifier changes nothing about which column this is.
-                Expr::CompoundIdentifier(parts) => {
-                    if parts.last().is_some_and(|part| {
-                        self.session_decided
-                            .contains(stored_ident_name(part).as_ref())
-                    }) {
+                    // Adding inexact numbers is not associative, so a sum answers per row
+                    // order and the loader's order need not be the caller's.
+                    if matches!(name.as_str(), "avg" | "sum")
+                        && SessionColumns::named_in(expr, &self.columns.inexact)
+                    {
                         return ControlFlow::Break(());
                     }
                 }
-                Expr::UnaryOp { .. }
+                Expr::CompoundIdentifier(_)
+                | Expr::UnaryOp { .. }
                 | Expr::BinaryOp { .. }
                 | Expr::IsNull(_)
                 | Expr::IsNotNull(_)
@@ -254,11 +314,21 @@ fn answer_depends_on_the_asker(
     }
 
     conjunct
-        .visit(&mut AskerDependence {
-            registry,
-            session_decided,
-        })
+        .visit(&mut AskerDependence { registry, columns })
         .is_break()
+}
+
+/// The two sides of a comparison, absent where `expr` is not one.
+fn comparison_operands(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    match expr {
+        Expr::BinaryOp { left, op, right } => {
+            attribute_operator(op).map(|_| (left.as_ref(), right.as_ref()))
+        }
+        Expr::IsDistinctFrom(left, right) | Expr::IsNotDistinctFrom(left, right) => {
+            Some((left, right))
+        }
+        _ => None,
+    }
 }
 
 /// Whether a nested query reaches the guarded row for any of its references.
@@ -274,9 +344,7 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
     struct GuardedReference<'a, DB> {
         db: &'a DB,
         enclosing: &'a BTreeSet<String>,
-        membership_columns: &'a [String],
-        /// What each entered query binds. Empty while the walk is still on the conjunct
-        /// itself, whose scope the caller has already checked.
+        /// What each scope binds, the membership row outermost.
         scopes: Vec<QueryScope>,
     }
 
@@ -319,17 +387,13 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
                         return ControlFlow::Break(());
                     }
                 }
-                Expr::Identifier(ident) if !self.scopes.is_empty() => {
+                Expr::Identifier(ident) => {
                     let name = stored_ident_name(ident);
-                    let bound = self
+                    if !self
                         .scopes
                         .iter()
                         .any(|scope| scope.binds_column(name.as_ref()))
-                        || self
-                            .membership_columns
-                            .iter()
-                            .any(|column| column == name.as_ref());
-                    if !bound {
+                    {
                         return ControlFlow::Break(());
                     }
                 }
@@ -345,12 +409,21 @@ fn reaches_the_guarded_row<DB: DatabaseLike>(
         .map(stored_relation_name)
         .collect();
     enclosing.extend(scope.alias.map(ToString::to_string));
+    // The membership row is the outermost scope both queries have, so seeding it leaves no
+    // level unresolved.
+    let membership = QueryScope {
+        names: BTreeSet::new(),
+        columns: scope
+            .columns
+            .iter()
+            .map(|column| (column.clone(), 1))
+            .collect(),
+    };
     conjunct
         .visit(&mut GuardedReference {
             db,
             enclosing: &enclosing,
-            membership_columns: scope.columns,
-            scopes: Vec::new(),
+            scopes: vec![membership],
         })
         .is_break()
 }

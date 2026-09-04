@@ -496,7 +496,7 @@ fn residual_guard(expr: &Expr) -> Option<ResidualGuard> {
     attribute_literal_predicate(inner).map(ResidualGuard::Compare)
 }
 
-fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
+pub(super) fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
     match op {
         BinaryOperator::Eq => Some(AttributeOperator::Eq),
         BinaryOperator::NotEq => Some(AttributeOperator::NotEq),

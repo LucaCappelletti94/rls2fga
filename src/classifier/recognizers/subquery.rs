@@ -691,11 +691,8 @@ impl SubqueryRefusal {
 /// Every binding is refused, referenced or not: a policy subquery that defines a `WITH` it
 /// never reads is dead SQL, and deciding which bindings shadow a `FROM` name is the kind
 /// of resolution whose failure direction is a grant.
-fn query_binds_its_own_names(query: &Query) -> Option<SubqueryRefusal> {
-    if query.with.is_some() {
-        return Some(SubqueryRefusal::BindsItsOwnNames);
-    }
-    None
+pub(super) fn query_binds_its_own_names(query: &Query) -> bool {
+    query.with.is_some()
 }
 
 /// The refusal a subquery's row locks earn, if it takes any.
@@ -718,7 +715,9 @@ fn query_locks_its_rows(query: &Query) -> Option<SubqueryRefusal> {
 ///
 /// One composition point, so a further query-level refusal reaches both spellings at once.
 fn query_level_refusal(query: &Query) -> Option<SubqueryRefusal> {
-    query_binds_its_own_names(query).or_else(|| query_locks_its_rows(query))
+    query_binds_its_own_names(query)
+        .then_some(SubqueryRefusal::BindsItsOwnNames)
+        .or_else(|| query_locks_its_rows(query))
 }
 
 /// The `Select` an `EXISTS` tests, paired with the reason it cannot be read plainly.
