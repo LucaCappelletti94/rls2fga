@@ -887,6 +887,36 @@ fn a_type_name_is_stored_as_a_type_name() {
     );
 }
 
+/// SQL text is read by the lexer the crate already depends on.
+///
+/// A hand-rolled scanner has to re-decide dollar quoting, nested comments, escaped quotes
+/// and quoted identifiers, and it read an unterminated literal as empty rather than as a
+/// body nobody can read. `sqlparser`'s tokenizer answers all of it and fails loudly.
+#[test]
+fn reading_sql_text_goes_through_the_lexer() {
+    for name in [
+        "sanitize_sql_for_keyword_scan",
+        "scan_identifier_tokens",
+        "parse_dollar_quote_delimiter",
+        "is_dollar_tag_char",
+        "is_dollar_tag_start_char",
+        "next_non_whitespace_char",
+    ] {
+        let definitions = fn_definitions(name);
+        assert_eq!(
+            definitions, 0,
+            "`{name}` re-decides what the lexer already decides, found {definitions}"
+        );
+    }
+
+    // Exempt: `function_analyzer.rs` is the one module that lexes a body.
+    let lexers = count_excluding(&["src/parser/function_analyzer.rs"], "Tokenizer::new(");
+    assert_eq!(
+        lexers, 0,
+        "one module lexes a function body, found {lexers} more"
+    );
+}
+
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.

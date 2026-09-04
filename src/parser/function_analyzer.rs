@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{Expr, FunctionArguments, FunctionSecurity, SelectItem, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use crate::classifier::recognizers::projected_select;
@@ -200,252 +201,48 @@ impl Default for AccessorInferenceSettings {
     }
 }
 
-/// Returns `true` when the lowercase function body looks like a simple, direct
-/// accessor expression: i.e. the body reduces to a single `current_setting(…)`
-/// or `current_user` expression, optionally with a type cast.
+/// The body's significant tokens, or [`None`] where the lexer cannot read it.
 ///
-/// Rejects bodies that contain DML or control-flow keywords, which indicate a
-/// complex function that merely *references* `current_user` incidentally (e.g.
-/// an audit trigger that writes `current_user` to a log table).
-fn is_direct_accessor_body(body_lower: &str) -> bool {
-    let sanitized = sanitize_sql_for_keyword_scan(body_lower);
-    !contains_disallowed_complex_token(&sanitized)
+/// Whitespace carries the comments, so dropping it drops both. A literal, a
+/// dollar-quoted block and a quoted identifier each arrive as their own token, so no
+/// keyword spelled inside one is ever mistaken for code.
+fn significant_tokens(sql: &str) -> Option<Vec<Token>> {
+    Some(
+        Tokenizer::new(&PostgreSqlDialect {}, sql)
+            .tokenize()
+            .ok()?
+            .into_iter()
+            .filter(|token| !matches!(token, Token::Whitespace(_)))
+            .collect(),
+    )
 }
 
-fn is_dollar_tag_start_char(ch: char) -> bool {
-    ch.is_ascii_alphabetic() || ch == '_'
-}
-
-fn is_dollar_tag_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
-fn parse_dollar_quote_delimiter(chars: &[char], start: usize) -> Option<Vec<char>> {
-    if chars.get(start) != Some(&'$') {
-        return None;
+/// The folded value of an unquoted word, which is the only shape a keyword takes.
+fn bare_word(token: &Token) -> Option<String> {
+    match token {
+        Token::Word(word) if word.quote_style.is_none() => Some(word.value.to_ascii_lowercase()),
+        _ => None,
     }
-
-    // Untagged form: $$...$$
-    if chars.get(start + 1) == Some(&'$') {
-        return Some(vec!['$', '$']);
-    }
-
-    // Tagged form: $tag$...$tag$
-    let first_tag_char = *chars.get(start + 1)?;
-    if !is_dollar_tag_start_char(first_tag_char) {
-        return None;
-    }
-
-    let mut idx = start + 2;
-    while let Some(ch) = chars.get(idx) {
-        if *ch == '$' {
-            return chars.get(start..=idx).map(<[char]>::to_vec);
-        }
-        if !is_dollar_tag_char(*ch) {
-            return None;
-        }
-        idx += 1;
-    }
-
-    None
-}
-
-fn matches_at(chars: &[char], idx: usize, needle: &[char]) -> bool {
-    chars
-        .get(idx..idx.saturating_add(needle.len()))
-        .is_some_and(|slice| slice == needle)
-}
-
-fn sanitize_sql_for_keyword_scan(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0usize;
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_line_comment = false;
-    let mut block_comment_depth = 0usize;
-    let mut dollar_delimiter: Option<Vec<char>> = None;
-
-    while i < chars.len() {
-        let Some(&ch) = chars.get(i) else {
-            break;
-        };
-        if let Some(delim) = dollar_delimiter.as_ref() {
-            if matches_at(&chars, i, delim) {
-                out.extend(core::iter::repeat_n(' ', delim.len()));
-                i += delim.len();
-                dollar_delimiter = None;
-                continue;
-            }
-
-            out.push(if ch == '\n' { '\n' } else { ' ' });
-            i += 1;
-            continue;
-        }
-
-        if in_single_quote {
-            if ch == '\'' {
-                // Escaped quote inside string literal: ''
-                if chars.get(i + 1).is_some_and(|next| *next == '\'') {
-                    out.push(' ');
-                    out.push(' ');
-                    i += 2;
-                    continue;
-                }
-                in_single_quote = false;
-                out.push(' ');
-                i += 1;
-                continue;
-            }
-            // Preserve token boundaries by replacing literal content with spaces.
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if in_double_quote {
-            if ch == '"' {
-                // Escaped quote inside quoted identifier: ""
-                if chars.get(i + 1).is_some_and(|next| *next == '"') {
-                    out.push(' ');
-                    out.push(' ');
-                    i += 2;
-                    continue;
-                }
-                in_double_quote = false;
-                out.push(' ');
-                i += 1;
-                continue;
-            }
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-                out.push('\n');
-            } else {
-                out.push(' ');
-            }
-            i += 1;
-            continue;
-        }
-
-        if block_comment_depth > 0 {
-            if ch == '/' && chars.get(i + 1).is_some_and(|next| *next == '*') {
-                block_comment_depth += 1;
-                out.push(' ');
-                out.push(' ');
-                i += 2;
-                continue;
-            }
-
-            if ch == '*' && chars.get(i + 1).is_some_and(|next| *next == '/') {
-                block_comment_depth -= 1;
-                out.push(' ');
-                out.push(' ');
-                i += 2;
-                continue;
-            }
-
-            out.push(if ch == '\n' { '\n' } else { ' ' });
-            i += 1;
-            continue;
-        }
-
-        if ch == '-' && chars.get(i + 1).is_some_and(|next| *next == '-') {
-            in_line_comment = true;
-            out.push(' ');
-            out.push(' ');
-            i += 2;
-            continue;
-        }
-
-        if ch == '/' && chars.get(i + 1).is_some_and(|next| *next == '*') {
-            block_comment_depth = 1;
-            out.push(' ');
-            out.push(' ');
-            i += 2;
-            continue;
-        }
-
-        if ch == '\'' {
-            in_single_quote = true;
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if ch == '"' {
-            in_double_quote = true;
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if ch == '$' {
-            if let Some(delim) = parse_dollar_quote_delimiter(&chars, i) {
-                out.extend(core::iter::repeat_n(' ', delim.len()));
-                i += delim.len();
-                dollar_delimiter = Some(delim);
-                continue;
-            }
-        }
-
-        out.push(ch);
-        i += 1;
-    }
-
-    out
-}
-
-fn is_identifier_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
-fn is_current_user_keyword_for_body_scan(token: &str) -> bool {
-    matches!(token, "current_user" | "current_role")
-}
-
-fn next_non_whitespace_char(sql: &str, start: usize) -> Option<char> {
-    sql[start..].chars().find(|ch| !ch.is_whitespace())
-}
-
-fn scan_identifier_tokens<F>(sql: &str, mut on_token: F) -> bool
-where
-    F: FnMut(&str, usize, usize) -> bool,
-{
-    let mut token_start: Option<usize> = None;
-    for (idx, ch) in sql.char_indices() {
-        if is_identifier_char(ch) {
-            if token_start.is_none() {
-                token_start = Some(idx);
-            }
-            continue;
-        }
-
-        if let Some(start) = token_start.take() {
-            if on_token(&sql[start..idx], start, idx) {
-                return true;
-            }
-        }
-    }
-
-    token_start.is_some_and(|start| on_token(&sql[start..], start, sql.len()))
 }
 
 fn contains_identifier_token(sql: &str, target: &str) -> bool {
-    scan_identifier_tokens(sql, |token, _start, _end| token == target)
+    significant_tokens(sql).is_some_and(|tokens| {
+        tokens
+            .iter()
+            .filter_map(bare_word)
+            .any(|word| word == target)
+    })
 }
 
-fn contains_disallowed_complex_token(sql: &str) -> bool {
+fn contains_disallowed_complex_token(tokens: &[Token]) -> bool {
     const COMPLEX_TOKENS: &[&str] = &[
         "insert", "update", "delete", "from", "where", "join", "begin", "end", "if", "loop",
         "raise", "perform", "execute", "call", "create", "drop", "alter",
     ];
-    scan_identifier_tokens(sql, |token, _start, _end| COMPLEX_TOKENS.contains(&token))
+    tokens
+        .iter()
+        .filter_map(bare_word)
+        .any(|word| COMPLEX_TOKENS.contains(&word.as_str()))
 }
 
 /// True when the declaration returns one value that can name the caller.
@@ -467,10 +264,16 @@ fn returns_one_identity(return_type_lower: &str) -> bool {
         && !contains_identifier_token(return_type_lower, "jsonb")
 }
 
-fn contains_current_user_keyword_token(sql: &str) -> bool {
-    fn token_can_precede_expression_operand(token: &str) -> bool {
+/// Whether the tokens read the effective session role as code.
+///
+/// An alias is not a read: `AS current_user` names a column, and so does a bare
+/// `current_user` following an expression, which is the alias form without `AS`. The
+/// closing parens a preceding expression may end with are skipped, so
+/// `(SELECT 1) current_user` reads as the alias it is.
+fn reads_effective_user(tokens: &[Token]) -> bool {
+    fn can_precede_an_operand(word: &str) -> bool {
         matches!(
-            token,
+            word,
             "select"
                 | "where"
                 | "and"
@@ -516,39 +319,47 @@ fn contains_current_user_keyword_token(sql: &str) -> bool {
         )
     }
 
-    fn only_whitespace_or_closing_parens(sql: &str, start: usize, end: usize) -> bool {
-        sql[start..end]
-            .chars()
-            .all(|ch| ch.is_whitespace() || ch == ')')
-    }
-
-    let mut prev_token: Option<String> = None;
-    let mut prev_end = 0usize;
-    scan_identifier_tokens(sql, |token, start, end| {
-        let is_accessor_keyword = is_current_user_keyword_for_body_scan(token);
-        let is_explicit_alias = prev_token.as_deref().is_some_and(|prev| prev == "as");
-        let is_implicit_alias = is_accessor_keyword
-            && prev_token
-                .as_deref()
-                .is_some_and(|prev| !token_can_precede_expression_operand(prev) && prev != "as")
-            && only_whitespace_or_closing_parens(sql, prev_end, start);
-        let matched = is_accessor_keyword && !is_explicit_alias && !is_implicit_alias;
-        prev_token = Some(token.to_string());
-        prev_end = end;
-        matched
+    tokens.iter().enumerate().any(|(at, token)| {
+        if !bare_word(token).is_some_and(|word| is_current_user_keyword_name(&word)) {
+            return false;
+        }
+        // The preceding word, and whether only closing parens stand between the two.
+        let mut only_closing_parens = true;
+        let mut preceding = None;
+        for earlier in tokens.get(..at).into_iter().flatten().rev() {
+            if let Some(word) = bare_word(earlier) {
+                preceding = Some(word);
+                break;
+            }
+            if !matches!(earlier, Token::RParen) {
+                only_closing_parens = false;
+            }
+        }
+        let Some(preceding) = preceding else {
+            return true;
+        };
+        if preceding == "as" {
+            return false;
+        }
+        !only_closing_parens || can_precede_an_operand(&preceding)
     })
 }
 
-fn contains_function_call_token(sql: &str, function_name: &str) -> bool {
-    scan_identifier_tokens(sql, |token, _start, end| {
-        token == function_name && next_non_whitespace_char(sql, end) == Some('(')
+fn contains_function_call_token(tokens: &[Token], function_name: &str) -> bool {
+    tokens.windows(2).any(|pair| {
+        pair.first().and_then(bare_word).as_deref() == Some(function_name)
+            && pair.get(1) == Some(&Token::LParen)
     })
 }
 
-fn contains_current_user_accessor_marker(body_lower: &str) -> bool {
-    let sanitized = sanitize_sql_for_keyword_scan(body_lower);
-    contains_function_call_token(&sanitized, "current_setting")
-        || contains_current_user_keyword_token(&sanitized)
+/// Whether the body names an accessor at all, and does so as a direct expression.
+///
+/// [`None`] where the lexer cannot read the body, which names no accessor.
+fn accessor_shape(body: &str) -> Option<bool> {
+    let tokens = significant_tokens(body)?;
+    let marks_an_accessor =
+        contains_function_call_token(&tokens, "current_setting") || reads_effective_user(&tokens);
+    Some(marks_an_accessor && !contains_disallowed_complex_token(&tokens))
 }
 
 /// Extract the literal setting key from `current_setting('key')` or
@@ -654,18 +465,15 @@ impl FunctionSemantic {
         if language != "sql" {
             return None;
         }
-        let body_lower = body.to_lowercase();
         let return_type_lower = return_type.to_lowercase();
 
-        // Detect current_user accessor patterns.
-        // Require the body to be a *direct* accessor expression, not a complex function
-        // that merely references current_user/current_setting incidentally (e.g. audit
-        // triggers or functions that record the caller but return a different value).
+        // A *direct* accessor expression, not a complex function that merely references
+        // current_user or current_setting incidentally, such as an audit trigger that
+        // records the caller and returns something else.
         if returns_one_identity(&return_type_lower)
-            && contains_current_user_accessor_marker(&body_lower)
-            && is_direct_accessor_body(&body_lower)
+            && accessor_shape(body) == Some(true)
             && has_single_direct_accessor_expression(body, settings)
-            && !runs_as_owner_reading_effective_user(&body_lower, security)
+            && !runs_as_owner_reading_effective_user(body, security)
         {
             return Some(FunctionSemantic::CurrentUserAccessor {
                 returns: return_type_lower.trim().to_string(),
@@ -680,15 +488,16 @@ impl FunctionSemantic {
 /// but runs as the owner, which makes that value the owner's for every caller.
 ///
 /// A session setting is per session, so a `current_setting` body is unaffected.
-fn runs_as_owner_reading_effective_user(body_lower: &str, security: &FunctionSecurity) -> bool {
-    matches!(security, FunctionSecurity::Definer)
-        && contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(body_lower))
+fn runs_as_owner_reading_effective_user(body: &str, security: &FunctionSecurity) -> bool {
+    matches!(security, FunctionSecurity::Definer) && body_reads_effective_user(body)
 }
 
 /// True when the body reads `current_user` or `current_role` as a token,
 /// keyword spellings inside literals and comments excluded.
+/// A body the lexer cannot read answers `true`: the caller refuses on it, and a body
+/// nobody can read is not one to conclude anything else from.
 pub(crate) fn body_reads_effective_user(body: &str) -> bool {
-    contains_current_user_keyword_token(&sanitize_sql_for_keyword_scan(&body.to_lowercase()))
+    significant_tokens(body).is_none_or(|tokens| reads_effective_user(&tokens))
 }
 
 #[cfg(test)]
@@ -698,6 +507,122 @@ mod tests {
     };
     use crate::types::ColumnName;
     use alloc::collections::BTreeMap;
+
+    /// Every non-code placement of the keyword, for the one question that decides whether a
+    /// definer function is refused. A spelling inside a literal, a comment or a
+    /// dollar-quoted block is text, not a read.
+    #[test]
+    fn the_keyword_is_read_only_where_it_is_code() {
+        for body in [
+            "SELECT 'current_user'",
+            "SELECT 1 -- current_user",
+            "SELECT 1 /* current_user */",
+            "SELECT 1 /* outer /* current_user */ still */",
+            "SELECT $tag$ current_user $tag$",
+            "SELECT $$ current_user $$",
+            r#"SELECT "current_user""#,
+            "SELECT 1 AS current_user",
+            "SELECT (who) current_user",
+        ] {
+            assert!(
+                !super::body_reads_effective_user(body),
+                "{body:?} spells the keyword somewhere it is not code"
+            );
+        }
+        for body in [
+            "SELECT current_user",
+            "SELECT CURRENT_USER",
+            "SELECT current_role",
+            "SELECT (current_user)",
+            "SELECT current_user /* and a comment */",
+        ] {
+            assert!(
+                super::body_reads_effective_user(body),
+                "{body:?} reads the keyword as code"
+            );
+        }
+    }
+
+    /// A body the lexer cannot read is refused rather than guessed at.
+    #[test]
+    fn an_unlexable_body_reads_as_reading_the_caller() {
+        for body in ["SELECT 'unterminated", "SELECT $tag$ unterminated"] {
+            assert!(
+                super::body_reads_effective_user(body),
+                "{body:?} cannot be lexed, so nothing may be concluded from it"
+            );
+        }
+    }
+
+    /// The complex-token refusal reads code only, so a keyword inside a literal or a
+    /// comment does not stop a direct accessor being recognized.
+    #[test]
+    fn a_complex_keyword_outside_code_does_not_refuse_the_accessor() {
+        for body in [
+            "SELECT current_user -- update",
+            "SELECT current_user /* delete from */",
+            "SELECT current_setting('app.current_user_id')::uuid /* update from */",
+            r#"SELECT current_user AS "from""#,
+        ] {
+            assert!(
+                FunctionSemantic::analyze_body(body, "UUID", "sql").is_some(),
+                "{body:?} is a direct accessor"
+            );
+        }
+        for body in [
+            "SELECT current_user FROM audit",
+            "UPDATE audit SET who = current_user RETURNING who",
+        ] {
+            assert!(
+                FunctionSemantic::analyze_body(body, "UUID", "sql").is_none(),
+                "{body:?} is not a direct accessor"
+            );
+        }
+    }
+
+    /// The body-shape question answers on its own, not only through the composition that
+    /// consumes it: a DML or control-flow keyword in code refuses, one in a literal or a
+    /// comment does not, and an unlexable body answers nothing.
+    #[test]
+    fn the_accessor_shape_reads_code_only() {
+        for body in [
+            "SELECT current_user",
+            "SELECT current_setting('app.user_id')",
+            "SELECT current_user -- delete from audit",
+            "SELECT current_user /* update */",
+            "SELECT 'delete from' || current_user",
+        ] {
+            assert_eq!(
+                super::accessor_shape(body),
+                Some(true),
+                "{body:?} is a direct accessor shape"
+            );
+        }
+        for body in [
+            "SELECT current_user FROM audit",
+            "SELECT current_user WHERE true",
+            "INSERT INTO audit(who) VALUES (current_user)",
+            "SELECT 1",
+        ] {
+            assert_eq!(
+                super::accessor_shape(body),
+                Some(false),
+                "{body:?} is not a direct accessor shape"
+            );
+        }
+        assert_eq!(super::accessor_shape("SELECT 'unterminated"), None);
+    }
+
+    /// An unlexable body names no accessor.
+    #[test]
+    fn an_unlexable_body_names_no_accessor() {
+        assert!(FunctionSemantic::analyze_body(
+            "SELECT current_user, 'unterminated",
+            "UUID",
+            "sql"
+        )
+        .is_none());
+    }
 
     #[test]
     fn analyze_body_detects_current_user_accessor() {
