@@ -230,7 +230,7 @@ pub const HOLDER_OBJECT_ID: &str = "all";
 /// The crate's own spelling for "everyone", never a value out of a row, so it is
 /// the one identifier the encoding leaves alone. A row whose value is literally
 /// `*` still encodes, or it would grant everybody.
-pub const WILDCARD_SUBJECT_ID: &str = "*";
+pub use crate::types::identity::WILDCARD_SUBJECT_ID;
 
 /// Action relation answering for a SQL `SELECT`.
 #[must_use]

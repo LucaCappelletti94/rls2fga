@@ -27,7 +27,12 @@ extern crate alloc;
 
 mod action_relations;
 mod identifiers;
-mod identity;
+/// One place a database value becomes the name of an object.
+///
+/// `OpenFGA` refuses some values outright and silently reinterprets others, so every name
+/// either side of the pipeline renders passes through here. A second spelling anywhere
+/// reintroduces the drift this exists to close.
+pub mod identity;
 mod notes;
 mod patterns;
 mod records;

@@ -779,6 +779,42 @@ fn quoting_an_identifier_for_sql_has_a_single_source_of_truth() {
     );
 }
 
+/// One place turns a database value into the name of an object.
+///
+/// The row evaluator and the tuple SQL must agree about it byte for byte, or a replay
+/// writes facts about an object nobody checks. The Rust and SQL renderings are compared by
+/// the per-row parity suite; this is what stops a second Rust rendering existing for it to
+/// disagree with.
+#[test]
+fn the_identity_encoder_has_a_single_source_of_truth() {
+    for name in [
+        "encode_part",
+        "encode_identity",
+        "hex_digit",
+        "is_spelled_verbatim",
+        "object_name_fits",
+        "subject_name_fits",
+    ] {
+        let definitions = fn_definitions(name);
+        assert_eq!(definitions, 1, "expected one `{name}`, found {definitions}");
+    }
+
+    for constant in [
+        "SAFE_PUNCTUATION: &str",
+        "ESCAPE_MARKER: char",
+        "PART_SEPARATOR: char",
+        "MAX_OBJECT_NAME_CHARS: usize",
+        "MAX_SUBJECT_NAME_BYTES: usize",
+        "WILDCARD_SUBJECT_ID: &str",
+    ] {
+        let declarations = count_all(constant);
+        assert_eq!(
+            declarations, 1,
+            "expected one `{constant}`, found {declarations}"
+        );
+    }
+}
+
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.
