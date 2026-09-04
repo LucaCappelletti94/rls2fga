@@ -4556,3 +4556,74 @@ fn a_residual_comparing_an_inexact_column_to_a_literal_is_recognized() {
         "a stored number against a constant needs no session, got: {sql}"
     );
 }
+
+/// An expression kind the allow-list does not name refuses, which is what makes the list a
+/// list rather than a suggestion.
+#[test]
+fn a_residual_using_an_unlisted_expression_is_refused() {
+    for residual in [
+        "s.weight > (SELECT extract(year FROM published_on) FROM tiers)",
+        "s.viewer > (SELECT count(*)::text FROM tiers WHERE cutoff = ANY(ARRAY[1, 2]))",
+    ] {
+        assert!(
+            review_refuses(residual),
+            "an unlisted expression is not a proven one: {residual}"
+        );
+    }
+}
+
+/// A placeholder is filled by whoever runs the query.
+#[test]
+fn a_residual_carrying_a_placeholder_is_refused() {
+    assert!(
+        review_refuses("s.weight > (SELECT max(cutoff) FROM tiers WHERE cutoff > $1)"),
+        "the caller fills a placeholder, so the loader cannot answer it"
+    );
+}
+
+/// `IS DISTINCT FROM` compares as a comparison does, so a zoned column against a literal
+/// reads the session's zone there too.
+#[test]
+fn a_residual_distinguishing_a_zoned_column_from_a_literal_is_refused() {
+    assert!(
+        review_refuses(
+            "s.weight > (SELECT count(*) FROM tiers \
+             WHERE published_on IS DISTINCT FROM '2026-01-01')"
+        ),
+        "the session's date style completes the literal whichever comparison spells it"
+    );
+}
+
+/// A set operation binds its output columns to no single relation, so nothing places a name
+/// it carries.
+#[test]
+fn a_residual_reading_a_set_operation_is_refused() {
+    assert!(
+        review_refuses("s.weight > (SELECT max(cutoff) FROM tiers UNION SELECT 1)"),
+        "a set operation binds no relation the names can be placed against"
+    );
+}
+
+/// A nested relation's own alias places its columns, so the qualifier resolves there rather
+/// than reaching outward.
+#[test]
+fn a_residual_qualifying_a_nested_alias_is_recognized() {
+    let db = review_schema();
+    let sql = recognized_residual_sql(
+        &db,
+        &review_membership("s.weight > (SELECT max(t.cutoff) FROM tiers t)"),
+    );
+    assert!(
+        sql.contains("max(t.cutoff)"),
+        "the nested alias places its own column, got: {sql}"
+    );
+}
+
+/// A window makes an aggregate answer per frame rather than per relation.
+#[test]
+fn a_residual_windowing_an_aggregate_is_refused() {
+    assert!(
+        review_refuses("s.weight > (SELECT max(cutoff) OVER () FROM tiers)"),
+        "a framed aggregate is not the order-free one the name promises"
+    );
+}
