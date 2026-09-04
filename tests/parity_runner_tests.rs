@@ -331,6 +331,64 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(an_array_and_a_jsonb_field_name_the_caller(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_array_and_a_jsonb_field_name_the_caller: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_clock_guard_holds_on_a_zoned_and_a_dated_column(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_clock_guard_holds_on_a_zoned_and_a_dated_column: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(
+        a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name(Arc::clone(&cluster)),
+    )
+    .await
+    {
+        failures.push(format!(
+            "a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_composite_key_share_stays_within_its_tenant(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_composite_key_share_stays_within_its_tenant: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(a_caller_role_residual_falls_closed(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_caller_role_residual_falls_closed: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_computed_argument_is_not_captured_by_the_body(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_computed_argument_is_not_captured_by_the_body: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -340,7 +398,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 33] = [
+const CASES: [&str; 39] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -374,6 +432,12 @@ const CASES: [&str; 33] = [
     "a_joined_inner_rule_drops_the_unjoined_row",
     "a_quoted_role_is_a_different_role",
     "a_declared_session_set_grants_beside_the_owner",
+    "an_array_and_a_jsonb_field_name_the_caller",
+    "a_clock_guard_holds_on_a_zoned_and_a_dated_column",
+    "a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name",
+    "a_composite_key_share_stays_within_its_tenant",
+    "a_caller_role_residual_falls_closed",
+    "a_computed_argument_is_not_captured_by_the_body",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -1879,4 +1943,288 @@ async fn a_declared_session_set_grants_beside_the_owner(cluster: Arc<Cluster>) {
         false,
     );
     assert_agrees(&case, &run);
+}
+
+/// Ported from `array_and_jsonb_membership_parity_postgres18_and_openfga`.
+///
+/// The caller as an element of an array column, and the caller named by a jsonb field.
+/// The interesting rows are the empty and NULL ones, which admit nobody.
+async fn an_array_and_a_jsonb_field_name_the_caller(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-array-jsonb-membership",
+        "array_jsonb_membership",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, editors, meta) VALUES
+                 ('aj-editor-only', ARRAY['alice'], '{\"owner_id\":\"bob\"}'),
+                 ('aj-meta-only', ARRAY['bob'], '{\"owner_id\":\"alice\"}'),
+                 ('aj-both', ARRAY['alice'], '{\"owner_id\":\"alice\"}'),
+                 ('aj-neither', ARRAY['bob'], '{\"owner_id\":\"bob\"}'),
+                 ('aj-empty-array', ARRAY[]::TEXT[], '{\"owner_id\":\"alice\"}'),
+                 ('aj-null-array', NULL, '{\"owner_id\":\"alice\"}'),
+                 ('aj-null-element', ARRAY[NULL]::TEXT[], '{}'),
+                 ('aj-missing-key', ARRAY['alice'], '{}')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (row, visible) in [
+        ("aj-editor-only", true),
+        ("aj-meta-only", true),
+        ("aj-both", true),
+        ("aj-neither", false),
+        // An empty array admits nobody, and so does a NULL one.
+        ("aj-empty-array", true),
+        ("aj-null-array", true),
+        ("aj-null-element", false),
+        ("aj-missing-key", true),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `zoneless_temporal_guard_parity_postgres18_and_openfga`.
+///
+/// A guard against the clock on a zoned column and on a date, where the comparison
+/// promotes the date to a timestamp in the session's zone.
+async fn a_clock_guard_holds_on_a_zoned_and_a_dated_column(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-zoneless-temporal-guard",
+        "
+CREATE TABLE zoned_docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+CREATE TABLE dated_docs (id TEXT PRIMARY KEY, expires_on DATE);
+ALTER TABLE zoned_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dated_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY zoned_unexpired ON zoned_docs FOR SELECT USING (expires_at > now());
+CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now());
+",
+        &[
+            "INSERT INTO zoned_docs (id, expires_at) VALUES
+                 ('z-live', TIMESTAMPTZ '2099-01-01 00:00:00+00'),
+                 ('z-stale', TIMESTAMPTZ '2000-01-01 00:00:00+00');
+             INSERT INTO dated_docs (id, expires_on) VALUES
+                 ('d-live', DATE '2099-01-01'),
+                 ('d-stale', DATE '2000-01-01')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON zoned_docs, dated_docs TO app_user",
+        ],
+        vec![Principal::as_role("app_user", "app_user").with_clock()],
+    );
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (object, visible) in [
+        ("zoned_docs:z-live", true),
+        ("zoned_docs:z-stale", false),
+        ("dated_docs:d-live", true),
+        ("dated_docs:d-stale", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_user",
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// Ported from `cross_row_residual_parity_postgres18_and_openfga`.
+///
+/// A share grants only when its weight beats the average across the whole share table,
+/// which rows the granted row does not name decide.
+async fn a_cross_row_residual_is_decided_by_rows_the_grant_does_not_name(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-cross-row-residual",
+        "cross_row_residual",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'owner'), (2, 'owner'), (3, 'owner');
+             INSERT INTO paper_shares (paper_id, viewer, weight) VALUES
+                 (1, 'alice', 50), (2, 'bob', 30), (3, 'alice', 1)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![
+            Principal::with_setting("alice", "app_reader", "app.user_id", "alice"),
+            Principal::with_setting("bob", "app_reader", "app.user_id", "bob"),
+            Principal::with_setting("carol", "app_reader", "app.user_id", "carol"),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // The average of 50, 30 and 1 is 27, so only the first two shares beat it.
+    for (subject, object, visible) in [
+        ("alice", "papers:1", true),
+        ("alice", "papers:3", false),
+        ("bob", "papers:2", true),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `composite_key_self_membership_parity_postgres18_and_openfga`.
+///
+/// The share is keyed on the tenant as well as the paper, so a bridge on the paper alone
+/// would hand one tenant's reader the other tenant's paper of the same id.
+async fn a_composite_key_share_stays_within_its_tenant(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-composite-key-self-membership",
+        "
+CREATE TABLE tenant_papers (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE tenant_shares (
+    tenant_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    viewer TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, paper_id, viewer)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE tenant_papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_visible ON tenant_papers FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM tenant_shares s
+        WHERE s.tenant_id = tenant_papers.tenant_id
+          AND s.paper_id = tenant_papers.id
+          AND s.viewer = auth_current_user_id()));
+",
+        &[
+            // One paper id in both tenants, plus one unshared paper.
+            "INSERT INTO tenant_papers(tenant_id, id, title) VALUES
+                 ('t1', 'p-shared', 'alpha'), ('t2', 'p-shared', 'beta'),
+                 ('t1', 'p-solo', 'gamma');
+             INSERT INTO tenant_shares(tenant_id, paper_id, viewer) VALUES
+                 ('t1', 'p-shared', 'alice'), ('t2', 'p-shared', 'bob')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON tenant_papers, tenant_shares TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "tenant_papers:t1|p-shared", true),
+        ("alice", "tenant_papers:t2|p-shared", false),
+        ("bob", "tenant_papers:t2|p-shared", true),
+        ("bob", "tenant_papers:t1|p-shared", false),
+        ("alice", "tenant_papers:t1|p-solo", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `caller_role_residual_parity_postgres18_and_openfga`.
+///
+/// The residual asks whether the caller holds the role the membership row names. The
+/// runner reads rows as the owning superuser, for whom `pg_has_role` is true of every
+/// role, so a translation deciding that residual while loading would grant the row to a
+/// caller the database denies it to.
+async fn a_caller_role_residual_falls_closed(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-caller-role-residual",
+        r"
+CREATE TABLE docs(id TEXT PRIMARY KEY);
+CREATE TABLE doc_members(doc_id TEXT REFERENCES docs(id), user_id TEXT, tenant TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_members ON docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM doc_members m
+    WHERE m.doc_id = docs.id
+      AND m.user_id = current_user
+      AND pg_has_role(m.tenant, 'USAGE')
+  )
+);
+",
+        &[
+            "INSERT INTO docs(id) VALUES ('d1');
+             INSERT INTO doc_members(doc_id, user_id, tenant)
+                 VALUES ('d1', 'app_reader', 'tenant_a')",
+            // The caller is deliberately not granted `tenant_a`.
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON docs, doc_members TO app_reader",
+        ],
+        vec![Principal::as_role("app_reader", "app_reader")],
+    )
+    .after(&["CREATE ROLE tenant_a"]);
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "docs:d1",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// Ported from `computed_argument_capture_parity_postgres18_and_openfga`.
+///
+/// A computed call argument is evaluated in the caller's scope, so a bare column inside it
+/// must reach the body qualified or the body's own scan captures it.
+async fn a_computed_argument_is_not_captured_by_the_body(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-computed-argument-capture",
+        r"
+CREATE TABLE leveled_docs(id TEXT PRIMARY KEY, level INT NOT NULL);
+CREATE TABLE leveled_members(doc_id TEXT REFERENCES leveled_docs(id), user_id TEXT,
+  level INT NOT NULL, min_level INT NOT NULL);
+ALTER TABLE leveled_docs ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION can_see(d TEXT, req INT) RETURNS BOOLEAN LANGUAGE sql
+SET search_path TO public, pg_catalog, pg_temp AS
+'SELECT EXISTS (SELECT 1 FROM leveled_members m WHERE m.doc_id = d AND m.user_id = current_user AND m.min_level <= req)';
+CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)));
+",
+        &[
+            // The poisoning row: the member's own `level` is high and `min_level` sits
+            // between the two, so a captured reading admits what the row's level denies.
+            "INSERT INTO leveled_docs(id, level) VALUES ('d1', 0);
+             INSERT INTO leveled_members(doc_id, user_id, level, min_level)
+                 VALUES ('d1', 'app_reader', 99, 50)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON leveled_docs, leveled_members TO app_reader",
+        ],
+        vec![Principal::as_role("app_reader", "app_reader")],
+    );
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    // `min_level` 50 against the row's level 0, so the database denies.
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "app_reader",
+        "leveled_docs:d1",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_no_over_grant(&case, &run);
 }

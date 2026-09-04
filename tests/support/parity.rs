@@ -600,14 +600,11 @@ impl Cluster {
     ///
     /// Every non-builtin role, because only this runner uses the cluster and a case's roles
     /// are named for their part in the case rather than for the case.
-    fn reset(&self, name: &str) {
+    fn reset(&self, name: &str) -> Result<(), diesel::result::Error> {
         let mut admin = self.admin();
-        admin
-            .batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
-            .unwrap_or_else(|error| panic!("dropping database {name}: {error}"));
-        admin
-            .batch_execute(
-                "DO $$
+        admin.batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))?;
+        admin.batch_execute(
+            "DO $$
                  DECLARE role_name text;
                  BEGIN
                      FOR role_name IN
@@ -618,8 +615,7 @@ impl Cluster {
                          EXECUTE format('DROP ROLE %I', role_name);
                      END LOOP;
                  END $$",
-            )
-            .unwrap_or_else(|error| panic!("dropping the case's roles: {error}"));
+        )
     }
 }
 
@@ -634,6 +630,39 @@ fn case_database(name: &str) -> String {
     format!("case_{at}_{folded}")
 }
 
+/// Drop a case's database and roles whether or not the case reached its assertions.
+///
+/// A failing case that kept its database left grants on roles the next case's reset could
+/// not drop, so one broken case failed every later one.
+struct Cleanup<'a> {
+    cluster: &'a Cluster,
+    database: String,
+    /// Set once the explicit path has run, so the fallback stays out of the way.
+    cleaned: bool,
+}
+
+impl Cleanup<'_> {
+    /// Clean up for a case that finished, where a failure is worth failing over.
+    fn finish(mut self) {
+        self.cleaned = true;
+        self.cluster
+            .reset(&self.database)
+            .unwrap_or_else(|error| panic!("cleaning up after {}: {error}", self.database));
+    }
+}
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        // The case is already failing, so this only reports what it left behind.
+        if let Err(error) = self.cluster.reset(&self.database) {
+            eprintln!("{} survived the failed case: {error}", self.database);
+        }
+    }
+}
+
 pub(crate) async fn run_with(
     cluster: &Cluster,
     case: &ParityCase,
@@ -641,10 +670,15 @@ pub(crate) async fn run_with(
     doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
 ) -> Run {
     let database = case_database(&case.name);
+    let cleanup = Cleanup {
+        cluster,
+        database: database.clone(),
+        cleaned: false,
+    };
     let mut conn = cluster.fresh_database(&database);
     let outcome = run_in(&mut conn, cluster, case, expectation, doctor).await;
     drop(conn);
-    cluster.reset(&database);
+    cleanup.finish();
     outcome
 }
 

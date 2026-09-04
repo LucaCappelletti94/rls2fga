@@ -311,6 +311,11 @@ pub(crate) fn execute_tuple_queries_for_parity(
 
     let mut keys = std::collections::BTreeSet::new();
     for query in queries {
+        // A declared gap carries advice rather than a statement, and diesel refuses a
+        // comment as an empty query.
+        if query.skipped.is_some() {
+            continue;
+        }
         if query.condition.is_some() {
             let rows: Vec<Conditional> =
                 diesel::sql_query(&query.sql)
