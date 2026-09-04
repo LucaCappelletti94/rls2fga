@@ -373,22 +373,42 @@ pub(crate) struct ResidualSqlKey<'a> {
 }
 
 impl ResidualSqlKey<'_> {
-    fn all(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
+    /// The residual as it identifies a rendered query.
+    ///
+    /// A gated source moves its request-completed conjuncts into the condition, so the
+    /// query filters on what remains and two such sources differing only there render one
+    /// statement. One constructor rather than the rule spelled per arm, because a key
+    /// finer than the query emits one statement twice and a key coarser than it drops one
+    /// of two different ones, and nothing else would notice either.
+    fn of(predicates: &ResidualPredicates, gated: Gated) -> ResidualSqlKey<'_> {
         ResidualSqlKey {
             predicates,
-            include_requests: true,
-        }
-    }
-
-    fn excluding_requests(predicates: &ResidualPredicates) -> ResidualSqlKey<'_> {
-        ResidualSqlKey {
-            predicates,
-            include_requests: false,
+            include_requests: gated == Gated::No,
         }
     }
 
     fn conjuncts(&self) -> impl Iterator<Item = &str> {
         self.predicates.sql_conjuncts(self.include_requests)
+    }
+}
+
+/// Whether a source's request-completed conjuncts are answered by its condition.
+///
+/// Named rather than a bare `bool`, so a call site says which way round it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gated {
+    Yes,
+    No,
+}
+
+impl Gated {
+    /// Gated exactly when the source carries something that re-evaluates the request.
+    fn when(gated: bool) -> Self {
+        if gated {
+            Self::Yes
+        } else {
+            Self::No
+        }
     }
 }
 
@@ -775,11 +795,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
-                extra_predicates: if gate.is_some() {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                } else {
-                    ResidualSqlKey::all(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
             Self::ParentBridge {
@@ -849,7 +865,10 @@ impl TupleSource {
                 row_parameter,
                 request_parameter,
                 comparison,
-                ..
+                // The caller's contract, which the notes carry off the plan's own sources.
+                // Named rather than elided, so a field added here has to be decided about.
+                setting_key: _,
+                separator: _,
             } => TupleSourceKey::SessionAttributeGate {
                 table,
                 identity_cols,
@@ -870,7 +889,8 @@ impl TupleSource {
                 request_parameter,
                 extra_predicates,
                 temporal_context,
-                ..
+                setting_key: _,
+                separator: _,
             } => TupleSourceKey::CallerSetShareGate {
                 share_type,
                 join_table,
@@ -880,11 +900,10 @@ impl TupleSource {
                 condition,
                 row_parameter,
                 request_parameter,
-                extra_predicates: if temporal_context.is_empty() {
-                    ResidualSqlKey::all(extra_predicates)
-                } else {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(
+                    extra_predicates,
+                    Gated::when(!temporal_context.is_empty()),
+                ),
                 temporal_context,
             },
             Self::ShareBridge {
@@ -918,7 +937,8 @@ impl TupleSource {
                 share_type,
                 relation,
                 condition,
-                extra_predicates: ResidualSqlKey::excluding_requests(extra_predicates),
+                // Its condition is not optional, so the request is always answered there.
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::Yes),
                 context,
             },
             Self::HolderShares {
@@ -988,11 +1008,7 @@ impl TupleSource {
                 holder_type,
                 member_table,
                 user_col,
-                extra_predicates: if gate.is_some() {
-                    ResidualSqlKey::excluding_requests(extra_predicates)
-                } else {
-                    ResidualSqlKey::all(extra_predicates)
-                },
+                extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
             Self::Skipped { reason } => TupleSourceKey::Skipped { reason },
@@ -1003,8 +1019,9 @@ impl TupleSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::patterns::ResidualPredicate;
+    use crate::classifier::patterns::{AttributeRequestPredicate, RequestValue, ResidualPredicate};
     use crate::generator::well_known::owner_user_relation;
+    use rls2fga_types::AttributeOperator;
 
     fn table(name: &str) -> TableId {
         TableId::from_stored(None, name.to_string())
@@ -1172,6 +1189,141 @@ mod tests {
         assert_ne!(
             with_principal("users").dedup_key(),
             with_principal("people").dedup_key()
+        );
+    }
+
+    /// A conjunct the row settles, and one the request completes.
+    fn conjunct(sql: &str, from_request: bool) -> ResidualPredicate {
+        ResidualPredicate {
+            sql: sql.to_string(),
+            guard: None,
+            request: from_request.then(|| AttributeRequestPredicate {
+                column: ColumnName::from_stored("expires_at"),
+                operator: AttributeOperator::Gt,
+                request_value: RequestValue::StatementTimestamp,
+                offset: None,
+            }),
+            relations: Vec::new(),
+        }
+    }
+
+    /// A gated source renders its residual without the request-completed conjuncts, so
+    /// two of them differing only there render one query and have to key as one.
+    ///
+    /// The key and the renderer decide this separately, and nothing else would notice them
+    /// disagreeing: a key finer than the query emits the same statement twice, and a key
+    /// coarser than the query drops one of two different ones.
+    #[test]
+    fn dedup_key_drops_a_request_conjunct_exactly_where_the_query_does() {
+        let gate = MembershipGate {
+            condition: "unexpired".to_string(),
+            context: vec![GateContextColumn {
+                parameter: "expires_at".to_string(),
+                column: ColumnName::from_stored("expires_at"),
+                witness: ContextWitness::Latest,
+            }],
+            aggregate: false,
+        };
+        // The same row-settled conjunct either way, and one request-completed conjunct
+        // beside it, which is what a gate takes over.
+        let membership = |gate: Option<MembershipGate>, request_conjunct: bool| {
+            let mut residual = vec![conjunct("role = 'editor'", false)];
+            if request_conjunct {
+                residual.push(conjunct("expires_at > now()", true));
+            }
+            TupleSource::ExistsMembership {
+                join_table: table("members"),
+                fk_cols: vec![ColumnName::from_stored("doc_id")],
+                user_col: ColumnName::from_stored("user_id"),
+                parent_type: TypeName::canonicalized("docs"),
+                extra_predicates: ResidualPredicates::new(residual),
+                gate: gate.clone(),
+            }
+        };
+
+        assert_eq!(
+            membership(Some(gate.clone()), true).dedup_key(),
+            membership(Some(gate.clone()), false).dedup_key(),
+            "the gate re-evaluates the request conjunct, so it does not identify the query"
+        );
+        assert_ne!(
+            membership(None, true).dedup_key(),
+            membership(None, false).dedup_key(),
+            "without a gate the conjunct filters in the query, so it identifies it"
+        );
+    }
+
+    /// A share gate keyed on its own row always carries a request value, and its residual
+    /// still filters in the query until a clock joins it.
+    #[test]
+    fn dedup_key_follows_the_share_gate_clock_rather_than_its_request_parameter() {
+        let share = |clock: bool, request_conjunct: bool| TupleSource::CallerSetShareGate {
+            join_table: table("shares"),
+            identity_cols: vec![ColumnName::from_stored("id")],
+            share_type: TypeName::canonicalized("shares"),
+            relation: owner_user_relation(),
+            condition: "in_set".to_string(),
+            row_parameter: "member".to_string(),
+            member_col: ColumnName::from_stored("viewer"),
+            request_parameter: "subjects".to_string(),
+            setting_key: "app.subjects".to_string(),
+            separator: Some(",".to_string()),
+            extra_predicates: ResidualPredicates::new({
+                let mut residual = vec![conjunct("role = 'editor'", false)];
+                if request_conjunct {
+                    residual.push(conjunct("expires_at > now()", true));
+                }
+                residual
+            }),
+            temporal_context: if clock {
+                vec![GateContextColumn {
+                    parameter: "expires_at".to_string(),
+                    column: ColumnName::from_stored("expires_at"),
+                    witness: ContextWitness::Latest,
+                }]
+            } else {
+                Vec::new()
+            },
+        };
+
+        assert_eq!(
+            share(true, true).dedup_key(),
+            share(true, false).dedup_key(),
+            "the clock moved the comparison into the condition"
+        );
+        assert_ne!(
+            share(false, true).dedup_key(),
+            share(false, false).dedup_key(),
+            "with no clock the residual filters in the query, requests and all"
+        );
+    }
+
+    /// The two fields the key leaves out, stated rather than elided.
+    ///
+    /// Neither reaches the query or the relation shapes: they name the caller's contract,
+    /// which the notes carry from the plan's own sources. Two gates differing only there
+    /// render one query and are one key.
+    #[test]
+    fn dedup_key_ignores_the_caller_contract_fields() {
+        let gate = |setting_key: &str, separator: Option<&str>| TupleSource::SessionAttributeGate {
+            table: table("docs"),
+            identity_cols: vec![ColumnName::from_stored("id")],
+            relation: owner_user_relation(),
+            condition: "in_set".to_string(),
+            row_parameter: RowParameter::Column {
+                parameter: "owner".to_string(),
+                column: ColumnName::from_stored("owner"),
+            },
+            request_parameter: "subjects".to_string(),
+            setting_key: setting_key.to_string(),
+            separator: separator.map(str::to_string),
+            comparison: RequestComparison::CallerSetHolds,
+        };
+
+        assert_eq!(
+            gate("app.subjects", Some(",")).dedup_key(),
+            gate("app.teams", Some(";")).dedup_key(),
+            "the setting key and its separator name the contract, not the query"
         );
     }
 }
