@@ -12,6 +12,7 @@ use support::exact_support::{
 
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
+use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 use rls2fga::types::{ActionAnswer, ActionStatement, ConfidenceLevel, NoteSeverity};
 
 /// Plan one generated schema at the threshold the parity runner uses.
@@ -224,15 +225,13 @@ fn a_folded_collision_plans_two_distinct_types() {
             .iter()
             .map(|entry| entry.type_name.as_str().to_string())
             .collect();
+        // The names themselves, not merely two of them: the first table keeps the
+        // canonical name and the second carries the suffix, and a regression in either the
+        // base or the suffix has to fail here.
         assert_eq!(
-            types.len(),
-            2,
-            "{}: two tables fold onto one name, so the model needs two types, got {types:?}",
-            case.name
-        );
-        assert_ne!(
-            types[0], types[1],
-            "{}: both tables answer to one type, so a row of either would answer for both",
+            types,
+            vec!["guarded".to_string(), "guarded_e788216f".to_string()],
+            "{}: the collision has to resolve to the canonical name and one suffixed",
             case.name
         );
     }
@@ -250,9 +249,21 @@ fn a_long_key_case_seeds_a_key_near_the_cap() {
         .collect();
     assert!(!long.is_empty(), "no long-key text case to check");
     for case in long {
+        let width = if case.name.contains("folded-collision") {
+            // `guarded_e788216f` and a separator.
+            MAX_OBJECT_NAME_CHARS - 17
+        } else {
+            // `guarded` and a separator.
+            MAX_OBJECT_NAME_CHARS - 8
+        };
         assert!(
-            case.seed[0].contains(&"l".repeat(200)),
-            "{}: the seed carries no long key",
+            case.seed[0].contains(&"l".repeat(width - 1)),
+            "{}: the seed's key is not at the boundary the cap leaves",
+            case.name
+        );
+        assert!(
+            !case.seed[0].contains(&"l".repeat(width)),
+            "{}: the seed's key is past the boundary, so the row has no name",
             case.name
         );
     }

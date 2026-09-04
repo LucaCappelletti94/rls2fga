@@ -12,6 +12,8 @@
 
 use core::fmt::Write as _;
 
+use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
+
 /// Preconditions every admitted case satisfies, each a rule of the database.
 ///
 /// 1. One permissive `SELECT` policy and no restrictive one, so no clause is composed with
@@ -59,7 +61,7 @@ impl KeyType {
     ///
     /// The text keys carry `|` and `~`, which the identity encoder gives meaning to, so a
     /// case in this class also exercises the escaping.
-    fn keys(self, length: KeyLength) -> Vec<String> {
+    fn keys(self, length: KeyLength, base_type: &str, disambiguated: bool) -> Vec<String> {
         let short = match self {
             Self::Text => vec!["'plain'", "'pipe|key'", "'tilde~key'", "'both|and~key'"],
             Self::Integer => vec!["1", "2", "3", "4"],
@@ -76,10 +78,10 @@ impl KeyType {
             // than pretending the axis reaches them.
             return short.into_iter().map(ToString::to_string).collect();
         }
-        // Long enough to exercise the encoder and the name budget, short enough that every
-        // row still has a name: the cap counts the type name and the separator too.
+        // At the boundary, not near it: one more character and the row has no name.
+        let width = length.characters(base_type, disambiguated);
         (0..4)
-            .map(|at| format!("'{}{at}'", "l".repeat(200)))
+            .map(|at| format!("'{}{at}'", "l".repeat(width - 1)))
             .collect()
     }
 
@@ -197,6 +199,26 @@ pub(crate) enum KeyLength {
 impl KeyLength {
     pub(crate) const ALL: [Self; 2] = [Self::Short, Self::NearTheCap];
 
+    /// The longest key that still leaves every row a name.
+    ///
+    /// An object name is the type, a separator and the encoded key, capped whole. Derived
+    /// from the cap rather than picked: a key comfortably inside it would let a budget
+    /// regression reject the last thirty characters and still pass every case. One more
+    /// character than this and naming the row raises, which the runner now refuses.
+    ///
+    /// `disambiguated` allows for the suffix a colliding type name carries, since the case
+    /// cannot know the hash the translator will choose.
+    fn characters(self, base_type: &str, disambiguated: bool) -> usize {
+        match self {
+            Self::Short => 8,
+            Self::NearTheCap => {
+                // `_` and eight hex digits, the shape `stable_hex_suffix` renders.
+                let suffix = usize::from(disambiguated) * 9;
+                MAX_OBJECT_NAME_CHARS - (base_type.chars().count() + suffix + 1)
+            }
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Short => "short-key",
@@ -296,10 +318,40 @@ fn case(
     name: TableName,
     length: KeyLength,
 ) -> ExactCase {
-    let null = if nullable { "" } else { " NOT NULL" };
     let tables = name.tables();
+    let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
+    // The values a row can carry: the caller's own, another, the empty string, and NULL
+    // where the column admits it. NULL and the empty string are where an equality stops
+    // behaving like one, so they are the boundaries worth seeding.
+    let mut values = vec!["'alice'", "'someone_else'", "''"];
+    if nullable {
+        values.push("NULL");
+    }
+    assert!(
+        values.len() <= keys.len(),
+        "one key per row, or the seed collides on the primary key"
+    );
+
+    ExactCase {
+        name: format!(
+            "exact-{}-{}-{}-{}-{}",
+            key.label(),
+            accessor.label(),
+            if nullable { "nullable" } else { "not-null" },
+            name.label(),
+            length.label()
+        ),
+        schema: schema_of(&tables, key, accessor, nullable),
+        seed: seed_of(&tables, &keys, &values),
+        accessor,
+    }
+}
+
+/// The tables, the accessor they read and the policy each carries.
+fn schema_of(tables: &[&str], key: KeyType, accessor: Accessor, nullable: bool) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
     let mut schema = String::new();
-    for table in &tables {
+    for table in tables {
         let _ = writeln!(
             schema,
             "CREATE TABLE {table} (id {} PRIMARY KEY, who TEXT{null});",
@@ -315,57 +367,43 @@ fn case(
             accessor.expression()
         );
     }
+    schema
+}
 
-    // The values a row can carry: the caller's own, another, the empty string, and NULL
-    // where the column admits it. NULL and the empty string are where an equality stops
-    // behaving like one, so they are the boundaries worth seeding.
-    let mut values = vec!["'alice'", "'someone_else'", "''"];
-    if nullable {
-        values.push("NULL");
-    }
-    let keys = key.keys(length);
-    assert!(
-        values.len() <= keys.len(),
-        "one key per row, or the seed collides on the primary key"
-    );
-    let mut rows = String::new();
-    for (at, value) in values.iter().enumerate() {
-        let joiner = if at == 0 { "" } else { ", " };
-        let _ = write!(rows, "{joiner}({}, {value})", keys[at]);
-    }
-    // The second table carries the same keys with the values rotated, so one type standing
-    // for both tables would hand a caller the other table's row under a name it owns.
-    let mut mirrored = String::new();
-    for (at, value) in values.iter().rev().enumerate() {
-        let joiner = if at == 0 { "" } else { ", " };
-        let _ = write!(mirrored, "{joiner}({}, {value})", keys[at]);
-    }
+/// The rows, and the grant the reading roles need.
+///
+/// A second table carries the same keys with its values rotated, so one type standing for
+/// both tables would hand a caller the other table's row under a name it owns.
+fn seed_of(tables: &[&str], keys: &[String], values: &[&str]) -> [String; 2] {
+    let row_list = |rotated: bool| {
+        let mut rows = String::new();
+        for (at, value) in values.iter().enumerate() {
+            let joiner = if at == 0 { "" } else { ", " };
+            let value = if rotated {
+                values[values.len() - 1 - at]
+            } else {
+                value
+            };
+            let _ = write!(rows, "{joiner}({}, {value})", keys[at]);
+        }
+        rows
+    };
     let mut seed = String::new();
     let mut grants = String::new();
     for (at, table) in tables.iter().enumerate() {
-        let values = if at == 0 { &rows } else { &mirrored };
-        let _ = write!(seed, "INSERT INTO {table} (id, who) VALUES {values}; ");
+        let _ = write!(
+            seed,
+            "INSERT INTO {table} (id, who) VALUES {}; ",
+            row_list(at > 0)
+        );
         let joiner = if at == 0 { "" } else { ", " };
         let _ = write!(grants, "{joiner}{table}");
     }
-
-    ExactCase {
-        name: format!(
-            "exact-{}-{}-{}-{}-{}",
-            key.label(),
-            accessor.label(),
-            if nullable { "nullable" } else { "not-null" },
-            name.label(),
-            length.label()
+    [
+        seed,
+        format!(
+            "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
+             GRANT SELECT ON {grants} TO alice, mallory, silent"
         ),
-        schema,
-        seed: [
-            seed,
-            format!(
-                "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-                 GRANT SELECT ON {grants} TO alice, mallory, silent"
-            ),
-        ],
-        accessor,
-    }
+    ]
 }
