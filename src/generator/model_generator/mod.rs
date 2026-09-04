@@ -1793,6 +1793,20 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
                 owner: table.owner(db).ok().flatten().map(str::to_string),
             });
         }
+        // A read naming the partition applies the partition's policies, which a partition
+        // of a protected root has none of. Reported rather than folded into the
+        // unrestricted tables: those show every row by every route, and these rows are
+        // filtered through the root, which is the route the model answers for.
+        if table.has_row_level_security(db) == Ok(false) {
+            if let Ok(Some(root)) = table.partition_root(db) {
+                if root.has_row_level_security(db) == Ok(true) {
+                    notes.push(TranslationNote::PartitionReadDirectlyIsUnfiltered {
+                        table: table_identity(table),
+                        root: table_identity(root),
+                    });
+                }
+            }
+        }
     }
 }
 

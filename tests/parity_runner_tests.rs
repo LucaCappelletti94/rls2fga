@@ -1636,7 +1636,9 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_u
     )
     .with_registry(ACCESSOR)
     // Reading a partition directly is unfiltered, since a parent's policies apply only to
-    // rows reached through the parent. The runner found that; see `not_read_directly`.
+    // rows reached through the parent. The runner found that, and the translation now
+    // discloses it through `PartitionReadDirectlyIsUnfiltered`, pinned offline by
+    // `a_partition_of_a_protected_root_discloses_its_direct_read`.
     .not_reading_directly(&["events_eu", "events_us"]);
     let run = support::parity::run(&cluster, &case).await;
     // The key is composite, so the object carries both parts.
