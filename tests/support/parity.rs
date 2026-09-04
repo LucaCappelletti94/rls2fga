@@ -42,6 +42,12 @@ pub(crate) struct Principal {
     pub(crate) pg_roles: Vec<String>,
     /// Whether every check carries the database's clock as `request_time`.
     pub(crate) carries_request_time: bool,
+    /// Whether a policy raises on a setting this caller never set.
+    ///
+    /// A caller holding no token is in that state and reads nothing, so the raise is a
+    /// denial. Declared per caller, because everywhere else a read that raises is a case
+    /// granting no privilege or naming no column.
+    pub(crate) reads_an_unset_setting: bool,
 }
 
 impl Principal {
@@ -54,6 +60,7 @@ impl Principal {
             context: serde_json::json!({}),
             pg_roles: Vec::new(),
             carries_request_time: false,
+            reads_an_unset_setting: false,
         }
     }
 
@@ -66,6 +73,7 @@ impl Principal {
             context: serde_json::json!({}),
             pg_roles: Vec::new(),
             carries_request_time: false,
+            reads_an_unset_setting: false,
         }
     }
 
@@ -90,6 +98,12 @@ impl Principal {
     /// The same caller, holding `roles`.
     pub(crate) fn holding(mut self, roles: &[&str]) -> Self {
         self.pg_roles = roles.iter().map(|role| (*role).to_string()).collect();
+        self
+    }
+
+    /// The same caller, whose read raises because a policy reads a setting it never set.
+    pub(crate) fn reading_an_unset_setting(mut self) -> Self {
+        self.reads_an_unset_setting = true;
         self
     }
 }
@@ -235,6 +249,8 @@ impl Mismatch {
 pub(crate) struct Run {
     /// Every compared pair, in the order the runner walked them.
     pub(crate) observations: Vec<Mismatch>,
+    /// What the translation said diverges, so a case can require its own gap by name.
+    pub(crate) disclosures: Vec<String>,
 }
 
 impl Run {
@@ -458,11 +474,24 @@ fn postgres_allows(
         Ok(counted.rows == 1)
     });
     match answered {
-        Ok(granted) => Some(granted),
+        Ok(granted) => {
+            assert!(
+                !(principal.reads_an_unset_setting && statement == ActionStatement::Select),
+                "{}: {} reads a setting it never set, yet the read succeeded, so the \
+                 case's claim is stale",
+                case.name,
+                principal.subject
+            );
+            Some(granted)
+        }
         // Row-level security raises on exactly one thing when reading: a policy that
         // expands into itself. The read returns no row, so it is a denial, and the model
         // has to deny too.
         Err(error) if reads_as_a_policy_refusal(&error) => Some(false),
+        // A caller that set nothing the policy reads is denied, where the case says so.
+        Err(error) if principal.reads_an_unset_setting && reads_an_unset_setting(&error) => {
+            Some(false)
+        }
         // Otherwise a plain read never raises, so an error is a case that granted no
         // privilege or named no column, and calling it a denial would hide the mistake.
         Err(error) if statement == ActionStatement::Select => panic!(
@@ -482,6 +511,12 @@ fn postgres_allows(
 fn reads_as_a_policy_refusal(error: &diesel::result::Error) -> bool {
     matches!(error, diesel::result::Error::DatabaseError(_, info)
         if info.message().contains("infinite recursion detected in policy"))
+}
+
+/// Whether `error` is a policy reading a setting nobody set, `42704`.
+fn reads_an_unset_setting(error: &diesel::result::Error) -> bool {
+    matches!(error, diesel::result::Error::DatabaseError(_, info)
+        if info.message().contains("unrecognized configuration parameter"))
 }
 
 /// Whether the model grants `principal` the statement on `object`.
@@ -826,7 +861,10 @@ async fn run_in(
             }
         }
     }
-    Run { observations }
+    Run {
+        observations,
+        disclosures: disclosed,
+    }
 }
 
 /// Apply the case and compare every pair, taking the translation's answers as they are.
@@ -868,7 +906,8 @@ pub(crate) fn assert_no_over_grant(case: &ParityCase, run: &Run) {
 /// Refuse any disagreement outside `expected`, and refuse an expected one that agreed.
 ///
 /// Narrower than [`assert_no_over_grant`] for a disclosed case whose divergence is known
-/// row by row: it also fails when the model denies something else it used to grant.
+/// row by row: it also fails when the model denies something else it used to grant. An
+/// empty `expected` asks for parity from a case that discloses anyway.
 pub(crate) fn assert_only_disagreements(
     case: &ParityCase,
     run: &Run,
@@ -892,6 +931,11 @@ pub(crate) fn assert_only_disagreements(
         "{}: disagreed where the case claims parity:\n{}",
         case.name,
         unexpected.join("\n")
+    );
+    assert!(
+        run.compared() > 0,
+        "{}: nothing was compared, so parity means nothing",
+        case.name
     );
     for (subject, object, statement) in expected {
         assert!(
@@ -947,4 +991,21 @@ pub(crate) fn assert_postgres(
         "{}: PostgreSQL on {subject} {statement:?} {object}",
         case.name
     );
+}
+
+/// Refuse a case whose disclosure does not name every gap the case claims.
+///
+/// A case reporting one gap where it has three is silent about two of them, which is the
+/// defect the disclosure exists to prevent.
+pub(crate) fn assert_discloses(case: &ParityCase, run: &Run, named: &[&str]) {
+    for name in named {
+        assert!(
+            run.disclosures
+                .iter()
+                .any(|disclosure| disclosure.contains(name)),
+            "{}: nothing discloses '{name}', so falling closed there is silent:\n{}",
+            case.name,
+            run.disclosures.join("\n")
+        );
+    }
 }

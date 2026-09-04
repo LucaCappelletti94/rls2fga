@@ -397,6 +397,74 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(a_role_scoped_membership_read_gates_the_parent(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_role_scoped_membership_read_gates_the_parent: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_noinherit_member_of_a_scoped_role_reads_nothing(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_noinherit_member_of_a_scoped_role_reads_nothing: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_shared_paper_reads_through_either_arm(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_shared_paper_reads_through_either_arm: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_token_claim_list_grants_by_membership(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_token_claim_list_grants_by_membership: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(one_shared_grant_ladder_answers_two_thresholds(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "one_shared_grant_ladder_answers_two_thresholds: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(three_refused_spellings_fall_closed(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "three_refused_spellings_fall_closed: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_missing_session_setting_is_not_a_denial(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_missing_session_setting_is_not_a_denial: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -406,7 +474,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 40] = [
+const CASES: [&str; 47] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -447,6 +515,13 @@ const CASES: [&str; 40] = [
     "a_caller_role_residual_falls_closed",
     "a_computed_argument_is_not_captured_by_the_body",
     "a_failed_case_leaves_no_role_behind",
+    "a_role_scoped_membership_read_gates_the_parent",
+    "a_noinherit_member_of_a_scoped_role_reads_nothing",
+    "a_shared_paper_reads_through_either_arm",
+    "a_token_claim_list_grants_by_membership",
+    "one_shared_grant_ladder_answers_two_thresholds",
+    "three_refused_spellings_fall_closed",
+    "a_missing_session_setting_is_not_a_denial",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -2298,4 +2373,448 @@ async fn a_failed_case_leaves_no_role_behind(cluster: Arc<Cluster>) {
         true,
     );
     assert_agrees(&successor, &run);
+}
+
+/// Ported from `role_scoped_membership_parity_postgres18_and_openfga`.
+///
+/// Only `auditor` may read the membership table, so a caller outside that role sees no
+/// membership row and the parent policy grants nothing.
+async fn a_role_scoped_membership_read_gates_the_parent(cluster: Arc<Cluster>) {
+    let reader = |subject: &str, login: &str| {
+        Principal::with_setting(subject, login, "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-role-scoped-membership",
+        "role_scoped_membership",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO docs(id) VALUES ('d1'), ('d2');
+             INSERT INTO doc_members(id, doc_id, user_id)
+                 VALUES ('dm-alice', 'd1', 'alice'), ('dm-bob', 'd1', 'bob')",
+            "CREATE ROLE app_alice LOGIN;
+             GRANT SELECT ON docs, doc_members TO app_alice;
+             GRANT auditor TO app_alice;
+             CREATE ROLE app_bob LOGIN;
+             GRANT SELECT ON docs, doc_members TO app_bob",
+        ],
+        vec![
+            reader("alice", "app_alice").holding(&["auditor"]),
+            reader("bob", "app_bob"),
+        ],
+    )
+    // The policy names the role, so it exists before the schema.
+    .after(&["CREATE ROLE auditor"]);
+    // The membership table's own row security is disclosed, and the answers still agree:
+    // the tuple loader reads only the rows the auditor scope exposes.
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "docs:d1", true),
+        ("alice", "docs:d2", false),
+        // Bob's membership row exists and he cannot see it, so the parent denies.
+        ("bob", "docs:d1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_only_disagreements(&case, &run, &[]);
+}
+
+/// Ported from `noinherit_member_parity_postgres18_and_openfga`.
+///
+/// A policy `TO editors` admits the role's inheriting members only: `PostgreSQL` applies
+/// the clause with `has_privs_of_role`, so a `NOINHERIT` member holds MEMBER and reads
+/// nothing. Only the inheriting caller declares the holding.
+async fn a_noinherit_member_of_a_scoped_role_reads_nothing(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-noinherit-member",
+        "role_scope_inherit",
+        &[
+            "INSERT INTO docs(id) VALUES ('d1'), ('d2')",
+            "CREATE ROLE app_alice LOGIN;
+             GRANT editors TO app_alice;
+             GRANT SELECT ON docs TO app_alice;
+             CREATE ROLE app_bob LOGIN NOINHERIT;
+             GRANT editors TO app_bob;
+             GRANT SELECT ON docs TO app_bob",
+        ],
+        vec![
+            Principal::as_role("alice", "app_alice").holding(&["editors"]),
+            Principal::as_role("bob", "app_bob"),
+        ],
+    )
+    .after(&["CREATE ROLE editors"]);
+    let run = support::parity::run(&cluster, &case).await;
+    // Two sided by construction: a model granting or denying everything cannot pass.
+    for (subject, visible) in [("alice", true), ("bob", false)] {
+        for object in ["docs:d1", "docs:d2"] {
+            support::parity::assert_postgres(
+                &case,
+                &run,
+                subject,
+                object,
+                ActionStatement::Select,
+                visible,
+            );
+        }
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `shared_paper_parity_postgres18_and_openfga`.
+///
+/// One policy carrying two arms, ownership by the caller's identity and a share row whose
+/// viewer is in the caller's held set, beside the share table's own set policy.
+async fn a_shared_paper_reads_through_either_arm(cluster: Arc<Cluster>) {
+    /// The caller's identity and held keys, as the setting and the condition parameter.
+    fn holder(subject: &str, keys: &[&str]) -> Principal {
+        let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
+            .with_context(serde_json::json!({ "app_subjects": keys }));
+        principal
+            .session
+            .push(("app.subjects".to_string(), keys.join(",")));
+        principal
+    }
+
+    let case = ParityCase::from_fixture(
+        "runner-shared-paper",
+        "connetto_capability",
+        &[
+            // Paper 2 is shared with a key alice carries, paper 3 with one she does not.
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
+             INSERT INTO paper_shares (paper_id, viewer) VALUES (2, 'team-a'), (3, 'team-z')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![holder("alice", &["team-a"]), holder("carol", &[])],
+    );
+    // The share table carries its own set policy, which is disclosed, and the answers
+    // still agree because the loader reads the shares each caller may see.
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "papers:1", true),
+        ("alice", "papers:2", true),
+        ("alice", "papers:3", false),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_only_disagreements(&case, &run, &[]);
+}
+
+/// Ported from `token_claim_set_parity_postgres18_and_openfga`.
+///
+/// The caller's set arrives as a real list inside the token rather than as a delimited
+/// string. Two tables, one per spelling, because they are the same database and must land
+/// the same way. The numeric claim against the row named `1` is what makes the rendering
+/// rule load bearing: `jsonb_array_elements_text` yields a JSON number as its text, so a
+/// model shipping the number unrendered answers differently.
+async fn a_token_claim_list_grants_by_membership(cluster: Arc<Cluster>) {
+    /// The caller's claim, as the token's jsonb and as the condition's list.
+    ///
+    /// The list is what `jsonb_array_elements_text` would produce, so a number renders as
+    /// its text. An absent claim sends the empty list, and its read raises.
+    fn bearer(subject: &str, teams: &[serde_json::Value]) -> Principal {
+        let rendered: Vec<String> = teams
+            .iter()
+            .map(|team| match team {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .collect();
+        let mut principal = Principal::as_role(subject, "app_reader")
+            .with_context(serde_json::json!({ "request_jwt_claims_teams": rendered }));
+        if subject == "unset" {
+            return principal.reading_an_unset_setting();
+        }
+        principal.session.push((
+            "request.jwt.claims".to_string(),
+            serde_json::json!({ "teams": teams }).to_string(),
+        ));
+        principal
+    }
+
+    let case = ParityCase::from_fixture(
+        "runner-token-claim-set",
+        "token_claim_set",
+        &[
+            // Row 4 is named by the numeric claim, row 3 by nobody.
+            "INSERT INTO documents (id, team_id) VALUES
+                 (1, 'team-a'), (2, 'team-b'), (3, NULL), (4, '1');
+             INSERT INTO reports (id, team_id) VALUES
+                 (1, 'team-a'), (2, 'team-b'), (3, NULL), (4, '1')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON documents, reports TO app_reader",
+        ],
+        vec![
+            // Every claim state the source covered: unset, empty, one team, two, numeric.
+            bearer("unset", &[]),
+            bearer("empty", &[]),
+            bearer("team_a", &[serde_json::json!("team-a")]),
+            bearer(
+                "both",
+                &[serde_json::json!("team-a"), serde_json::json!("team-b")],
+            ),
+            bearer("numeric", &[serde_json::json!(1)]),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // Both spellings have to land the same way, and a NULL team belongs to nobody.
+    for table in ["documents", "reports"] {
+        for (subject, row, visible) in [
+            // An unset setting raises, which is the caller holding no token reading nothing.
+            ("unset", 1, false),
+            ("empty", 1, false),
+            ("team_a", 1, true),
+            ("team_a", 2, false),
+            ("team_a", 3, false),
+            ("team_a", 4, false),
+            ("both", 1, true),
+            ("both", 2, true),
+            // The number renders as text, so it names the row spelled '1'.
+            ("numeric", 4, true),
+            ("numeric", 1, false),
+        ] {
+            support::parity::assert_postgres(
+                &case,
+                &run,
+                subject,
+                &format!("{table}:{row}"),
+                ActionStatement::Select,
+                visible,
+            );
+        }
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `shared_owner_grants_parity_postgres18_and_openfga`.
+///
+/// Two guarded tables read one role-threshold function at different levels, so a caller
+/// between the thresholds reads a sample and not a spectrum. That caller is the point: a
+/// model collapsing the two tables onto one ladder level fails here.
+async fn one_shared_grant_ladder_answers_two_thresholds(cluster: Arc<Cluster>) {
+    const ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
+    const BOB: &str = "00000000-0000-0000-0000-0000000000a2";
+    const CAROL: &str = "00000000-0000-0000-0000-0000000000a3";
+    const DAVE: &str = "00000000-0000-0000-0000-0000000000a4";
+    const EVE: &str = "00000000-0000-0000-0000-0000000000a5";
+    const ALPHA: &str = "00000000-0000-0000-0000-0000000000b1";
+    const BETA: &str = "00000000-0000-0000-0000-0000000000b2";
+
+    let reader = |subject: &str| {
+        Principal::with_setting(subject, "app_reader", "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-shared-owner-grants",
+        "shared_owner_grants",
+        &[
+            &format!(
+                "INSERT INTO users (id) VALUES
+                     ('{ALICE}'), ('{BOB}'), ('{CAROL}'), ('{DAVE}'), ('{EVE}');
+                 INSERT INTO teams (id) VALUES ('{ALPHA}'), ('{BETA}');
+                 INSERT INTO team_members (team_id, user_id) VALUES
+                     ('{ALPHA}', '{BOB}'), ('{BETA}', '{CAROL}'), ('{BETA}', '{DAVE}');
+                 INSERT INTO samples (id, owner_id) VALUES
+                     ('{ALICE}', '{ALICE}'), ('{ALPHA}', '{ALPHA}');
+                 INSERT INTO spectra (id, owner_id) VALUES
+                     ('{ALICE}', '{ALICE}'), ('{ALPHA}', '{ALPHA}');
+                 INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+                     ('{CAROL}', '{ALICE}', 3), ('{BETA}', '{ALICE}', 2), ('{EVE}', '{ALPHA}', 4)"
+            ),
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON users, teams, team_members, owner_grants, samples, spectra
+                 TO app_reader",
+        ],
+        vec![
+            reader(ALICE),
+            reader(BOB),
+            reader(CAROL),
+            reader(DAVE),
+            reader(EVE),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        // Alice owns hers outright, so both thresholds pass.
+        (ALICE, format!("samples:{ALICE}"), true),
+        (ALICE, format!("spectra:{ALICE}"), true),
+        // Dave reaches Alice's owner at level 2 through team beta: the sample only.
+        (DAVE, format!("samples:{ALICE}"), true),
+        (DAVE, format!("spectra:{ALICE}"), false),
+        // Carol's own grant is level 3, so both.
+        (CAROL, format!("samples:{ALICE}"), true),
+        (CAROL, format!("spectra:{ALICE}"), true),
+        // Bob holds nothing over Alice's owner.
+        (BOB, format!("samples:{ALICE}"), false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `refused_spellings_fall_closed_parity_postgres18_and_openfga`.
+///
+/// Three spellings the classifier must refuse rather than widen: a CASE whose FALSE arm
+/// vetoes, an EXISTS carrying a comparison between two columns of the guarded table, and
+/// a NULLIF hiding a row from its own principal. Every one denies in the database.
+async fn three_refused_spellings_fall_closed(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-refused-spellings",
+        r"
+CREATE TABLE case_docs(id TEXT PRIMARY KEY, archived BOOLEAN NOT NULL, is_public BOOLEAN NOT NULL);
+CREATE TABLE filter_docs(id TEXT PRIMARY KEY, owner_id TEXT, reviewer_id TEXT);
+CREATE TABLE filter_members(doc_id TEXT REFERENCES filter_docs(id), user_id TEXT);
+CREATE TABLE sentinel_docs(id TEXT PRIMARY KEY, owner_id TEXT);
+ALTER TABLE case_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE filter_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sentinel_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY case_p ON case_docs FOR SELECT USING (
+  CASE WHEN archived THEN FALSE WHEN is_public THEN TRUE ELSE FALSE END
+);
+CREATE POLICY filter_p ON filter_docs FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM filter_members m
+    WHERE m.doc_id = filter_docs.id
+      AND m.user_id = current_user
+      AND filter_docs.owner_id = filter_docs.reviewer_id
+  )
+);
+CREATE POLICY sentinel_p ON sentinel_docs FOR SELECT USING (
+  NULLIF(owner_id, 'system') = current_user
+);
+",
+        &[
+            "INSERT INTO case_docs(id, archived, is_public) VALUES ('c1', TRUE, TRUE);
+             INSERT INTO filter_docs(id, owner_id, reviewer_id)
+                 VALUES ('f1', 'someone', 'someone_else');
+             INSERT INTO filter_members(doc_id, user_id) VALUES ('f1', 'app_reader');
+             INSERT INTO sentinel_docs(id, owner_id) VALUES ('s1', 'system')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON case_docs, filter_docs, filter_members TO app_reader;
+             CREATE ROLE system LOGIN;
+             GRANT SELECT ON sentinel_docs TO system",
+        ],
+        vec![
+            Principal::as_role("app_reader", "app_reader"),
+            Principal::as_role("system", "system"),
+        ],
+    );
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, object) in [
+        // The CASE veto denies the archived public row.
+        ("app_reader", "case_docs:c1"),
+        // Owner and reviewer differ, so the filter denies.
+        ("app_reader", "filter_docs:f1"),
+        // NULLIF hides the sentinel row from its own principal.
+        ("system", "sentinel_docs:s1"),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            false,
+        );
+    }
+    // All three refusals have to be reported, not just the one that makes the case
+    // disclosed: a policy falling closed silently is the defect.
+    support::parity::assert_discloses(&case, &run, &["case_docs", "filter_docs", "sentinel_docs"]);
+    support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// A caller missing a setting its policies read fails the case, unless it says so.
+///
+/// The runner reads a raise as a denial only where the caller declares it, because
+/// everywhere else the raise is the case granting no privilege or naming no column. The
+/// token fixture is the shape that raises: `current_setting` without `missing_ok`.
+async fn a_missing_session_setting_is_not_a_denial(cluster: Arc<Cluster>) {
+    let seed = [
+        "INSERT INTO documents (id, team_id) VALUES (1, 'team-a');
+         INSERT INTO reports (id, team_id) VALUES (1, 'team-a')",
+        "CREATE ROLE app_reader LOGIN; GRANT SELECT ON documents, reports TO app_reader",
+    ];
+    let empty = || serde_json::json!({ "request_jwt_claims_teams": [] });
+    // The same caller twice: once silently misconfigured, once declaring the raise.
+    let planted = ParityCase::from_fixture(
+        "runner-missing-setting",
+        "token_claim_set",
+        &seed,
+        vec![Principal::as_role("nobody", "app_reader").with_context(empty())],
+    );
+    let shared = Arc::clone(&cluster);
+    let failure = tokio::spawn(async move {
+        support::parity::run(&shared, &planted).await;
+    })
+    .await;
+    assert!(
+        failure.is_err(),
+        "a caller whose read raises without declaring it has to fail the case"
+    );
+
+    // Declared, yet the setting is there: the claim is stale and has to fail too.
+    let stale_principal = {
+        let mut principal = Principal::as_role("nobody", "app_reader")
+            .with_context(empty())
+            .reading_an_unset_setting();
+        principal.session.push((
+            "request.jwt.claims".to_string(),
+            serde_json::json!({ "teams": [] }).to_string(),
+        ));
+        principal
+    };
+    let stale = ParityCase::from_fixture(
+        "runner-stale-unset-claim",
+        "token_claim_set",
+        &seed,
+        vec![stale_principal],
+    );
+    let shared = Arc::clone(&cluster);
+    let stale_failure = tokio::spawn(async move {
+        support::parity::run(&shared, &stale).await;
+    })
+    .await;
+    assert!(
+        stale_failure.is_err(),
+        "a caller declaring a raise whose read succeeds has to fail the case"
+    );
+
+    let declared = ParityCase::from_fixture(
+        "runner-missing-setting-declared",
+        "token_claim_set",
+        &seed,
+        vec![Principal::as_role("nobody", "app_reader")
+            .with_context(empty())
+            .reading_an_unset_setting()],
+    );
+    let run = support::parity::run(&cluster, &declared).await;
+    support::parity::assert_postgres(
+        &declared,
+        &run,
+        "nobody",
+        "documents:1",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&declared, &run);
 }
