@@ -203,6 +203,31 @@ pub(crate) fn classify_sql(
     (classified, db, registry)
 }
 
+/// Classify SQL with both the accessor metadata and the session attributes a deployment
+/// declares.
+///
+/// The two existing helpers each take one of them, and a fixture may declare both.
+pub(crate) fn classify_with(
+    sql: &str,
+    registry_json: Option<&str>,
+    attributes_json: Option<&str>,
+) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
+    let db = sql_parser::parse_schema(sql).expect("schema should parse");
+    let mut registry = FunctionRegistry::new();
+    if let Some(json) = registry_json {
+        registry
+            .load_from_json(json)
+            .expect("registry json should parse");
+    }
+    if let Some(json) = attributes_json {
+        let attributes: Vec<SessionAttribute> =
+            serde_json::from_str(json).expect("session attributes should parse");
+        registry.declare_session_attributes(attributes);
+    }
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    (classified, db, registry)
+}
+
 /// Classify SQL with declared session attributes and no function registry.
 pub(crate) fn classify_sql_with_session_attributes(
     sql: &str,
@@ -234,20 +259,34 @@ pub(crate) fn try_load_fixture_classified(
     (classified, db, registry)
 }
 
-/// Run every tuple query and collect the `(object, relation, subject)` triples, sorted and
-/// deduplicated.
+/// One loaded fact, carrying the condition and context where its query yields them.
+///
+/// `TupleQuery::condition` says which shape a query produces, so the loader knows how many
+/// columns to read without parsing the SQL. Dropping the two extra columns makes the
+/// service refuse the write with `condition is missing`.
+#[cfg(all(not(target_os = "windows"), feature = "client"))]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LoadedTuple {
+    pub(crate) object: String,
+    pub(crate) relation: String,
+    pub(crate) subject: String,
+    /// The condition the relation names, and the context the row supplies as JSON text.
+    pub(crate) condition: Option<(String, String)>,
+}
+
+/// Run every tuple query and collect what it loaded, sorted and deduplicated.
 ///
 /// Beside the per-case loaders, for the generic parity runner.
 #[cfg(all(not(target_os = "windows"), feature = "client"))]
 pub(crate) fn execute_tuple_queries_for_parity(
     conn: &mut diesel::pg::PgConnection,
     queries: &[rls2fga::generator::tuple_generator::TupleQuery],
-) -> Vec<(String, String, String)> {
+) -> Vec<LoadedTuple> {
     use diesel::prelude::*;
-    use diesel::sql_types::Text;
+    use diesel::sql_types::{Jsonb, Text};
 
     #[derive(diesel::QueryableByName)]
-    struct Row {
+    struct Plain {
         #[diesel(sql_type = Text)]
         object: String,
         #[diesel(sql_type = Text)]
@@ -256,18 +295,58 @@ pub(crate) fn execute_tuple_queries_for_parity(
         subject: String,
     }
 
+    #[derive(diesel::QueryableByName)]
+    struct Conditional {
+        #[diesel(sql_type = Text)]
+        object: String,
+        #[diesel(sql_type = Text)]
+        relation: String,
+        #[diesel(sql_type = Text)]
+        subject: String,
+        #[diesel(sql_type = Text)]
+        condition: String,
+        #[diesel(sql_type = Jsonb)]
+        context: serde_json::Value,
+    }
+
     let mut keys = std::collections::BTreeSet::new();
     for query in queries {
-        let rows: Vec<Row> = diesel::sql_query(&query.sql)
-            .load(conn)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "tuple SQL failed: {}\n{}\nError: {error}",
-                    query.comment, query.sql
-                )
-            });
-        for row in rows {
-            keys.insert((row.object, row.relation, row.subject));
+        if query.condition.is_some() {
+            let rows: Vec<Conditional> =
+                diesel::sql_query(&query.sql)
+                    .load(conn)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "tuple SQL failed: {}\n{}\nError: {error}",
+                            query.comment, query.sql
+                        )
+                    });
+            for row in rows {
+                keys.insert(LoadedTuple {
+                    object: row.object,
+                    relation: row.relation,
+                    subject: row.subject,
+                    condition: Some((row.condition, row.context.to_string())),
+                });
+            }
+        } else {
+            let rows: Vec<Plain> =
+                diesel::sql_query(&query.sql)
+                    .load(conn)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "tuple SQL failed: {}\n{}\nError: {error}",
+                            query.comment, query.sql
+                        )
+                    });
+            for row in rows {
+                keys.insert(LoadedTuple {
+                    object: row.object,
+                    relation: row.relation,
+                    subject: row.subject,
+                    condition: None,
+                });
+            }
         }
     }
     keys.into_iter().collect()

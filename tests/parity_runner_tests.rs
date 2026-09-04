@@ -286,6 +286,51 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) =
+        tokio::spawn(a_partition_is_named_after_its_root(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_partition_is_named_after_its_root: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_composite_foreign_key_membership_joins_on_both_columns(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_composite_foreign_key_membership_joins_on_both_columns: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_joined_inner_rule_drops_the_unjoined_row(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_joined_inner_rule_drops_the_unjoined_row: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_quoted_role_is_a_different_role(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_quoted_role_is_a_different_role: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_declared_session_set_grants_beside_the_owner(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_declared_session_set_grants_beside_the_owner: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -295,7 +340,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 28] = [
+const CASES: [&str; 33] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -324,6 +369,11 @@ const CASES: [&str; 28] = [
     "a_read_and_a_write_are_judged_separately",
     "an_aliased_quoted_guard_falls_closed",
     "mutually_recursive_policies_return_no_row",
+    "a_partition_is_named_after_its_root",
+    "a_composite_foreign_key_membership_joins_on_both_columns",
+    "a_joined_inner_rule_drops_the_unjoined_row",
+    "a_quoted_role_is_a_different_role",
+    "a_declared_session_set_grants_beside_the_owner",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -1555,5 +1605,276 @@ async fn mutually_recursive_policies_return_no_row(cluster: Arc<Cluster>) {
             );
         }
     }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `partitioned_table_parity_postgres18_and_openfga`.
+///
+/// A partition has no type of its own: its rows are named as objects of the root, so a
+/// read through either the root or a partition asks the same question.
+async fn a_partition_is_named_after_its_root(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-partitioned-table",
+        "
+CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL, PRIMARY KEY (id, region))
+    PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu');
+CREATE TABLE events_us PARTITION OF events FOR VALUES IN ('us');
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY events_visible ON events FOR SELECT USING (tenant = auth_current_user_id());
+",
+        &[
+            "INSERT INTO events(id, tenant, region) VALUES
+                 ('e-eu', 'alice', 'eu'), ('e-us', 'bob', 'us')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON events, events_eu, events_us TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR)
+    // Reading a partition directly is unfiltered, since a parent's policies apply only to
+    // rows reached through the parent. The runner found that; see `not_read_directly`.
+    .not_reading_directly(&["events_eu", "events_us"]);
+    let run = support::parity::run(&cluster, &case).await;
+    // The key is composite, so the object carries both parts.
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "events:e-eu|eu",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "bob",
+        "events:e-eu|eu",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `composite_fk_membership_parity_postgres18_and_openfga`.
+///
+/// The membership row is joined on two columns, so the bridge has to carry both or it
+/// admits a row of another tenant.
+async fn a_composite_foreign_key_membership_joins_on_both_columns(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-composite-fk-membership",
+        "
+CREATE TABLE projects (
+    tenant_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, id)
+);
+CREATE TABLE docs (
+    doc_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE TABLE project_members (
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, project_id, user_id),
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_visible ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM project_members m
+        WHERE m.tenant_id = docs.tenant_id
+          AND m.project_id = docs.project_id
+          AND m.user_id = auth_current_user_id()));
+",
+        &[
+            // One project id in two tenants, so a bridge on the project alone would admit
+            // the other tenant's document.
+            "INSERT INTO projects(tenant_id, id) VALUES ('t1', 'p1'), ('t2', 'p1');
+             INSERT INTO docs(doc_id, tenant_id, project_id) VALUES
+                 ('d-t1', 't1', 'p1'), ('d-t2', 't2', 'p1');
+             INSERT INTO project_members(tenant_id, project_id, user_id) VALUES
+                 ('t1', 'p1', 'alice')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON projects, docs, project_members TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "docs:d-t1",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "docs:d-t2",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `joined_inner_rule_parity_postgres18_and_openfga`.
+///
+/// The inner rule joins two tables, and the join drops an order with no customer, so a
+/// bridge built from the key alone would admit it.
+async fn a_joined_inner_rule_drops_the_unjoined_row(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-joined-inner-rule",
+        "
+CREATE TABLE customers (id TEXT PRIMARY KEY, org_id TEXT NOT NULL);
+CREATE TABLE orders (id TEXT PRIMARY KEY, customer_id TEXT REFERENCES customers(id));
+CREATE TABLE line_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id));
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+ALTER TABLE line_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY line_items_visible ON line_items FOR SELECT
+    USING (order_id IN (SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id
+                        WHERE c.id = auth_current_user_id()));
+",
+        &[
+            "INSERT INTO customers(id, org_id) VALUES ('alice', 'acme'), ('bob', 'acme');
+             INSERT INTO orders(id, customer_id) VALUES
+                 ('o-alice', 'alice'), ('o-bob', 'bob'), ('o-none', NULL);
+             INSERT INTO line_items(id, order_id) VALUES
+                 ('li-alice', 'o-alice'), ('li-bob', 'o-bob'), ('li-none', 'o-none')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON customers, orders, line_items TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .with_registry(ACCESSOR);
+    let run = support::parity::run(&cluster, &case).await;
+    for (row, visible) in [("li-alice", true), ("li-bob", false), ("li-none", false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("line_items:{row}"),
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `quoted_role_identity_parity_postgres18_and_openfga`.
+///
+/// `admin` and `"Admin"` are different roles, so a policy scoped to one admits nothing
+/// through the other, and two policies of one name on two tables stay apart.
+async fn a_quoted_role_is_a_different_role(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-quoted-role-identity",
+        r#"
+CREATE TABLE docs (id TEXT PRIMARY KEY);
+CREATE TABLE memos (id TEXT PRIMARY KEY);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT TO admin USING (TRUE);
+CREATE POLICY p ON memos FOR SELECT TO "Admin" USING (TRUE);
+"#,
+        &[
+            "INSERT INTO docs (id) VALUES ('d1'); INSERT INTO memos (id) VALUES ('m1')",
+            "CREATE ROLE alice LOGIN;
+             GRANT SELECT ON docs, memos TO alice;
+             GRANT admin TO alice",
+        ],
+        vec![Principal::as_role("alice", "alice").holding(&["admin"])],
+    )
+    .after(&[r#"CREATE ROLE admin; CREATE ROLE "Admin""#]);
+    let run = support::parity::run(&cluster, &case).await;
+    // The policy on `memos` names the quoted role, which alice does not hold.
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "docs:d1",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "memos:m1",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `session_attribute_parity_postgres18_and_openfga`.
+///
+/// One policy unioning the caller's own id with the set of keys it holds. A caller holding
+/// no key leaves the setting unset, so the second arm is NULL rather than true.
+async fn a_declared_session_set_grants_beside_the_owner(cluster: Arc<Cluster>) {
+    /// The caller's held keys, as the condition's list parameter and as the setting.
+    fn holder(subject: &str, keys: &[&str]) -> Principal {
+        let mut principal = Principal::with_setting(subject, "app_writer", "app.user_id", subject)
+            .with_context(serde_json::json!({ "app_subjects": keys }));
+        principal
+            .session
+            .push(("app.subjects".to_string(), keys.join(",")));
+        principal
+    }
+
+    let case = ParityCase::from_fixture(
+        "runner-session-attribute",
+        "connetto_or_policy",
+        &[
+            "INSERT INTO notes (id, owner) VALUES
+                 (1, 'alice'), (2, 'team-a'), (3, 'bob'), (4, NULL)",
+            "CREATE ROLE app_writer LOGIN; GRANT SELECT ON notes TO app_writer",
+        ],
+        vec![
+            // The owner arm alone, the set arm alone, and both together.
+            holder("alice", &[]),
+            holder("bob", &["team-a"]),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // Row 1 reads through the owner arm, row 2 through the set arm, row 4 through neither.
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:1",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:2",
+        ActionStatement::Select,
+        false,
+    );
+    support::parity::assert_postgres(&case, &run, "bob", "notes:2", ActionStatement::Select, true);
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "bob",
+        "notes:4",
+        ActionStatement::Select,
+        false,
+    );
     assert_agrees(&case, &run);
 }

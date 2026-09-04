@@ -69,6 +69,15 @@ impl Principal {
         }
     }
 
+    /// The same caller, whose checks carry `context`.
+    ///
+    /// A condition the caller fills reads it, and only the case knows which parameter the
+    /// deployment declared.
+    pub(crate) fn with_context(mut self, context: serde_json::Value) -> Self {
+        self.context = context;
+        self
+    }
+
     /// The same caller, whose checks carry the database's clock.
     ///
     /// A condition against the request clock needs it, and reading it from the same
@@ -123,6 +132,17 @@ pub(crate) struct ParityCase {
     /// Accessor metadata the deployment declares, as a fixture's
     /// `function_registry.json` holds it.
     pub(crate) registry_json: Option<String>,
+    /// Request-scoped values the deployment declares, as a fixture's
+    /// `session_attributes.json` holds them.
+    pub(crate) attributes_json: Option<String>,
+    /// Tables whose rows are not read through the table itself.
+    ///
+    /// A partition with row-level security off is unfiltered when it is queried directly,
+    /// because `PostgreSQL` applies a parent's policies only to rows reached through the
+    /// parent. The model has one answer per row whichever relation names it, so the two
+    /// disagree by access path rather than by row. A case naming a partition here compares
+    /// reads through the root, which is the question the model answers.
+    pub(crate) not_read_directly: Vec<String>,
 }
 
 impl ParityCase {
@@ -141,6 +161,8 @@ impl ParityCase {
             principals,
             mutations: BTreeMap::new(),
             registry_json: None,
+            attributes_json: None,
+            not_read_directly: Vec::new(),
         }
     }
 
@@ -161,12 +183,21 @@ impl ParityCase {
         case.registry_json =
             std::fs::read_to_string(super::fixture_dir(fixture).join("function_registry.json"))
                 .ok();
+        case.attributes_json =
+            std::fs::read_to_string(super::fixture_dir(fixture).join("session_attributes.json"))
+                .ok();
         case
     }
 
     /// The same case, with the accessor metadata its deployment declares.
     pub(crate) fn with_registry(mut self, registry_json: &str) -> Self {
         self.registry_json = Some(registry_json.to_string());
+        self
+    }
+
+    /// The same case, reading the named tables only through the table that types them.
+    pub(crate) fn not_reading_directly(mut self, tables: &[&str]) -> Self {
+        self.not_read_directly = tables.iter().map(|table| (*table).to_string()).collect();
         self
     }
 
@@ -304,9 +335,12 @@ fn key_columns(naming: &RowNaming) -> Option<Vec<&str>> {
 
 /// Every object the model names, read as the owner so row-level security does not filter
 /// the enumeration.
-fn objects(conn: &mut PgConnection, naming: &[RowNaming]) -> Vec<Object> {
+fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) -> Vec<Object> {
     let mut out = Vec::new();
     for entry in naming {
+        if skipped.iter().any(|table| entry.table.name() == table) {
+            continue;
+        }
         let Some(columns) = key_columns(entry) else {
             continue;
         };
@@ -632,8 +666,11 @@ async fn run_in(
             .unwrap_or_else(|error| panic!("{}: seed {sql}: {error}", case.name));
     }
 
-    let (classified, db, registry) =
-        super::classify_sql(&case.schema, case.registry_json.as_deref());
+    let (classified, db, registry) = super::classify_with(
+        &case.schema,
+        case.registry_json.as_deref(),
+        case.attributes_json.as_deref(),
+    );
     let planned = Translation::plan(
         classified,
         &db,
@@ -669,7 +706,7 @@ async fn run_in(
     let outputs = planned.outputs_accepting_gaps();
     let model = outputs.json_model();
 
-    let objects = objects(conn, &naming);
+    let objects = objects(conn, &naming, &case.not_read_directly);
     let tuples = super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries());
 
     let mut service = openfga::connect(cluster.grpc_port).await;
@@ -679,7 +716,16 @@ async fn run_in(
 
     let mut writes: Vec<_> = tuples
         .iter()
-        .map(|(object, relation, subject)| openfga::make_tuple(object, relation, subject))
+        .map(|tuple| match &tuple.condition {
+            Some((condition, context)) => openfga::make_conditional_tuple(
+                &tuple.object,
+                &tuple.relation,
+                &tuple.subject,
+                condition,
+                serde_json::from_str(context).expect("the row's context is JSON"),
+            ),
+            None => openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject),
+        })
         .collect();
     for principal in &case.principals {
         for role in &principal.pg_roles {
