@@ -9,6 +9,7 @@ pub(crate) mod parity;
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod containers;
 
+pub(crate) mod exact_support;
 pub(crate) mod footgun;
 
 use std::borrow::Cow;

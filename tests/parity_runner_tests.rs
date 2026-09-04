@@ -627,6 +627,12 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(every_exact_support_case_agrees(Arc::clone(&cluster))).await {
+        failures.push(format!(
+            "every_exact_support_case_agrees: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -636,7 +642,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 64] = [
+const CASES: [&str; 65] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -701,6 +707,7 @@ const CASES: [&str; 64] = [
     "a_role_ladder_answers_four_thresholds",
     "an_insert_that_reads_back_applies_the_select_policy",
     "an_upsert_applies_the_update_policy_too",
+    "every_exact_support_case_agrees",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -4069,4 +4076,37 @@ async fn an_upsert_applies_the_update_policy_too(cluster: Arc<Cluster>) {
         );
     }
     assert_agrees(&case, &run);
+}
+
+/// Every case the exact-support grammar admits, against both services.
+///
+/// The grammar decides membership, so there is nothing to declare per case and nothing to
+/// exempt: a case it admits agrees with `PostgreSQL` on every caller, row and statement.
+/// `run` refuses a case the translation says it diverges on, which is the property, since
+/// one row settles each of these answers and there is nothing to disclose.
+///
+/// Two sided per case, so a model granting or denying everything cannot pass, and the
+/// caller that set nothing is compared too: whether that read raises is the accessor
+/// spelling's business, which the grammar knows from `PostgreSQL`'s rules.
+async fn every_exact_support_case_agrees(cluster: Arc<Cluster>) {
+    for generated in support::exact_support::every_case() {
+        let seed: Vec<&str> = generated.seed.iter().map(String::as_str).collect();
+        let principals = support::exact_support::CALLERS
+            .iter()
+            .map(|caller| match caller.value {
+                Some(value) => {
+                    Principal::with_setting(caller.subject, caller.subject, "app.who", value)
+                }
+                None if generated.accessor.raises_when_unset() => {
+                    Principal::as_role(caller.subject, caller.subject).reading_an_unset_setting()
+                }
+                None => Principal::as_role(caller.subject, caller.subject),
+            })
+            .collect();
+        let case = ParityCase::reading(&generated.name, &generated.schema, &seed, principals)
+            .with_attributes(support::exact_support::DECLARED_KEY);
+        let run = support::parity::run(&cluster, &case).await;
+        support::parity::assert_two_sided(&case, &run);
+        assert_agrees(&case, &run);
+    }
 }

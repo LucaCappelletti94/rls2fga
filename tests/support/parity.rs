@@ -800,7 +800,7 @@ pub(crate) async fn run_with(
         cleaned: false,
     };
     let mut conn = cluster.fresh_database(&database);
-    let outcome = run_in(&mut conn, cluster, case, expectation, doctor).await;
+    let outcome = run_in(&mut conn, cluster, &database, case, expectation, doctor).await;
     drop(conn);
     cleanup.finish();
     outcome
@@ -809,6 +809,7 @@ pub(crate) async fn run_with(
 async fn run_in(
     conn: &mut PgConnection,
     cluster: &Cluster,
+    database: &str,
     case: &ParityCase,
     expectation: Class,
     doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
@@ -907,6 +908,13 @@ async fn run_in(
 
     let mut observations = Vec::new();
     for principal in &case.principals {
+        // A connection of its own, because a caller that set nothing is a real state and a
+        // shared one cannot spell it. Setting a custom key defines it for the whole
+        // session, so after one caller sets `app.who` the next reads it back as the empty
+        // string rather than finding it unset, and the answers would depend on the order
+        // the callers were declared in.
+        let mut owned = super::containers::connect_postgres_with_retry(&cluster.url(database));
+        let conn = &mut owned;
         for object in &objects {
             for statement in COMPARED {
                 let Some(postgres) = postgres_allows(conn, case, principal, object, statement)
@@ -1403,4 +1411,25 @@ fn fresh_key(
         }
         _ => None,
     }
+}
+
+/// Refuse a case where every compared pair got the same answer.
+///
+/// A generated case has no hand-written expectations, so agreement alone is weak: a model
+/// granting everything agrees with a seed nothing denies. Requiring both answers is what
+/// makes the generator's cases two sided by construction rather than by inspection.
+pub(crate) fn assert_two_sided(case: &ParityCase, run: &Run) {
+    let granted = run
+        .observations
+        .iter()
+        .filter(|observation| observation.postgres)
+        .count();
+    assert!(
+        granted > 0 && granted < run.compared(),
+        "{}: the database answered the same way {} times out of {}, so a model granting \
+         or denying everything would pass",
+        case.name,
+        granted.max(run.compared() - granted),
+        run.compared()
+    );
 }
