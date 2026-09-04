@@ -465,6 +465,62 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(a_request_time_guard_holds_at_two_instants(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_request_time_guard_holds_at_two_instants: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_grace_period_keeps_its_offset(Arc::clone(&cluster))).await {
+        failures.push(format!(
+            "a_grace_period_keeps_its_offset: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_expiring_share_leaves_the_owner_arm_alone(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_expiring_share_leaves_the_owner_arm_alone: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_expiring_share_keeps_its_grace_period(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_expiring_share_keeps_its_grace_period: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_expiring_membership_row_gates_its_own_document(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "an_expiring_membership_row_gates_its_own_document: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_expiring_holder_row_admits_the_caller_to_everything(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "an_expiring_holder_row_admits_the_caller_to_everything: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -474,7 +530,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 47] = [
+const CASES: [&str; 53] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -522,6 +578,12 @@ const CASES: [&str; 47] = [
     "one_shared_grant_ladder_answers_two_thresholds",
     "three_refused_spellings_fall_closed",
     "a_missing_session_setting_is_not_a_denial",
+    "a_request_time_guard_holds_at_two_instants",
+    "a_grace_period_keeps_its_offset",
+    "an_expiring_share_leaves_the_owner_arm_alone",
+    "an_expiring_share_keeps_its_grace_period",
+    "an_expiring_membership_row_gates_its_own_document",
+    "an_expiring_holder_row_admits_the_caller_to_everything",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -2817,4 +2879,382 @@ async fn a_missing_session_setting_is_not_a_denial(cluster: Arc<Cluster>) {
         false,
     );
     assert_agrees(&declared, &run);
+}
+
+/// The request-scoped values the share cases declare.
+const CALLER_AND_SUBJECTS: &str = r#"[
+      { "key": "app.user_id", "kind": "caller_id" },
+      { "key": "app.subjects", "kind": "set_attribute" }
+    ]"#;
+
+/// A caller identified by `app.user_id` and holding `keys` as `app.subjects`.
+fn key_holder(subject: &str, keys: &[&str]) -> Principal {
+    let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
+        .with_context(serde_json::json!({ "app_subjects": keys }))
+        .with_clock();
+    principal
+        .session
+        .push(("app.subjects".to_string(), keys.join(",")));
+    principal
+}
+
+/// Ported from `request_time_condition_parity_postgres18_and_openfga`.
+///
+/// A guard against `now()` cannot become tuples, since a tuple computed once keeps
+/// granting after the value passed. It becomes a condition, and the second instant is what
+/// proves the service evaluates it rather than the loader having baked the clock in.
+async fn a_request_time_guard_holds_at_two_instants(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-request-time-condition",
+        r#"
+CREATE TABLE docs (id TEXT PRIMARY KEY, foo TEXT, "Foo" TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_unexpired ON docs FOR SELECT USING ("Foo" > now());
+"#,
+        &[
+            // The quoted column carries the boundary, the unquoted one is a decoy.
+            "INSERT INTO docs (id, foo, \"Foo\") VALUES
+                 ('d-live', 'text', '2099-01-01T00:00:00+00:00'),
+                 ('d-stale', 'text', '2000-01-01T00:00:00+00:00'),
+                 ('d-soon', 'text', '2027-01-01T00:00:00+00:00'),
+                 ('d-null', 'text', NULL)",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON docs TO app_user",
+        ],
+        vec![Principal::as_role("app_user", "app_user").with_clock()],
+    )
+    .also_at(
+        "1 year",
+        "SELECT 'app_user'::text AS subject, 'docs:' || id AS object
+         FROM docs WHERE \"Foo\" > $1::timestamptz",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (object, visible) in [
+        ("docs:d-live", true),
+        ("docs:d-stale", false),
+        ("docs:d-soon", true),
+        // A NULL boundary compares as unknown, so the row admits nobody.
+        ("docs:d-null", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_user",
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `interval_grace_condition_parity_postgres18_and_openfga`.
+///
+/// A grace period spelled `now() - interval '30 days'` must survive with its offset
+/// intact, so a row that expired inside the window still reads and one past it does not.
+async fn a_grace_period_keeps_its_offset(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-interval-grace-condition",
+        "
+CREATE TABLE docs (id TEXT PRIMARY KEY, expires_at TIMESTAMPTZ);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_grace ON docs FOR SELECT USING (expires_at > now() - interval '30 days');
+",
+        &[
+            // Relative to the run clock: valid, expired inside the grace, past it, none.
+            "INSERT INTO docs (id, expires_at) VALUES
+                 ('g-fresh', now() + interval '5 days'),
+                 ('g-grace', now() - interval '10 days'),
+                 ('g-stale', now() - interval '40 days'),
+                 ('g-null', NULL)",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON docs TO app_user",
+        ],
+        vec![Principal::as_role("app_user", "app_user").with_clock()],
+    )
+    // Twenty five days on, not a year: the fresh row expired twenty days ago and the
+    // thirty day window still admits it, while the graced row has fallen out of it. Both
+    // answers depend on the offset, so a future instant a year away would prove less.
+    .also_at(
+        "25 days",
+        "SELECT 'app_user'::text AS subject, 'docs:' || id AS object
+         FROM docs WHERE expires_at > $1::timestamptz - interval '30 days'",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (object, visible) in [
+        ("docs:g-fresh", true),
+        // Expired ten days ago, which the thirty-day window still admits.
+        ("docs:g-grace", true),
+        ("docs:g-stale", false),
+        ("docs:g-null", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_user",
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `expiring_share_condition_parity_postgres18_and_openfga`.
+///
+/// The share arm carries a deadline, so the share expires while the ownership arm does
+/// not. A year on the owner still reads and the shared paper is gone.
+async fn an_expiring_share_leaves_the_owner_arm_alone(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-expiring-share-condition",
+        r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
+             INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES
+                 (2, 'team-a', now() + interval '1 day'),
+                 (3, 'team-z', now() - interval '1 day')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![key_holder("alice", &["team-a"]), key_holder("carol", &[])],
+    )
+    .with_attributes(CALLER_AND_SUBJECTS)
+    .also_at(
+        "1 year",
+        "SELECT c.subject, 'papers:' || p.id AS object
+         FROM papers p
+         CROSS JOIN (VALUES ('alice', 'team-a'), ('carol', '')) AS c(subject, keys)
+         WHERE p.owner = c.subject
+            OR EXISTS (
+                SELECT 1 FROM paper_shares s
+                WHERE s.paper_id = p.id
+                  AND s.viewer = ANY(string_to_array(c.keys, ','))
+                  AND s.expires_at > $1::timestamptz)",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "papers:1", true),
+        ("alice", "papers:2", true),
+        ("alice", "papers:3", false),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `interval_grace_membership_condition_parity_postgres18_and_openfga`.
+///
+/// The same shape with a grace period on the share's deadline, so a share that expired ten
+/// days ago still grants and one forty days ago does not.
+async fn an_expiring_share_keeps_its_grace_period(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-interval-grace-membership",
+        r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    owner = current_setting('app.user_id', true)
+    OR EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now() - interval '30 days'
+    )
+);
+",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
+             INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES
+                 (2, 'team-a', now() - interval '10 days'),
+                 (3, 'team-z', now() - interval '40 days')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![key_holder("alice", &["team-a"]), key_holder("carol", &[])],
+    )
+    .with_attributes(CALLER_AND_SUBJECTS)
+    .also_at(
+        "1 year",
+        "SELECT c.subject, 'papers:' || p.id AS object
+         FROM papers p
+         CROSS JOIN (VALUES ('alice', 'team-a'), ('carol', '')) AS c(subject, keys)
+         WHERE p.owner = c.subject
+            OR EXISTS (
+                SELECT 1 FROM paper_shares s
+                WHERE s.paper_id = p.id
+                  AND s.viewer = ANY(string_to_array(c.keys, ','))
+                  AND s.expires_at > $1::timestamptz - interval '30 days')",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "papers:1", true),
+        // Ten days expired, inside the window.
+        ("alice", "papers:2", true),
+        ("alice", "papers:3", false),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `expiring_exists_membership_condition_parity_postgres18_and_openfga`.
+///
+/// The deadline sits on the membership row an EXISTS names, so each share gates its own
+/// row rather than the caller as a whole.
+async fn an_expiring_membership_row_gates_its_own_document(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-expiring-exists-membership",
+        "
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE doc_shares (
+    doc_id INT,
+    user_id TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (doc_id, user_id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM doc_shares s
+        WHERE s.doc_id = docs.id AND s.user_id = current_user AND s.expires_at > now()
+    )
+);
+",
+        &[
+            "INSERT INTO docs (id) VALUES (1), (2), (3);
+             INSERT INTO doc_shares (doc_id, user_id, expires_at) VALUES
+                 (1, 'alice', now() + interval '1 day'),
+                 (2, 'bob', now() - interval '1 day'),
+                 (3, 'alice', now() + interval '1 day')",
+            "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN;
+             GRANT SELECT ON docs, doc_shares TO alice, bob",
+        ],
+        vec![
+            Principal::as_role("alice", "alice").with_clock(),
+            Principal::as_role("bob", "bob").with_clock(),
+        ],
+    )
+    .also_at(
+        "1 year",
+        "SELECT s.user_id AS subject, 'docs:' || d.id AS object
+         FROM docs d JOIN doc_shares s ON s.doc_id = d.id
+         WHERE s.expires_at > $1::timestamptz",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "docs:1", true),
+        ("alice", "docs:2", false),
+        ("alice", "docs:3", true),
+        // Bob's only share expired yesterday.
+        ("bob", "docs:2", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `expiring_holder_membership_condition_parity_postgres18_and_openfga`.
+///
+/// The membership row names no document, so one live row admits the caller to every memo.
+/// Alice holds an expired row beside a live one, which a model reading the wrong row of
+/// the two would answer for.
+async fn an_expiring_holder_row_admits_the_caller_to_everything(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-expiring-holder-membership",
+        "
+CREATE TABLE memos (id INT PRIMARY KEY);
+CREATE TABLE reviewers (user_id TEXT, vetted_at TIMESTAMPTZ);
+ALTER TABLE memos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY memos_p ON memos FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM reviewers
+        WHERE reviewers.user_id = current_user AND reviewers.vetted_at > now()
+    )
+);
+",
+        &[
+            "INSERT INTO memos (id) VALUES (1), (2);
+             INSERT INTO reviewers (user_id, vetted_at) VALUES
+                 ('alice', now() - interval '1 day'),
+                 ('alice', now() + interval '1 day'),
+                 ('bob', now() - interval '1 day')",
+            "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN;
+             GRANT SELECT ON memos, reviewers TO alice, bob",
+        ],
+        vec![
+            Principal::as_role("alice", "alice").with_clock(),
+            Principal::as_role("bob", "bob").with_clock(),
+        ],
+    )
+    .also_at(
+        "1 year",
+        "SELECT r.user_id AS subject, 'memos:' || m.id AS object
+         FROM memos m CROSS JOIN reviewers r
+         WHERE r.vetted_at > $1::timestamptz",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "memos:1", true),
+        ("alice", "memos:2", true),
+        // Bob's one row is expired, so he reads nothing.
+        ("bob", "memos:1", false),
+        ("bob", "memos:2", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
 }

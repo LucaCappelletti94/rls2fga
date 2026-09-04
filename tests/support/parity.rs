@@ -157,6 +157,24 @@ pub(crate) struct ParityCase {
     /// disagree by access path rather than by row. A case naming a partition here compares
     /// reads through the root, which is the question the model answers.
     pub(crate) not_read_directly: Vec<String>,
+    /// A second instant to compare at, where the case names the oracle.
+    pub(crate) future: Option<FutureInstant>,
+}
+
+/// A moment the database cannot be asked about, and what it would answer there.
+///
+/// A guard against the clock becomes a condition rather than tuples, and at `now()` alone
+/// a model that baked the clock in while loading answers correctly. Comparing at a second
+/// instant is what separates the two, and `PostgreSQL` has no way to be asked what a read
+/// would return later, so the case supplies the policy's own predicate at that instant.
+pub(crate) struct FutureInstant {
+    /// Interval past `now()`, such as `1 year`.
+    pub(crate) offset: String,
+    /// Rows visible at the instant, as `(subject, object)` text pairs.
+    ///
+    /// Bound with the instant as `$1`. The object is spelled as the model names it, so a
+    /// single-column key reads `'docs:' || id`.
+    pub(crate) visible: String,
 }
 
 impl ParityCase {
@@ -177,7 +195,17 @@ impl ParityCase {
             registry_json: None,
             attributes_json: None,
             not_read_directly: Vec::new(),
+            future: None,
         }
+    }
+
+    /// The same case, also compared `offset` past `now()` against `visible`.
+    pub(crate) fn also_at(mut self, offset: &str, visible: &str) -> Self {
+        self.future = Some(FutureInstant {
+            offset: offset.to_string(),
+            visible: visible.to_string(),
+        });
+        self
     }
 
     /// The same case, with statements applied before the schema.
@@ -206,6 +234,12 @@ impl ParityCase {
     /// The same case, with the accessor metadata its deployment declares.
     pub(crate) fn with_registry(mut self, registry_json: &str) -> Self {
         self.registry_json = Some(registry_json.to_string());
+        self
+    }
+
+    /// The same case, with the request-scoped values its deployment declares.
+    pub(crate) fn with_attributes(mut self, attributes_json: &str) -> Self {
+        self.attributes_json = Some(attributes_json.to_string());
         self
     }
 
@@ -861,6 +895,10 @@ async fn run_in(
             }
         }
     }
+
+    let later =
+        compare_at_future_instant(conn, case, &client, &answers, &objects, &observations).await;
+    observations.extend(later);
     Run {
         observations,
         disclosures: disclosed,
@@ -1008,4 +1046,99 @@ pub(crate) fn assert_discloses(case: &ParityCase, run: &Run, named: &[&str]) {
             run.disclosures.join("\n")
         );
     }
+}
+
+/// One pair the case's own oracle says is visible at the future instant.
+#[derive(QueryableByName)]
+struct VisiblePair {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    subject: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    object: String,
+}
+
+/// Compare every pair again at the case's future instant, if it declared one.
+///
+/// A model that resolved the clock while loading tuples answers correctly at `now()` and
+/// keeps granting afterwards, so the second instant is what catches it. The case supplies
+/// the oracle because the database cannot be asked what a read would return later, and the
+/// clock has to take something away or the comparison proves nothing.
+async fn compare_at_future_instant(
+    conn: &mut PgConnection,
+    case: &ParityCase,
+    client: &openfga::Client,
+    answers: &[ActionRelations],
+    objects: &[Object],
+    at_now: &[Mismatch],
+) -> Vec<Mismatch> {
+    let Some(future) = case.future.as_ref() else {
+        return Vec::new();
+    };
+    let instant: Instant = diesel::sql_query(format!(
+        "SELECT to_char(now() + interval '{}', 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant",
+        future.offset
+    ))
+    .get_result(&mut *conn)
+    .unwrap_or_else(|error| panic!("{}: reading the future instant: {error}", case.name));
+
+    let visible: Vec<VisiblePair> = diesel::sql_query(&future.visible)
+        .bind::<diesel::sql_types::Text, _>(&instant.instant)
+        .load(&mut *conn)
+        .unwrap_or_else(|error| {
+            panic!(
+                "{}: the case's oracle at {} failed: {error}",
+                case.name, future.offset
+            )
+        });
+
+    let mut observations = Vec::new();
+    for principal in &case.principals {
+        for object in objects {
+            let postgres = visible
+                .iter()
+                .any(|pair| pair.subject == principal.subject && pair.object == object.name);
+            let mut context = principal.context.clone();
+            if let Some(entries) = context.as_object_mut() {
+                entries.insert(
+                    "request_time".to_string(),
+                    serde_json::Value::String(instant.instant.clone()),
+                );
+            }
+            let Some(openfga) = openfga_allows(
+                client,
+                answers,
+                principal,
+                &context,
+                object,
+                ActionStatement::Select,
+                false,
+            )
+            .await
+            else {
+                continue;
+            };
+            observations.push(Mismatch {
+                subject: principal.subject.clone(),
+                object: object.name.clone(),
+                statement: ActionStatement::Select,
+                postgres,
+                openfga,
+            });
+        }
+    }
+    let took_away = observations.iter().any(|later| {
+        at_now.iter().any(|now| {
+            now.subject == later.subject
+                && now.object == later.object
+                && now.statement == ActionStatement::Select
+                && now.postgres
+                && !later.postgres
+        })
+    });
+    assert!(
+        took_away,
+        "{}: nothing loses its grant by {}, so the clock condition proves nothing",
+        case.name, future.offset
+    );
+    observations
 }
