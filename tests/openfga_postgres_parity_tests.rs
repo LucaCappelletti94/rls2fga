@@ -8822,3 +8822,148 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
         "falling closed on this policy has to be reported, not silent"
     );
 }
+
+mod reserved_name_schema {
+    diesel::table! {
+        #[sql_name = "self"]
+        reserved_docs (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+
+    diesel::table! {
+        #[sql_name = "t_self"]
+        prefixed_docs (id) {
+            id -> diesel::sql_types::Text,
+            editor_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+}
+
+/// Two tables whose canonical names differ and whose reserved-word rename collides.
+///
+/// The model used to declare one type twice, which the service refuses outright, and both
+/// tables' rows minted the same object names. Both tables are read here under both
+/// principals, so a shared type shows up as a grant `PostgreSQL` denies.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn reserved_type_name_parity_postgres18_and_openfga() {
+    use reserved_name_schema::{prefixed_docs, reserved_docs};
+
+    let postgres = support::containers::start_postgres().await;
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r#"
+CREATE TABLE "self"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE t_self(id TEXT PRIMARY KEY, editor_id TEXT);
+ALTER TABLE "self" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE t_self ENABLE ROW LEVEL SECURITY;
+CREATE POLICY a ON "self" FOR SELECT USING (owner_id = current_user);
+CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
+"#;
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the reserved-name schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN;
+         GRANT SELECT ON \"self\", t_self TO alice, bob;",
+    )
+    .expect("Failed to create the querying roles");
+    // One key value in both tables, so a shared type would name one object.
+    diesel::insert_into(reserved_docs::table)
+        .values((
+            reserved_docs::id.eq("shared"),
+            reserved_docs::owner_id.eq(Some("alice")),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the reserved table");
+    diesel::insert_into(prefixed_docs::table)
+        .values((
+            prefixed_docs::id.eq("shared"),
+            prefixed_docs::editor_id.eq(Some("bob")),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the prefixed table");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "reserved-name-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let naming: Vec<(String, String)> = outputs
+        .translation()
+        .row_naming()
+        .iter()
+        .map(|entry| (entry.table.to_string(), entry.type_name.clone()))
+        .collect();
+
+    let mut granted = 0;
+    let mut denied = 0;
+    for principal in ["alice", "bob"] {
+        for (table, type_name) in &naming {
+            #[derive(QueryableByName)]
+            struct Counted {
+                #[diesel(sql_type = diesel::sql_types::BigInt)]
+                rows: i64,
+            }
+            let expected = conn
+                .transaction::<bool, diesel::result::Error, _>(|conn| {
+                    diesel::sql_query(format!("SET LOCAL ROLE {principal}")).execute(conn)?;
+                    let counted: Counted = diesel::sql_query(format!(
+                        "SELECT count(*) AS rows FROM {} WHERE id = 'shared'",
+                        if table.contains("t_self") {
+                            "t_self"
+                        } else {
+                            "\"self\""
+                        }
+                    ))
+                    .get_result(conn)?;
+                    Ok(counted.rows == 1)
+                })
+                .expect("reading under row level security should not error");
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{principal}"),
+                "can_select",
+                &format!("{type_name}:shared"),
+            )
+            .await;
+            assert_eq!(
+                actual, expected,
+                "{principal} on {table} as {type_name}:shared"
+            );
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+        }
+    }
+    assert!(
+        granted > 0 && denied > 0,
+        "the case needs both answers, got {granted} granted and {denied} denied"
+    );
+}

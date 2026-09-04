@@ -271,13 +271,15 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         (MembershipPairing::Single, [pair]) => {
             referenced_table_for_fk_col(db, join_table, &pair.join_column).map_or_else(
                 || parent_type_from_fk_column(pair.join_column.as_str()),
-                |referenced| table_types.resolve(&referenced),
+                |referenced| table_types.resolve(&referenced).to_string(),
             )
         }
         // The resolver never yields `Single` with any other width, so this arm
         // exists only to fall closed rather than panic.
         (MembershipPairing::Single, _) => return deny_expr(table_plan),
-        (MembershipPairing::ForeignKey { parent_table }, _) => table_types.resolve(parent_table),
+        (MembershipPairing::ForeignKey { parent_table }, _) => {
+            table_types.resolve(parent_table).to_string()
+        }
         // The outer columns are the guarded key, so the parent is the row itself.
         (MembershipPairing::SelfKeyed, _) => table_plan.type_name.to_string(),
     };
@@ -484,7 +486,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             return membership;
         }
         let scope_relation =
-            membership_read_scope_relation_name(&ctx.table_types.resolve(join_table));
+            membership_read_scope_relation_name(ctx.table_types.resolve(join_table).as_str());
         register_pg_role_scope(
             table_plan,
             all_types,
@@ -546,7 +548,8 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
 
     // Only those roles can read the membership rows, so only they inherit
     // the grant.
-    let scope_relation = membership_read_scope_relation_name(&ctx.table_types.resolve(join_table));
+    let scope_relation =
+        membership_read_scope_relation_name(ctx.table_types.resolve(join_table).as_str());
     register_pg_role_scope(
         table_plan,
         all_types,
@@ -588,7 +591,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     let source_table = ctx.source_table;
     let table_types = ctx.table_types;
 
-    let parent_type = table_types.resolve(parent_table);
+    let parent_type = table_types.resolve(parent_table).to_string();
 
     // The relation is named after the parent type, but relation names have a
     // tighter length limit, so use the name the plan actually registered.

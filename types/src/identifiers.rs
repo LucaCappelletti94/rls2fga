@@ -682,4 +682,35 @@ mod tests {
         assert_eq!(TypeName::try_from("docs").expect("valid type name"), "docs");
         assert!(TypeName::try_from("not a type").is_err());
     }
+
+    /// A second pass changes nothing, which is what lets a canonical name be carried
+    /// through references and definitions alike.
+    #[test]
+    fn canonicalizing_a_type_name_twice_answers_the_same() {
+        for name in [
+            "",
+            "docs",
+            "Docs",
+            "self",
+            "this",
+            "t_self",
+            "123_items",
+            "a-b",
+            "app.docs",
+            "___",
+            "resource",
+        ] {
+            let once = TypeName::canonicalized(name);
+            let twice = TypeName::canonicalized(once.as_str());
+            assert_eq!(once, twice, "for {name:?}");
+        }
+    }
+
+    /// The two names OpenFGA reserves never survive as themselves.
+    #[test]
+    fn a_reserved_type_name_is_prefixed() {
+        assert_eq!(TypeName::canonicalized("self"), "t_self");
+        assert_eq!(TypeName::canonicalized("this"), "t_this");
+        assert_eq!(TypeName::canonicalized("selfish"), "selfish");
+    }
 }

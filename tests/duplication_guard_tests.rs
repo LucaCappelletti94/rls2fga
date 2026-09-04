@@ -815,6 +815,31 @@ fn the_identity_encoder_has_a_single_source_of_truth() {
     }
 }
 
+/// One place decides what a schema name canonicalizes to, and it decides the whole
+/// answer.
+///
+/// The reserved-word prefix used to be applied where a type was *defined*, after
+/// collisions had been resolved against the unprefixed name, so two tables could collapse
+/// onto one type and a cross-type reference could name a type the model never declared.
+/// `TypeName::canonicalized` is idempotent on this function's output, which is what lets
+/// the record templates re-wrap a name the generator already decided.
+#[test]
+fn a_type_name_is_decided_in_one_place() {
+    let deciders = fn_definitions("canonical_fga_type_name");
+    assert_eq!(
+        deciders, 1,
+        "expected one type-name canonicalizer, found {deciders}"
+    );
+
+    // The reserved-word and leading-digit prefix is `TypeName`'s rule. A second site
+    // applying it is how the definition and the reference came to disagree.
+    let prefixers = count_excluding(&["types/src/identifiers.rs"], "\"t_");
+    assert_eq!(
+        prefixers, 0,
+        "the type-name prefix is TypeName's rule, found {prefixers} applying it elsewhere"
+    );
+}
+
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.

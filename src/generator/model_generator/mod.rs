@@ -1804,12 +1804,13 @@ fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> String 
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
-        return format!(
+        return canonical_fga_type_name(&format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(member_table))
-        );
+            stable_hex_suffix(table_types.resolve(member_table).as_str())
+        ))
+        .to_string();
     }
-    base
+    base.to_string()
 }
 
 /// The type standing for the owner identities `grant_table` records grants over.
@@ -1833,9 +1834,9 @@ fn owner_type_name(
         .count()
         <= 1;
     if one_function && !table_types.claims(&base) {
-        return base;
+        return base.to_string();
     }
-    format!("{base}_{}", stable_hex_suffix(function_name))
+    canonical_fga_type_name(&format!("{base}_{}", stable_hex_suffix(function_name))).to_string()
 }
 
 /// The type standing for the share rows of a caller-set membership on `join_table`.
@@ -1848,12 +1849,13 @@ fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> String {
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
-        return format!(
+        return canonical_fga_type_name(&format!(
             "{base}_{}",
-            stable_hex_suffix(&table_types.resolve(join_table))
-        );
+            stable_hex_suffix(table_types.resolve(join_table).as_str())
+        ))
+        .to_string();
     }
-    base
+    base.to_string()
 }
 
 /// Every `(type, relation)` a permission can consult. Anything unresolved counts as
@@ -1889,7 +1891,8 @@ fn types_bearing_name<DB: DatabaseLike>(
 ) -> Vec<String> {
     db.tables()
         .filter(|table| stored_relation_name(named) == table.stored_table_name())
-        .filter_map(|table| table_types.by_identity.get(&table_identity(table)).cloned())
+        .filter_map(|table| table_types.by_identity.get(&table_identity(table)))
+        .map(TypeName::to_string)
         .collect()
 }
 
@@ -2029,9 +2032,9 @@ struct TypeOwner {
 
 #[derive(Default)]
 struct TableTypes {
-    by_identity: BTreeMap<TableId, String>,
-    owners: BTreeMap<String, TypeOwner>,
-    reserved: BTreeMap<String, &'static str>,
+    by_identity: BTreeMap<TableId, TypeName>,
+    owners: BTreeMap<TypeName, TypeOwner>,
+    reserved: BTreeMap<TypeName, &'static str>,
 }
 
 impl TableTypes {
@@ -2040,22 +2043,29 @@ impl TableTypes {
             reserved: well_known
                 .reserved()
                 .into_iter()
-                .map(|(setting, type_name)| (type_name.to_string(), setting))
+                .map(|(setting, type_name)| (type_name.clone(), setting))
                 .collect(),
             ..Self::default()
         }
     }
 
     /// Whether a table or reserved generator type already holds this type name.
-    fn claims(&self, type_name: &str) -> bool {
+    fn claims(&self, type_name: &TypeName) -> bool {
         self.owners.contains_key(type_name) || self.reserved.contains_key(type_name)
     }
 
-    /// The schema identity of the table holding this type.
-    fn spelling(&self, type_name: &str) -> String {
+    /// The schema identity of the table holding this type, found by its rendered name.
+    ///
+    /// By name rather than by `TypeName`, because the read graph carries the names the
+    /// model declares.
+    fn spelling_of(&self, type_name: &str) -> String {
         self.owners
-            .get(type_name)
-            .map_or_else(|| type_name.to_string(), |owner| owner.identity.to_string())
+            .iter()
+            .find(|(name, _)| name.as_str() == type_name)
+            .map_or_else(
+                || type_name.to_string(),
+                |(_, owner)| owner.identity.to_string(),
+            )
     }
 }
 
@@ -2110,24 +2120,27 @@ impl TableTypes {
                 return Err(PlanningError::ReservedTypeName {
                     table: spelling.clone(),
                     setting,
-                    type_name: base,
+                    type_name: base.to_string(),
                 });
             }
             let assigned = match types.owners.get(&base) {
                 Some(prior) => {
-                    let disambiguated = format!("{base}_{}", stable_hex_suffix(&spelling));
+                    let disambiguated = canonical_fga_type_name(&format!(
+                        "{base}_{}",
+                        stable_hex_suffix(&spelling)
+                    ));
                     if let Some(setting) = types.reserved.get(&disambiguated) {
                         return Err(PlanningError::ReservedTypeName {
                             table: spelling.clone(),
                             setting,
-                            type_name: disambiguated,
+                            type_name: disambiguated.to_string(),
                         });
                     }
                     notes.push(TranslationNote::TypeNameCollision {
                         spelling: identity.clone(),
                         prior: prior.identity.clone(),
-                        canonical: base.clone(),
-                        renamed: disambiguated.clone(),
+                        canonical: base.to_string(),
+                        renamed: disambiguated.to_string(),
                     });
                     disambiguated
                 }
@@ -2145,15 +2158,15 @@ impl TableTypes {
     }
 
     /// Type of `table`, or `None` when it has no type (unresolvable or RLS off).
-    fn get(&self, table: &TableId) -> Option<&str> {
-        self.by_identity.get(table).map(String::as_str)
+    fn get(&self, table: &TableId) -> Option<&TypeName> {
+        self.by_identity.get(table)
     }
 
     /// Type of `table`, deriving one when it has none: a parent without RLS still
     /// needs a type for the child to point at. The derived name steps aside when
     /// another table already owns it, so the child cannot inherit that table's
     /// permissions.
-    fn resolve(&self, table: &TableId) -> String {
+    fn resolve(&self, table: &TableId) -> TypeName {
         if let Some(assigned) = self.by_identity.get(table) {
             return assigned.clone();
         }
@@ -2161,7 +2174,7 @@ impl TableTypes {
         let base = canonical_fga_type_name(&spelling);
         match self.owners.get(&base) {
             Some(owner) if owner.identity != *table => {
-                format!("{base}_{}", stable_hex_suffix(&spelling))
+                canonical_fga_type_name(&format!("{base}_{}", stable_hex_suffix(&spelling)))
             }
             _ => base,
         }

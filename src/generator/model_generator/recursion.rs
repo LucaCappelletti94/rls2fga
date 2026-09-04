@@ -195,7 +195,7 @@ fn loops_reachable_from(
                             .get(at..)
                             .unwrap_or_default()
                             .iter()
-                            .map(|node| table_types.spelling(node).clone())
+                            .map(|node| table_types.spelling_of(node))
                             .collect(),
                     );
                     frame.2 = frame.2.or(Some(index));

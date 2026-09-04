@@ -14,8 +14,8 @@ use rls2fga::types::ConfidenceLevel;
 mod support;
 
 use support::footgun::{
-    db_of, is_structural_type, relation_definition, relation_definitions, translator,
-    tuples_reading_from, type_names,
+    assert_model_is_internally_consistent, db_of, is_structural_type, relation_definition,
+    relation_definitions, translator, tuples_reading_from, type_names,
 };
 
 const COLLIDING_SCHEMAS: &str = r"
@@ -991,4 +991,89 @@ fn the_stable_suffix_has_one_public_implementation() {
         rls2fga::stable_hex_suffix("rls2fga"),
         rls2fga::types::stable_hex_suffix("rls2fga")
     );
+}
+
+/// A table named after a reserved word is renamed, and the rename is a collision like
+/// any other.
+///
+/// `self` and `t_self` canonicalize to different names and then to the same one, so the
+/// disambiguation that catches `app.docs` beside `public.docs` has to catch this too.
+/// Sharing the type would name a row of each table as one object.
+#[test]
+fn a_reserved_table_name_collides_with_the_name_it_is_renamed_to() {
+    let db = db_of(
+        r#"
+CREATE TABLE "self"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE t_self(id TEXT PRIMARY KEY, editor_id TEXT);
+ALTER TABLE "self" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE t_self ENABLE ROW LEVEL SECURITY;
+CREATE POLICY a ON "self" FOR SELECT USING (owner_id = current_user);
+CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
+"#,
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert_model_is_internally_consistent(&outputs.json_model());
+
+    let named: Vec<String> = outputs
+        .translation()
+        .row_naming()
+        .iter()
+        .map(|naming| naming.type_name.clone())
+        .collect();
+    let distinct: std::collections::BTreeSet<&String> = named.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        named.len(),
+        "two tables share one type name, so their rows share one object: {named:?}"
+    );
+}
+
+/// A parent whose name is reserved is referenced by the name its definition carries.
+///
+/// The bridge relation names the parent type, and a reference to a name the model never
+/// declares is a model the service refuses.
+#[test]
+fn a_reserved_parent_type_is_referenced_by_the_name_it_is_defined_under() {
+    let db = db_of(
+        r#"
+CREATE TABLE "self"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE docs(id TEXT PRIMARY KEY, parent_id TEXT REFERENCES "self"(id));
+ALTER TABLE "self" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parent_owner ON "self" FOR SELECT USING (owner_id = current_user);
+CREATE POLICY inherit ON docs FOR SELECT USING (EXISTS (
+    SELECT 1 FROM "self" p WHERE p.id = docs.parent_id AND p.owner_id = current_user));
+"#,
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert_model_is_internally_consistent(&outputs.json_model());
+
+    let declared = type_names(&outputs.model());
+    for query in outputs.tuple_queries() {
+        for named in query.sql.split('\'').filter(|piece| {
+            piece.ends_with(':')
+                && piece
+                    .trim_end_matches(':')
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        }) {
+            let type_name = named.trim_end_matches(':');
+            if type_name.is_empty() || is_structural_type(type_name) {
+                continue;
+            }
+            assert!(
+                declared.iter().any(|name| name == type_name),
+                "tuple SQL names objects of '{type_name}', which the model does not define: {}",
+                query.sql
+            );
+        }
+    }
 }

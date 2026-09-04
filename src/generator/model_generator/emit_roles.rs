@@ -431,7 +431,7 @@ pub(crate) fn ensure_role_threshold_scaffold(
     let sorted_roles = sorted_role_relation_names(role_levels);
 
     let pointer = table_plan.ensure_direct(
-        clamp_relation_name(canonical_fga_type_name(owner_column.as_str())),
+        clamp_relation_name(canonical_fga_type_name(owner_column.as_str()).to_string()),
         vec![DirectSubject::Type(owner_type.to_string())],
     );
     let well_known = table_plan.well_known.clone();

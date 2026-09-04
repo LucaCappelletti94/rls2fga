@@ -117,13 +117,13 @@ impl WellKnownTypes {
         &self.nobody
     }
 
-    pub(crate) fn reserved(&self) -> [(&'static str, &str); 5] {
+    pub(crate) fn reserved(&self) -> [(&'static str, &TypeName); 5] {
         [
-            ("user", self.user.as_str()),
-            ("team", self.team.as_str()),
-            ("pg_role", self.pg_role.as_str()),
-            ("pg_role_scope", self.pg_role_scope.as_str()),
-            ("nobody", self.nobody.as_str()),
+            ("user", &self.user),
+            ("team", &self.team),
+            ("pg_role", &self.pg_role),
+            ("pg_role_scope", &self.pg_role_scope),
+            ("nobody", &self.nobody),
         ]
     }
 }
