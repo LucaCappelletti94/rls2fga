@@ -3,6 +3,9 @@
 #[cfg(all(not(target_os = "windows"), feature = "client"))]
 pub(crate) mod openfga;
 
+#[cfg(all(not(target_os = "windows"), feature = "client"))]
+pub(crate) mod parity;
+
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod containers;
 
@@ -229,4 +232,43 @@ pub(crate) fn try_load_fixture_classified(
     let registry = try_load_fixture_registry(fixture);
     let classified = policy_classifier::classify_policies(&db, &registry);
     (classified, db, registry)
+}
+
+/// Run every tuple query and collect the `(object, relation, subject)` triples, sorted and
+/// deduplicated.
+///
+/// Beside the per-case loaders, for the generic parity runner.
+#[cfg(all(not(target_os = "windows"), feature = "client"))]
+pub(crate) fn execute_tuple_queries_for_parity(
+    conn: &mut diesel::pg::PgConnection,
+    queries: &[rls2fga::generator::tuple_generator::TupleQuery],
+) -> Vec<(String, String, String)> {
+    use diesel::prelude::*;
+    use diesel::sql_types::Text;
+
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Text)]
+        object: String,
+        #[diesel(sql_type = Text)]
+        relation: String,
+        #[diesel(sql_type = Text)]
+        subject: String,
+    }
+
+    let mut keys = std::collections::BTreeSet::new();
+    for query in queries {
+        let rows: Vec<Row> = diesel::sql_query(&query.sql)
+            .load(conn)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "tuple SQL failed: {}\n{}\nError: {error}",
+                    query.comment, query.sql
+                )
+            });
+        for row in rows {
+            keys.insert((row.object, row.relation, row.subject));
+        }
+    }
+    keys.into_iter().collect()
 }

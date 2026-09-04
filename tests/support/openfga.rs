@@ -6,6 +6,9 @@ use openfga_client::tonic::transport::Channel;
 
 pub(crate) type GrpcClient = OpenFgaServiceClient<Channel>;
 
+/// The store-scoped client every check goes through.
+pub(crate) type Client = OpenFgaClient<Channel>;
+
 pub(crate) async fn connect(grpc_port: u16) -> GrpcClient {
     OpenFgaServiceClient::connect(format!("http://localhost:{grpc_port}"))
         .await

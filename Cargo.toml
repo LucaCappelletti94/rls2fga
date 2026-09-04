@@ -70,6 +70,10 @@ required-features = ["client"]
 name = "dump_round_trip_tests"
 required-features = ["client"]
 
+[[test]]
+name = "parity_runner_tests"
+required-features = ["client"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
