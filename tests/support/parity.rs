@@ -403,6 +403,24 @@ fn key_columns(naming: &RowNaming) -> Option<Vec<&str>> {
         .collect()
 }
 
+/// The `WHERE` clause naming one row by its key, compared as text so any key type fits.
+fn key_predicate(row: &serde_json::Value, columns: &[&str]) -> String {
+    let mut predicate = String::new();
+    for (at, column) in columns.iter().enumerate() {
+        let value = row
+            .get(*column)
+            .and_then(super::scalar_text)
+            .unwrap_or_default();
+        let joiner = if at == 0 { "" } else { " AND " };
+        let _ = write!(
+            predicate,
+            "{joiner}\"{column}\"::text = '{}'",
+            value.replace('\'', "''")
+        );
+    }
+    predicate
+}
+
 /// Every object the model names, read as the owner so row-level security does not filter
 /// the enumeration.
 fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) -> Vec<Object> {
@@ -420,23 +438,16 @@ fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) ->
                 .load(conn)
                 .unwrap_or_else(|error| panic!("reading {table} as its owner: {error}"));
         for JsonRow { row } in rows {
-            let Ok(Some(name)) = entry.render(&super::JsonRowValues(&row)) else {
-                continue;
+            // A name the renderer refuses is the row-naming divergence this suite exists to
+            // find, so it fails here rather than removing the row and passing on the rest.
+            // `Ok(None)` is the deliberate one: no column names that row.
+            let name = match entry.render(&super::JsonRowValues(&row)) {
+                Ok(Some(name)) => name,
+                Ok(None) => continue,
+                Err(error) => panic!("naming a row of {table}: {error}"),
             };
 
-            let mut predicate = String::new();
-            for (at, column) in columns.iter().enumerate() {
-                let value = row
-                    .get(*column)
-                    .and_then(super::scalar_text)
-                    .unwrap_or_default();
-                let joiner = if at == 0 { "" } else { " AND " };
-                let _ = write!(
-                    predicate,
-                    "{joiner}\"{column}\"::text = '{}'",
-                    value.replace('\'', "''")
-                );
-            }
+            let predicate = key_predicate(&row, &columns);
             out.push(Object {
                 name,
                 table: table.clone(),
@@ -493,6 +504,7 @@ fn postgres_allows(
     principal: &Principal,
     object: &Object,
     statement: ActionStatement,
+    mutations: Option<&Mutations>,
 ) -> Option<bool> {
     let table = &object.table;
     let predicate = &object.predicate;
@@ -527,10 +539,10 @@ fn postgres_allows(
             "SELECT count(*) AS rows FROM (SELECT 1 FROM {table} WHERE {predicate} FOR UPDATE) s"
         ),
         ActionStatement::Update => {
-            let set = case
-                .mutations
-                .values()
-                .find_map(|mutations| mutations.update_set.as_deref())?;
+            // This table's own change, or none. Reaching for the first one any table
+            // declared ran another table's `SET` here, which names a column this one does
+            // not have, and the error read as the policy refusing the write.
+            let set = mutations?.update_set.as_deref()?;
             format!("WITH changed AS (UPDATE {table} SET {set} WHERE {predicate} RETURNING 1) SELECT count(*) AS rows FROM changed")
         }
         ActionStatement::Delete => format!(
@@ -598,20 +610,45 @@ fn reads_an_unset_setting(error: &diesel::result::Error) -> bool {
         if info.message().contains("unrecognized configuration parameter"))
 }
 
+/// The model under test, as the three things every question about it needs.
+struct Model<'run> {
+    client: &'run openfga::Client,
+    answers: &'run [ActionRelations],
+    /// For the case's name, which every refusal reports.
+    case: &'run ParityCase,
+}
+
 /// Whether the model grants `principal` the statement on `object`.
 async fn openfga_allows(
-    client: &openfga::Client,
-    answers: &[ActionRelations],
+    model: &Model<'_>,
     principal: &Principal,
     context: &serde_json::Value,
     object: &Object,
     statement: ActionStatement,
     check_neutral: bool,
 ) -> Option<bool> {
-    let type_name = object.name.split_once(':')?.0;
+    let Model {
+        client,
+        answers,
+        case,
+    } = model;
+    let type_name = object
+        .name
+        .split_once(':')
+        .map_or_else(|| object.name.as_str(), |(type_name, _)| type_name);
+    // A missing answer is not a pair to leave out. Skipping it kept the non-vacuity guard
+    // satisfied by the pairs that remained, so a whole table or statement could stop being
+    // compared with nothing to show it had.
     let entry = answers
         .iter()
-        .find(|entry| entry.type_name == *type_name && entry.statement == statement)?;
+        .find(|entry| entry.type_name == *type_name && entry.statement == statement)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: the model answers nothing for {statement:?} on '{type_name}', so the \
+                 pair would go uncompared",
+                case.name
+            )
+        });
     match &entry.answer {
         ActionAnswer::Unrestricted => Some(true),
         ActionAnswer::Denied => Some(false),
@@ -640,8 +677,13 @@ async fn openfga_allows(
             }
             Some(true)
         }
-        // A new answer the model learns to give is not one this compares.
-        _ => None,
+        // An answer the model learns to give has to be read deliberately: treating it as
+        // no answer would drop the pair the way a missing entry used to.
+        other => panic!(
+            "{}: the model answered {other:?} for {statement:?} on '{type_name}', which this \
+             runner does not read yet",
+            case.name
+        ),
     }
 }
 
@@ -906,6 +948,13 @@ async fn run_in(
             .get_result(&mut *conn)
             .expect("reading now() should succeed");
 
+    let mutations = resolved_mutations(case, &naming);
+    let model = Model {
+        client: &client,
+        answers: &answers,
+        case,
+    };
+
     let mut observations = Vec::new();
     for principal in &case.principals {
         // A connection of its own, because a caller that set nothing is a real state and a
@@ -917,7 +966,9 @@ async fn run_in(
         let conn = &mut owned;
         for object in &objects {
             for statement in COMPARED {
-                let Some(postgres) = postgres_allows(conn, case, principal, object, statement)
+                let candidate = mutations.get(&object.table).copied();
+                let Some(postgres) =
+                    postgres_allows(conn, case, principal, object, statement, candidate)
                 else {
                     continue;
                 };
@@ -931,15 +982,12 @@ async fn run_in(
                     }
                 }
                 let Some(openfga) = openfga_allows(
-                    &client,
-                    &answers,
+                    &model,
                     principal,
                     &context,
                     object,
                     statement,
-                    case.mutations
-                        .values()
-                        .any(|mutations| mutations.check_neutral),
+                    candidate.is_some_and(|mutations| mutations.check_neutral),
                 )
                 .await
                 else {
@@ -956,8 +1004,7 @@ async fn run_in(
         }
     }
 
-    let later =
-        compare_at_future_instant(conn, case, &client, &answers, &objects, &observations).await;
+    let later = compare_at_future_instant(conn, case, &model, &objects, &observations).await;
     observations.extend(later);
     Run {
         observations,
@@ -1126,8 +1173,7 @@ struct VisiblePair {
 async fn compare_at_future_instant(
     conn: &mut PgConnection,
     case: &ParityCase,
-    client: &openfga::Client,
-    answers: &[ActionRelations],
+    model: &Model<'_>,
     objects: &[Object],
     at_now: &[Mismatch],
 ) -> Vec<Mismatch> {
@@ -1165,8 +1211,7 @@ async fn compare_at_future_instant(
                 );
             }
             let Some(openfga) = openfga_allows(
-                client,
-                answers,
+                model,
                 principal,
                 &context,
                 object,
@@ -1432,4 +1477,67 @@ pub(crate) fn assert_two_sided(case: &ParityCase, run: &Run) {
         granted.max(run.compared() - granted),
         run.compared()
     );
+}
+
+/// The case's declared changes, keyed the way an object names its table.
+///
+/// A case spells a table the way its schema does, `notes`, while an object carries
+/// `TableId::sql_name`, `"public"."notes"`. Comparing those as text finds nothing, so the
+/// spelling is resolved through the identities the model already named. A declaration
+/// matching no table is a typo in the case, and silently disabling it would look like the
+/// write simply not being compared.
+fn resolved_mutations<'case>(
+    case: &'case ParityCase,
+    naming: &[RowNaming],
+) -> BTreeMap<String, &'case Mutations> {
+    let mut resolved = BTreeMap::new();
+    for (spelling, mutations) in &case.mutations {
+        let matches: Vec<&RowNaming> = naming
+            .iter()
+            .filter(|entry| names_the_same_table(&entry.table, spelling))
+            .collect();
+        let entry = match matches.as_slice() {
+            [entry] => *entry,
+            [] => panic!(
+                "{}: no table the model names is spelled '{spelling}', so its declared \
+                 change would never be attempted",
+                case.name
+            ),
+            several => panic!(
+                "{}: '{spelling}' names {} of the tables the model names, so which change \
+                 is attempted would be arbitrary",
+                case.name,
+                several.len()
+            ),
+        };
+        assert!(
+            resolved.insert(entry.table.sql_name(), mutations).is_none(),
+            "{}: two declarations resolve to '{}', and the second would win",
+            case.name,
+            entry.table.sql_name()
+        );
+    }
+    resolved
+}
+
+/// Whether `spelling` names `table`, however the case wrote it.
+///
+/// One resolver, because comparing table names as text has three answers here: the stored
+/// name, the qualified name, and the same name with the implicit schema spelled out. A
+/// table stored without a schema resides in `public`, so `notes`, `public.notes` and
+/// `"public"."notes"` are one table and have to resolve alike.
+fn names_the_same_table(table: &TableId, spelling: &str) -> bool {
+    if table.name() == spelling || table.to_string() == spelling || table.sql_name() == spelling {
+        return true;
+    }
+    let (schema, name) = match unquote(spelling).split_once('.') {
+        Some((schema, name)) => (unquote(schema).to_string(), unquote(name).to_string()),
+        None => return false,
+    };
+    table.schema().unwrap_or("public") == schema && table.name() == name
+}
+
+/// One identifier with its quotes removed, which is not an unquoting of embedded ones.
+fn unquote(spelling: &str) -> &str {
+    spelling.trim_matches('"')
 }

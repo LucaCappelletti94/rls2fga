@@ -633,6 +633,46 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(a_missing_statement_answer_fails_the_case(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_missing_statement_answer_fails_the_case: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_row_the_model_cannot_name_fails_the_case(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_row_the_model_cannot_name_fails_the_case: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_declared_write_stays_on_its_own_table(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_declared_write_stays_on_its_own_table: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_mutation_spelling_resolves_to_exactly_one_table(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_mutation_spelling_resolves_to_exactly_one_table: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -642,7 +682,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 65] = [
+const CASES: [&str; 69] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -708,6 +748,10 @@ const CASES: [&str; 65] = [
     "an_insert_that_reads_back_applies_the_select_policy",
     "an_upsert_applies_the_update_policy_too",
     "every_exact_support_case_agrees",
+    "a_missing_statement_answer_fails_the_case",
+    "a_row_the_model_cannot_name_fails_the_case",
+    "a_declared_write_stays_on_its_own_table",
+    "a_mutation_spelling_resolves_to_exactly_one_table",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -4111,4 +4155,243 @@ async fn every_exact_support_case_agrees(cluster: Arc<Cluster>) {
         support::parity::assert_two_sided(&case, &run);
         assert_agrees(&case, &run);
     }
+}
+
+/// A statement the model says nothing about is a failure, not a pair to leave out.
+///
+/// The runner used to skip a pair whose `ActionRelations` entry was missing, and the
+/// non-vacuity guard still passed on the pairs that remained, so a whole table or statement
+/// could stop being compared without anything saying so.
+async fn a_missing_statement_answer_fails_the_case(cluster: Arc<Cluster>) {
+    let case = ownership_case();
+    let shared = Arc::clone(&cluster);
+    let failure = tokio::spawn(async move {
+        support::parity::run_with(
+            &shared,
+            &case,
+            support::parity::Class::Exact,
+            // The model answers for everything except reading, which is the one the case
+            // is about.
+            |answers| {
+                answers
+                    .into_iter()
+                    .filter(|entry| entry.statement != ActionStatement::Select)
+                    .collect()
+            },
+        )
+        .await;
+    })
+    .await;
+    assert!(
+        failure.is_err(),
+        "a missing answer for SELECT has to fail rather than quietly drop every read"
+    );
+}
+
+/// A row the model cannot name is a failure, not a row to leave out.
+///
+/// An object name is capped, and a row past the cap makes rendering raise. Dropping it
+/// removed the row from the comparison while the case still passed on its other rows,
+/// which is the row-naming divergence the suite exists to find.
+async fn a_row_the_model_cannot_name_fails_the_case(cluster: Arc<Cluster>) {
+    let long = "l".repeat(300);
+    let case = ParityCase::reading(
+        "runner-unnameable-row",
+        OWNERSHIP,
+        &[
+            &format!(
+                "INSERT INTO docs(id, owner_id, title) VALUES
+                     ('d1', 'alice', 'first'), ('{long}', 'alice', 'too long')"
+            ),
+            "CREATE ROLE alice LOGIN; GRANT SELECT, UPDATE, DELETE ON docs TO alice",
+        ],
+        vec![Principal::with_setting(
+            "alice",
+            "alice",
+            "app.user_id",
+            "alice",
+        )],
+    );
+    let shared = Arc::clone(&cluster);
+    let failure = tokio::spawn(async move {
+        support::parity::run(&shared, &case).await;
+    })
+    .await;
+    assert!(
+        failure.is_err(),
+        "a row whose name cannot be rendered has to fail rather than leave the row out"
+    );
+}
+
+/// A write declared for one table is not applied to another.
+///
+/// Two tables, and only the second declares a change. The first has no candidate, so its
+/// `UPDATE` is not compared at all: running the other table's `SET` against it names a
+/// column it does not have, which used to be recorded as the policy denying the write.
+async fn a_declared_write_stays_on_its_own_table(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-write-per-table",
+        "
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT, title TEXT);
+CREATE TABLE notes(id TEXT PRIMARY KEY, owner_id TEXT, body TEXT);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_all ON docs FOR ALL
+    USING (owner_id = current_setting('app.user_id', true));
+CREATE POLICY notes_all ON notes FOR ALL
+    USING (owner_id = current_setting('app.user_id', true));
+",
+        &[
+            "INSERT INTO docs(id, owner_id, title) VALUES ('d1', 'alice', 'first');
+             INSERT INTO notes(id, owner_id, body) VALUES ('n1', 'alice', 'first')",
+            "CREATE ROLE alice LOGIN;
+             GRANT SELECT, INSERT, UPDATE, DELETE ON docs, notes TO alice",
+        ],
+        vec![Principal::with_setting(
+            "alice",
+            "alice",
+            "app.user_id",
+            "alice",
+        )],
+    )
+    // Two tables declaring different changes, and disagreeing about neutrality: rewriting
+    // the body cannot alter any policy's answer, while handing the row to somebody else is
+    // the whole question, so that one may not be asked of the row that exists.
+    .writing(
+        "notes",
+        Mutations {
+            update_set: Some("body = body".to_string()),
+            check_neutral: true,
+        },
+    )
+    .writing(
+        "docs",
+        Mutations {
+            update_set: Some("owner_id = 'someone_else'".to_string()),
+            check_neutral: false,
+        },
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:n1",
+        ActionStatement::Update,
+        true,
+    );
+    // The database refuses to hand the row away, and the model is not asked about a row
+    // that does not exist, so the pair is declined rather than compared.
+    assert!(
+        run.observations.iter().all(|observation| {
+            observation.object != "docs:d1" || observation.statement != ActionStatement::Update
+        }),
+        "a change the case does not call neutral must not be asked of the existing row: {:#?}",
+        run.observations
+    );
+    assert_agrees(&case, &run);
+}
+
+/// A declared change names exactly one table, whichever way the case spells it.
+///
+/// The resolver has to accept the spellings that mean the same table and refuse the ones
+/// that mean none or several. A first match would pick one of two same-named tables in
+/// different schemas, and two spellings of one table would overwrite each other, either way
+/// probing a change the case did not declare for that table.
+async fn a_mutation_spelling_resolves_to_exactly_one_table(cluster: Arc<Cluster>) {
+    const TWO_SCHEMAS: &str = "
+CREATE SCHEMA left_hand;
+CREATE SCHEMA right_hand;
+CREATE TABLE left_hand.notes(id TEXT PRIMARY KEY, owner_id TEXT, body TEXT);
+CREATE TABLE right_hand.notes(id TEXT PRIMARY KEY, owner_id TEXT, body TEXT);
+ALTER TABLE left_hand.notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE right_hand.notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY left_all ON left_hand.notes FOR ALL
+    USING (owner_id = current_setting('app.user_id', true));
+CREATE POLICY right_all ON right_hand.notes FOR ALL
+    USING (owner_id = current_setting('app.user_id', true));
+";
+    let neutral = || Mutations {
+        update_set: Some("body = body".to_string()),
+        check_neutral: true,
+    };
+    let two_schema_case = |name: &str| {
+        ParityCase::reading(
+            name,
+            TWO_SCHEMAS,
+            &[
+                "INSERT INTO left_hand.notes(id, owner_id, body) VALUES ('l1', 'alice', 'x');
+                 INSERT INTO right_hand.notes(id, owner_id, body) VALUES ('r1', 'alice', 'x')",
+                "CREATE ROLE alice LOGIN;
+                 GRANT USAGE ON SCHEMA left_hand, right_hand TO alice;
+                 GRANT SELECT, INSERT, UPDATE, DELETE
+                     ON left_hand.notes, right_hand.notes TO alice",
+            ],
+            vec![Principal::with_setting(
+                "alice",
+                "alice",
+                "app.user_id",
+                "alice",
+            )],
+        )
+    };
+
+    // A bare name two schemas both carry names neither of them.
+    let ambiguous = two_schema_case("runner-ambiguous-spelling").writing("notes", neutral());
+    let shared = Arc::clone(&cluster);
+    let refused = tokio::spawn(async move {
+        support::parity::run(&shared, &ambiguous).await;
+    })
+    .await;
+    assert!(
+        refused.is_err(),
+        "a spelling two tables answer to has to be refused, not resolved to the first"
+    );
+
+    // Two spellings of one table are one declaration twice, and the second would win.
+    let doubled = two_schema_case("runner-doubled-spelling")
+        .writing("left_hand.notes", neutral())
+        .writing("\"left_hand\".\"notes\"", neutral());
+    let shared = Arc::clone(&cluster);
+    let refused = tokio::spawn(async move {
+        support::parity::run(&shared, &doubled).await;
+    })
+    .await;
+    assert!(
+        refused.is_err(),
+        "two declarations for one table have to be refused rather than silently merged"
+    );
+
+    // The implicit schema, spelled out. The table is stored without one, so the resolver
+    // has to know that a table with no schema lives in `public`.
+    let qualified = ParityCase::reading(
+        "runner-qualified-spelling",
+        "
+CREATE TABLE notes(id TEXT PRIMARY KEY, owner_id TEXT, body TEXT);
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY notes_all ON notes FOR ALL
+    USING (owner_id = current_setting('app.user_id', true));
+",
+        &[
+            "INSERT INTO notes(id, owner_id, body) VALUES ('n1', 'alice', 'x')",
+            "CREATE ROLE alice LOGIN; GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO alice",
+        ],
+        vec![Principal::with_setting(
+            "alice",
+            "alice",
+            "app.user_id",
+            "alice",
+        )],
+    )
+    .writing("public.notes", neutral());
+    let run = support::parity::run(&cluster, &qualified).await;
+    support::parity::assert_postgres(
+        &qualified,
+        &run,
+        "alice",
+        "notes:n1",
+        ActionStatement::Update,
+        true,
+    );
+    assert_agrees(&qualified, &run);
 }
