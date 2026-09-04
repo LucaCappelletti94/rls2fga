@@ -3704,3 +3704,178 @@ fn unqualified_table_declaration_does_not_produce_search_path_dependent_sql() {
         );
     }
 }
+
+/// A membership qualified by a whole-table aggregate over open relations.
+const CROSS_ROW_RESIDUAL: &str = "
+CREATE TABLE users (id TEXT PRIMARY KEY);
+CREATE TABLE papers (id TEXT PRIMARY KEY);
+CREATE TABLE paper_shares (paper_id TEXT REFERENCES papers(id), viewer TEXT, weight INT);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = current_user
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+/// A consumer refuses a table its change stream does not carry, so every table the
+/// query reads has to be named.
+#[test]
+fn a_cross_row_residual_names_every_relation_it_reads() {
+    let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    let tables: BTreeSet<String> = member
+        .shapes
+        .iter()
+        .flat_map(|shape| shape.tables.iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        tables.contains("paper_shares") && tables.contains("tiers"),
+        "the aggregate's relation belongs in the table list, got {tables:?}"
+    );
+}
+
+/// A global aggregate moves records for papers whose own shares never changed, so no
+/// key narrows the replay.
+#[test]
+fn a_cross_row_residual_refuses_a_keyed_replay() {
+    let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    let shape = member
+        .shapes
+        .first()
+        .expect("the membership reports one shape");
+    match &shape.derivation {
+        RecordDerivation::WholeShape { scope, query, .. } => {
+            assert!(
+                query.contains("max(cutoff)"),
+                "the unnarrowed query is the whole filter, got: {query}"
+            );
+            assert_eq!(
+                scope,
+                &ReplayScope::Object {
+                    object_type: "papers".to_string(),
+                    relations: vec![member_relation()],
+                },
+                "the result is the whole truth for the membership facts on papers"
+            );
+        }
+        other => panic!("a whole-table aggregate cannot be replayed per row, got {other:?}"),
+    }
+}
+
+/// The disclosure names the relations the proof rests on, or nothing can be watched.
+#[test]
+fn a_cross_row_residual_discloses_the_relations_its_proof_rests_on() {
+    let (db, registry) = parsed(CROSS_ROW_RESIDUAL, "{}");
+    let notes = translation(&db, &registry, &GeneratorSettings::default())
+        .outputs_accepting_gaps()
+        .notes()
+        .to_vec();
+    let disclosure = notes
+        .iter()
+        .find_map(|note| match note {
+            TranslationNote::MembershipResidualReadsUnrestrictedTables { tables, .. } => {
+                Some(tables.clone())
+            }
+            _ => None,
+        })
+        .expect("the exemption is disclosed");
+    let named: BTreeSet<String> = disclosure.iter().map(ToString::to_string).collect();
+    assert!(
+        named.contains("tiers"),
+        "the relation the proof rests on is named, got {named:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .all(|note| !matches!(note, TranslationNote::MembershipExtraPredicate { .. })),
+        "one residual is disclosed once, by the note that names its proof"
+    );
+}
+
+/// The same residual reached through the caller's declared set.
+const CALLER_SET_CROSS_ROW: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY);
+CREATE TABLE paper_shares (
+  paper_id INT REFERENCES papers(id),
+  viewer TEXT,
+  weight INT,
+  PRIMARY KEY (paper_id, viewer)
+);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+#[test]
+fn a_caller_set_membership_discloses_the_relations_its_proof_rests_on() {
+    let (db, registry) = parsed_with_session_attributes(
+        CALLER_SET_CROSS_ROW,
+        r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
+    );
+    let notes = translation(&db, &registry, &GeneratorSettings::default())
+        .outputs_accepting_gaps()
+        .notes()
+        .to_vec();
+    let disclosure = notes
+        .iter()
+        .find_map(|note| match note {
+            TranslationNote::MembershipResidualReadsUnrestrictedTables { tables, .. } => {
+                Some(tables.clone())
+            }
+            _ => None,
+        })
+        .expect("the exemption is disclosed on the caller-set route too");
+    let named: BTreeSet<String> = disclosure.iter().map(ToString::to_string).collect();
+    assert!(
+        named.contains("tiers"),
+        "the relation the proof rests on is named, got {named:?}"
+    );
+}
+
+/// A temporal conjunct beside a cross-row one still yields the unnarrowed derivation, since
+/// no clock gate forms while a conjunct neither the row nor the request decides remains.
+const MIXED_CROSS_ROW: &str = "
+CREATE TABLE papers (id INT PRIMARY KEY);
+CREATE TABLE paper_shares (
+  paper_id INT REFERENCES papers(id),
+  viewer TEXT,
+  weight INT,
+  expires_at TIMESTAMPTZ,
+  PRIMARY KEY (paper_id, viewer)
+);
+CREATE TABLE tiers (cutoff INT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM paper_shares s
+  WHERE s.paper_id = papers.id
+    AND s.viewer = current_user
+    AND s.expires_at > now()
+    AND s.weight > (SELECT max(cutoff) FROM tiers)));
+";
+
+#[test]
+fn a_temporal_conjunct_beside_a_cross_row_one_keeps_the_unnarrowed_derivation() {
+    let shapes = shapes_of(MIXED_CROSS_ROW, "{}");
+    let member = entry(&shapes, "papers", member_relation().as_str());
+    for shape in &member.shapes {
+        assert!(
+            matches!(shape.derivation, RecordDerivation::WholeShape { .. }),
+            "a cross-row conjunct forbids a row-derived record, got {:?}",
+            shape.derivation
+        );
+        assert!(
+            shape.tables.iter().any(|table| table.name() == "tiers"),
+            "the relation the residual reads is named, got {:?}",
+            shape.tables
+        );
+    }
+    assert!(!member.shapes.is_empty(), "the membership reports a shape");
+}

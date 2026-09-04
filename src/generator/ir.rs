@@ -1114,6 +1114,7 @@ mod tests {
                 sql: "role = 'admin'".to_string(),
                 guard: None,
                 request: None,
+                relations: Vec::new(),
             }]),
             gate: None,
         };

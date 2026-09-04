@@ -562,6 +562,46 @@ fn assert_descriptions_match_their_sql(
                 records += expected.len();
                 continue;
             }
+            // No key narrows this one, so the carried query has to be the whole one and
+            // the table list has to name what it reads.
+            RecordDerivation::WholeShape {
+                query: whole,
+                condition,
+                ..
+            } => {
+                joined += 1;
+                assert_eq!(
+                    whole, &query.sql,
+                    "{label}: an unnarrowed replay is the whole query: {}",
+                    query.comment
+                );
+                assert_eq!(
+                    condition, &query.condition,
+                    "{label}: the rows carry the query's own condition: {}",
+                    query.comment
+                );
+                assert!(
+                    !description.tables.is_empty(),
+                    "{label}: a query reading nothing cannot need a whole replay: {}",
+                    query.comment
+                );
+                for table in &description.tables {
+                    assert!(
+                        whole.contains(&table.sql_name()),
+                        "{label}: {} is listed but the query never reads it:\n{}",
+                        table,
+                        query.sql
+                    );
+                }
+                let expected = records_from_sql(outputs, conn, query);
+                assert!(
+                    !expected.is_empty(),
+                    "{label}: the unnarrowed replay yields nothing, so it proves nothing: {}",
+                    query.comment
+                );
+                records += expected.len();
+                continue;
+            }
             // `RecordDerivation` is non_exhaustive, so a variant added later has
             // to be judged here rather than passing as one of the three above.
             other => panic!("{label}: unhandled derivation {other:?}"),
@@ -740,6 +780,67 @@ async fn every_row_shape_description_matches_its_own_sql() {
     assert!(
         records > 20,
         "the seed must produce records to compare, saw {records}"
+    );
+}
+
+/// Weights straddling their own average, so the residual admits some and refuses others.
+const CROSS_ROW_SEED: &str = "
+INSERT INTO papers (id, owner) VALUES (1, 'owner'), (2, 'owner'), (3, 'owner');
+INSERT INTO paper_shares (paper_id, viewer, weight) VALUES
+    (1, 'alice', 50),
+    (2, 'bob',   30),
+    (3, 'alice', 1);
+";
+
+/// The shape no key narrows, which nothing else in this file produces.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_cross_row_residual_description_matches_its_own_sql() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(&support::read_fixture_sql("cross_row_residual"))
+        .expect("failed to apply the cross-row residual schema");
+    conn.batch_execute(CROSS_ROW_SEED)
+        .expect("failed to seed the cross-row residual schema");
+
+    let (classified, db, registry) = support::try_load_fixture_classified("cross_row_residual");
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let queries = outputs.tuple_queries();
+
+    let unnarrowed = queries
+        .iter()
+        .filter(|query| {
+            query.description.as_ref().is_some_and(|description| {
+                matches!(description.derivation, RecordDerivation::WholeShape { .. })
+            })
+        })
+        .count();
+    assert_eq!(
+        unnarrowed, 1,
+        "the membership is the one shape no key narrows, saw {unnarrowed}"
+    );
+
+    let (pure, joined, records) =
+        assert_descriptions_match_their_sql(&outputs, &mut conn, queries, "cross-row residual");
+    assert_eq!(
+        pure, 1,
+        "each paper names itself from its own row, and nothing else is row-decided, saw {pure}"
+    );
+    assert_eq!(
+        joined, 1,
+        "the membership is read by querying, since no row decides an average, saw {joined}"
+    );
+    assert_eq!(
+        records, 5,
+        "three papers name themselves and the two shares above the average grant, saw {records}"
     );
 }
 
@@ -2529,4 +2630,89 @@ impl RowValues for EmptyRow {
     fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
         RowCell::Absent
     }
+}
+
+/// Row security filters a read by the policies of the relation the query names alone,
+/// which is why the residual exemption asks only that relation's flag.
+#[tokio::test]
+#[ignore = "requires Docker: starts a PostgreSQL 18 container"]
+async fn a_partition_is_filtered_by_the_relation_the_query_names() {
+    let (_container, mut conn) = start_postgres().await;
+
+    conn.batch_execute(
+        "CREATE TABLE parted(id int, region text) PARTITION BY LIST (region); \
+         CREATE TABLE parted_eu PARTITION OF parted FOR VALUES IN ('eu'); \
+         CREATE TABLE inh_parent(id int, tag text); \
+         CREATE TABLE inh_child(extra text) INHERITS (inh_parent); \
+         INSERT INTO parted VALUES (1,'eu'),(2,'eu'); \
+         INSERT INTO inh_parent VALUES (1,'a'); \
+         INSERT INTO inh_child VALUES (2,'b','x'); \
+         CREATE ROLE probe; \
+         GRANT SELECT ON parted, parted_eu, inh_parent, inh_child TO probe;",
+    )
+    .expect("failed to build the inheritance shapes");
+
+    let counted = |conn: &mut PgConnection, relation: &str| -> usize {
+        let mut rows = 0;
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            conn.batch_execute("SET LOCAL ROLE probe")?;
+            rows = rows_returned(conn, &format!("SELECT 1 FROM {relation}"));
+            Err::<(), _>(diesel::result::Error::RollbackTransaction)
+        })
+        .ok();
+        rows
+    };
+
+    // Guarding the ancestor. A query naming the descendant is unaffected by it.
+    conn.batch_execute(
+        "ALTER TABLE parted ENABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_parent ENABLE ROW LEVEL SECURITY; \
+         CREATE POLICY p_parted ON parted FOR SELECT USING (false); \
+         CREATE POLICY p_inh ON inh_parent FOR SELECT USING (false);",
+    )
+    .expect("failed to guard the ancestors");
+    assert_eq!(
+        counted(&mut conn, "parted"),
+        0,
+        "the root's own policy filters a read naming the root"
+    );
+    assert_eq!(
+        counted(&mut conn, "parted_eu"),
+        2,
+        "a read naming the partition is not filtered by the root's policy"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_parent"),
+        0,
+        "the parent's own policy filters a read naming the parent"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_child"),
+        1,
+        "a read naming the inheriting child is not filtered by the parent's policy"
+    );
+
+    // The mirror: guarding the descendant leaves a read naming the ancestor unfiltered,
+    // so a relation whose own flag is off is open however its descendants are guarded.
+    conn.batch_execute(
+        "DROP POLICY p_parted ON parted; \
+         DROP POLICY p_inh ON inh_parent; \
+         ALTER TABLE parted DISABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_parent DISABLE ROW LEVEL SECURITY; \
+         ALTER TABLE parted_eu ENABLE ROW LEVEL SECURITY; \
+         ALTER TABLE inh_child ENABLE ROW LEVEL SECURITY; \
+         CREATE POLICY p_eu ON parted_eu FOR SELECT USING (false); \
+         CREATE POLICY p_child ON inh_child FOR SELECT USING (false);",
+    )
+    .expect("failed to guard the descendants");
+    assert_eq!(
+        counted(&mut conn, "parted"),
+        2,
+        "a read naming the root is not filtered by the partition's policy"
+    );
+    assert_eq!(
+        counted(&mut conn, "inh_parent"),
+        2,
+        "a read naming the parent is not filtered by the child's policy"
+    );
 }

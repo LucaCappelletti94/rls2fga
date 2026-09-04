@@ -226,6 +226,18 @@ pub fn residual_predicate(expr: &Expr) -> ResidualPredicate {
         sql: expr.to_string(),
         guard: residual_guard(expr),
         request: attribute_request_predicate(expr),
+        relations: Vec::new(),
+    }
+}
+
+/// As [`residual_predicate`], carrying the relations the conjunct was proven to read.
+pub(crate) fn residual_predicate_reading(
+    expr: &Expr,
+    relations: Vec<TableId>,
+) -> ResidualPredicate {
+    ResidualPredicate {
+        relations,
+        ..residual_predicate(expr)
     }
 }
 
@@ -234,7 +246,7 @@ pub fn residual_predicate(expr: &Expr) -> ResidualPredicate {
 /// Nothing here reads the caller, the session or the clock, which is what makes it safe
 /// for the tuple loader to answer on the caller's behalf. `to_char` is deliberately
 /// absent: its output depends on `DateStyle` and `lc_time`.
-const ROW_PURE_FUNCTIONS: &[&str] = &[
+pub(super) const ROW_PURE_FUNCTIONS: &[&str] = &[
     "abs",
     "btrim",
     "ceil",
@@ -484,7 +496,7 @@ fn residual_guard(expr: &Expr) -> Option<ResidualGuard> {
     attribute_literal_predicate(inner).map(ResidualGuard::Compare)
 }
 
-fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
+pub(super) fn attribute_operator(op: &BinaryOperator) -> Option<AttributeOperator> {
     match op {
         BinaryOperator::Eq => Some(AttributeOperator::Eq),
         BinaryOperator::NotEq => Some(AttributeOperator::NotEq),

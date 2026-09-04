@@ -145,6 +145,48 @@ fn rendered(query: &TupleQuery) -> Option<&TupleQuery> {
     query.skipped.is_none().then_some(query)
 }
 
+/// The description for a residual only SQL can evaluate.
+///
+/// A residual reading a relation moves with rows no key names, so no key narrows its
+/// replay and the table list has to name those relations too.
+fn residual_description(
+    query: &TupleQuery,
+    table: &TableId,
+    key_columns: &[ColumnName],
+    extra_predicates: &ResidualPredicates,
+    scope: ReplayScope,
+    reason: String,
+) -> RecordDescription {
+    let relations = extra_predicates.relations();
+    if relations.is_empty() {
+        return RecordDescription {
+            tables: tables(&[table]),
+            derivation: RecordDerivation::Joined {
+                queries: bind(
+                    query,
+                    table,
+                    key_columns,
+                    &bound_eq(None, key_columns),
+                    scope,
+                )
+                .into_iter()
+                .collect(),
+                reason,
+            },
+        };
+    }
+    let read: Vec<&TableId> = core::iter::once(table).chain(relations.iter()).collect();
+    RecordDescription {
+        tables: tables(&read),
+        derivation: RecordDerivation::WholeShape {
+            query: query.sql.clone(),
+            condition: query.condition.clone(),
+            scope,
+            reason,
+        },
+    }
+}
+
 /// One value source per key column, in declared order.
 ///
 /// A missing part yields no record, so a `NOT NULL` guard would duplicate the key.
@@ -377,27 +419,20 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 let Some(residual) = residual_guards(join_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(query)?;
-                    return Some(RecordDescription {
-                        tables: tables(&[join_table]),
-                        derivation: RecordDerivation::Joined {
-                            queries: bind(
-                                query,
-                                join_table,
-                                fk_cols,
-                                &bound_eq(None, fk_cols),
-                                ReplayScope::Object {
-                                    object_type: parent_type.clone(),
-                                    relations: vec![member_relation()],
-                                },
-                            )
-                            .into_iter()
-                            .collect(),
-                            reason: format!(
-                                "the membership row carries a residual predicate only SQL can \
-                                 evaluate: {predicate}"
-                            ),
+                    return Some(residual_description(
+                        query,
+                        join_table,
+                        fk_cols,
+                        extra_predicates,
+                        ReplayScope::Object {
+                            object_type: parent_type.clone(),
+                            relations: vec![member_relation()],
                         },
-                    });
+                        format!(
+                            "the membership row carries a residual predicate only SQL can \
+                             evaluate: {predicate}"
+                        ),
+                    ));
                 };
                 guards.extend(residual);
                 return Some(from_row(
@@ -414,28 +449,21 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 // Several rows can key the same (object, user), so the latest deadline is
                 // read by querying the changed parent's slice. The row alone cannot say it.
                 let query = rendered(query)?;
-                return Some(RecordDescription {
-                    tables: tables(&[join_table]),
-                    derivation: RecordDerivation::Joined {
-                        queries: bind(
-                            query,
-                            join_table,
-                            fk_cols,
-                            &bound_eq(None, fk_cols),
-                            ReplayScope::Object {
-                                object_type: parent_type.clone(),
-                                relations: vec![member_relation()],
-                            },
-                        )
-                        .into_iter()
-                        .collect(),
-                        reason: format!(
-                            "several membership rows can grant one (object, user), so the \
-                             latest deadline is read by querying: condition {}",
-                            gate.condition
-                        ),
+                return Some(residual_description(
+                    query,
+                    join_table,
+                    fk_cols,
+                    extra_predicates,
+                    ReplayScope::Object {
+                        object_type: parent_type.clone(),
+                        relations: vec![member_relation()],
                     },
-                });
+                    format!(
+                        "several membership rows can grant one (object, user), so the latest \
+                         deadline is read by querying: condition {}",
+                        gate.condition
+                    ),
+                ));
             }
             // The clock joined the condition, so the member row alone decides the record:
             // its guards are the residual's row-decidable conjuncts, and each carried column
@@ -730,27 +758,20 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 let Some(residual) = residual_guards(join_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(query)?;
-                    return Some(RecordDescription {
-                        tables: tables(&[join_table]),
-                        derivation: RecordDerivation::Joined {
-                            queries: bind(
-                                query,
-                                join_table,
-                                identity_cols,
-                                &bound_eq(None, identity_cols),
-                                ReplayScope::Object {
-                                    object_type: share_type.clone(),
-                                    relations: vec![relation.clone()],
-                                },
-                            )
-                            .into_iter()
-                            .collect(),
-                            reason: format!(
-                                "the share row carries a residual predicate only SQL can \
-                                 evaluate: {predicate}"
-                            ),
+                    return Some(residual_description(
+                        query,
+                        join_table,
+                        identity_cols,
+                        extra_predicates,
+                        ReplayScope::Object {
+                            object_type: share_type.clone(),
+                            relations: vec![relation.clone()],
                         },
-                    });
+                        format!(
+                            "the share row carries a residual predicate only SQL can evaluate: \
+                             {predicate}"
+                        ),
+                    ));
                 };
                 guards.extend(residual);
             } else {
@@ -932,28 +953,21 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 let Some(residual) = residual_guards(member_table, extra_predicates, db) else {
                     let predicate = extra_predicates.sql().unwrap_or_default();
                     let query = rendered(query)?;
-                    return Some(RecordDescription {
-                        tables: tables(&[member_table]),
-                        derivation: RecordDerivation::Joined {
-                            queries: bind(
-                                query,
-                                member_table,
-                                core::slice::from_ref(user_col),
-                                &bound_eq(None, core::slice::from_ref(user_col)),
-                                ReplayScope::Subject {
-                                    subject_type: well_known.user.to_string(),
-                                    relation: member_relation(),
-                                    object_type: holder_type.clone(),
-                                },
-                            )
-                            .into_iter()
-                            .collect(),
-                            reason: format!(
-                                "the member row carries a residual predicate only SQL can \
-                                 evaluate: {predicate}"
-                            ),
+                    return Some(residual_description(
+                        query,
+                        member_table,
+                        core::slice::from_ref(user_col),
+                        extra_predicates,
+                        ReplayScope::Subject {
+                            subject_type: well_known.user.to_string(),
+                            relation: member_relation(),
+                            object_type: holder_type.clone(),
                         },
-                    });
+                        format!(
+                            "the member row carries a residual predicate only SQL can evaluate: \
+                             {predicate}"
+                        ),
+                    ));
                 };
                 guards.extend(residual);
                 return Some(from_row(
@@ -971,29 +985,22 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 // holder collapses them, so the latest deadline is read by querying that
                 // user's slice rather than settled from one row.
                 let query = rendered(query)?;
-                return Some(RecordDescription {
-                    tables: tables(&[member_table]),
-                    derivation: RecordDerivation::Joined {
-                        queries: bind(
-                            query,
-                            member_table,
-                            core::slice::from_ref(user_col),
-                            &bound_eq(None, core::slice::from_ref(user_col)),
-                            ReplayScope::Subject {
-                                subject_type: well_known.user.to_string(),
-                                relation: member_relation(),
-                                object_type: holder_type.clone(),
-                            },
-                        )
-                        .into_iter()
-                        .collect(),
-                        reason: format!(
-                            "several member rows can name one user, so the latest deadline is \
-                             read by querying: condition {}",
-                            gate.condition
-                        ),
+                return Some(residual_description(
+                    query,
+                    member_table,
+                    core::slice::from_ref(user_col),
+                    extra_predicates,
+                    ReplayScope::Subject {
+                        subject_type: well_known.user.to_string(),
+                        relation: member_relation(),
+                        object_type: holder_type.clone(),
                     },
-                });
+                    format!(
+                        "several member rows can name one user, so the latest deadline is read \
+                         by querying: condition {}",
+                        gate.condition
+                    ),
+                ));
             }
             // The clock joined the condition, so the member row alone decides the record.
             guards.extend(

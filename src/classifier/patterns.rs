@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
+use alloc::collections::BTreeSet;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
@@ -118,12 +119,12 @@ pub struct TemporalOffset {
 
 /// One residual conjunct on a membership row.
 ///
-/// The SQL spelling is kept verbatim, so the query the generator renders is
-/// exactly what the policy wrote, whether or not the structure beside it
-/// exists.
+/// The SQL is the policy's own spelling but for the names the generator has to resolve, so
+/// the query it renders reads what the policy meant under any `search_path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidualPredicate {
-    /// The conjunct as SQL, join-table qualifiers already stripped.
+    /// The conjunct as SQL, join-table qualifiers stripped and any relation it reads
+    /// spelled as the catalog carries it.
     pub sql: String,
     /// The conjunct as structure, when a row image alone decides it.
     pub guard: Option<ResidualGuard>,
@@ -131,6 +132,12 @@ pub struct ResidualPredicate {
     /// and the clock the other. A temporal guard such as `expires_at > now()` is
     /// nobody's to decide from the row alone, so it becomes a condition, not a tuple.
     pub request: Option<AttributeRequestPredicate>,
+    /// The relations the conjunct reads, each proven to show every row to everybody.
+    ///
+    /// Empty for the residual a row or a request decides, which reads none. Non-empty
+    /// means the loader's one evaluation is every caller's, and the records the shape
+    /// produces depend on rows the changed row does not name.
+    pub relations: Vec<TableId>,
 }
 
 /// A residual conjunct a row image can evaluate.
@@ -229,6 +236,20 @@ impl ResidualPredicates {
     #[must_use]
     pub fn sql_excluding_requests(&self) -> Option<String> {
         self.joined_sql(false)
+    }
+
+    /// Every relation the residual reads, sorted and deduplicated.
+    ///
+    /// Empty where the row and the request decide it all. Non-empty is what makes the
+    /// records depend on rows no changed row names, so a consumer reconciling one row's
+    /// slice would leave the rest standing.
+    #[must_use]
+    pub fn relations(&self) -> Vec<TableId> {
+        let mut relations: BTreeSet<TableId> = BTreeSet::new();
+        for conjunct in &self.0 {
+            relations.extend(conjunct.relations.iter().cloned());
+        }
+        relations.into_iter().collect()
     }
 
     /// The residual split into row guards and request-completed comparisons, or
@@ -1186,10 +1207,7 @@ CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
         // One relation per kind, since the sets differ.
         let names = [Member, Usage, SetRole, AdminOption].map(RolePrivilege::relation_name);
         assert_eq!(
-            names
-                .iter()
-                .collect::<alloc::collections::BTreeSet<_>>()
-                .len(),
+            names.iter().collect::<BTreeSet<_>>().len(),
             names.len(),
             "two kinds sharing a relation would make the operator's facts mean both"
         );

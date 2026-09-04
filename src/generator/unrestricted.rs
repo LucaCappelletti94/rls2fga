@@ -23,11 +23,10 @@ use crate::types::{TableId, UnrestrictedTable};
 
 /// Whether row-level security is positively known to be off on this table.
 ///
-/// Only a definite no counts, which is the rule the plan builder itself applies: an
-/// unreadable answer must not become a claim that nothing is enforced. The flag alone,
-/// so a read reaching these rows through an ancestor is not accounted for: that is
-/// [`restricts_nothing_by_any_route`].
-fn row_level_security_is_off<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> bool {
+/// Only a definite no counts: an unreadable answer must not become a claim that nothing is
+/// enforced. The flag alone, which is what a query naming this table reads under; a read
+/// reaching these rows through an ancestor is [`restricts_nothing_by_any_route`].
+pub(crate) fn row_level_security_is_off<DB: DatabaseLike>(table: &DB::Table, db: &DB) -> bool {
     table.has_row_level_security(db) == Ok(false)
 }
 
