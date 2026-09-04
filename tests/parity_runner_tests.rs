@@ -116,6 +116,7 @@ async fn every_parity_case_agrees() {
             a_row_the_model_cannot_name_fails_the_case,
             a_declared_write_stays_on_its_own_table,
             a_mutation_spelling_resolves_to_exactly_one_table,
+            the_oracle_rejects_a_note_excused_mismatch,
         ]
     ];
     let total = cases.len();
@@ -444,7 +445,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `quoted_definer_owner_parity_postgres18_and_openfga`.
@@ -493,7 +494,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `strict_function_null_parity_postgres18_and_openfga`.
@@ -658,7 +659,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `function_local_search_path_parity_postgres18_and_openfga`.
@@ -848,7 +849,7 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Two readers of one fixture, told apart by the setting alone.
@@ -1326,7 +1327,7 @@ CREATE POLICY m_owner ON "M" FOR SELECT USING (
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `read_recursion_parity_postgres18_and_openfga`.
@@ -1886,7 +1887,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `computed_argument_capture_parity_postgres18_and_openfga`.
@@ -1927,7 +1928,7 @@ CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)
         ActionStatement::Select,
         false,
     );
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// A case that fails must still drop its database and roles.
@@ -2349,7 +2350,7 @@ CREATE POLICY sentinel_p ON sentinel_docs FOR SELECT USING (
     // All three refusals have to be reported, not just the one that makes the case
     // disclosed: a policy falling closed silently is the defect.
     support::parity::assert_discloses(&case, &run, &["case_docs", "filter_docs", "sentinel_docs"]);
-    support::parity::assert_no_over_grant(&case, &run);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// A caller missing a setting its policies read fails the case, unless it says so.
@@ -3777,4 +3778,121 @@ CREATE POLICY notes_all ON notes FOR ALL
         true,
     );
     assert_agrees(&qualified, &run);
+}
+
+/// A note licenses a divergence at its own table, in its own direction, on its own command.
+///
+/// The hole this closes: requiring merely that *some* note diverge let one dropped clause
+/// license a mismatch anywhere in the schema. Three plants, each licensed by nothing: one
+/// on another table, one going the other way, and one on a command the note never fed. The
+/// first two would pass a no-over-grant check as well, since a narrowing plant grants
+/// nothing.
+async fn the_oracle_rejects_a_note_excused_mismatch(cluster: Arc<Cluster>) {
+    const SCHEMA: &str = "
+CREATE TABLE plain(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE refused(id TEXT PRIMARY KEY, owner_id TEXT, archived BOOLEAN NOT NULL);
+ALTER TABLE plain ENABLE ROW LEVEL SECURITY;
+ALTER TABLE refused ENABLE ROW LEVEL SECURITY;
+CREATE POLICY plain_own ON plain FOR SELECT
+    USING (owner_id = current_setting('app.user_id', true));
+CREATE POLICY refused_case ON refused FOR SELECT USING (
+  CASE WHEN archived THEN FALSE WHEN owner_id IS NOT NULL THEN TRUE ELSE FALSE END
+);
+-- Beside the refused clause, so reads are not denied outright and the model can still
+-- name rows of this table for a write. Without it every leg carries a second divergence
+-- and the plants are not what fails.
+CREATE POLICY refused_own ON refused FOR SELECT
+    USING (owner_id = current_setting('app.user_id', true));
+CREATE POLICY refused_delete ON refused FOR DELETE
+    USING (owner_id = current_setting('app.user_id', true));
+";
+    let planted = |name: &'static str,
+                   doctor: fn(
+        Vec<rls2fga::types::ActionRelations>,
+    ) -> Vec<rls2fga::types::ActionRelations>| {
+        let cluster = Arc::clone(&cluster);
+        async move {
+            let case = ParityCase::reading(
+                name,
+                SCHEMA,
+                &[
+                    "INSERT INTO plain(id, owner_id) VALUES ('p1', 'alice');
+                     INSERT INTO refused(id, owner_id, archived) VALUES
+                         ('r1', 'alice', FALSE), ('r2', 'alice', TRUE),
+                         ('r3', 'bob', TRUE)",
+                    "CREATE ROLE alice LOGIN; GRANT SELECT, DELETE ON plain, refused TO alice",
+                ],
+                vec![Principal::with_setting(
+                    "alice",
+                    "alice",
+                    "app.user_id",
+                    "alice",
+                )],
+            );
+            let outcome = tokio::spawn(async move {
+                let run = support::parity::run_with(
+                    &cluster,
+                    &case,
+                    support::parity::Class::Disclosed,
+                    doctor,
+                )
+                .await;
+                support::parity::assert_disclosed_where_noted(&case, &run);
+            })
+            .await;
+            assert!(
+                outcome.is_err(),
+                "{name}: the note about the refused clause has to leave this unlicensed"
+            );
+        }
+    };
+
+    // Another table. `plain` translates and nothing is disclosed about it, so denying its
+    // reads is a divergence the note about `refused` must not cover.
+    planted("runner-plant-other-table", |answers| {
+        answers
+            .into_iter()
+            .map(|mut entry| {
+                if entry.type_name.as_str() == "plain" {
+                    entry.answer = ActionAnswer::Denied;
+                }
+                entry
+            })
+            .collect()
+    })
+    .await;
+
+    // The other direction. A clause the threshold dropped can only make the model narrower,
+    // so granting the archived row on the noted table is licensed by nothing.
+    planted("runner-plant-other-direction", |answers| {
+        answers
+            .into_iter()
+            .map(|mut entry| {
+                if entry.type_name.as_str() == "refused"
+                    && entry.statement == ActionStatement::Select
+                {
+                    entry.answer = ActionAnswer::Unrestricted;
+                }
+                entry
+            })
+            .collect()
+    })
+    .await;
+
+    // Another command. The dropped clause fed SELECT, and the DELETE policy translated, so
+    // denying deletes is a divergence the note does not reach.
+    planted("runner-plant-other-command", |answers| {
+        answers
+            .into_iter()
+            .map(|mut entry| {
+                if entry.type_name.as_str() == "refused"
+                    && entry.statement == ActionStatement::Delete
+                {
+                    entry.answer = ActionAnswer::Denied;
+                }
+                entry
+            })
+            .collect()
+    })
+    .await;
 }
