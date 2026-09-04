@@ -579,6 +579,54 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(a_clock_gated_record_replays_from_its_own_row(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_clock_gated_record_replays_from_its_own_row: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_share_record_replays_onto_another_types_object(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_share_record_replays_onto_another_types_object: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(a_role_ladder_answers_four_thresholds(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_role_ladder_answers_four_thresholds: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_insert_that_reads_back_applies_the_select_policy(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "an_insert_that_reads_back_applies_the_select_policy: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_upsert_applies_the_update_policy_too(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_upsert_applies_the_update_policy_too: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -588,7 +636,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 59] = [
+const CASES: [&str; 64] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -648,6 +696,11 @@ const CASES: [&str; 59] = [
     "two_viewers_of_one_paper_load_and_union",
     "two_expiring_viewers_of_one_paper_gate_independently",
     "two_deadlines_need_one_witnessing_row",
+    "a_clock_gated_record_replays_from_its_own_row",
+    "a_share_record_replays_onto_another_types_object",
+    "a_role_ladder_answers_four_thresholds",
+    "an_insert_that_reads_back_applies_the_select_policy",
+    "an_upsert_applies_the_update_policy_too",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -887,7 +940,6 @@ CREATE POLICY docs_update ON docs FOR UPDATE
                 // `owner_id = owner_id` leaves the value the policy reads unchanged, so
                 // the resulting row decides as the existing one does.
                 update_set: Some("owner_id = owner_id".to_string()),
-                insert: None,
                 check_neutral: true,
             },
         );
@@ -904,7 +956,6 @@ CREATE POLICY docs_update ON docs FOR UPDATE
             "docs",
             Mutations {
                 update_set: Some("owner_id = 'somebody_else'".to_string()),
-                insert: None,
                 check_neutral: false,
             },
         );
@@ -1396,7 +1447,6 @@ async fn an_update_policy_without_using_updates_nothing(cluster: Arc<Cluster>) {
         "notes",
         Mutations {
             update_set: Some("owner_id = owner_id".to_string()),
-            insert: None,
             check_neutral: true,
         },
     );
@@ -1773,7 +1823,6 @@ CREATE POLICY notes_write ON notes FOR UPDATE USING (writer_user_id = auth_curre
             // `body` is read by no policy, so the resulting row decides as the
             // existing one does.
             update_set: Some("body = 'changed'".to_string()),
-            insert: None,
             check_neutral: true,
         },
     );
@@ -3686,6 +3735,337 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
             object,
             ActionStatement::Select,
             visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `clock_gated_from_row_parity_postgres18_and_openfga`.
+///
+/// A record keyed on the guarded table's own compound key, replayed from the row alone. One
+/// row each side of `now()` per tenant, so a replay keyed on the tenant would answer for
+/// both and a prefix of the key could not name the row it came from.
+async fn a_clock_gated_record_replays_from_its_own_row(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-clock-gated-from-row",
+        "
+CREATE TABLE readings (
+    tenant_id INT,
+    reading_id INT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, reading_id)
+);
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at <= now());
+",
+        &[
+            "INSERT INTO readings (tenant_id, reading_id, starts_at) VALUES
+                 (7, 9, now() - interval '1 day'),
+                 (7, 10, now() + interval '1 day'),
+                 (8, 9, now() - interval '1 day'),
+                 (8, 10, now() + interval '1 day')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON readings TO app_user",
+        ],
+        vec![Principal::as_role("app_user", "app_user").with_clock()],
+    )
+    .loading_from_rows()
+    // A year back, not on: this guard admits more as time passes, so a later instant
+    // takes nothing away and the runner refuses it. Earlier, nothing has started yet.
+    .also_at(
+        "-1 year",
+        "SELECT 'app_user'::text AS subject,
+                'readings:' || tenant_id || '|' || reading_id AS object
+         FROM readings WHERE starts_at <= $1::timestamptz",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (object, visible) in [
+        ("readings:7|9", true),
+        ("readings:7|10", false),
+        ("readings:8|9", true),
+        ("readings:8|10", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_user",
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `shared_paper_from_row_parity_postgres18_and_openfga`.
+///
+/// A record keyed on a foreign column, so one membership row states a record about another
+/// type's object. The share arm replays from the share row and nothing runs its whole-table
+/// query, while the owner arm and the share table's own rows still load whole.
+async fn a_share_record_replays_onto_another_types_object(cluster: Arc<Cluster>) {
+    /// The caller's identity and held keys, as the setting and the condition parameter.
+    fn holder(subject: &str, keys: &[&str]) -> Principal {
+        let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
+            .with_context(serde_json::json!({ "app_subjects": keys }));
+        principal
+            .session
+            .push(("app.subjects".to_string(), keys.join(",")));
+        principal
+    }
+
+    let case = ParityCase::from_fixture(
+        "runner-shared-paper-from-row",
+        "connetto_capability",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob'), (3, 'bob');
+             INSERT INTO paper_shares (paper_id, viewer) VALUES (2, 'team-a'), (3, 'team-z')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![holder("alice", &["team-a"]), holder("carol", &[])],
+    )
+    .loading_from_rows();
+    // The share table carries its own set policy, which is disclosed, and the answers agree.
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, object, visible) in [
+        // The owner arm, which loads whole.
+        ("alice", "papers:1", true),
+        // The share arm, which only the replay loads.
+        ("alice", "papers:2", true),
+        ("alice", "papers:3", false),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_only_disagreements(&case, &run, &[]);
+}
+
+/// Ported from `translated_schema_parity_postgres18_and_openfga`.
+///
+/// The role ladder: one shared grant function answers four thresholds, read at 2, inserted
+/// and updated at 3, deleted at 4. Five callers sit at different rungs, so a model
+/// collapsing the thresholds answers one of them wrongly.
+async fn a_role_ladder_answers_four_thresholds(cluster: Arc<Cluster>) {
+    const ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
+    const BOB: &str = "00000000-0000-0000-0000-0000000000a2";
+    const CAROL: &str = "00000000-0000-0000-0000-0000000000a3";
+    const DAVE: &str = "00000000-0000-0000-0000-0000000000a4";
+    const EVE: &str = "00000000-0000-0000-0000-0000000000a5";
+    const ALPHA: &str = "00000000-0000-0000-0000-0000000000b1";
+    const BETA: &str = "00000000-0000-0000-0000-0000000000b2";
+    const DOC_1: &str = "00000000-0000-0000-0000-0000000000d1";
+    const DOC_2: &str = "00000000-0000-0000-0000-0000000000d2";
+
+    let reader = |subject: &str| {
+        Principal::with_setting(subject, "app_reader", "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-translated-schema",
+        "earth_metabolome",
+        &[
+            &format!(
+                "INSERT INTO users (id) VALUES
+                     ('{ALICE}'), ('{BOB}'), ('{CAROL}'), ('{DAVE}'), ('{EVE}');
+                 INSERT INTO teams (id) VALUES ('{ALPHA}'), ('{BETA}');
+                 INSERT INTO team_members (team_id, user_id) VALUES
+                     ('{ALPHA}', '{BOB}'), ('{BETA}', '{DAVE}');
+                 INSERT INTO ownables (id, owner_id) VALUES
+                     ('{DOC_1}', '{ALICE}'), ('{DOC_2}', '{ALPHA}');
+                 INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
+                     ('{CAROL}', '{ALICE}', 3), ('{BETA}', '{ALICE}', 2), ('{EVE}', '{ALPHA}', 4)"
+            ),
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON users, teams, team_members, owner_grants TO app_reader;
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ownables TO app_reader",
+        ],
+        vec![
+            reader(ALICE),
+            reader(BOB),
+            reader(CAROL),
+            reader(DAVE),
+            reader(EVE),
+        ],
+    )
+    .writing(
+        "ownables",
+        Mutations {
+            // Rewriting the owner with itself exercises USING and WITH CHECK together, and
+            // the ladder reads the owner alone, so the probe's fresh key changes no answer.
+            update_set: Some("owner_id = owner_id".to_string()),
+            check_neutral: true,
+        },
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    let doc_1 = format!("ownables:{DOC_1}");
+    for (subject, statement, allowed) in [
+        // Alice owns doc 1 outright, which is rung 4.
+        (ALICE, ActionStatement::Select, true),
+        (ALICE, ActionStatement::Delete, true),
+        // Carol's own grant is rung 3: reads, writes, no delete.
+        (CAROL, ActionStatement::Select, true),
+        (CAROL, ActionStatement::Insert, true),
+        (CAROL, ActionStatement::Delete, false),
+        // Dave reaches rung 2 through team beta: reads only.
+        (DAVE, ActionStatement::Select, true),
+        (DAVE, ActionStatement::Insert, false),
+        (DAVE, ActionStatement::Update, false),
+        // Bob holds nothing over alice's owner.
+        (BOB, ActionStatement::Select, false),
+    ] {
+        support::parity::assert_postgres(&case, &run, subject, &doc_1, statement, allowed);
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `insert_readback_parity_postgres18_and_openfga`.
+///
+/// Split `INSERT` and `SELECT` policies: the author may insert a row, the owner may read
+/// it. `PostgreSQL` applies both to `INSERT ... RETURNING`, and only the `WITH CHECK` to a
+/// plain `INSERT`, which is what leaves one relation ungated and the other not.
+async fn an_insert_that_reads_back_applies_the_select_policy(cluster: Arc<Cluster>) {
+    let reader = |subject: &str| {
+        Principal::with_setting(subject, "app_user", "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-insert-readback",
+        "insert_readback",
+        &[
+            // One row per combination of owning and authoring.
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, owner_id, author_id) VALUES
+                 ('note-author-only', 'bob', 'alice'),
+                 ('note-owner-only', 'alice', 'bob'),
+                 ('note-both', 'alice', 'alice'),
+                 ('note-neither', 'bob', 'bob')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT, INSERT ON notes TO app_user",
+        ],
+        vec![reader("alice"), reader("bob")],
+    )
+    .writing(
+        "notes",
+        Mutations {
+            update_set: None,
+            // The policies read owner and author, never the key.
+            check_neutral: true,
+        },
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, row, statement, allowed) in [
+        // Alice authors it, so the plain insert stands and the readback does not.
+        ("alice", "note-author-only", ActionStatement::Insert, true),
+        (
+            "alice",
+            "note-author-only",
+            ActionStatement::InsertReturning,
+            false,
+        ),
+        // Owned and authored by her, so both.
+        ("alice", "note-both", ActionStatement::Insert, true),
+        ("alice", "note-both", ActionStatement::InsertReturning, true),
+        // Hers to read, not hers to write.
+        ("alice", "note-owner-only", ActionStatement::Insert, false),
+        ("bob", "note-owner-only", ActionStatement::Insert, true),
+        (
+            "bob",
+            "note-neither",
+            ActionStatement::InsertReturning,
+            true,
+        ),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &format!("notes:{row}"),
+            statement,
+            allowed,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `upsert_parity_postgres18_and_openfga`.
+///
+/// An upsert may change the conflicting row, so `PostgreSQL` applies the `UPDATE` policies
+/// on top of the `INSERT` one. A row the author may insert and the editor may not change
+/// separates the two relations.
+async fn an_upsert_applies_the_update_policy_too(cluster: Arc<Cluster>) {
+    let reader = |subject: &str| {
+        Principal::with_setting(subject, "app_user", "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-upsert",
+        "upsert",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, owner_id, author_id, editor_id) VALUES
+                 ('note-alice-all', 'alice', 'alice', 'alice'),
+                 ('note-author-only', 'bob', 'alice', 'bob'),
+                 ('note-author-editor', 'bob', 'alice', 'alice'),
+                 ('note-owner-author', 'alice', 'alice', 'bob'),
+                 ('note-bob-all', 'bob', 'bob', 'bob')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT, INSERT, UPDATE ON notes TO app_user",
+        ],
+        vec![reader("alice"), reader("bob")],
+    )
+    .writing(
+        "notes",
+        Mutations {
+            update_set: None,
+            // The policies read owner, author and editor, never the key.
+            check_neutral: true,
+        },
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, row, statement, allowed) in [
+        // Alice authors it and does not edit it: the insert stands, the upsert does not.
+        ("alice", "note-author-only", ActionStatement::Insert, true),
+        (
+            "alice",
+            "note-author-only",
+            ActionStatement::InsertOnConflictUpdate,
+            false,
+        ),
+        // She authors and edits it, and bob owns it. Naming the arbiter reads the
+        // conflicting row, so the SELECT policy denies the upsert anyway.
+        (
+            "alice",
+            "note-author-editor",
+            ActionStatement::InsertOnConflictUpdate,
+            false,
+        ),
+        // Hers to read and to author, bob's to edit: the insert stands, the upsert does not.
+        ("alice", "note-owner-author", ActionStatement::Insert, true),
+        (
+            "alice",
+            "note-owner-author",
+            ActionStatement::InsertOnConflictUpdate,
+            false,
+        ),
+        // Hers throughout, so both.
+        (
+            "alice",
+            "note-alice-all",
+            ActionStatement::InsertOnConflictUpdate,
+            true,
+        ),
+        ("bob", "note-bob-all", ActionStatement::Insert, true),
+        ("bob", "note-author-only", ActionStatement::Insert, false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &format!("notes:{row}"),
+            statement,
+            allowed,
         );
     }
     assert_agrees(&case, &run);

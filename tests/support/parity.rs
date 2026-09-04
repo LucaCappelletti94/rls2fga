@@ -19,8 +19,8 @@ use testcontainers::{ContainerAsync, GenericImage};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
 use rls2fga::types::{
-    ActionAnswer, ActionRelations, ActionStatement, ConfidenceLevel, RowNaming, RowVersion,
-    ValueSource,
+    records_from_row, ActionAnswer, ActionRelations, ActionStatement, ConfidenceLevel, RowNaming,
+    RowVersion, TableId, ValueSource,
 };
 
 use super::openfga;
@@ -111,13 +111,11 @@ impl Principal {
 /// What a write would attempt on one table.
 ///
 /// A no-op `UPDATE` exercises `USING` and never `WITH CHECK`, so the new row is named. An
-/// `INSERT` needs a row that does not collide with a seeded key.
+/// `INSERT` needs no declaration: the runner copies an existing row onto a fresh key.
 #[derive(Default)]
 pub(crate) struct Mutations {
     /// `SET` clause an `UPDATE` applies, such as `title = 'changed'`.
     pub(crate) update_set: Option<String>,
-    /// Column list and values an `INSERT` attempts, such as `("id") VALUES ('new')`.
-    pub(crate) insert: Option<String>,
     /// Whether the change touches no column any policy reads.
     ///
     /// The tuples state facts about rows the database holds, so a judgement about the row
@@ -125,7 +123,8 @@ pub(crate) struct Mutations {
     /// any policy's decision the resulting row's facts are the existing row's, and the
     /// question can be asked of the object that exists. Declared by the case because it is
     /// a claim about the schema, and false by default so the runner declines rather than
-    /// guessing.
+    /// guessing. An `INSERT` probe changes the key alone, so the claim there is that no
+    /// policy reads it.
     pub(crate) check_neutral: bool,
 }
 
@@ -157,6 +156,12 @@ pub(crate) struct ParityCase {
     /// disagree by access path rather than by row. A case naming a partition here compares
     /// reads through the root, which is the question the model answers.
     pub(crate) not_read_directly: Vec<String>,
+    /// Whether tuples come from evaluating each row rather than from the tuple SQL.
+    ///
+    /// A consumer watching a change stream has one row and the description, never the
+    /// whole table, so the two loaders have to state the same facts. Declared by the case
+    /// because a description that cannot be answered from one row is a gap, not a bug.
+    pub(crate) loading_from_rows: bool,
     /// A second instant to compare at, where the case names the oracle.
     pub(crate) future: Option<FutureInstant>,
 }
@@ -195,8 +200,15 @@ impl ParityCase {
             registry_json: None,
             attributes_json: None,
             not_read_directly: Vec::new(),
+            loading_from_rows: false,
             future: None,
         }
+    }
+
+    /// The same case, loading its tuples by evaluating each row's own description.
+    pub(crate) fn loading_from_rows(mut self) -> Self {
+        self.loading_from_rows = true;
+        self
     }
 
     /// The same case, also compared `offset` past `now()` against `visible`.
@@ -337,11 +349,14 @@ impl std::fmt::Display for Mismatch {
 /// policies back. Measured that way every write-only row reports as unreached. Comparing it
 /// needs a different measurement, such as the affected-row count against the number of
 /// objects the model grants, which is an aggregate rather than a pair.
-const COMPARED: [ActionStatement; 4] = [
+const COMPARED: [ActionStatement; 7] = [
     ActionStatement::Select,
     ActionStatement::SelectForUpdate,
     ActionStatement::Update,
     ActionStatement::Delete,
+    ActionStatement::Insert,
+    ActionStatement::InsertReturning,
+    ActionStatement::InsertOnConflictUpdate,
 ];
 
 #[derive(QueryableByName)]
@@ -367,6 +382,11 @@ struct Object {
     name: String,
     table: String,
     predicate: String,
+    /// The row as its owner read it, for a loader that evaluates one row and for the
+    /// write probe that copies it.
+    row: serde_json::Value,
+    /// The columns its key is spelled from.
+    keys: Vec<String>,
 }
 
 /// The key columns a table's objects are named from, or [`None`] where a column does not
@@ -403,6 +423,7 @@ fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) ->
             let Ok(Some(name)) = entry.render(&super::JsonRowValues(&row)) else {
                 continue;
             };
+
             let mut predicate = String::new();
             for (at, column) in columns.iter().enumerate() {
                 let value = row
@@ -420,6 +441,8 @@ fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) ->
                 name,
                 table: table.clone(),
                 predicate,
+                row,
+                keys: columns.iter().map(|column| (*column).to_string()).collect(),
             });
         }
     }
@@ -473,14 +496,28 @@ fn postgres_allows(
 ) -> Option<bool> {
     let table = &object.table;
     let predicate = &object.predicate;
-    let privilege = match statement {
-        ActionStatement::Select => "SELECT",
-        ActionStatement::SelectForUpdate | ActionStatement::Update => "UPDATE",
-        ActionStatement::Delete => "DELETE",
+    let privileges: &[&str] = match statement {
+        ActionStatement::Select => &["SELECT"],
+        ActionStatement::SelectForUpdate | ActionStatement::Update => &["UPDATE"],
+        ActionStatement::Delete => &["DELETE"],
+        ActionStatement::Insert | ActionStatement::InsertReturning => &["INSERT"],
+        // An upsert may change the conflicting row, so it needs both.
+        ActionStatement::InsertOnConflictUpdate => &["INSERT", "UPDATE"],
         _ => return None,
     };
-    if !holds_privilege(conn, &principal.login_role, table, privilege) {
+    if !privileges
+        .iter()
+        .all(|privilege| holds_privilege(conn, &principal.login_role, table, privilege))
+    {
         return None;
+    }
+    if matches!(
+        statement,
+        ActionStatement::Insert
+            | ActionStatement::InsertReturning
+            | ActionStatement::InsertOnConflictUpdate
+    ) {
+        return postgres_allows_write_probe(conn, case, principal, object, statement);
     }
     let sql = match statement {
         ActionStatement::Select => {
@@ -502,11 +539,19 @@ fn postgres_allows(
         _ => return None,
     };
 
-    let answered = conn.transaction::<bool, diesel::result::Error, _>(|conn| {
+    // Always rolled back: a `DELETE` the caller may run would otherwise take the row away
+    // from every caller compared after it, and the answers would depend on their order.
+    let mut granted = false;
+    let answered = match conn.transaction::<(), diesel::result::Error, _>(|conn| {
         become_principal(conn, principal)?;
         let counted: Counted = diesel::sql_query(&sql).get_result(conn)?;
-        Ok(counted.rows == 1)
-    });
+        granted = counted.rows == 1;
+        Err(diesel::result::Error::RollbackTransaction)
+    }) {
+        Err(diesel::result::Error::RollbackTransaction) => Ok(granted),
+        Err(error) => Err(error),
+        Ok(()) => unreachable!("the transaction body always rolls back"),
+    };
     match answered {
         Ok(granted) => {
             assert!(
@@ -575,7 +620,10 @@ async fn openfga_allows(
                 // The tuples state facts about rows the database holds, so a judgement
                 // about the row a write would produce has nothing to read. Answering it
                 // needs that row's records, which is not this runner's job yet.
-                if judgement.version == RowVersion::Resulting && !check_neutral {
+                // An upsert probe copies every column and keeps the key, so its
+                // resulting row is the existing one and no claim is needed.
+                let settled = check_neutral || statement == ActionStatement::InsertOnConflictUpdate;
+                if judgement.version == RowVersion::Resulting && !settled {
                     return None;
                 }
                 let granted = openfga::check_allowed_with_context(
@@ -817,7 +865,11 @@ async fn run_in(
     let model = outputs.json_model();
 
     let objects = objects(conn, &naming, &case.not_read_directly);
-    let tuples = super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries());
+    let tuples = if case.loading_from_rows {
+        tuples_replaying_pure_queries(conn, case, outputs.tuple_queries(), &objects)
+    } else {
+        super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries())
+    };
 
     let mut service = openfga::connect(cluster.grpc_port).await;
     let store_id = openfga::create_store(&mut service, &case.name).await;
@@ -1141,4 +1193,214 @@ async fn compare_at_future_instant(
         case.name, future.offset
     );
     observations
+}
+
+/// Load a query that one row can answer by evaluating the row, and the rest by its SQL.
+///
+/// A consumer watching a change stream holds one row and the description, never the whole
+/// table. Replaying the pure queries this way runs none of their SQL, so a description
+/// disagreeing with it about the object, the relation, the condition or the context shows
+/// as a parity failure rather than as agreement between a query and itself. The impure
+/// queries still load whole, since one row cannot answer them and dropping them would
+/// silently narrow the case.
+fn tuples_replaying_pure_queries(
+    conn: &mut PgConnection,
+    case: &ParityCase,
+    queries: &[rls2fga::generator::tuple_generator::TupleQuery],
+    objects: &[Object],
+) -> Vec<super::LoadedTuple> {
+    let mut loaded = std::collections::BTreeSet::new();
+    let mut pure = 0usize;
+    for query in queries {
+        if query.skipped.is_some() {
+            continue;
+        }
+        let table = query
+            .description
+            .as_ref()
+            .and_then(|description| description.row_table().map(TableId::sql_name));
+        let (Some(description), Some(table)) = (query.description.as_ref(), table) else {
+            loaded.extend(super::execute_tuple_queries_for_parity(
+                conn,
+                std::slice::from_ref(query),
+            ));
+            continue;
+        };
+        pure += 1;
+        for object in objects.iter().filter(|object| object.table == table) {
+            let records = records_from_row(description, &super::JsonRowValues(&object.row))
+                .unwrap_or_else(|error| {
+                    panic!("{}: evaluating {}: {error:?}", case.name, object.name)
+                });
+            for record in records {
+                loaded.insert(super::LoadedTuple {
+                    object: record.object,
+                    relation: record.relation.as_str().to_string(),
+                    subject: record.subject,
+                    condition: record.context.as_ref().map(|context| {
+                        let values: serde_json::Map<_, _> = context
+                            .values
+                            .iter()
+                            .map(|(key, value)| {
+                                (key.clone(), serde_json::Value::String(value.clone()))
+                            })
+                            .collect();
+                        (
+                            context.condition.clone(),
+                            serde_json::Value::Object(values).to_string(),
+                        )
+                    }),
+                });
+            }
+        }
+    }
+    assert!(
+        pure > 0,
+        "{}: no description answers from one row, so this loader states nothing",
+        case.name
+    );
+    loaded.into_iter().collect()
+}
+
+/// Whether the caller may write a row copied from `object` onto a fresh key.
+///
+/// A write is about a row that does not exist yet, so the probe is the existing row with
+/// its key replaced, which keeps every column a policy reads. The statement is always
+/// rolled back, so nothing the runner compares afterwards sees the probe.
+///
+/// Two spellings of each statement are measured and required to agree, which is what makes
+/// one relation cover both: naming a conflict arbiter reads the new row back exactly as
+/// `RETURNING` does, and `ON CONFLICT` without an arbiter reads nothing back, exactly as a
+/// plain `INSERT`.
+fn postgres_allows_write_probe(
+    conn: &mut PgConnection,
+    case: &ParityCase,
+    principal: &Principal,
+    object: &Object,
+    statement: ActionStatement,
+) -> Option<bool> {
+    let table = &object.table;
+    let row = object.row.as_object()?;
+    let keys = &object.keys;
+    let arbiter = keys
+        .iter()
+        .map(|key| format!("\"{key}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let settable = row.keys().find(|column| !keys.contains(column))?;
+
+    let mut probe = row.clone();
+    if statement != ActionStatement::InsertOnConflictUpdate {
+        for key in keys {
+            let fresh = fresh_key(conn, table, key, row.get(key)?)?;
+            probe.insert(key.clone(), fresh);
+        }
+    }
+    let source = format!(
+        "INSERT INTO {table} SELECT * FROM jsonb_populate_record(NULL::{table}, $1::jsonb)"
+    );
+    let spellings = match statement {
+        ActionStatement::Insert => [source.clone(), format!("{source} ON CONFLICT DO NOTHING")],
+        ActionStatement::InsertReturning => [
+            format!(
+                "WITH written AS ({source} RETURNING \"{}\") SELECT 1 FROM written",
+                keys[0]
+            ),
+            format!("{source} ON CONFLICT ({arbiter}) DO NOTHING"),
+        ],
+        ActionStatement::InsertOnConflictUpdate => {
+            let update = format!(
+                "{source} ON CONFLICT ({arbiter}) DO UPDATE SET \"{settable}\" = excluded.\"{settable}\""
+            );
+            [update.clone(), update]
+        }
+        _ => return None,
+    };
+
+    let payload = serde_json::Value::Object(probe).to_string();
+    let answers: Vec<bool> = spellings
+        .iter()
+        .map(|sql| attempt_write(conn, case, principal, object, statement, sql, &payload))
+        .collect();
+    assert_eq!(
+        answers[0], answers[1],
+        "{}: two spellings of {statement:?} on {} answered differently, so one relation \
+         cannot cover both",
+        case.name, object.name
+    );
+    Some(answers[0])
+}
+
+/// Run one write spelling as the caller and roll it back, reading a refusal as a denial.
+fn attempt_write(
+    conn: &mut PgConnection,
+    case: &ParityCase,
+    principal: &Principal,
+    object: &Object,
+    statement: ActionStatement,
+    sql: &str,
+    payload: &str,
+) -> bool {
+    let outcome = conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        become_principal(conn, principal)?;
+        diesel::sql_query(sql)
+            .bind::<diesel::sql_types::Text, _>(payload)
+            .execute(conn)?;
+        // The probe is never kept, so the comparison that follows sees the seeded rows.
+        Err(diesel::result::Error::RollbackTransaction)
+    });
+    match outcome {
+        Err(diesel::result::Error::RollbackTransaction) => true,
+        Err(error) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("row-level security"),
+                "{}: {statement:?} on {} failed for a reason other than row-level \
+                 security: {rendered}",
+                case.name,
+                object.name
+            );
+            false
+        }
+        Ok(()) => unreachable!("the transaction body always rolls back"),
+    }
+}
+
+/// A key value the seeded rows do not carry, in the column's own type.
+///
+/// The type has to be asked for rather than guessed from the JSON, which spells a `uuid`
+/// and a `text` the same way and would hand `uuid` a value it refuses. A type the runner
+/// cannot mint for declines the comparison rather than reporting a syntax error as a
+/// policy denying the write.
+fn fresh_key(
+    conn: &mut PgConnection,
+    table: &str,
+    column: &str,
+    current: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let kind: Instant = diesel::sql_query(format!(
+        "SELECT format_type(atttypid, atttypmod) AS instant
+         FROM pg_attribute WHERE attrelid = '{table}'::regclass AND attname = $1"
+    ))
+    .bind::<diesel::sql_types::Text, _>(column)
+    .get_result(conn)
+    .ok()?;
+    match (kind.instant.as_str(), current) {
+        // One digit is enough, and keeping the shape keeps the value valid.
+        ("uuid", serde_json::Value::String(text)) => {
+            let mut digits = text.chars();
+            let first = digits.next()?;
+            let fresh = if first == 'f' { 'e' } else { 'f' };
+            Some(serde_json::Value::String(
+                core::iter::once(fresh).chain(digits).collect(),
+            ))
+        }
+        ("text" | "character varying" | "name", serde_json::Value::String(text)) => {
+            Some(serde_json::Value::String(format!("probe-{text}")))
+        }
+        ("integer" | "bigint" | "smallint", serde_json::Value::Number(number)) => {
+            Some(serde_json::Value::from(number.as_i64()? + 1_000_000))
+        }
+        _ => None,
+    }
 }

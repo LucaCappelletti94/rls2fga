@@ -59,10 +59,6 @@ name = "openfga_semantic_tests"
 required-features = ["client"]
 
 [[test]]
-name = "openfga_postgres_parity_tests"
-required-features = ["client"]
-
-[[test]]
 name = "per_row_record_parity_tests"
 required-features = ["client"]
 
