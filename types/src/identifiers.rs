@@ -706,7 +706,7 @@ mod tests {
         }
     }
 
-    /// The two names OpenFGA reserves never survive as themselves.
+    /// The two names `OpenFGA` reserves never survive as themselves.
     #[test]
     fn a_reserved_type_name_is_prefixed() {
         assert_eq!(TypeName::canonicalized("self"), "t_self");

@@ -1,6 +1,7 @@
 //! Parser-independent output contracts and row evaluation.
 //!
-//! Unchecked `OpenFGA` names are internal.
+//! A type or relation name cannot be built from an unresolved spelling. Object and subject
+//! names are strings, encoded in one place by [`identity`].
 //!
 //! ```compile_fail
 //! use rls2fga_types::{RelationName, TypeName};

@@ -41,10 +41,10 @@ jobs:
       - name: Run quality checks
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --lib --tests
-          cargo test --all-features --no-run --lib --tests
-          cargo test --doc --all-features
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --lib --tests
+          cargo test --workspace --all-features --no-run --lib --tests
+          cargo test --workspace --doc --all-features
 
   no-std:
     name: no_std build (thumbv7em-none-eabi)
