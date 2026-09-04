@@ -389,6 +389,14 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) =
+        tokio::spawn(a_failed_case_leaves_no_role_behind(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_failed_case_leaves_no_role_behind: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -398,7 +406,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 39] = [
+const CASES: [&str; 40] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -438,6 +446,7 @@ const CASES: [&str; 39] = [
     "a_composite_key_share_stays_within_its_tenant",
     "a_caller_role_residual_falls_closed",
     "a_computed_argument_is_not_captured_by_the_body",
+    "a_failed_case_leaves_no_role_behind",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -1948,7 +1957,8 @@ async fn a_declared_session_set_grants_beside_the_owner(cluster: Arc<Cluster>) {
 /// Ported from `array_and_jsonb_membership_parity_postgres18_and_openfga`.
 ///
 /// The caller as an element of an array column, and the caller named by a jsonb field.
-/// The interesting rows are the empty and NULL ones, which admit nobody.
+/// An empty or NULL array admits nobody, and those rows stay readable only because the
+/// jsonb arm still names the caller.
 async fn an_array_and_a_jsonb_field_name_the_caller(cluster: Arc<Cluster>) {
     let case = ParityCase::from_fixture(
         "runner-array-jsonb-membership",
@@ -1974,7 +1984,7 @@ async fn an_array_and_a_jsonb_field_name_the_caller(cluster: Arc<Cluster>) {
         ("aj-meta-only", true),
         ("aj-both", true),
         ("aj-neither", false),
-        // An empty array admits nobody, and so does a NULL one.
+        // The array arm admits nobody here, the jsonb arm carries both rows.
         ("aj-empty-array", true),
         ("aj-null-array", true),
         ("aj-null-element", false),
@@ -2035,7 +2045,14 @@ CREATE POLICY dated_unexpired ON dated_docs FOR SELECT USING (expires_on > now()
             visible,
         );
     }
-    support::parity::assert_no_over_grant(&case, &run);
+    // The dated guard alone diverges: no tuple can carry a value the row does not decide,
+    // so the live dated row is denied. The zoned guard has to keep its conditional tuples,
+    // which losing them all would also satisfy under a bare no-over-grant check.
+    support::parity::assert_only_disagreements(
+        &case,
+        &run,
+        &[("app_user", "dated_docs:d-live", ActionStatement::Select)],
+    );
 }
 
 /// Ported from `cross_row_residual_parity_postgres18_and_openfga`.
@@ -2227,4 +2244,58 @@ CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)
         false,
     );
     support::parity::assert_no_over_grant(&case, &run);
+}
+
+/// A case that fails must still drop its database and roles.
+///
+/// Roles are cluster-wide, so a case that kept its database left grants the next case's
+/// reset could not drop, and one failure failed every later case. The planted case fails
+/// on its last seed, after creating the role the successor reuses.
+async fn a_failed_case_leaves_no_role_behind(cluster: Arc<Cluster>) {
+    let planted = || {
+        ParityCase::reading(
+            "runner-planted-panic",
+            "CREATE TABLE only_docs(id TEXT PRIMARY KEY);
+             ALTER TABLE only_docs ENABLE ROW LEVEL SECURITY;
+             CREATE POLICY p ON only_docs FOR SELECT USING (id = current_user);",
+            &[
+                "CREATE ROLE reused_reader LOGIN; GRANT SELECT ON only_docs TO reused_reader",
+                "INSERT INTO absent_table(id) VALUES ('x')",
+            ],
+            vec![Principal::as_role("reused_reader", "reused_reader")],
+        )
+    };
+    let shared = Arc::clone(&cluster);
+    let planted_case = planted();
+    let failure = tokio::spawn(async move {
+        support::parity::run(&shared, &planted_case).await;
+    })
+    .await;
+    assert!(
+        failure.is_err(),
+        "the planted case has to fail, or it pins nothing"
+    );
+
+    // Same role name, so it can only be created if the failed case's cleanup ran.
+    let successor = ParityCase::reading(
+        "runner-planted-panic-successor",
+        "CREATE TABLE only_docs(id TEXT PRIMARY KEY);
+         ALTER TABLE only_docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY p ON only_docs FOR SELECT USING (id = current_user);",
+        &[
+            "INSERT INTO only_docs(id) VALUES ('reused_reader'), ('someone_else')",
+            "CREATE ROLE reused_reader LOGIN; GRANT SELECT ON only_docs TO reused_reader",
+        ],
+        vec![Principal::as_role("reused_reader", "reused_reader")],
+    );
+    let run = support::parity::run(&cluster, &successor).await;
+    support::parity::assert_postgres(
+        &successor,
+        &run,
+        "reused_reader",
+        "only_docs:reused_reader",
+        ActionStatement::Select,
+        true,
+    );
+    assert_agrees(&successor, &run);
 }

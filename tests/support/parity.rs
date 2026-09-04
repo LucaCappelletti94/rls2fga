@@ -656,10 +656,17 @@ impl Drop for Cleanup<'_> {
         if self.cleaned {
             return;
         }
-        // The case is already failing, so this only reports what it left behind.
-        if let Err(error) = self.cluster.reset(&self.database) {
-            eprintln!("{} survived the failed case: {error}", self.database);
-        }
+        // The case is already unwinding, so a panic here would abort the process. Every
+        // step can raise one: connecting to the admin database retries and then panics.
+        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.cluster.reset(&self.database)
+        }));
+        let survived = match attempt {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "cleaning up panicked as well".to_string(),
+        };
+        eprintln!("{} survived the failed case: {survived}", self.database);
     }
 }
 
@@ -856,6 +863,49 @@ pub(crate) fn assert_no_over_grant(case: &ParityCase, run: &Run) {
         "{}: nothing was compared, so narrowness means nothing",
         case.name
     );
+}
+
+/// Refuse any disagreement outside `expected`, and refuse an expected one that agreed.
+///
+/// Narrower than [`assert_no_over_grant`] for a disclosed case whose divergence is known
+/// row by row: it also fails when the model denies something else it used to grant.
+pub(crate) fn assert_only_disagreements(
+    case: &ParityCase,
+    run: &Run,
+    expected: &[(&str, &str, ActionStatement)],
+) {
+    let named = |observation: &Mismatch| {
+        expected.iter().any(|(subject, object, statement)| {
+            observation.subject == *subject
+                && observation.object == *object
+                && observation.statement == *statement
+        })
+    };
+    let unexpected: Vec<_> = run
+        .mismatches()
+        .into_iter()
+        .filter(|observation| !named(observation))
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "{}: disagreed where the case claims parity:\n{}",
+        case.name,
+        unexpected.join("\n")
+    );
+    for (subject, object, statement) in expected {
+        assert!(
+            run.observations
+                .iter()
+                .any(|observation| observation.subject == *subject
+                    && observation.object == *object
+                    && observation.statement == *statement
+                    && observation.disagrees()),
+            "{}: {subject} on {statement:?} {object} agreed, so the case's claimed \
+             divergence is stale",
+            case.name
+        );
+    }
 }
 
 /// Fail with every disagreement named, and refuse a case that compared nothing.
