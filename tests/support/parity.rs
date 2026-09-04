@@ -14,6 +14,7 @@ use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::Jsonb;
+use testcontainers::{ContainerAsync, GenericImage};
 
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
@@ -480,21 +481,116 @@ pub(crate) enum Class {
     Disclosed,
 }
 
+/// One `PostgreSQL` and one `OpenFGA` container, shared by every case in the binary.
+///
+/// Starting a pair per case cost twenty-two pairs and loaded the daemon enough to fail
+/// startups. Cases run one at a time against this pair instead: each gets its own database,
+/// and the roles it created are dropped after it, because a role is cluster-wide and the
+/// next case spells the same names.
+pub(crate) struct Cluster {
+    postgres: ContainerAsync<GenericImage>,
+    openfga: ContainerAsync<GenericImage>,
+    pg_port: u16,
+    grpc_port: u16,
+}
+
+impl Cluster {
+    /// Start the pair.
+    pub(crate) async fn start() -> Self {
+        let postgres = super::containers::start_postgres().await;
+        let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+        let openfga = super::containers::start_openfga().await;
+        let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+        Self {
+            postgres,
+            openfga,
+            pg_port,
+            grpc_port,
+        }
+    }
+
+    fn url(&self, database: &str) -> String {
+        format!(
+            "postgres://{}:{}@127.0.0.1:{}/{database}",
+            super::containers::PG_USER,
+            super::containers::PG_PASSWORD,
+            self.pg_port
+        )
+    }
+
+    /// A connection to the cluster's own database, for creating and dropping others.
+    fn admin(&self) -> PgConnection {
+        super::containers::connect_postgres_with_retry(&self.url(super::containers::PG_DB))
+    }
+
+    /// An empty database of its own, and a connection to it.
+    fn fresh_database(&self, name: &str) -> PgConnection {
+        let mut admin = self.admin();
+        admin
+            .batch_execute(&format!("CREATE DATABASE \"{name}\""))
+            .unwrap_or_else(|error| panic!("creating database {name}: {error}"));
+        super::containers::connect_postgres_with_retry(&self.url(name))
+    }
+
+    /// Drop the case's database and every role it left behind.
+    ///
+    /// Every non-builtin role, because only this runner uses the cluster and a case's roles
+    /// are named for their part in the case rather than for the case.
+    fn reset(&self, name: &str) {
+        let mut admin = self.admin();
+        admin
+            .batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
+            .unwrap_or_else(|error| panic!("dropping database {name}: {error}"));
+        admin
+            .batch_execute(
+                "DO $$
+                 DECLARE role_name text;
+                 BEGIN
+                     FOR role_name IN
+                         SELECT rolname FROM pg_roles
+                         WHERE rolname <> current_user AND rolname NOT LIKE 'pg\\_%'
+                     LOOP
+                         EXECUTE format('DROP OWNED BY %I', role_name);
+                         EXECUTE format('DROP ROLE %I', role_name);
+                     END LOOP;
+                 END $$",
+            )
+            .unwrap_or_else(|error| panic!("dropping the case's roles: {error}"));
+    }
+}
+
+/// The database name a case runs in, unique within the binary.
+fn case_database(name: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let at = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let folded: String = name
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("case_{at}_{folded}")
+}
+
 pub(crate) async fn run_with(
+    cluster: &Cluster,
     case: &ParityCase,
     expectation: Class,
     doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
 ) -> Run {
-    let postgres = super::containers::start_postgres().await;
-    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
-    let pg_url = format!(
-        "postgres://{}:{}@127.0.0.1:{pg_port}/{}",
-        super::containers::PG_USER,
-        super::containers::PG_PASSWORD,
-        super::containers::PG_DB
-    );
-    let mut conn = super::containers::connect_postgres_with_retry(&pg_url);
+    let database = case_database(&case.name);
+    let mut conn = cluster.fresh_database(&database);
+    let outcome = run_in(&mut conn, cluster, case, expectation, doctor).await;
+    drop(conn);
+    cluster.reset(&database);
+    outcome
+}
 
+async fn run_in(
+    conn: &mut PgConnection,
+    cluster: &Cluster,
+    case: &ParityCase,
+    expectation: Class,
+    doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
+) -> Run {
     for sql in &case.prelude {
         conn.batch_execute(sql)
             .unwrap_or_else(|error| panic!("{}: prelude {sql}: {error}", case.name));
@@ -543,12 +639,10 @@ pub(crate) async fn run_with(
     let outputs = planned.outputs_accepting_gaps();
     let model = outputs.json_model();
 
-    let objects = objects(&mut conn, &naming);
-    let tuples = super::execute_tuple_queries_for_parity(&mut conn, outputs.tuple_queries());
+    let objects = objects(conn, &naming);
+    let tuples = super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries());
 
-    let openfga_container = super::containers::start_openfga().await;
-    let grpc_port = openfga_container.get_host_port_ipv4(8081).await.unwrap();
-    let mut service = openfga::connect(grpc_port).await;
+    let mut service = openfga::connect(cluster.grpc_port).await;
     let store_id = openfga::create_store(&mut service, &case.name).await;
     let model_id = openfga::write_authorization_model(&mut service, &store_id, &model).await;
     let client = service.into_client(&store_id, &model_id);
@@ -570,14 +664,14 @@ pub(crate) async fn run_with(
 
     let clock: Instant =
         diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
-            .get_result(&mut conn)
+            .get_result(&mut *conn)
             .expect("reading now() should succeed");
 
     let mut observations = Vec::new();
     for principal in &case.principals {
         for object in &objects {
             for statement in COMPARED {
-                let Some(postgres) = postgres_allows(&mut conn, case, principal, object, statement)
+                let Some(postgres) = postgres_allows(conn, case, principal, object, statement)
                 else {
                     continue;
                 };
@@ -609,15 +703,15 @@ pub(crate) async fn run_with(
 }
 
 /// Apply the case and compare every pair, taking the translation's answers as they are.
-pub(crate) async fn run(case: &ParityCase) -> Run {
-    run_with(case, Class::Exact, |answers| answers).await
+pub(crate) async fn run(cluster: &Cluster, case: &ParityCase) -> Run {
+    run_with(cluster, case, Class::Exact, |answers| answers).await
 }
 
 /// Apply a case the translation says it diverges on, and answer with what both sides said.
 ///
 /// Refuses a case that discloses nothing, since that one belongs to [`run`].
-pub(crate) async fn run_disclosing(case: &ParityCase) -> Run {
-    run_with(case, Class::Disclosed, |answers| answers).await
+pub(crate) async fn run_disclosing(cluster: &Cluster, case: &ParityCase) -> Run {
+    run_with(cluster, case, Class::Disclosed, |answers| answers).await
 }
 
 /// Fail if the model grants anything the database denies.

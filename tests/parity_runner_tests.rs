@@ -7,11 +7,277 @@
 
 #![cfg(all(not(target_os = "windows"), feature = "client"))]
 
+use std::sync::Arc;
+
 use rls2fga::types::{ActionAnswer, ActionStatement};
 
 mod support;
 
-use support::parity::{assert_agrees, Mutations, ParityCase, Principal};
+use support::parity::{assert_agrees, Cluster, Mutations, ParityCase, Principal};
+
+/// Every case, one at a time against one container pair.
+///
+/// One test rather than twenty-two: the pair has to outlive every case, and a container
+/// that is removed when it drops cannot be parked in a static without leaking it after the
+/// process exits. Each case still runs in its own task, so a panic fails that case, names
+/// it, and leaves the rest to run.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn every_parity_case_agrees() {
+    let cluster = Arc::new(Cluster::start().await);
+    let mut failures = Vec::new();
+    let total = CASES.len();
+
+    if let Err(joined) =
+        tokio::spawn(the_runner_agrees_on_direct_ownership(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "the_runner_agrees_on_direct_ownership: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(the_runner_agrees_on_membership(Arc::clone(&cluster))).await {
+        failures.push(format!(
+            "the_runner_agrees_on_membership: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(the_runner_agrees_on_a_role_scoped_restriction(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "the_runner_agrees_on_a_role_scoped_restriction: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(both_one_sided_cases_pass(Arc::clone(&cluster))).await {
+        failures.push(format!(
+            "both_one_sided_cases_pass: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(the_runner_finds_a_planted_divergence(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "the_runner_finds_a_planted_divergence: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_update_candidate_exercises_with_check(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_update_candidate_exercises_with_check: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_nested_protected_read_denies_on_both_sides(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_nested_protected_read_denies_on_both_sides: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_split_function_owner_does_not_bypass_row_level_security(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_split_function_owner_does_not_bypass_row_level_security: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(a_strict_function_hides_the_null_row(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "a_strict_function_hides_the_null_row: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_reserved_name_collision_keeps_two_types(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_reserved_name_collision_keeps_two_types: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_reserved_parent_is_referenced_by_its_defined_name(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_reserved_parent_is_referenced_by_its_defined_name: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_qualified_call_is_not_the_declared_accessor(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_qualified_call_is_not_the_declared_accessor: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_function_local_search_path_picks_the_membership_table(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_function_local_search_path_picks_the_membership_table: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_unplaceable_membership_table_grants_nothing(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_unplaceable_membership_table_grants_nothing: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_restrictive_flag_narrows_a_blanket_read(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_restrictive_flag_narrows_a_blanket_read: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_blanket_delete_does_not_widen_the_read(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_blanket_delete_does_not_widen_the_read: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_shadowed_clock_is_not_the_request_clock(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_shadowed_clock_is_not_the_request_clock: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(an_update_policy_without_using_updates_nothing(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "an_update_policy_without_using_updates_nothing: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_locking_read_applies_the_update_policy(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_locking_read_applies_the_update_policy: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(an_altered_policy_is_read_as_altered(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "an_altered_policy_is_read_as_altered: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(folded_identifiers_name_one_table(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "folded_identifiers_name_one_table: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(two_owner_columns_grant_independently(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "two_owner_columns_grant_independently: {}",
+            panic_message(joined)
+        ));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {total} cases failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The case names, so the count a failure reports is the count that ran.
+const CASES: [&str; 22] = [
+    "the_runner_agrees_on_direct_ownership",
+    "the_runner_agrees_on_membership",
+    "the_runner_agrees_on_a_role_scoped_restriction",
+    "both_one_sided_cases_pass",
+    "the_runner_finds_a_planted_divergence",
+    "an_update_candidate_exercises_with_check",
+    "a_nested_protected_read_denies_on_both_sides",
+    "a_split_function_owner_does_not_bypass_row_level_security",
+    "a_strict_function_hides_the_null_row",
+    "a_reserved_name_collision_keeps_two_types",
+    "a_reserved_parent_is_referenced_by_its_defined_name",
+    "a_qualified_call_is_not_the_declared_accessor",
+    "a_function_local_search_path_picks_the_membership_table",
+    "an_unplaceable_membership_table_grants_nothing",
+    "a_restrictive_flag_narrows_a_blanket_read",
+    "a_blanket_delete_does_not_widen_the_read",
+    "a_shadowed_clock_is_not_the_request_clock",
+    "an_update_policy_without_using_updates_nothing",
+    "a_locking_read_applies_the_update_policy",
+    "an_altered_policy_is_read_as_altered",
+    "folded_identifiers_name_one_table",
+    "two_owner_columns_grant_independently",
+];
+
+/// The message a panicking case left, so a failure reads like a test failure.
+fn panic_message(joined: tokio::task::JoinError) -> String {
+    if !joined.is_panic() {
+        return joined.to_string();
+    }
+    let payload = joined.into_panic();
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+        })
+        .unwrap_or_else(|| "panicked with no message".to_string())
+}
 
 const OWNERSHIP: &str = "
 CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT, title TEXT);
@@ -50,17 +316,13 @@ fn ownership_case() -> ParityCase {
     )
 }
 
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn the_runner_agrees_on_direct_ownership() {
+async fn the_runner_agrees_on_direct_ownership(cluster: Arc<Cluster>) {
     let case = ownership_case();
-    let mismatches = support::parity::run(&case).await;
+    let mismatches = support::parity::run(&cluster, &case).await;
     assert_agrees(&case, &mismatches);
 }
 
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn the_runner_agrees_on_membership() {
+async fn the_runner_agrees_on_membership(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-membership",
         MEMBERSHIP,
@@ -75,16 +337,14 @@ async fn the_runner_agrees_on_membership() {
             Principal::with_setting("bob", "bob", "app.user_id", "bob"),
         ],
     );
-    let mismatches = support::parity::run(&case).await;
+    let mismatches = support::parity::run(&cluster, &case).await;
     assert_agrees(&case, &mismatches);
 }
 
 /// A RESTRICTIVE policy scoped to a role, which the model expresses by subtracting the
 /// role from the grant. The caller's role memberships are declared, since no tuple query
 /// can know them.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn the_runner_agrees_on_a_role_scoped_restriction() {
+async fn the_runner_agrees_on_a_role_scoped_restriction(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-role-scoped",
         "
@@ -110,7 +370,7 @@ CREATE POLICY notes_reviewed ON notes AS RESTRICTIVE FOR SELECT TO contractor
         ],
     )
     .after(&["CREATE ROLE contractor"]);
-    let mismatches = support::parity::run(&case).await;
+    let mismatches = support::parity::run(&cluster, &case).await;
     assert_agrees(&case, &mismatches);
 }
 
@@ -119,9 +379,7 @@ CREATE POLICY notes_reviewed ON notes AS RESTRICTIVE FOR SELECT TO contractor
 /// The runner carries no one-sidedness rejection. A hand-written case counted grants and
 /// denials because it checked the pairs its author chose; this one checks every pair, so a
 /// model that answered everything the same way would be caught by the comparison itself.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn both_one_sided_cases_pass() {
+async fn both_one_sided_cases_pass(cluster: Arc<Cluster>) {
     let all_granted = ParityCase::reading(
         "runner-all-granted",
         "
@@ -139,7 +397,10 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (true);
             Principal::as_role("bob", "bob"),
         ],
     );
-    assert_agrees(&all_granted, &support::parity::run(&all_granted).await);
+    assert_agrees(
+        &all_granted,
+        &support::parity::run(&cluster, &all_granted).await,
+    );
 
     let all_denied = ParityCase::reading(
         "runner-all-denied",
@@ -158,29 +419,31 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (false);
             Principal::as_role("bob", "bob"),
         ],
     );
-    assert_agrees(&all_denied, &support::parity::run(&all_denied).await);
+    assert_agrees(
+        &all_denied,
+        &support::parity::run(&cluster, &all_denied).await,
+    );
 }
 
 /// A harness that has never caught anything is not yet a harness.
 ///
 /// The statement answers are doctored on their way in, so `can_select` grants with nothing
 /// asked. Every row the database hides from a caller then has to be reported.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn the_runner_finds_a_planted_divergence() {
+async fn the_runner_finds_a_planted_divergence(cluster: Arc<Cluster>) {
     let case = ownership_case();
-    let mismatches = support::parity::run_with(&case, support::parity::Class::Exact, |answers| {
-        answers
-            .into_iter()
-            .map(|mut entry| {
-                if entry.statement == ActionStatement::Select {
-                    entry.answer = ActionAnswer::Judged(Vec::new());
-                }
-                entry
-            })
-            .collect()
-    })
-    .await;
+    let mismatches =
+        support::parity::run_with(&cluster, &case, support::parity::Class::Exact, |answers| {
+            answers
+                .into_iter()
+                .map(|mut entry| {
+                    if entry.statement == ActionStatement::Select {
+                        entry.answer = ActionAnswer::Judged(Vec::new());
+                    }
+                    entry
+                })
+                .collect()
+        })
+        .await;
 
     let over_grants = mismatches
         .mismatches()
@@ -206,9 +469,7 @@ async fn the_runner_finds_a_planted_divergence() {
 ///
 /// The policy admits the caller's own rows and its `WITH CHECK` refuses handing a row to
 /// somebody else, which only a declared change can reach.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn an_update_candidate_exercises_with_check() {
+async fn an_update_candidate_exercises_with_check(cluster: Arc<Cluster>) {
     let schema = "
 CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -239,7 +500,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
                 insert: None,
             },
         );
-    let kept = support::parity::run(&keeps_owner).await;
+    let kept = support::parity::run(&cluster, &keeps_owner).await;
     assert_agrees(&keeps_owner, &kept);
 
     // Handing the row away passes `USING` and fails `WITH CHECK`, so PostgreSQL refuses
@@ -255,7 +516,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
                 insert: None,
             },
         );
-    let given = support::parity::run(&gives_away).await;
+    let given = support::parity::run(&cluster, &gives_away).await;
     assert_agrees(&gives_away, &given);
     assert!(
         kept.mismatches().is_empty() && given.mismatches().is_empty(),
@@ -268,9 +529,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE
 /// A membership subquery whose own nested read is on a protected table: the model cannot
 /// prove the nested read, so the shape falls closed, and `PostgreSQL` denies too because
 /// the reader sees no row of `"Memberships"`.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_nested_protected_read_denies_on_both_sides() {
+async fn a_nested_protected_read_denies_on_both_sides(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-quoted-nested-membership",
         r#"
@@ -299,7 +558,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run_disclosing(&case).await;
+    let run = support::parity::run_disclosing(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -315,9 +574,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
 ///
 /// `actor` and `"Actor"` are different roles, so the function's owner is not the table's
 /// and the definer read does not bypass row-level security.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_split_function_owner_does_not_bypass_row_level_security() {
+async fn a_split_function_owner_does_not_bypass_row_level_security(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-quoted-definer-owner",
         r#"
@@ -350,7 +607,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
         )],
     )
     .after(&[r#"CREATE ROLE actor; CREATE ROLE "Actor""#]);
-    let run = support::parity::run_disclosing(&case).await;
+    let run = support::parity::run_disclosing(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -366,9 +623,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
 ///
 /// A `STRICT` function returns NULL for a NULL argument, so the row with no gate value
 /// is hidden however the body reads.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_strict_function_hides_the_null_row() {
+async fn a_strict_function_hides_the_null_row(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-strict-function-null",
         "
@@ -384,7 +639,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (strict_true(gate));
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     for (row, visible) in [("d-null", false), ("d-value", true)] {
         support::parity::assert_postgres(
             &case,
@@ -403,9 +658,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (strict_true(gate));
 /// Two tables whose canonical names differ and whose reserved-word rename collides. A
 /// shared type would name a row of each as one object, which the runner sees because it
 /// asks both readers about both tables.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_reserved_name_collision_keeps_two_types() {
+async fn a_reserved_name_collision_keeps_two_types(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-reserved-type-name",
         r#"
@@ -427,7 +680,7 @@ CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
             Principal::as_role("bob", "bob"),
         ],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     assert_agrees(&case, &run);
     // One key value in two tables, so a shared type shows up as a grant the database
     // denies. Four pairs, one granted each way.
@@ -447,9 +700,7 @@ CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
 /// Ported from `reserved_parent_type_parity_postgres18_and_openfga`.
 ///
 /// A parent whose name `OpenFGA` reserves, reached through a child's membership policy.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_reserved_parent_is_referenced_by_its_defined_name() {
+async fn a_reserved_parent_is_referenced_by_its_defined_name(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-reserved-parent-type",
         r#"
@@ -472,7 +723,7 @@ CREATE POLICY inherit ON child_docs FOR SELECT USING (EXISTS (
             Principal::as_role("bob", "bob"),
         ],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     for (subject, visible) in [("alice", true), ("bob", false)] {
         support::parity::assert_postgres(
             &case,
@@ -500,9 +751,7 @@ fn app_reader() -> Vec<Principal> {
 ///
 /// `other.uid()` is not the accessor the registry names, so the policy is not an
 /// ownership check and the shape falls closed.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_qualified_call_is_not_the_declared_accessor() {
+async fn a_qualified_call_is_not_the_declared_accessor(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-qualified-registry-identity",
         r"
@@ -523,7 +772,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
         app_reader(),
     )
     .with_registry(r#"{"auth.uid": {"kind": "current_user_accessor", "returns": "text"}}"#);
-    let run = support::parity::run_disclosing(&case).await;
+    let run = support::parity::run_disclosing(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -539,9 +788,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
 ///
 /// The function sets its own `search_path`, so the membership table it reads is the one
 /// that path names, not the caller's.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_function_local_search_path_picks_the_membership_table() {
+async fn a_function_local_search_path_picks_the_membership_table(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-function-local-search-path",
         r"
@@ -574,7 +821,7 @@ SET search_path TO a, public;
         ],
         app_reader(),
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -590,9 +837,7 @@ SET search_path TO a, public;
 ///
 /// Two schemas hold a table of the same name and the policy names it unqualified, which
 /// the catalog cannot place, so nothing is granted on a guess.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn an_unplaceable_membership_table_grants_nothing() {
+async fn an_unplaceable_membership_table_grants_nothing(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-resolved-membership-table",
         r"
@@ -616,7 +861,7 @@ INSERT INTO public.memberships VALUES ('d1', 'app_reader');
         &[],
         app_reader(),
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -632,9 +877,7 @@ INSERT INTO public.memberships VALUES ('d1', 'app_reader');
 ///
 /// A blanket permissive read beside a RESTRICTIVE flag: only the flagged row is visible,
 /// which the model can only express with a relation per predicate.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_restrictive_flag_narrows_a_blanket_read() {
+async fn a_restrictive_flag_narrows_a_blanket_read(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-restrictive-flag-pair",
         r"
@@ -649,7 +892,7 @@ CREATE POLICY r ON union_docs AS RESTRICTIVE FOR SELECT USING (is_public);
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     for (row, visible) in [("p1", true), ("h1", false)] {
         support::parity::assert_postgres(
             &case,
@@ -667,9 +910,7 @@ CREATE POLICY r ON union_docs AS RESTRICTIVE FOR SELECT USING (is_public);
 ///
 /// A blanket DELETE beside a flag-gated SELECT: the wildcard the DELETE needs must not
 /// widen the read.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_blanket_delete_does_not_widen_the_read() {
+async fn a_blanket_delete_does_not_widen_the_read(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-cross-command-wildcard",
         r"
@@ -684,7 +925,7 @@ CREATE POLICY d ON union_docs FOR DELETE USING (true);
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     for (row, visible) in [("p1", true), ("h1", false)] {
         support::parity::assert_postgres(
             &case,
@@ -702,9 +943,7 @@ CREATE POLICY d ON union_docs FOR DELETE USING (true);
 ///
 /// `app.now()` is a declared function, not the builtin clock, so a temporal condition
 /// against the request clock would answer a different question.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_shadowed_clock_is_not_the_request_clock() {
+async fn a_shadowed_clock_is_not_the_request_clock(cluster: Arc<Cluster>) {
     let case = ParityCase::reading(
         "runner-qualified-clock-shadow",
         "
@@ -723,7 +962,7 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
         ],
         vec![Principal::as_role("alice", "alice").with_clock()],
     );
-    let run = support::parity::run_disclosing(&case).await;
+    let run = support::parity::run_disclosing(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -751,9 +990,7 @@ const OWNED_NOTES_SEED: &str = "INSERT INTO users(id) VALUES ('alice'), ('bob');
 ///
 /// An `UPDATE` policy storing only `WITH CHECK` says nothing about the existing row, so
 /// no row is updatable however the check reads.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn an_update_policy_without_using_updates_nothing() {
+async fn an_update_policy_without_using_updates_nothing(cluster: Arc<Cluster>) {
     let case = ParityCase::from_fixture(
         "runner-clause-absent",
         "clause_absent",
@@ -770,7 +1007,7 @@ async fn an_update_policy_without_using_updates_nothing() {
             insert: None,
         },
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     support::parity::assert_postgres(
         &case,
         &run,
@@ -794,9 +1031,7 @@ async fn an_update_policy_without_using_updates_nothing() {
 ///
 /// A locking read is filtered by the `UPDATE` policies' `USING` clause on top of the
 /// `SELECT` policies, so it returns fewer rows than a plain read.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn a_locking_read_applies_the_update_policy() {
+async fn a_locking_read_applies_the_update_policy(cluster: Arc<Cluster>) {
     let case = ParityCase::from_fixture(
         "runner-locking-read",
         "locking_read",
@@ -806,7 +1041,7 @@ async fn a_locking_read_applies_the_update_policy() {
         ],
         two_setting_readers("alice", "bob"),
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     // Every row reads, only the caller's own row locks.
     for (row, plain, locking) in [("note-alice", true, true), ("note-bob", true, false)] {
         support::parity::assert_postgres(
@@ -833,9 +1068,7 @@ async fn a_locking_read_applies_the_update_policy() {
 ///
 /// `ALTER POLICY` supersedes the clause the policy was created with, so the rule enforced
 /// is the narrowed one and never the original.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn an_altered_policy_is_read_as_altered() {
+async fn an_altered_policy_is_read_as_altered(cluster: Arc<Cluster>) {
     let case = ParityCase::from_fixture(
         "runner-policy-altered",
         "policy_altered",
@@ -845,7 +1078,7 @@ async fn an_altered_policy_is_read_as_altered() {
         ],
         two_setting_readers("alice", "bob"),
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     // The original clause admitted everything; the altered one admits the owner alone.
     support::parity::assert_postgres(
         &case,
@@ -862,9 +1095,7 @@ async fn an_altered_policy_is_read_as_altered() {
 ///
 /// `PostgreSQL` folds an unquoted identifier, so the schema's spelling is not the stored
 /// name, and every comparison has to use the stored one.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn folded_identifiers_name_one_table() {
+async fn folded_identifiers_name_one_table(cluster: Arc<Cluster>) {
     let case = ParityCase::from_fixture(
         "runner-folded-identifiers",
         "folded_identifiers",
@@ -877,7 +1108,7 @@ async fn folded_identifiers_name_one_table() {
         ],
         two_setting_readers("alice", "bob"),
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     // Alice owns one row and is a member of the other, so both read for her.
     for row in ["own", "shared"] {
         support::parity::assert_postgres(
@@ -904,9 +1135,7 @@ async fn folded_identifiers_name_one_table() {
 ///
 /// One table judged through two owner values with different thresholds, so a delegate
 /// needs a higher role than an owner to read the same row.
-#[tokio::test]
-#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
-async fn two_owner_columns_grant_independently() {
+async fn two_owner_columns_grant_independently(cluster: Arc<Cluster>) {
     const ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
     const BOB: &str = "00000000-0000-0000-0000-0000000000a2";
     const CAROL: &str = "00000000-0000-0000-0000-0000000000a3";
@@ -932,7 +1161,7 @@ async fn two_owner_columns_grant_independently() {
             Principal::with_setting(CAROL, "app_user", "app.current_user_id", CAROL),
         ],
     );
-    let run = support::parity::run(&case).await;
+    let run = support::parity::run(&cluster, &case).await;
     // The owner reads at 2, the delegate itself reads at 4, and a viewer of the delegate
     // holds only 2, which the delegate pointer does not admit.
     for (subject, visible) in [(ALICE, true), (BOB, true), (CAROL, false)] {
