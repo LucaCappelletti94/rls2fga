@@ -403,6 +403,24 @@ fn key_columns(naming: &RowNaming) -> Option<Vec<&str>> {
         .collect()
 }
 
+/// The `WHERE` clause naming one row by its key, compared as text so any key type fits.
+fn key_predicate(row: &serde_json::Value, columns: &[&str]) -> String {
+    let mut predicate = String::new();
+    for (at, column) in columns.iter().enumerate() {
+        let value = row
+            .get(*column)
+            .and_then(super::scalar_text)
+            .unwrap_or_default();
+        let joiner = if at == 0 { "" } else { " AND " };
+        let _ = write!(
+            predicate,
+            "{joiner}\"{column}\"::text = '{}'",
+            value.replace('\'', "''")
+        );
+    }
+    predicate
+}
+
 /// Every object the model names, read as the owner so row-level security does not filter
 /// the enumeration.
 fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) -> Vec<Object> {
@@ -429,19 +447,7 @@ fn objects(conn: &mut PgConnection, naming: &[RowNaming], skipped: &[String]) ->
                 Err(error) => panic!("naming a row of {table}: {error}"),
             };
 
-            let mut predicate = String::new();
-            for (at, column) in columns.iter().enumerate() {
-                let value = row
-                    .get(*column)
-                    .and_then(super::scalar_text)
-                    .unwrap_or_default();
-                let joiner = if at == 0 { "" } else { " AND " };
-                let _ = write!(
-                    predicate,
-                    "{joiner}\"{column}\"::text = '{}'",
-                    value.replace('\'', "''")
-                );
-            }
+            let predicate = key_predicate(&row, &columns);
             out.push(Object {
                 name,
                 table: table.clone(),
@@ -1486,19 +1492,52 @@ fn resolved_mutations<'case>(
 ) -> BTreeMap<String, &'case Mutations> {
     let mut resolved = BTreeMap::new();
     for (spelling, mutations) in &case.mutations {
-        let matched = naming.iter().find(|entry| {
-            entry.table.name() == spelling
-                || entry.table.to_string() == *spelling
-                || entry.table.sql_name() == *spelling
-        });
-        let entry = matched.unwrap_or_else(|| {
-            panic!(
+        let matches: Vec<&RowNaming> = naming
+            .iter()
+            .filter(|entry| names_the_same_table(&entry.table, spelling))
+            .collect();
+        let entry = match matches.as_slice() {
+            [entry] => *entry,
+            [] => panic!(
                 "{}: no table the model names is spelled '{spelling}', so its declared \
                  change would never be attempted",
                 case.name
-            )
-        });
-        resolved.insert(entry.table.sql_name(), mutations);
+            ),
+            several => panic!(
+                "{}: '{spelling}' names {} of the tables the model names, so which change \
+                 is attempted would be arbitrary",
+                case.name,
+                several.len()
+            ),
+        };
+        assert!(
+            resolved.insert(entry.table.sql_name(), mutations).is_none(),
+            "{}: two declarations resolve to '{}', and the second would win",
+            case.name,
+            entry.table.sql_name()
+        );
     }
     resolved
+}
+
+/// Whether `spelling` names `table`, however the case wrote it.
+///
+/// One resolver, because comparing table names as text has three answers here: the stored
+/// name, the qualified name, and the same name with the implicit schema spelled out. A
+/// table stored without a schema resides in `public`, so `notes`, `public.notes` and
+/// `"public"."notes"` are one table and have to resolve alike.
+fn names_the_same_table(table: &TableId, spelling: &str) -> bool {
+    if table.name() == spelling || table.to_string() == spelling || table.sql_name() == spelling {
+        return true;
+    }
+    let (schema, name) = match unquote(spelling).split_once('.') {
+        Some((schema, name)) => (unquote(schema).to_string(), unquote(name).to_string()),
+        None => return false,
+    };
+    table.schema().unwrap_or("public") == schema && table.name() == name
+}
+
+/// One identifier with its quotes removed, which is not an unquoting of embedded ones.
+fn unquote(spelling: &str) -> &str {
+    spelling.trim_matches('"')
 }
