@@ -39,20 +39,20 @@ fn tables(names: &[&TableId]) -> Vec<TableId> {
 /// A description whose records follow from one row of `table`.
 fn from_row(
     table: &TableId,
-    object_type: &str,
+    object_type: &TypeName,
     object_key: impl Into<ObjectKey>,
     relation: &RelationName,
-    subject_type: &str,
+    subject_type: &TypeName,
     subject_key: impl Into<SubjectKey>,
     guards: Vec<Guard>,
 ) -> RecordDescription {
     described(
         table,
         RecordTemplate {
-            object_type: TypeName::canonicalized(object_type),
+            object_type: object_type.clone(),
             object_key: object_key.into(),
             relation: relation.clone(),
-            subject_type: TypeName::canonicalized(subject_type),
+            subject_type: subject_type.clone(),
             subject_key: subject_key.into(),
             context: None,
         },
@@ -256,7 +256,7 @@ fn key_parts<DB: DatabaseLike>(
 /// Describe the records `source` produces, or `None` where it produces none.
 pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
     source: &TupleSource,
-    owner_type: &str,
+    owner_type: &TypeName,
     query: &TupleQuery,
     well_known: &WellKnownTypes,
     db: &DB,
@@ -272,7 +272,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             value_column(table, owner_col, db),
             vec![not_null(table, owner_col, db)],
         )),
@@ -289,7 +289,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             list_column(table, array_col, db),
             Vec::new(),
         )),
@@ -305,7 +305,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             json_path(table, column, path, db),
             Vec::new(),
         )),
@@ -386,10 +386,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_col,
         } => Some(from_row(
             membership_table,
-            well_known.team.as_str(),
+            &well_known.team,
             value_column(membership_table, team_col, db),
             &member_relation(),
-            well_known.user.as_str(),
+            &well_known.user,
             value_column(membership_table, user_col, db),
             vec![
                 not_null(membership_table, team_col, db),
@@ -440,7 +440,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     parent_type,
                     ObjectKey::new(key_parts(join_table, fk_cols, db)),
                     &member_relation(),
-                    well_known.user.as_str(),
+                    &well_known.user,
                     value_column(join_table, user_col, db),
                     guards,
                 ));
@@ -486,7 +486,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: TypeName::canonicalized(parent_type),
+                    object_type: parent_type.clone(),
                     object_key: ObjectKey::new(key_parts(join_table, fk_cols, db)),
                     relation: member_relation(),
                     subject_type: well_known.user.clone(),
@@ -540,7 +540,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             SubjectKey::wildcard(),
             vec![is_true(table, flag_col, db)],
         )),
@@ -555,7 +555,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             SubjectKey::wildcard(),
             columns
                 .iter()
@@ -572,7 +572,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             owner_type,
             ObjectKey::new(key_parts(table, identity_cols, db)),
             relation,
-            well_known.user.as_str(),
+            &well_known.user,
             SubjectKey::wildcard(),
             Vec::new(),
         )),
@@ -634,7 +634,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                             identity_cols,
                             &bound_eq(None, identity_cols),
                             ReplayScope::Object {
-                                object_type: owner_type.to_string(),
+                                object_type: owner_type.clone(),
                                 relations: vec![relation.clone()],
                             },
                         )
@@ -649,7 +649,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 owner_type,
                 ObjectKey::new(key_parts(table, identity_cols, db)),
                 relation,
-                well_known.user.as_str(),
+                &well_known.user,
                 SubjectKey::wildcard(),
                 vec![guard],
             ))
@@ -669,7 +669,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
         } => Some(described(
             table,
             RecordTemplate {
-                object_type: TypeName::canonicalized(owner_type),
+                object_type: owner_type.clone(),
                 object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
                 relation: relation.clone(),
                 subject_type: well_known.user.clone(),
@@ -713,7 +713,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 table,
                 RecordTemplate {
-                    object_type: TypeName::canonicalized(owner_type),
+                    object_type: owner_type.clone(),
                     object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
                     relation: relation.clone(),
                     subject_type: well_known.user.clone(),
@@ -796,7 +796,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: TypeName::canonicalized(share_type),
+                    object_type: share_type.clone(),
                     object_key: ObjectKey::new(key_parts(join_table, identity_cols, db)),
                     relation: relation.clone(),
                     subject_type: well_known.user.clone(),
@@ -841,7 +841,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 join_table,
                 RecordTemplate {
-                    object_type: TypeName::canonicalized(share_type),
+                    object_type: share_type.clone(),
                     object_key: ObjectKey::new(key_parts(join_table, identity_cols, db)),
                     relation: relation.clone(),
                     subject_type: well_known.user.clone(),
@@ -959,7 +959,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         core::slice::from_ref(user_col),
                         extra_predicates,
                         ReplayScope::Subject {
-                            subject_type: well_known.user.to_string(),
+                            subject_type: well_known.user.clone(),
                             relation: member_relation(),
                             object_type: holder_type.clone(),
                         },
@@ -975,7 +975,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     holder_type,
                     ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
                     &member_relation(),
-                    well_known.user.as_str(),
+                    &well_known.user,
                     value_column(member_table, user_col, db),
                     guards,
                 ));
@@ -991,7 +991,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     core::slice::from_ref(user_col),
                     extra_predicates,
                     ReplayScope::Subject {
-                        subject_type: well_known.user.to_string(),
+                        subject_type: well_known.user.clone(),
                         relation: member_relation(),
                         object_type: holder_type.clone(),
                     },
@@ -1021,7 +1021,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             Some(described(
                 member_table,
                 RecordTemplate {
-                    object_type: TypeName::canonicalized(holder_type),
+                    object_type: holder_type.clone(),
                     object_key: ObjectKey::new(vec![ValueSource::Literal(
                         HOLDER_OBJECT_ID.to_string(),
                     )]),

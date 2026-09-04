@@ -14,7 +14,7 @@
 use crate::no_std_prelude::*;
 use crate::types::{
     RecordDerivation, RecordDescription, RelationName, RelationShapes, RequestComparison,
-    RowDecision, ValueSource,
+    RowDecision, TypeName, ValueSource,
 };
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -43,7 +43,7 @@ pub(crate) fn relation_shapes<'plan, DB: DatabaseLike>(
         for relation in names {
             let mut visiting = BTreeSet::new();
             let decision = relation_decision(
-                type_plan.type_name.as_str(),
+                &type_plan.type_name,
                 relation,
                 plan,
                 &sources,
@@ -54,7 +54,7 @@ pub(crate) fn relation_shapes<'plan, DB: DatabaseLike>(
                 type_name: type_plan.type_name.clone(),
                 relation: relation.clone(),
                 from_one_row: decision.is_some(),
-                shapes: shapes_filling(type_plan.type_name.as_str(), relation, &sources),
+                shapes: shapes_filling(&type_plan.type_name, relation, &sources),
                 decision,
                 grants_nobody: relation_grants_nothing(type_plan, relation),
             });
@@ -72,7 +72,7 @@ fn index_sources<'plan, 'description>(
         for source in &type_plan.table_tuple_sources {
             let key = rendered_source_key(
                 source,
-                type_plan.type_name.as_str(),
+                &type_plan.type_name,
                 type_plan.reads_only_its_own_rows,
             );
             let description = descriptions.get(&key).and_then(Option::as_ref);
@@ -94,7 +94,7 @@ struct IndexedSource<'plan, 'description> {
 }
 
 type SourceIndex<'plan, 'description> =
-    BTreeMap<(String, RelationName), Vec<IndexedSource<'plan, 'description>>>;
+    BTreeMap<(TypeName, RelationName), Vec<IndexedSource<'plan, 'description>>>;
 
 /// One shape per source. A source feeding the same relation from two type plans
 /// describes it twice, and the key the renderer deduplicates queries on is what
@@ -102,14 +102,14 @@ type SourceIndex<'plan, 'description> =
 /// keying its objects on the owning type only ever reaches the bucket named after
 /// that type.
 fn shapes_filling(
-    type_name: &str,
+    type_name: &TypeName,
     relation: &RelationName,
     sources: &SourceIndex<'_, '_>,
 ) -> Vec<RecordDescription> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     for indexed in sources
-        .get(&(type_name.to_string(), relation.clone()))
+        .get(&(type_name.clone(), relation.clone()))
         .into_iter()
         .flatten()
     {
@@ -123,14 +123,14 @@ fn shapes_filling(
     out
 }
 
-fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &str) -> Option<&'plan TypePlan> {
+fn find_type<'plan>(plan: &'plan SchemaPlan, type_name: &TypeName) -> Option<&'plan TypePlan> {
     plan.types
         .iter()
-        .find(|candidate| candidate.type_name.as_str() == type_name)
+        .find(|candidate| candidate.type_name == *type_name)
 }
 
 fn relation_decision<DB: DatabaseLike>(
-    type_name: &str,
+    type_name: &TypeName,
     relation: &RelationName,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_, '_>,
@@ -158,7 +158,7 @@ fn relation_decision<DB: DatabaseLike>(
 }
 
 fn expr_decision<DB: DatabaseLike>(
-    type_name: &str,
+    type_name: &TypeName,
     expr: &UsersetExpr,
     plan: &SchemaPlan,
     sources: &SourceIndex<'_, '_>,
@@ -186,7 +186,7 @@ fn expr_decision<DB: DatabaseLike>(
 }
 
 fn child_decisions<DB: DatabaseLike>(
-    type_name: &str,
+    type_name: &TypeName,
     children: &[UsersetExpr],
     plan: &SchemaPlan,
     sources: &SourceIndex<'_, '_>,
@@ -203,13 +203,13 @@ fn child_decisions<DB: DatabaseLike>(
 /// name a user the row itself supplies. The shapes that pass are the ones
 /// [`shapes_filling`] reports for it, deduplicated the same way.
 fn leaf_decision<DB: DatabaseLike>(
-    type_name: &str,
+    type_name: &TypeName,
     relation: &RelationName,
     sources: &SourceIndex<'_, '_>,
     well_known: &WellKnownTypes,
     db: &DB,
 ) -> Option<RowDecision> {
-    let feeding = sources.get(&(type_name.to_string(), relation.clone()))?;
+    let feeding = sources.get(&(type_name.clone(), relation.clone()))?;
     if feeding.is_empty() {
         return None;
     }
@@ -279,12 +279,7 @@ fn leaf_decision<DB: DatabaseLike>(
     let mut shapes = Vec::new();
     for indexed in feeding {
         let description = indexed.description?;
-        if !row_names_a_user(
-            &description.derivation,
-            type_name,
-            well_known.user.as_str(),
-            db,
-        ) {
+        if !row_names_a_user(&description.derivation, type_name, &well_known.user, db) {
             return None;
         }
         if unique.insert(indexed.source.dedup_key()) {
@@ -299,8 +294,8 @@ fn leaf_decision<DB: DatabaseLike>(
 
 fn row_names_a_user<DB: DatabaseLike>(
     derivation: &RecordDerivation,
-    type_name: &str,
-    user_type: &str,
+    type_name: &TypeName,
+    user_type: &TypeName,
     db: &DB,
 ) -> bool {
     let RecordDerivation::FromRow {
@@ -315,7 +310,7 @@ fn row_names_a_user<DB: DatabaseLike>(
     if template.context.is_some() {
         return false;
     }
-    if template.object_type != type_name {
+    if template.object_type != *type_name {
         return false;
     }
     // The object has to be this row's identity: every key column, in declared order. A
@@ -342,7 +337,7 @@ fn row_names_a_user<DB: DatabaseLike>(
     }
     // The subject has to be a user the consumer can compare against, named by
     // this row rather than reached through another type's membership.
-    if template.subject_type != user_type {
+    if template.subject_type != *user_type {
         return false;
     }
     !matches!(template.subject_key.part(), ValueSource::Literal(_))

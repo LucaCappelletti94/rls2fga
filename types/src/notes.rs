@@ -7,7 +7,7 @@
 //! what the database says.
 
 use crate::prelude::*;
-use crate::{ColumnName, RelationName, TableId};
+use crate::{ColumnName, RelationName, TableId, TypeName};
 use crate::{ConfidenceLevel, RolePrivilege};
 use alloc::borrow::Cow;
 use core::fmt;
@@ -413,7 +413,7 @@ pub enum TranslationNote {
         #[serde(with = "table_id_as_str")]
         table: TableId,
         /// Type the bridge would have pointed at.
-        parent_type: String,
+        parent_type: TypeName,
         /// Column the bridge would have read, absent from `table`.
         column: ColumnName,
     },

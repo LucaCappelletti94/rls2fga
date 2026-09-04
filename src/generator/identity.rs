@@ -7,6 +7,8 @@
 use crate::no_std_prelude::*;
 use core::fmt::Write;
 
+use crate::types::TypeName;
+
 #[cfg(test)]
 pub(crate) use crate::types::identity::encode_identity;
 pub(crate) use crate::types::identity::{
@@ -55,7 +57,7 @@ where
 /// The type name is deliberately **not** encoded: it has to match the type the
 /// model declares, and `canonical_fga_type_name` already restricts it to
 /// `[a-z0-9_]`, so there is nothing here to escape.
-pub(crate) fn typed_name_sql<'a, I>(type_name: &str, parts: I) -> String
+pub(crate) fn typed_name_sql<'a, I>(type_name: &TypeName, parts: I) -> String
 where
     I: IntoIterator<Item = &'a str>,
 {
@@ -67,13 +69,13 @@ where
 /// For a key the crate holds at generation time (a role name, a fixed holder
 /// id) rather than one a column supplies. An encoded key never contains a
 /// quote, so the literal needs no further escaping.
-pub(crate) fn typed_name_literal(type_name: &str, key: &str) -> String {
+pub(crate) fn typed_name_literal(type_name: &TypeName, key: &str) -> String {
     format!("'{type_name}:{}'", encode_part(key))
 }
 
 /// The typed wildcard subject as a SQL literal. The `*` stays verbatim: it is
 /// the target's wildcard, not a value to encode.
-pub(crate) fn wildcard_subject_literal(user_type: &str) -> String {
+pub(crate) fn wildcard_subject_literal(user_type: &TypeName) -> String {
     format!("'{user_type}:{WILDCARD_SUBJECT_ID}'")
 }
 
@@ -198,7 +200,10 @@ mod tests {
     fn a_typed_name_keeps_its_type_unencoded_and_encodes_only_the_key() {
         // The type has to match what the model declares, and `canonical_fga_type_name`
         // already restricts it to `[a-z0-9_]`, so encoding it here would rename the type.
-        let sql = typed_name_sql("paper_shares", [r#""paper_id""#, r#""viewer""#]);
+        let sql = typed_name_sql(
+            &TypeName::canonicalized("paper_shares"),
+            [r#""paper_id""#, r#""viewer""#],
+        );
         assert!(sql.starts_with("'paper_shares:' || "), "{sql}");
         assert_eq!(sql.matches("CASE WHEN").count(), 2, "{sql}");
     }
@@ -207,11 +212,11 @@ mod tests {
     fn a_generation_time_key_is_encoded_into_the_literal() {
         // A role name comes from the schema and may hold anything PostgreSQL allows.
         assert_eq!(
-            typed_name_literal("pg_role", "app_admin"),
+            typed_name_literal(&TypeName::canonicalized("pg_role"), "app_admin"),
             "'pg_role:app_admin'"
         );
         assert_eq!(
-            typed_name_literal("pg_role", "read only"),
+            typed_name_literal(&TypeName::canonicalized("pg_role"), "read only"),
             "'pg_role:~72656164206f6e6c79'"
         );
     }

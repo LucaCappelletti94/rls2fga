@@ -20,13 +20,16 @@ use crate::generator::db_lookup::{column_kind, resolve_row_identity};
 use crate::generator::model_generator::{SchemaPlan, TypePlan};
 use crate::parser::names::table_identity;
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
-use crate::types::{ColumnName, ColumnRead, ObjectKey, RowNaming, TableId, ValueSource};
+use crate::types::{ColumnName, ColumnRead, ObjectKey, RowNaming, TableId, TypeName, ValueSource};
 
 /// The type a table's rows are named by, and the columns that key them.
-fn named_by<DB: DatabaseLike>(type_plan: &TypePlan, db: &DB) -> Option<(String, Vec<ColumnName>)> {
+fn named_by<DB: DatabaseLike>(
+    type_plan: &TypePlan,
+    db: &DB,
+) -> Option<(TypeName, Vec<ColumnName>)> {
     let table = type_plan.source_table.as_ref()?;
     let columns = resolve_row_identity(table, db)?;
-    Some((type_plan.type_name.to_string(), columns))
+    Some((type_plan.type_name.clone(), columns))
 }
 
 /// The plan whose objects a partition's rows are named as, walking up until one is

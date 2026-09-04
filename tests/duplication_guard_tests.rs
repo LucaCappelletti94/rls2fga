@@ -840,6 +840,53 @@ fn a_type_name_is_decided_in_one_place() {
     );
 }
 
+/// A type name is stored as a `TypeName`, never as a bare string.
+///
+/// Relation names have carried `RelationName` since the types crate was split out, while
+/// type names travelled as `String` beside them, so a table spelling could be handed to a
+/// field expecting a type. That is how a reference came to name a type the model never
+/// declared. Carrying the newtype also removes the re-wrapping in the record templates, so
+/// the idempotence of the canonicalizer stops being load-bearing.
+///
+/// Stored fields only. A function that renders a name as text, or looks one up by its
+/// rendered form, takes `&str` on purpose: `dsl::bare`, `TableTypes::spelling_of`,
+/// `Recursion::blocked_targets` and `gate_condition_name`.
+#[test]
+fn a_type_name_is_stored_as_a_type_name() {
+    // Named rather than matched by suffix: `return_type` and `data_type` are SQL types,
+    // which are strings and stay strings.
+    for field in [
+        "type_name",
+        "object_type",
+        "subject_type",
+        "owner_type",
+        "parent_type",
+        "guarded_type",
+        "share_type",
+        "holder_type",
+        "scope_type",
+        "user_type",
+        "through_type",
+    ] {
+        let stringly = count_all(&format!("{field}: String,"));
+        assert_eq!(
+            stringly, 0,
+            "a type name is stored as TypeName, found {stringly} declared `{field}: String`"
+        );
+    }
+
+    // Exempt: `names.rs` holds the canonicalizer and `well_known.rs` names the five
+    // generator types from literals. Everywhere else already holds a decided name.
+    let rewraps = count_excluding(
+        &["src/parser/names.rs", "src/generator/well_known.rs"],
+        "TypeName::canonicalized(",
+    );
+    assert_eq!(
+        rewraps, 0,
+        "a decided type name is carried, not canonicalized again, found {rewraps} rewrapping"
+    );
+}
+
 /// One place decides that a parenthesis carries no meaning, and one place splits a
 /// conjunction. A second peel would let one analyzer see through `pg_dump`'s
 /// parentheses while another still refuses them.

@@ -73,7 +73,7 @@ fn classified_from_policy<DB: DatabaseLike>(
 
 #[test]
 fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let bucket = ModeBuckets {
         permissive: Vec::new(),
         restrictive: vec![UsersetExpr::Computed(RelationName::canonicalized("owner"))],
@@ -93,7 +93,7 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
 
 #[test]
 fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let bucket = ModeBuckets {
         permissive: Vec::new(),
         restrictive: Vec::new(),
@@ -115,12 +115,15 @@ fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
 /// can tell a wrong answer here from a right one. The contract is pinned directly.
 #[test]
 fn grants_nothing_reads_only_the_base_of_an_exclusion() {
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     plan.ensure_direct(
         deny_relation(),
-        vec![DirectSubject::Type(USER_TYPE.to_string())],
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
     );
-    plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    plan.ensure_direct(
+        "owner",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
 
     let from_nothing = UsersetExpr::Exclusion {
         base: Box::new(UsersetExpr::Computed(deny_relation())),
@@ -166,7 +169,7 @@ fn userset_key_separates_exclusions_by_both_sides() {
 #[test]
 fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
     let empty_registry = FunctionRegistry::new();
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -227,7 +230,7 @@ fn pattern_to_expr_handles_missing_or_invalid_role_threshold_metadata() {
 #[test]
 fn pattern_to_expr_handles_empty_role_selection_paths() {
     let registry = role_registry("{}", false);
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -274,7 +277,7 @@ fn pattern_to_expr_handles_empty_role_selection_paths() {
 #[test]
 fn pattern_to_expr_covers_abac_composite_constant_and_unknown_branches() {
     let registry = FunctionRegistry::new();
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -561,7 +564,7 @@ fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
 fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
     // `viewer=1` and `guest=1` share the same integer level.  Selecting only
     // `'viewer'` by name must NOT include `grant_guest`.
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let role_levels = BTreeMap::from([
         ("viewer".to_string(), 1),
@@ -572,7 +575,7 @@ fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
     let (sorted, _) = ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
         false,
@@ -582,7 +585,7 @@ fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
     let selected = BTreeSet::from(["viewer".to_string()]);
     let relation = ensure_exact_roles_relation(
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &sorted,
         &selected,
         false,
@@ -611,7 +614,7 @@ fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
 
 #[test]
 fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclusion() {
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let role_levels = BTreeMap::from([
         ("viewer".to_string(), 1),
@@ -622,7 +625,7 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
     let (sorted, pointer) = ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
         true,
@@ -641,7 +644,7 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
     let selected = BTreeSet::from(["admin".to_string()]);
     let relation = ensure_exact_roles_relation(
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &sorted,
         &selected,
         true,
@@ -664,7 +667,7 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
 
 #[test]
 fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let role_levels =
         BTreeMap::from([("read-write".to_string(), 1), ("Team Admin".to_string(), 2)]);
@@ -672,7 +675,7 @@ fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
     ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
         false,
@@ -695,14 +698,14 @@ fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
 
 #[test]
 fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let role_levels = BTreeMap::from([("role-a".to_string(), 1), ("role a".to_string(), 2)]);
 
     ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
         false,
@@ -768,7 +771,7 @@ fn combine_helpers_cover_empty_and_multi_intersection() {
     .expect("intersection should exist");
     assert!(matches!(inter, UsersetExpr::Intersection(children) if children.len() == 2));
 
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let empty_bucket = ModeBuckets::default();
     assert!(compose_action(&mut plan, Some(&empty_bucket)).is_none());
 }
@@ -923,7 +926,7 @@ fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
 
 #[test]
 fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let role_levels = BTreeMap::from([
         ("beta".to_string(), 1),
@@ -934,7 +937,7 @@ fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
     let (sorted, _) = ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
-        "grants_owner",
+        &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
         false,
@@ -956,7 +959,7 @@ fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
 #[test]
 fn pattern_to_expr_handles_unreachable_thresholds_and_case_insensitive_role_names() {
     let registry = role_registry(r#"{"viewer": 1}"#, false);
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -1027,7 +1030,7 @@ fn bound_query_deserialization_validates_placeholders() {
         "SELECT * FROM docs WHERE id = $1".to_string(),
         None,
         ReplayScope::Object {
-            object_type: "docs".to_string(),
+            object_type: TypeName::canonicalized("docs"),
             relations: vec![member_relation()],
         },
     )
@@ -1204,7 +1207,7 @@ CREATE TABLE accounts(account_id UUID PRIMARY KEY);
 #[test]
 fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
     let registry = FunctionRegistry::new();
-    let mut table_plan = TypePlan::new("tasks");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("tasks"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -1256,7 +1259,7 @@ fn pattern_to_expr_p5_with_unknown_inner_returns_no_access() {
 #[test]
 fn pattern_to_expr_p6_without_row_identity_denies_and_skips_its_tuples() {
     let registry = FunctionRegistry::new();
-    let mut table_plan = TypePlan::new("items");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("items"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -1302,7 +1305,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     .unwrap();
 
     let registry = role_registry(r#"{"viewer": 1, "editor": 2}"#, false);
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
 
     populate_role_threshold_sources(
@@ -1315,7 +1318,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
         &db,
         &registry,
         &OwnerScope {
-            type_name: "object_grants_owner",
+            type_name: &TypeName::canonicalized("object_grants_owner"),
             pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
@@ -1357,7 +1360,7 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     .unwrap();
 
     let registry = role_registry(r#"{"viewer": 1}"#, true);
-    let mut table_plan = TypePlan::new("docs");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
 
     populate_role_threshold_sources(
@@ -1370,7 +1373,7 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
         &db,
         &registry,
         &OwnerScope {
-            type_name: "object_grants_owner",
+            type_name: &TypeName::canonicalized("object_grants_owner"),
             pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
@@ -1438,7 +1441,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
     .unwrap();
 
     let registry = role_registry(r#"{"viewer": 1}"#, false);
-    let mut table_plan = TypePlan::new("things");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("things"));
     let mut all_types = BTreeMap::new();
 
     populate_role_threshold_sources(
@@ -1451,7 +1454,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
         &db,
         &registry,
         &OwnerScope {
-            type_name: "object_grants_owner",
+            type_name: &TypeName::canonicalized("object_grants_owner"),
             pointer: &RelationName::canonicalized("owner_id"),
             column: &ColumnName::from_stored("owner_id"),
         },
@@ -1473,12 +1476,15 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
 // DSL would then carry two `define` lines for it.
 #[test]
 fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
-    let mut plan = TypePlan::new("test");
+    let mut plan = TypePlan::new(TypeName::canonicalized("test"));
     plan.ensure_computed(
         "rel",
         UsersetExpr::Computed(RelationName::canonicalized("x")),
     );
-    let name = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
+    let name = plan.ensure_direct(
+        "rel",
+        vec![DirectSubject::Type(TypeName::canonicalized("user"))],
+    );
     assert_ne!(name, "rel", "the computed relation still holds 'rel'");
     assert!(plan.direct_relations.contains_key(&name));
     assert!(!plan.computed_relations.contains_key(&name));
@@ -1486,9 +1492,12 @@ fn ensure_direct_yields_a_fresh_name_when_the_relation_is_computed() {
 
 #[test]
 fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
-    let mut plan = TypePlan::new("test");
-    let first = plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
-    let team = vec![DirectSubject::Type("team".into())];
+    let mut plan = TypePlan::new(TypeName::canonicalized("test"));
+    let first = plan.ensure_direct(
+        "rel",
+        vec![DirectSubject::Type(TypeName::canonicalized("user"))],
+    );
+    let team = vec![DirectSubject::Type(TypeName::canonicalized("team"))];
     let second = plan.ensure_direct("rel", team.clone());
     assert_eq!(first, "rel");
     // One collision carries no counter: a `_1` would imply a `_2` that does not exist.
@@ -1499,15 +1508,18 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
     );
     assert_eq!(
         plan.direct_relations.get(&first),
-        Some(&vec![DirectSubject::Type("user".into())])
+        Some(&vec![DirectSubject::Type(TypeName::canonicalized("user"))])
     );
     assert_eq!(
         plan.direct_relations.get(&second),
-        Some(&vec![DirectSubject::Type("team".into())])
+        Some(&vec![DirectSubject::Type(TypeName::canonicalized("team"))])
     );
     // Asking again with the same subjects reuses the name it already minted.
     assert_eq!(
-        plan.ensure_direct("rel", vec![DirectSubject::Type("team".into())]),
+        plan.ensure_direct(
+            "rel",
+            vec![DirectSubject::Type(TypeName::canonicalized("team"))]
+        ),
         second
     );
 }
@@ -1516,7 +1528,7 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
 /// colliding wildcard would merge two predicates' tuple sets under one gate.
 #[test]
 fn wildcard_gate_relations_never_share_across_keys_even_when_the_base_collides() {
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let first =
         plan.wildcard_gate_relation("attr:6:status:Eq:t9:published", "public_where_status_cafe");
     let second =
@@ -1538,8 +1550,8 @@ fn wildcard_gate_relations_never_share_across_keys_even_when_the_base_collides()
 /// counter survives the length clamp instead of being truncated into a collision.
 #[test]
 fn a_wildcard_gate_never_adopts_an_occupied_name_however_many_collide() {
-    let mut plan = TypePlan::new("docs");
-    let foreign = vec![DirectSubject::Type("user".into())];
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
+    let foreign = vec![DirectSubject::Type(TypeName::canonicalized("user"))];
     plan.ensure_direct("gate_base", foreign.clone());
     for counter in 1..=4 {
         plan.ensure_direct(format!("gate_base_{counter}"), foreign.clone());
@@ -1547,7 +1559,9 @@ fn a_wildcard_gate_never_adopts_an_occupied_name_however_many_collide() {
     let minted = plan.wildcard_gate_relation("key:a", "gate_base");
     assert_eq!(
         plan.direct_relations.get(&minted),
-        Some(&vec![DirectSubject::Wildcard(USER_TYPE.to_string())]),
+        Some(&vec![DirectSubject::Wildcard(TypeName::canonicalized(
+            USER_TYPE
+        ))]),
         "the minted gate holds its own wildcard subjects, never a foreign definition"
     );
 
@@ -1567,8 +1581,8 @@ fn a_wildcard_gate_never_adopts_an_occupied_name_however_many_collide() {
 /// one name twice, since direct and computed relations live in separate maps.
 #[test]
 fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
-    let mut plan = TypePlan::new("docs");
-    let subjects = vec![DirectSubject::Type(USER_TYPE.to_string())];
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
+    let subjects = vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))];
 
     // `owner` is held by a rule, so a direct `owner` has to yield.
     plan.ensure_computed(
@@ -1604,14 +1618,17 @@ fn ensure_direct_keeps_looking_when_the_renamed_name_is_taken_too() {
 /// The same for a rule, where the collision is with a direct relation.
 #[test]
 fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
-    let mut plan = TypePlan::new("docs");
+    let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let rule = UsersetExpr::Computed(RelationName::canonicalized("wanted"));
 
-    plan.ensure_direct("owner", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    plan.ensure_direct(
+        "owner",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
     let taken = clamp_relation_name(format!("owner_{}", stable_hex_suffix(&userset_key(&rule))));
     plan.ensure_direct(
         taken.clone(),
-        vec![DirectSubject::Type(TEAM_TYPE.to_string())],
+        vec![DirectSubject::Type(TypeName::canonicalized(TEAM_TYPE))],
     );
 
     let got = plan.ensure_computed("owner", rule.clone());
@@ -1632,7 +1649,7 @@ fn ensure_computed_keeps_looking_when_the_renamed_name_is_taken_too() {
 
 #[test]
 fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
-    let mut plan = TypePlan::new("test");
+    let mut plan = TypePlan::new(TypeName::canonicalized("test"));
     let first = plan.ensure_computed(
         "rel",
         UsersetExpr::Computed(RelationName::canonicalized("a")),
@@ -1666,8 +1683,11 @@ fn ensure_computed_yields_a_fresh_name_when_the_expression_differs() {
 /// debug builds and do nothing in release, which is a guard where it cannot fire.
 #[test]
 fn set_computed_yields_a_fresh_name_when_the_relation_is_direct() {
-    let mut plan = TypePlan::new("test");
-    plan.ensure_direct("rel", vec![DirectSubject::Type("user".into())]);
+    let mut plan = TypePlan::new(TypeName::canonicalized("test"));
+    plan.ensure_direct(
+        "rel",
+        vec![DirectSubject::Type(TypeName::canonicalized("user"))],
+    );
 
     let name = plan.set_computed(
         "rel",
@@ -1844,7 +1864,7 @@ CREATE POLICY things_sel ON things FOR SELECT TO app_user USING (value > 0);
 #[test]
 fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
     let registry = FunctionRegistry::new();
-    let mut table_plan = TypePlan::new("tasks");
+    let mut table_plan = TypePlan::new(TypeName::canonicalized("tasks"));
     let mut all_types = BTreeMap::new();
     let mut notes = Vec::new();
 
@@ -1890,18 +1910,18 @@ fn pattern_to_expr_p5_with_inner_no_access_emits_note() {
 /// conditional side does not imply.
 #[test]
 fn rule_implies_consults_conditional_tupleset_subjects() {
-    let mut docs = TypePlan::new("docs");
+    let mut docs = TypePlan::new(TypeName::canonicalized("docs"));
     docs.ensure_direct(
         "grants",
         vec![
-            DirectSubject::Type("teams".to_string()),
+            DirectSubject::Type(TypeName::canonicalized("teams")),
             DirectSubject::ConditionalType {
-                type_name: "groups".to_string(),
+                type_name: TypeName::canonicalized("groups"),
                 condition: "while_valid".to_string(),
             },
         ],
     );
-    let mut teams = TypePlan::new("teams");
+    let mut teams = TypePlan::new(TypeName::canonicalized("teams"));
     teams.set_computed(
         "viewer",
         UsersetExpr::Union(vec![UsersetExpr::Computed(RelationName::canonicalized(
@@ -1909,15 +1929,19 @@ fn rule_implies_consults_conditional_tupleset_subjects() {
         ))]),
     );
     // On `groups` the two relations are unrelated, so nothing implies the gate there.
-    let mut groups = TypePlan::new("groups");
-    groups.ensure_direct("viewer", vec![DirectSubject::Type(USER_TYPE.to_string())]);
-    groups.ensure_direct("editor", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    let mut groups = TypePlan::new(TypeName::canonicalized("groups"));
+    groups.ensure_direct(
+        "viewer",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
+    groups.ensure_direct(
+        "editor",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
 
     let plans = [docs, teams, groups];
-    let by_name: BTreeMap<&str, &TypePlan> = plans
-        .iter()
-        .map(|plan| (plan.type_name.as_str(), plan))
-        .collect();
+    let by_name: BTreeMap<&TypeName, &TypePlan> =
+        plans.iter().map(|plan| (&plan.type_name, plan)).collect();
     let rule = UsersetExpr::TupleToUserset {
         tupleset: RelationName::canonicalized("grants"),
         computed: RelationName::canonicalized("editor"),
@@ -1937,7 +1961,7 @@ fn rule_implies_consults_conditional_tupleset_subjects() {
 /// plain one: the condition restricts which tuples exist, not which type they name.
 #[test]
 fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned() {
-    let mut docs = TypePlan::new("docs");
+    let mut docs = TypePlan::new(TypeName::canonicalized("docs"));
     docs.set_computed(
         can_select_relation(),
         UsersetExpr::TupleToUserset {
@@ -1948,15 +1972,20 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
     docs.ensure_direct(
         "parent",
         vec![DirectSubject::ConditionalType {
-            type_name: "groups".to_string(),
+            type_name: TypeName::canonicalized("groups"),
             condition: "while_valid".to_string(),
         }],
     );
-    let mut groups = TypePlan::new("groups");
-    groups.ensure_direct("granted", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    let mut groups = TypePlan::new(TypeName::canonicalized("groups"));
+    groups.ensure_direct(
+        "granted",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
 
-    let mut all_types =
-        BTreeMap::from([("docs".to_string(), docs), ("groups".to_string(), groups)]);
+    let mut all_types = BTreeMap::from([
+        (TypeName::canonicalized("docs"), docs),
+        (TypeName::canonicalized("groups"), groups),
+    ]);
     prune_unreferenced_relations(&mut all_types);
 
     assert!(
@@ -1973,7 +2002,7 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
 #[test]
 fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
     let alias = RelationName::canonicalized("inherited_x");
-    let mut docs = TypePlan::new("docs");
+    let mut docs = TypePlan::new(TypeName::canonicalized("docs"));
     docs.set_computed(
         can_select_relation(),
         UsersetExpr::TupleToUserset {
@@ -1984,19 +2013,24 @@ fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
     docs.ensure_direct(
         "parent",
         vec![DirectSubject::ConditionalType {
-            type_name: "groups".to_string(),
+            type_name: TypeName::canonicalized("groups"),
             condition: "while_valid".to_string(),
         }],
     );
-    let mut groups = TypePlan::new("groups");
-    groups.ensure_direct("granted", vec![DirectSubject::Type(USER_TYPE.to_string())]);
+    let mut groups = TypePlan::new(TypeName::canonicalized("groups"));
+    groups.ensure_direct(
+        "granted",
+        vec![DirectSubject::Type(TypeName::canonicalized(USER_TYPE))],
+    );
     groups.set_computed(
         alias.clone(),
         UsersetExpr::Computed(RelationName::canonicalized("granted")),
     );
 
-    let mut all_types =
-        BTreeMap::from([("docs".to_string(), docs), ("groups".to_string(), groups)]);
+    let mut all_types = BTreeMap::from([
+        (TypeName::canonicalized("docs"), docs),
+        (TypeName::canonicalized("groups"), groups),
+    ]);
     inline_synthetic_rule_aliases(&mut all_types);
 
     let UsersetExpr::TupleToUserset { computed, .. } =
@@ -2017,7 +2051,7 @@ fn a_witness_membership_source_carries_its_condition() {
         join_table: table_id("members"),
         identity_cols: vec![ColumnName::from_stored("id")],
         user_col: ColumnName::from_stored("user_id"),
-        share_type: "members_share".to_string(),
+        share_type: TypeName::canonicalized("members_share"),
         relation: RelationName::canonicalized("member"),
         condition: "when_valid".to_string(),
         extra_predicates: ResidualPredicates::default(),

@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use crate::{ObjectKey, RecordError, RowValues, TableId};
+use crate::{ObjectKey, RecordError, RowValues, TableId, TypeName};
 
 /// How rows of one table are named as objects of the emitted model.
 ///
@@ -13,14 +13,14 @@ pub struct RowNaming {
     /// own spelling with its root's type.
     pub table: TableId,
     /// The type the model assigned it, after any collision suffix.
-    pub type_name: String,
+    pub type_name: TypeName,
     /// How the row's key is built.
     pub key: ObjectKey,
 }
 impl RowNaming {
     /// Build one table naming contract.
     #[must_use]
-    pub fn new(table: TableId, type_name: String, key: ObjectKey) -> Self {
+    pub fn new(table: TableId, type_name: TypeName, key: ObjectKey) -> Self {
         Self {
             table,
             type_name,

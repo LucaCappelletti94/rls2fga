@@ -8917,7 +8917,7 @@ CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
         .translation()
         .row_naming()
         .iter()
-        .map(|entry| (entry.table.to_string(), entry.type_name.clone()))
+        .map(|entry| (entry.table.to_string(), entry.type_name.to_string()))
         .collect();
 
     let mut granted = 0;
@@ -8954,6 +8954,150 @@ CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
             assert_eq!(
                 actual, expected,
                 "{principal} on {table} as {type_name}:shared"
+            );
+            if expected {
+                granted += 1;
+            } else {
+                denied += 1;
+            }
+        }
+    }
+    assert!(
+        granted > 0 && denied > 0,
+        "the case needs both answers, got {granted} granted and {denied} denied"
+    );
+}
+
+mod reserved_parent_schema {
+    diesel::table! {
+        #[sql_name = "self"]
+        reserved_parents (id) {
+            id -> diesel::sql_types::Text,
+            owner_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+
+    diesel::table! {
+        child_docs (id) {
+            id -> diesel::sql_types::Text,
+            parent_id -> diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        }
+    }
+}
+
+/// A parent whose name `OpenFGA` reserves, reached through a child's membership policy.
+///
+/// The bridge used to name the parent by the spelling the schema wrote while the model
+/// defined it under the renamed one, so the model referenced a type it never declared and
+/// the service refused it. Both principals are read against both tables here.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn reserved_parent_type_parity_postgres18_and_openfga() {
+    use reserved_parent_schema::{child_docs, reserved_parents};
+
+    let postgres = support::containers::start_postgres().await;
+    let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let pg_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
+    let mut conn = support::containers::connect_postgres_with_retry(&pg_url);
+    let schema_sql = r#"
+CREATE TABLE "self"(id TEXT PRIMARY KEY, owner_id TEXT);
+CREATE TABLE child_docs(id TEXT PRIMARY KEY, parent_id TEXT REFERENCES "self"(id));
+ALTER TABLE "self" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE child_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY parent_owner ON "self" FOR SELECT USING (owner_id = current_user);
+CREATE POLICY inherit ON child_docs FOR SELECT USING (EXISTS (
+    SELECT 1 FROM "self" p WHERE p.id = child_docs.parent_id AND p.owner_id = current_user));
+"#;
+    conn.batch_execute(schema_sql)
+        .expect("Failed to apply the reserved-parent schema");
+    conn.batch_execute(
+        "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN;
+         GRANT SELECT ON \"self\", child_docs TO alice, bob;",
+    )
+    .expect("Failed to create the querying roles");
+    diesel::insert_into(reserved_parents::table)
+        .values((
+            reserved_parents::id.eq("p1"),
+            reserved_parents::owner_id.eq(Some("alice")),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the parent row");
+    diesel::insert_into(child_docs::table)
+        .values((
+            child_docs::id.eq("c1"),
+            child_docs::parent_id.eq(Some("p1")),
+        ))
+        .execute(&mut conn)
+        .expect("Failed to seed the child row");
+
+    let (classified, db, registry) = support::classify_sql(schema_sql, None);
+    let outputs = Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.json_model();
+    let tuple_keys = execute_tuple_queries(&mut conn, outputs.tuple_queries());
+
+    let openfga = support::containers::start_openfga().await;
+    let grpc_port = openfga.get_host_port_ipv4(8081).await.unwrap();
+    let mut service_client = support::openfga::connect(grpc_port).await;
+    let store_id =
+        support::openfga::create_store(&mut service_client, "reserved-parent-parity").await;
+    let model_id =
+        support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
+    let client = service_client.into_client(&store_id, &model_id);
+    let writes = tuple_keys
+        .iter()
+        .map(|tuple| support::openfga::make_tuple(&tuple.object, &tuple.relation, &tuple.subject))
+        .collect();
+    support::openfga::write_tuples(&client, writes).await;
+
+    let naming: Vec<(String, String)> = outputs
+        .translation()
+        .row_naming()
+        .iter()
+        .map(|entry| (entry.table.to_string(), entry.type_name.to_string()))
+        .collect();
+
+    let mut granted = 0;
+    let mut denied = 0;
+    for principal in ["alice", "bob"] {
+        for (table, type_name) in &naming {
+            #[derive(QueryableByName)]
+            struct Counted {
+                #[diesel(sql_type = diesel::sql_types::BigInt)]
+                rows: i64,
+            }
+            let (relation, key) = if table.contains("child_docs") {
+                ("child_docs", "c1")
+            } else {
+                ("\"self\"", "p1")
+            };
+            let expected = conn
+                .transaction::<bool, diesel::result::Error, _>(|conn| {
+                    diesel::sql_query(format!("SET LOCAL ROLE {principal}")).execute(conn)?;
+                    let counted: Counted = diesel::sql_query(format!(
+                        "SELECT count(*) AS rows FROM {relation} WHERE id = '{key}'"
+                    ))
+                    .get_result(conn)?;
+                    Ok(counted.rows == 1)
+                })
+                .expect("reading under row level security should not error");
+            let actual = support::openfga::check_allowed(
+                &client,
+                &format!("user:{principal}"),
+                "can_select",
+                &format!("{type_name}:{key}"),
+            )
+            .await;
+            assert_eq!(
+                actual, expected,
+                "{principal} on {table} as {type_name}:{key}"
             );
             if expected {
                 granted += 1;

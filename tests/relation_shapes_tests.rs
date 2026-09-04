@@ -23,7 +23,8 @@ use rls2fga::types::ConditionParameterName;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::TranslationNote;
 use rls2fga::types::{
-    BoundQuery, Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, ValueSource,
+    BoundQuery, Guard, RecordDerivation, RecordDescription, ReplayScope, SubjectKey, TypeName,
+    ValueSource,
 };
 use rls2fga::types::{ColumnName, RelationName, TableId};
 use rls2fga::types::{RelationShapes, RowDecision};
@@ -179,7 +180,7 @@ fn fixture_names() -> Vec<String> {
 
 fn declared_relations(
     model: &rls2fga::generator::json_model::AuthorizationModel,
-) -> BTreeSet<(String, RelationName)> {
+) -> BTreeSet<(TypeName, RelationName)> {
     model
         .type_definitions
         .iter()
@@ -193,14 +194,14 @@ fn declared_relations(
         .collect()
 }
 
-fn relation_key_from_object(object: &str) -> String {
+fn relation_key_from_object(object: &str) -> TypeName {
     object.split_once(':').map_or_else(
         || panic!("record object should be typed: {object}"),
-        |(type_name, _)| type_name.to_string(),
+        |(type_name, _)| TypeName::canonicalized(type_name),
     )
 }
 
-fn scope_relations(scope: &ReplayScope) -> Vec<(String, RelationName)> {
+fn scope_relations(scope: &ReplayScope) -> Vec<(TypeName, RelationName)> {
     match scope {
         ReplayScope::Object {
             object_type,
@@ -218,10 +219,10 @@ fn scope_relations(scope: &ReplayScope) -> Vec<(String, RelationName)> {
     }
 }
 
-fn description_relations(description: &RecordDescription) -> Vec<(String, RelationName)> {
+fn description_relations(description: &RecordDescription) -> Vec<(TypeName, RelationName)> {
     match &description.derivation {
         RecordDerivation::FromRow { template, .. } => {
-            vec![(template.object_type.to_string(), template.relation.clone())]
+            vec![(template.object_type.clone(), template.relation.clone())]
         }
         RecordDerivation::Constant { record } => {
             vec![(
@@ -435,14 +436,14 @@ fn every_relation_the_model_declares_is_reported() {
             &GeneratorSettings::default(),
         )
         .expect("translation should plan");
-        let reported: BTreeSet<(String, RelationName)> = planned
+        let reported: BTreeSet<(TypeName, RelationName)> = planned
             .relations()
             .iter()
-            .map(|entry| (entry.type_name.to_string(), entry.relation.clone()))
+            .map(|entry| (entry.type_name.clone(), entry.relation.clone()))
             .collect();
 
         let outputs = planned.clone().outputs_accepting_gaps();
-        let declared: BTreeSet<(String, RelationName)> = outputs
+        let declared: BTreeSet<(TypeName, RelationName)> = outputs
             .json_model()
             .type_definitions
             .iter()
@@ -471,7 +472,7 @@ fn every_relation_the_model_declares_is_reported() {
             };
             checked += 1;
             assert!(
-                reported.contains(&(template.object_type.to_string(), template.relation.clone())),
+                reported.contains(&(template.object_type.clone(), template.relation.clone())),
                 "{fixture}: {}#{} produces records yet is not reported",
                 template.object_type,
                 template.relation
@@ -640,7 +641,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
         .expect("translation should plan");
         // Keyed by type, not by table: the same table is the object's own in one shape
         // and the join table of another type's shape in the next.
-        let keys: Vec<(TableId, String, Vec<ColumnName>)> = planned
+        let keys: Vec<(TableId, TypeName, Vec<ColumnName>)> = planned
             .row_naming()
             .iter()
             .map(|naming| {
@@ -1246,9 +1247,9 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
     assert_eq!(
         queries[0].scope(),
         &ReplayScope::Subject {
-            subject_type: "user".to_string(),
+            subject_type: TypeName::canonicalized("user"),
             relation: member_relation(),
-            object_type: holder.type_name.as_str().to_string(),
+            object_type: holder.type_name.clone(),
         },
         "the replay determines what the one member holds through the holder"
     );
@@ -3198,7 +3199,7 @@ fn every_replay_declares_the_slice_its_result_determines() {
                             relations,
                         } => {
                             assert!(
-                                !object_type.is_empty() && !relations.is_empty(),
+                                !object_type.as_str().is_empty() && !relations.is_empty(),
                                 "{fixture}: {}#{} declares an empty object slice",
                                 entry.type_name,
                                 entry.relation
@@ -3756,7 +3757,7 @@ fn a_cross_row_residual_refuses_a_keyed_replay() {
             assert_eq!(
                 scope,
                 &ReplayScope::Object {
-                    object_type: "papers".to_string(),
+                    object_type: TypeName::canonicalized("papers"),
                     relations: vec![member_relation()],
                 },
                 "the result is the whole truth for the membership facts on papers"

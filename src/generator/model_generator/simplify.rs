@@ -24,8 +24,8 @@ pub(crate) fn rule_implies(
     rule: &UsersetExpr,
     visible: &UsersetExpr,
     plan: &TypePlan,
-    by_name: &BTreeMap<&str, &TypePlan>,
-    seen: &mut BTreeSet<(String, RelationName)>,
+    by_name: &BTreeMap<&TypeName, &TypePlan>,
+    seen: &mut BTreeSet<(TypeName, RelationName)>,
 ) -> bool {
     if rule == visible {
         return true;
@@ -42,7 +42,7 @@ pub(crate) fn rule_implies(
         // A named relation stands for its own definition. Levels of a role
         // hierarchy chain through here, and `seen` keeps a cycle from looping.
         UsersetExpr::Computed(name) => {
-            seen.insert((plan.type_name.to_string(), name.clone()))
+            seen.insert((plan.type_name.clone(), name.clone()))
                 && plan
                     .computed_relations
                     .get(name)
@@ -95,16 +95,16 @@ pub(crate) fn requires_read_access(expr: UsersetExpr) -> UsersetExpr {
 }
 
 /// Drop a `can_select` gate the rule already implies.
-pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     // A rule reaching its read through a pointer is answered on the type it points at, so
     // the whole plan is read while one type is rewritten.
     let snapshot: Vec<TypePlan> = all_types.values().cloned().collect();
-    let by_name: BTreeMap<&str, &TypePlan> = snapshot
+    let by_name: BTreeMap<&TypeName, &TypePlan> = snapshot
         .iter()
-        .map(|plan| (plan.type_name.as_str(), plan))
+        .map(|plan| (&plan.type_name, plan))
         .collect();
     for plan in all_types.values_mut() {
-        let Some(read) = by_name.get(plan.type_name.as_str()).copied() else {
+        let Some(read) = by_name.get(&plan.type_name).copied() else {
             continue;
         };
         let Some(visible) = read.computed_relations.get(&can_select_relation()) else {
@@ -126,7 +126,7 @@ pub(crate) fn simplify_redundant_select_gates(all_types: &mut BTreeMap<String, T
 
 /// Drop the readback relation where it repeats `can_insert`, since a relation
 /// that adds no requirement is noise.
-pub(crate) fn drop_implied_insert_readback(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn drop_implied_insert_readback(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     for plan in all_types.values_mut() {
         let repeats = plan
             .computed_relations
@@ -142,8 +142,8 @@ pub(crate) fn drop_implied_insert_readback(all_types: &mut BTreeMap<String, Type
 
 /// Inline a synthesized rule relation that is just another name for one relation on
 /// the same type. Only generated holders are disposable.
-pub(crate) fn inline_synthetic_rule_aliases(all_types: &mut BTreeMap<String, TypePlan>) {
-    let mut aliases: BTreeMap<String, BTreeMap<RelationName, RelationName>> = BTreeMap::new();
+pub(crate) fn inline_synthetic_rule_aliases(all_types: &mut BTreeMap<TypeName, TypePlan>) {
+    let mut aliases: BTreeMap<TypeName, BTreeMap<RelationName, RelationName>> = BTreeMap::new();
     for (type_name, plan) in all_types.iter() {
         for (relation, expr) in &plan.computed_relations {
             if !relation.as_str().starts_with(INHERITED_RELATION_PREFIX) {
@@ -188,7 +188,7 @@ pub(crate) fn repoint_inlined_aliases(
     expr: &mut UsersetExpr,
     direct_relations: &BTreeMap<RelationName, Vec<DirectSubject>>,
     own: Option<&BTreeMap<RelationName, RelationName>>,
-    aliases: &BTreeMap<String, BTreeMap<RelationName, RelationName>>,
+    aliases: &BTreeMap<TypeName, BTreeMap<RelationName, RelationName>>,
 ) {
     match expr {
         UsersetExpr::Computed(name) => {
@@ -226,12 +226,10 @@ pub(crate) fn repoint_inlined_aliases(
 /// Deliberately not [`grantable_relations`], which stops at a permission that grants
 /// nothing. A relation only a denial names still has to stay declared, or the model
 /// carries a reference to something it does not define.
-pub(crate) fn referenced_relations(types: &[TypePlan]) -> BTreeSet<(String, RelationName)> {
-    let by_name: BTreeMap<&str, &TypePlan> = types
-        .iter()
-        .map(|plan| (plan.type_name.as_str(), plan))
-        .collect();
-    let mut reached: BTreeSet<(String, RelationName)> = BTreeSet::new();
+pub(crate) fn referenced_relations(types: &[TypePlan]) -> BTreeSet<(TypeName, RelationName)> {
+    let by_name: BTreeMap<&TypeName, &TypePlan> =
+        types.iter().map(|plan| (&plan.type_name, plan)).collect();
+    let mut reached: BTreeSet<(TypeName, RelationName)> = BTreeSet::new();
     for plan in types {
         for action in action_relations().chain(derived_action_relations()) {
             if let Some(expr) = plan.computed_relations.get(&action) {
@@ -247,11 +245,11 @@ pub(crate) fn referenced_relations(types: &[TypePlan]) -> BTreeSet<(String, Rela
 ///
 /// An operator hand-writing their own facts for such a relation will no longer find it
 /// in the model, which is the point: it never did anything.
-pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, TypePlan>) {
+pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<TypeName, TypePlan>) {
     let types: Vec<TypePlan> = all_types.values().cloned().collect();
     let referenced = referenced_relations(&types);
     for plan in all_types.values_mut() {
-        let owner = plan.type_name.to_string();
+        let owner = plan.type_name.clone();
         plan.direct_relations
             .retain(|name, _| referenced.contains(&(owner.clone(), name.clone())));
         plan.computed_relations.retain(|name, _| {
@@ -266,14 +264,14 @@ pub(crate) fn prune_unreferenced_relations(all_types: &mut BTreeMap<String, Type
 /// relation poisons the whole write batch, so the source follows the pruning.
 /// Owned by the plan rather than one renderer, so the tuple SQL, the bound
 /// queries and the record descriptions all read the same levels.
-pub(crate) fn narrow_grant_sources_to_declared(all_types: &mut BTreeMap<String, TypePlan>) {
-    let declared: BTreeSet<(String, RelationName)> = all_types
+pub(crate) fn narrow_grant_sources_to_declared(all_types: &mut BTreeMap<TypeName, TypePlan>) {
+    let declared: BTreeSet<(TypeName, RelationName)> = all_types
         .values()
         .flat_map(|plan| {
             plan.direct_relations
                 .keys()
                 .chain(plan.computed_relations.keys())
-                .map(|relation| (plan.type_name.to_string(), relation.clone()))
+                .map(|relation| (plan.type_name.clone(), relation.clone()))
         })
         .collect();
     for plan in all_types.values_mut() {
@@ -341,12 +339,12 @@ pub(crate) fn grants_nothing(
 pub(crate) fn reach_userset(
     expr: &UsersetExpr,
     plan: &TypePlan,
-    by_name: &BTreeMap<&str, &TypePlan>,
-    reached: &mut BTreeSet<(String, RelationName)>,
+    by_name: &BTreeMap<&TypeName, &TypePlan>,
+    reached: &mut BTreeSet<(TypeName, RelationName)>,
 ) {
     match expr {
         UsersetExpr::Computed(name) => {
-            if !reached.insert((plan.type_name.to_string(), name.clone())) {
+            if !reached.insert((plan.type_name.clone(), name.clone())) {
                 return;
             }
             if let Some(inner) = plan.computed_relations.get(name) {
@@ -354,7 +352,7 @@ pub(crate) fn reach_userset(
             }
         }
         UsersetExpr::TupleToUserset { tupleset, computed } => {
-            reached.insert((plan.type_name.to_string(), tupleset.clone()));
+            reached.insert((plan.type_name.clone(), tupleset.clone()));
             // The walked relation is evaluated on every type the tupleset admits.
             for target in plan
                 .direct_relations
@@ -364,7 +362,7 @@ pub(crate) fn reach_userset(
                 .filter_map(DirectSubject::resolved_type_name)
                 .filter_map(|name| by_name.get(name))
             {
-                if !reached.insert((target.type_name.to_string(), computed.clone())) {
+                if !reached.insert((target.type_name.clone(), computed.clone())) {
                     continue;
                 }
                 if let Some(inner) = target.computed_relations.get(computed) {

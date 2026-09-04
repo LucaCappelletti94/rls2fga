@@ -44,7 +44,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     uncorrelated_membership: &UncorrelatedMembership,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -116,19 +116,19 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let holder_type = holder_type_name(member_table, table_types);
     // Named after the type it points at, as the parent link is.
     let holder_relation = table_plan.ensure_direct(
-        clamp_relation_name(holder_type.clone()),
+        clamp_relation_name(holder_type.to_string()),
         vec![DirectSubject::Type(holder_type.clone())],
     );
     if let Some((condition, context, identity_cols)) = witness {
         let share_type = share_type_name(member_table, table_types);
         let member_rel = {
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
-                TypePlan::new_with_well_known(&share_type, &table_plan.well_known)
+                TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
             });
             share_plan.ensure_direct(
                 member_relation(),
                 vec![DirectSubject::ConditionalType {
-                    type_name: table_plan.well_known.user.to_string(),
+                    type_name: table_plan.well_known.user.clone(),
                     condition: condition.clone(),
                 }],
             )
@@ -147,11 +147,11 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         if let Some(share_plan) = all_types.get_mut(&share_type) {
             share_plan.add_source(share_source);
         }
-        let holder_plan = all_types
-            .entry(holder_type.clone())
-            .or_insert_with(|| TypePlan::new_with_well_known(&holder_type, &table_plan.well_known));
+        let holder_plan = all_types.entry(holder_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(holder_type.clone(), &table_plan.well_known)
+        });
         let link = holder_plan.ensure_direct(
-            clamp_relation_name(share_type.clone()),
+            clamp_relation_name(share_type.to_string()),
             vec![DirectSubject::Type(share_type.clone())],
         );
         let witness_member = holder_plan.ensure_computed(
@@ -189,7 +189,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         holder_plan.add_direct_subject(
             &member_relation(),
             DirectSubject::ConditionalType {
-                type_name: table_plan.well_known.user.to_string(),
+                type_name: table_plan.well_known.user.clone(),
                 condition: gate.condition.clone(),
             },
         );
@@ -227,7 +227,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     exists_membership: &ExistsMembership,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -271,17 +271,15 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         (MembershipPairing::Single, [pair]) => {
             referenced_table_for_fk_col(db, join_table, &pair.join_column).map_or_else(
                 || parent_type_from_fk_column(pair.join_column.as_str()),
-                |referenced| table_types.resolve(&referenced).to_string(),
+                |referenced| table_types.resolve(&referenced),
             )
         }
         // The resolver never yields `Single` with any other width, so this arm
         // exists only to fall closed rather than panic.
         (MembershipPairing::Single, _) => return deny_expr(table_plan),
-        (MembershipPairing::ForeignKey { parent_table }, _) => {
-            table_types.resolve(parent_table).to_string()
-        }
+        (MembershipPairing::ForeignKey { parent_table }, _) => table_types.resolve(parent_table),
         // The outer columns are the guarded key, so the parent is the row itself.
-        (MembershipPairing::SelfKeyed, _) => table_plan.type_name.to_string(),
+        (MembershipPairing::SelfKeyed, _) => table_plan.type_name.clone(),
     };
     let outer_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.outer_column.clone()).collect();
 
@@ -337,7 +335,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     };
     let conditional_member = match &gate {
         Some((condition, _)) if witness.is_none() => Some(DirectSubject::ConditionalType {
-            type_name: table_plan.well_known.user.to_string(),
+            type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
         }),
         _ => None,
@@ -357,7 +355,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         if witness.is_none() {
             table_plan.ensure_direct(
                 member_relation(),
-                vec![DirectSubject::Type(table_plan.well_known.user.to_string())],
+                vec![DirectSubject::Type(table_plan.well_known.user.clone())],
             );
             if let Some(subject) = &conditional_member {
                 table_plan.add_direct_subject(&member_relation(), subject.clone());
@@ -373,7 +371,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             }
         } else {
             all_types.entry(parent_type.clone()).or_insert_with(|| {
-                TypePlan::new_with_well_known(&parent_type, &table_plan.well_known)
+                TypePlan::new_with_well_known(parent_type.clone(), &table_plan.well_known)
             });
         }
         // Only a declared reference names a table: the single-column fallback
@@ -403,12 +401,12 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         let share_type = share_type_name(join_table, table_types);
         let member_rel = {
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
-                TypePlan::new_with_well_known(&share_type, &table_plan.well_known)
+                TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
             });
             share_plan.ensure_direct(
                 member_relation(),
                 vec![DirectSubject::ConditionalType {
-                    type_name: table_plan.well_known.user.to_string(),
+                    type_name: table_plan.well_known.user.clone(),
                     condition: condition.clone(),
                 }],
             )
@@ -430,7 +428,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         let fk_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.join_column.clone()).collect();
         let (shares_link, witness_member) = if parent_type == table_plan.type_name.as_str() {
             let link = table_plan.ensure_direct(
-                clamp_relation_name(share_type.clone()),
+                clamp_relation_name(share_type.to_string()),
                 vec![DirectSubject::Type(share_type.clone())],
             );
             let witness_member = table_plan.ensure_computed(
@@ -446,7 +444,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                 return deny_expr(table_plan);
             };
             let link = parent_plan.ensure_direct(
-                clamp_relation_name(share_type.clone()),
+                clamp_relation_name(share_type.to_string()),
                 vec![DirectSubject::Type(share_type.clone())],
             );
             let witness_member = parent_plan.ensure_computed(
@@ -577,7 +575,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     parent_inheritance: &ParentInheritance,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -591,7 +589,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     let source_table = ctx.source_table;
     let table_types = ctx.table_types;
 
-    let parent_type = table_types.resolve(parent_table).to_string();
+    let parent_type = table_types.resolve(parent_table);
 
     // The relation is named after the parent type, but relation names have a
     // tighter length limit, so use the name the plan actually registered.
@@ -624,12 +622,12 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
             readability,
         )
     } else {
-        let parent_plan = all_types
-            .entry(parent_type.clone())
-            .or_insert_with(|| TypePlan::new_with_well_known(&parent_type, &table_plan.well_known));
+        let parent_plan = all_types.entry(parent_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(parent_type.clone(), &table_plan.well_known)
+        });
         let mut parent_plan_owned = core::mem::replace(
             parent_plan,
-            TypePlan::new_with_well_known(&parent_type, &table_plan.well_known),
+            TypePlan::new_with_well_known(parent_type.clone(), &table_plan.well_known),
         );
         let expr = translate_pattern(
             &inner_pattern.pattern,
@@ -641,7 +639,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
         );
         *all_types
             .entry(parent_type.clone())
-            .or_insert_with(|| TypePlan::new(&parent_type)) = parent_plan_owned;
+            .or_insert_with(|| TypePlan::new(parent_type.clone())) = parent_plan_owned;
         bind_row_source(all_types, &parent_type, parent_table, db);
         expr
     };
@@ -680,7 +678,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
                 all_types
                     .entry(parent_type.clone())
                     .or_insert_with(|| {
-                        TypePlan::new_with_well_known(&parent_type, &table_plan.well_known)
+                        TypePlan::new_with_well_known(parent_type.clone(), &table_plan.well_known)
                     })
                     .ensure_computed(name, expr)
             }
@@ -721,7 +719,7 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
     abac_and: &AbacAnd,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
@@ -759,7 +757,7 @@ pub(crate) fn emit_composite<DB: DatabaseLike>(
     composite: &Composite,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {

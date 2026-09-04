@@ -2244,7 +2244,7 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         naming
             .iter()
             .any(|entry| entry.type_name.as_str() != entry.table.name()
-                && entry.type_name.contains('_')),
+                && entry.type_name.as_str().contains('_')),
         "one table has to take a collision suffix: {naming:?}"
     );
     assert!(

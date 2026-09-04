@@ -1022,7 +1022,7 @@ CREATE POLICY b ON t_self FOR SELECT USING (editor_id = current_user);
         .translation()
         .row_naming()
         .iter()
-        .map(|naming| naming.type_name.clone())
+        .map(|naming| naming.type_name.to_string())
         .collect();
     let distinct: std::collections::BTreeSet<&String> = named.iter().collect();
     assert_eq!(

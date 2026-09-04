@@ -271,8 +271,8 @@ fn scope_relation_name(prefix: &str, key: &str) -> RelationName {
 }
 
 /// Infer the parent `OpenFGA` type from a foreign-key-like column name.
-pub fn parent_type_from_fk_column(fk_column: &str) -> String {
-    canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column)).to_string()
+pub fn parent_type_from_fk_column(fk_column: &str) -> TypeName {
+    canonical_fga_type_name(fk_column.strip_suffix("_id").unwrap_or(fk_column))
 }
 
 /// True when the name looks like a public-visibility column.

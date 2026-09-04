@@ -107,7 +107,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
         .json_model()
         .type_definitions
         .iter()
-        .map(|definition| definition.type_name.clone())
+        .map(|definition| definition.type_name.to_string())
         .collect();
     let tuples = format_tuples(outputs.tuple_queries());
     let report = outputs.report();

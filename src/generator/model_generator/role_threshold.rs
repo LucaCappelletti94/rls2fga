@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::generator::db_lookup::{TEAM_PRINCIPAL_TABLES, USER_PRINCIPAL_TABLES};
+use crate::types::TypeName;
 pub(super) struct RoleThresholdTables<'a> {
     pub(super) source: &'a TableId,
     pub(super) grant: &'a TableId,
@@ -18,7 +19,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     scope: &OwnerScope<'_>,
     table_plan: &mut TypePlan,
-    all_types: &mut BTreeMap<String, TypePlan>,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
 ) {
     let source_table = tables.source;
     let grant_table = tables.grant;
@@ -65,10 +66,10 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     let mut identities: Vec<TupleSource> = Vec::new();
     if let Some(upi) = user_principal.clone() {
         identities.push(TupleSource::OwnerIdentity {
-            owner_type: scope.type_name.to_string(),
+            owner_type: scope.type_name.clone(),
             principal_table: upi.table,
             principal_identity_col: upi.identity_col,
-            subject_type: table_plan.well_known.user.to_string(),
+            subject_type: table_plan.well_known.user.clone(),
             relation: owner_user_relation(),
         });
     } else {
@@ -81,10 +82,10 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     if has_team {
         if let Some(tpi) = team_principal.clone() {
             identities.push(TupleSource::OwnerIdentity {
-                owner_type: scope.type_name.to_string(),
+                owner_type: scope.type_name.clone(),
                 principal_table: tpi.table,
                 principal_identity_col: tpi.identity_col,
-                subject_type: table_plan.well_known.team.to_string(),
+                subject_type: table_plan.well_known.team.clone(),
                 relation: owner_team_relation(),
             });
         } else {
@@ -105,10 +106,10 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         };
         table_plan.add_source(membership_source.clone());
         all_types
-            .entry(table_plan.well_known.team.to_string())
+            .entry(table_plan.well_known.team.clone())
             .or_insert_with(|| {
                 TypePlan::new_with_well_known(
-                    table_plan.well_known.team.as_str(),
+                    table_plan.well_known.team.clone(),
                     &table_plan.well_known,
                 )
             })
@@ -126,7 +127,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         table_plan.add_source(TupleSource::ParentBridge {
             table: source_table.clone(),
             fk_cols: vec![scope.column.clone()],
-            parent_type: scope.type_name.to_string(),
+            parent_type: scope.type_name.clone(),
             relation: scope.pointer.clone(),
         });
     }
@@ -154,7 +155,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         .collect();
 
     let grants = TupleSource::ExplicitGrants {
-        owner_type: scope.type_name.to_string(),
+        owner_type: scope.type_name.clone(),
         grant_table: grant_table.clone(),
         grant_role_col: grant_role_col.clone(),
         grant_grantee_col: grant_grantee_col.clone(),

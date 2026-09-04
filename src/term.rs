@@ -40,7 +40,7 @@ use crate::parser::names::{lookup_table, resolve_table_id};
 use crate::parser::sql_parser::{DatabaseLike, TableLike};
 use crate::types::RelationShapes;
 use crate::types::TranslationNote;
-use crate::types::{RecordDerivation, RecordTemplate, ValueSource};
+use crate::types::{RecordDerivation, RecordTemplate, TypeName, ValueSource};
 use crate::types::{RelationName, TableId};
 
 /// What one subscription filter implies, in the vocabulary a change stream consumer
@@ -51,7 +51,7 @@ use crate::types::{RelationName, TableId};
 #[non_exhaustive]
 pub struct TermShapes {
     /// The type the filtered table maps to.
-    pub object_type: String,
+    pub object_type: TypeName,
     /// How a row of that type reaches the caller the filter admits it for.
     pub chain: TermChain,
     /// The relations the chain names, with the shapes whose records fill them. Same
@@ -81,7 +81,7 @@ pub enum TermChain {
         /// Relation on the filtered type whose subject is `through_type`.
         link: RelationName,
         /// The related type.
-        through_type: String,
+        through_type: TypeName,
         /// Relation on `through_type` whose records name the caller.
         member: RelationName,
     },
@@ -153,7 +153,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
                 db,
                 guarded_table,
                 &entry.type_name,
-                plan.well_known.user.as_str(),
+                &plan.well_known.user,
             )
             .map(|chain| (entry.type_name, chain))
         });
@@ -272,13 +272,13 @@ fn synthetic_policy<DB: DatabaseLike>(
 /// complete while the rule says otherwise.
 fn rule_beyond_the_chain(
     plan: &SchemaPlan,
-    object_type: &str,
+    object_type: &TypeName,
     chain: &TermChain,
 ) -> Option<String> {
     let rule = plan
         .types
         .iter()
-        .find(|type_plan| type_plan.type_name.as_str() == object_type)
+        .find(|type_plan| type_plan.type_name == *object_type)
         .and_then(|type_plan| type_plan.computed_relations.get(&can_select_relation()))?;
     let answered = match (rule, chain) {
         (UsersetExpr::Computed(name), TermChain::Direct { relation }) => name == relation,
@@ -325,12 +325,12 @@ fn derive_chain<DB: DatabaseLike>(
     relations: &[RelationShapes],
     db: &DB,
     guarded_table: &str,
-    object_type: &str,
-    user_type: &str,
+    object_type: &TypeName,
+    user_type: &TypeName,
 ) -> Result<TermChain, usize> {
-    let mut links: Vec<(RelationName, String)> = Vec::new();
+    let mut links: Vec<(RelationName, TypeName)> = Vec::new();
     for entry in relations {
-        if entry.type_name.as_str() != object_type {
+        if entry.type_name != *object_type {
             continue;
         }
         for shape in &entry.shapes {
@@ -343,7 +343,7 @@ fn derive_chain<DB: DatabaseLike>(
             if !same_table(db, table, guarded_table) || !links_out_of_its_own_row(entry, template) {
                 continue;
             }
-            links.push((entry.relation.clone(), template.subject_type.to_string()));
+            links.push((entry.relation.clone(), template.subject_type.clone()));
         }
     }
 
@@ -388,17 +388,17 @@ fn links_out_of_its_own_row(entry: &RelationShapes, template: &RecordTemplate) -
 /// The relation on `type_name` whose records name a caller, when exactly one does.
 fn member_relation(
     relations: &[RelationShapes],
-    type_name: &str,
-    user_type: &str,
+    type_name: &TypeName,
+    user_type: &TypeName,
 ) -> Option<RelationName> {
     let mut naming = relations.iter().filter(|entry| {
-        entry.type_name.as_str() == type_name
+        entry.type_name == *type_name
             && entry.shapes.iter().any(|shape| {
                 matches!(
                     &shape.derivation,
                     RecordDerivation::FromRow { template, .. }
-                        if template.object_type == type_name
-                            && template.subject_type == user_type
+                        if template.object_type == *type_name
+                            && template.subject_type == *user_type
                 )
             })
     });
@@ -410,17 +410,17 @@ fn member_relation(
 /// everything else the plan holds is policy vocabulary the filter never asked for.
 fn chain_relations(
     relations: &[RelationShapes],
-    object_type: &str,
+    object_type: &TypeName,
     chain: &TermChain,
 ) -> Vec<RelationShapes> {
     let wanted: Vec<(&str, &str)> = match chain {
-        TermChain::Direct { relation } => vec![(object_type, relation.as_str())],
+        TermChain::Direct { relation } => vec![(object_type.as_str(), relation.as_str())],
         TermChain::Through {
             link,
             through_type,
             member,
         } => vec![
-            (object_type, link.as_str()),
+            (object_type.as_str(), link.as_str()),
             (through_type.as_str(), member.as_str()),
         ],
     };
@@ -429,7 +429,7 @@ fn chain_relations(
         .filter_map(|(type_name, relation)| {
             relations
                 .iter()
-                .find(|entry| entry.type_name.as_str() == type_name && entry.relation == relation)
+                .find(|entry| entry.type_name == *type_name && entry.relation == relation)
                 .cloned()
         })
         .collect()
@@ -443,12 +443,12 @@ fn chain_relations(
 /// the filtered table instead.
 fn caller_side_table(
     relations: &[RelationShapes],
-    type_name: &str,
+    type_name: &TypeName,
     member: &RelationName,
 ) -> Option<String> {
     relations
         .iter()
-        .filter(|entry| entry.type_name.as_str() == type_name && entry.relation == *member)
+        .filter(|entry| entry.type_name == *type_name && entry.relation == *member)
         .flat_map(|entry| &entry.shapes)
         .find_map(|shape| match &shape.derivation {
             RecordDerivation::FromRow { table, .. } => Some(table.to_string()),
@@ -505,9 +505,13 @@ mod tests {
     fn a_type_naming_the_caller_twice_has_no_single_member_relation() {
         let one = [naming_user("orders", "customer", "orders")];
         assert_eq!(
-            member_relation(&one, "orders", WellKnownTypes::default().user().as_str())
-                .as_ref()
-                .map(RelationName::as_str),
+            member_relation(
+                &one,
+                &TypeName::canonicalized("orders"),
+                WellKnownTypes::default().user()
+            )
+            .as_ref()
+            .map(RelationName::as_str),
             Some("customer")
         );
 
@@ -516,7 +520,11 @@ mod tests {
             naming_user("orders", "buyer", "orders"),
         ];
         assert_eq!(
-            member_relation(&two, "orders", WellKnownTypes::default().user().as_str()),
+            member_relation(
+                &two,
+                &TypeName::canonicalized("orders"),
+                WellKnownTypes::default().user()
+            ),
             None
         );
     }
@@ -548,8 +556,8 @@ CREATE TABLE public."Memberships"(id INT PRIMARY KEY, user_id TEXT);
                     &[naming_user_from_table("memberships", "viewer", &stored,)],
                     &db,
                     guarded,
-                    "memberships",
-                    user.user().as_str(),
+                    &TypeName::canonicalized("memberships"),
+                    user.user(),
                 ),
                 Ok(expected.clone())
             );
@@ -558,8 +566,8 @@ CREATE TABLE public."Memberships"(id INT PRIMARY KEY, user_id TEXT);
                     &[naming_user_from_table("memberships", "viewer", &quoted,)],
                     &db,
                     guarded,
-                    "memberships",
-                    user.user().as_str(),
+                    &TypeName::canonicalized("memberships"),
+                    user.user(),
                 ),
                 Err(0)
             );

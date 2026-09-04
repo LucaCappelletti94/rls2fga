@@ -8,7 +8,7 @@ use crate::generator::model_generator::{
     ConditionParameter, DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
 use crate::generator::well_known::LIST_PARAMETER_TYPE;
-use crate::types::RelationName;
+use crate::types::{RelationName, TypeName};
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -40,8 +40,10 @@ pub struct Condition {
 /// A condition parameter's type, spelled the way the API names it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConditionParamType {
-    /// For example `TYPE_NAME_TIMESTAMP`.
-    pub type_name: String,
+    /// For example `TYPE_NAME_TIMESTAMP`. A `CEL` parameter type, not a model type, so it
+    /// carries no [`TypeName`].
+    #[serde(rename = "type_name")]
+    pub parameter_type: String,
     /// Element type of a list parameter, absent for a single value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generic_types: Option<Vec<ConditionParamType>>,
@@ -52,13 +54,13 @@ pub struct ConditionParamType {
 fn condition_param_type(kind: &ConditionParameter) -> ConditionParamType {
     match kind {
         ConditionParameter::Scalar(type_name) => ConditionParamType {
-            type_name: (*type_name).to_string(),
+            parameter_type: (*type_name).to_string(),
             generic_types: None,
         },
         ConditionParameter::ListOf(element) => ConditionParamType {
-            type_name: LIST_PARAMETER_TYPE.to_string(),
+            parameter_type: LIST_PARAMETER_TYPE.to_string(),
             generic_types: Some(vec![ConditionParamType {
-                type_name: (*element).to_string(),
+                parameter_type: (*element).to_string(),
                 generic_types: None,
             }]),
         },
@@ -70,7 +72,7 @@ fn condition_param_type(kind: &ConditionParameter) -> ConditionParamType {
 pub struct TypeDefinition {
     /// Type identifier.
     #[serde(rename = "type")]
-    pub type_name: String,
+    pub type_name: TypeName,
     /// Relation name → userset rewrite rule. `None` for types with no relations (e.g. `user`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations: Option<BTreeMap<RelationName, Userset>>,
@@ -98,7 +100,7 @@ pub struct RelationMetadata {
 pub struct RelationReference {
     /// Type identifier.
     #[serde(rename = "type")]
-    pub type_name: String,
+    pub type_name: TypeName,
     /// If `Some`, this reference represents the public wildcard (`type:*`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wildcard: Option<EmptyObject>,
@@ -225,7 +227,7 @@ pub(crate) fn json_model_from_plan(plan: &SchemaPlan) -> AuthorizationModel {
 fn type_plan_to_definition(plan: &TypePlan) -> TypeDefinition {
     if plan.direct_relations.is_empty() && plan.computed_relations.is_empty() {
         return TypeDefinition {
-            type_name: plan.type_name.to_string(),
+            type_name: plan.type_name.clone(),
             relations: None,
             metadata: None,
         };
@@ -287,7 +289,7 @@ fn type_plan_to_definition(plan: &TypePlan) -> TypeDefinition {
     }
 
     TypeDefinition {
-        type_name: plan.type_name.to_string(),
+        type_name: plan.type_name.clone(),
         relations: Some(relations),
         metadata: Some(TypeMetadata {
             relations: meta_relations,

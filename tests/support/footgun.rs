@@ -241,7 +241,7 @@ pub(crate) fn targets_of(
         .flat_map(|definition| definition.metadata.iter())
         .filter_map(|metadata| metadata.relations.get(tupleset))
         .flat_map(|relation| &relation.directly_related_user_types)
-        .map(|reference| reference.type_name.clone())
+        .map(|reference| reference.type_name.to_string())
         .collect()
 }
 

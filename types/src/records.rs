@@ -316,7 +316,7 @@ impl ObjectKey {
     /// so this refuses instead.
     pub(crate) fn render<R: RowValues + ?Sized>(
         &self,
-        object_type: &str,
+        object_type: &TypeName,
         row: &R,
     ) -> Result<Option<String>, RecordError> {
         match self.evaluate(object_type, row) {
@@ -326,7 +326,7 @@ impl ObjectKey {
         }
     }
 
-    fn evaluate<R: RowValues + ?Sized>(&self, object_type: &str, row: &R) -> Eval<String> {
+    fn evaluate<R: RowValues + ?Sized>(&self, object_type: &TypeName, row: &R) -> Eval<String> {
         let mut values = Vec::with_capacity(self.parts.len());
         for part in &self.parts {
             match single_value(part, row) {
@@ -437,7 +437,7 @@ impl SubjectKey {
     /// target accepts.
     pub fn render<R: RowValues + ?Sized>(
         &self,
-        subject_type: &str,
+        subject_type: &TypeName,
         row: &R,
     ) -> Result<Vec<String>, RecordError> {
         match self.evaluate(subject_type, row) {
@@ -447,7 +447,11 @@ impl SubjectKey {
         }
     }
 
-    fn evaluate<R: RowValues + ?Sized>(&self, subject_type: &str, row: &R) -> Eval<Vec<String>> {
+    fn evaluate<R: RowValues + ?Sized>(
+        &self,
+        subject_type: &TypeName,
+        row: &R,
+    ) -> Eval<Vec<String>> {
         if self.wildcard {
             return Eval::Value(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
         }
@@ -787,18 +791,18 @@ pub enum ReplayScope {
     /// Every fact `relations` state about objects of `object_type`.
     Object {
         /// Type the object belongs to.
-        object_type: String,
+        object_type: TypeName,
         /// The relations this query's rows can carry.
         relations: Vec<RelationName>,
     },
     /// Every fact `relation` grants on `object_type` rows to subjects of `subject_type`.
     Subject {
         /// Type the subject belongs to.
-        subject_type: String,
+        subject_type: TypeName,
         /// Relation the facts grant through.
         relation: RelationName,
         /// Type of the objects the facts are about.
-        object_type: String,
+        object_type: TypeName,
     },
 }
 
@@ -1021,10 +1025,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         }
     }
 
-    let object = match template
-        .object_key
-        .evaluate(template.object_type.as_str(), row)
-    {
+    let object = match template.object_key.evaluate(&template.object_type, row) {
         Eval::Value(object) => object,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
@@ -1059,10 +1060,7 @@ pub fn records_from_row<R: RowValues + ?Sized>(
         None => None,
     };
 
-    let subjects = match template
-        .subject_key
-        .evaluate(template.subject_type.as_str(), row)
-    {
+    let subjects = match template.subject_key.evaluate(&template.subject_type, row) {
         Eval::Value(subjects) => subjects,
         Eval::Empty => return Ok(Vec::new()),
         Eval::Refuse(error) => {
