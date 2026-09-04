@@ -521,6 +521,64 @@ async fn every_parity_case_agrees() {
             panic_message(joined)
         ));
     }
+    if let Err(joined) = tokio::spawn(a_definer_wrapper_answers_for_a_caller_without_the_grant(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "a_definer_wrapper_answers_for_a_caller_without_the_grant: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(a_restrictive_policy_binds_only_its_role(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "a_restrictive_policy_binds_only_its_role: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(one_policy_name_on_two_tables_keeps_two_comparisons(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "one_policy_name_on_two_tables_keeps_two_comparisons: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(two_viewers_of_one_paper_load_and_union(Arc::clone(
+        &cluster,
+    )))
+    .await
+    {
+        failures.push(format!(
+            "two_viewers_of_one_paper_load_and_union: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) = tokio::spawn(two_expiring_viewers_of_one_paper_gate_independently(
+        Arc::clone(&cluster),
+    ))
+    .await
+    {
+        failures.push(format!(
+            "two_expiring_viewers_of_one_paper_gate_independently: {}",
+            panic_message(joined)
+        ));
+    }
+    if let Err(joined) =
+        tokio::spawn(two_deadlines_need_one_witnessing_row(Arc::clone(&cluster))).await
+    {
+        failures.push(format!(
+            "two_deadlines_need_one_witnessing_row: {}",
+            panic_message(joined)
+        ));
+    }
     assert!(
         failures.is_empty(),
         "{} of {total} cases failed:\n{}",
@@ -530,7 +588,7 @@ async fn every_parity_case_agrees() {
 }
 
 /// The case names, so the count a failure reports is the count that ran.
-const CASES: [&str; 53] = [
+const CASES: [&str; 59] = [
     "the_runner_agrees_on_direct_ownership",
     "the_runner_agrees_on_membership",
     "the_runner_agrees_on_a_role_scoped_restriction",
@@ -584,6 +642,12 @@ const CASES: [&str; 53] = [
     "an_expiring_share_keeps_its_grace_period",
     "an_expiring_membership_row_gates_its_own_document",
     "an_expiring_holder_row_admits_the_caller_to_everything",
+    "a_definer_wrapper_answers_for_a_caller_without_the_grant",
+    "a_restrictive_policy_binds_only_its_role",
+    "one_policy_name_on_two_tables_keeps_two_comparisons",
+    "two_viewers_of_one_paper_load_and_union",
+    "two_expiring_viewers_of_one_paper_gate_independently",
+    "two_deadlines_need_one_witnessing_row",
 ];
 
 /// The message a panicking case left, so a failure reads like a test failure.
@@ -3246,6 +3310,374 @@ CREATE POLICY memos_p ON memos FOR SELECT USING (
         // Bob's one row is expired, so he reads nothing.
         ("bob", "memos:1", false),
         ("bob", "memos:2", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// The set attribute the viewer cases declare.
+const SUBJECTS_ONLY: &str = r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#;
+
+/// A caller identified only by the keys it holds as `app.subjects`.
+fn subject_holder(subject: &str, keys: &[&str]) -> Principal {
+    let mut principal = Principal::as_role(subject, "app_reader")
+        .with_context(serde_json::json!({ "app_subjects": keys }));
+    principal
+        .session
+        .push(("app.subjects".to_string(), keys.join(",")));
+    principal
+}
+
+/// Ported from `definer_membership_parity_postgres18_and_openfga`.
+///
+/// A `SECURITY DEFINER` wrapper around the membership EXISTS, called by the guarded table
+/// and by the membership table's own policy, so the self-reference `PostgreSQL` would
+/// refuse to plan runs as the owner. The third caller holds no grant on the membership
+/// table at all and the definer still answers for its docs.
+async fn a_definer_wrapper_answers_for_a_caller_without_the_grant(cluster: Arc<Cluster>) {
+    let reader = |subject: &str, login: &str| {
+        Principal::with_setting(subject, login, "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-definer-membership",
+        "definer_membership",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob'), ('carol');
+             INSERT INTO docs(id) VALUES ('d1'), ('d2');
+             INSERT INTO doc_members(id, doc_id, user_id) VALUES
+                 ('dm-alice', 'd1', 'alice'),
+                 ('dm-bob', 'd1', 'bob'),
+                 ('dm-carol', 'd2', 'carol')",
+            // Carol is deliberately given nothing on the membership table.
+            "CREATE ROLE app_alice LOGIN;
+             GRANT SELECT ON docs, doc_members TO app_alice;
+             CREATE ROLE app_bob LOGIN;
+             GRANT SELECT ON docs, doc_members TO app_bob;
+             CREATE ROLE app_carol LOGIN;
+             GRANT SELECT ON docs TO app_carol",
+        ],
+        vec![
+            reader("alice", "app_alice"),
+            reader("bob", "app_bob"),
+            reader("carol", "app_carol"),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "docs:d1", true),
+        ("alice", "docs:d2", false),
+        ("bob", "docs:d1", true),
+        ("carol", "docs:d2", true),
+        ("carol", "docs:d1", false),
+        // The membership policy calls the same wrapper, so a member of d1 sees both rows.
+        ("alice", "doc_members:dm-bob", true),
+        ("alice", "doc_members:dm-carol", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `role_scoped_restrictive_parity_postgres18_and_openfga`.
+///
+/// A RESTRICTIVE policy scoped to `contractor` binds only that role, so an owner outside
+/// it keeps the read the permissive policy grants.
+async fn a_restrictive_policy_binds_only_its_role(cluster: Arc<Cluster>) {
+    let reader = |subject: &str, login: &str| {
+        Principal::with_setting(subject, login, "app.current_user_id", subject)
+    };
+    let case = ParityCase::from_fixture(
+        "runner-role-scoped-restrictive",
+        "role_scoped_restrictive",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, owner_id, reviewer_id) VALUES
+                 ('note-reviewed', 'alice', 'alice'),
+                 ('note-unreviewed', 'alice', 'bob'),
+                 ('note-outside-the-role', 'bob', 'alice')",
+            "CREATE ROLE app_alice LOGIN;
+             GRANT SELECT ON users, notes TO app_alice;
+             GRANT contractor TO app_alice;
+             CREATE ROLE app_bob LOGIN;
+             GRANT SELECT ON users, notes TO app_bob",
+        ],
+        vec![
+            reader("alice", "app_alice").holding(&["contractor"]),
+            reader("bob", "app_bob"),
+        ],
+    )
+    .after(&["CREATE ROLE contractor"]);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "notes:note-reviewed", true),
+        // Alice owns it and is a contractor, but is not its reviewer.
+        ("alice", "notes:note-unreviewed", false),
+        ("alice", "notes:note-outside-the-role", false),
+        // Bob owns it and the barrier does not reach him.
+        ("bob", "notes:note-outside-the-role", true),
+        ("bob", "notes:note-reviewed", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `shared_policy_name_condition_parity_postgres18_and_openfga`.
+///
+/// One policy name on two tables, comparing against the clock in opposite directions. A
+/// condition named after the policy would collide, and one table would answer with the
+/// other's comparison.
+async fn one_policy_name_on_two_tables_keeps_two_comparisons(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-shared-policy-name",
+        "
+CREATE TABLE campaigns (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL);
+CREATE TABLE embargoes (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL);
+ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE embargoes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY visible_now ON campaigns FOR SELECT TO PUBLIC USING (at <= now());
+CREATE POLICY visible_now ON embargoes FOR SELECT TO PUBLIC USING (at > now());
+",
+        &[
+            "INSERT INTO campaigns (id, at) VALUES
+                 ('c-running', now() - interval '1 day'),
+                 ('c-upcoming', now() + interval '1 day');
+             INSERT INTO embargoes (id, at) VALUES
+                 ('e-held', now() + interval '1 day'),
+                 ('e-lifted', now() - interval '1 day')",
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON campaigns, embargoes TO app_user",
+        ],
+        vec![Principal::as_role("app_user", "app_user").with_clock()],
+    )
+    .also_at(
+        "1 year",
+        "SELECT 'app_user'::text AS subject, 'campaigns:' || id AS object
+         FROM campaigns WHERE at <= $1::timestamptz
+         UNION ALL
+         SELECT 'app_user'::text AS subject, 'embargoes:' || id AS object
+         FROM embargoes WHERE at > $1::timestamptz",
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    // The two comparisons are mirror images, so a collision shows as a swapped answer.
+    for (object, visible) in [
+        ("campaigns:c-running", true),
+        ("campaigns:c-upcoming", false),
+        ("embargoes:e-held", true),
+        ("embargoes:e-lifted", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "app_user",
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `two_viewers_of_one_paper_load_and_union_parity_postgres18_and_openfga`.
+///
+/// A paper shared to two viewers must load and union rather than collide. Keying every
+/// share tuple on the paper put both viewers on one triple, which `OpenFGA` refuses as a
+/// duplicate write, so the load itself is half the assertion.
+async fn two_viewers_of_one_paper_load_and_union(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-two-viewers-of-one-paper",
+        "
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (paper_id INT, viewer TEXT, PRIMARY KEY (paper_id, viewer));
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+    )
+);
+CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
+",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice'), (2, 'bob');
+             INSERT INTO paper_shares (paper_id, viewer) VALUES
+                 (1, 'viewer_x'), (1, 'viewer_y'), (2, 'viewer_z')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![
+            subject_holder("viewer_x", &["viewer_x"]),
+            subject_holder("viewer_y", &["viewer_y"]),
+            subject_holder("viewer_z", &["viewer_z"]),
+        ],
+    )
+    .with_attributes(SUBJECTS_ONLY);
+    // The share table's own row security is disclosed, and the answers still agree: its
+    // policy exposes every share, so the loader reads what each caller would.
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("viewer_x", "papers:1", true),
+        ("viewer_y", "papers:1", true),
+        ("viewer_x", "papers:2", false),
+        ("viewer_z", "papers:2", true),
+        ("viewer_z", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_only_disagreements(&case, &run, &[]);
+}
+
+/// Ported from
+/// `two_expiring_viewers_of_one_paper_gate_independently_parity_postgres18_and_openfga`.
+///
+/// Two shares of one paper, each carrying its own deadline, so one viewer's expiry must
+/// not take the other's grant with it.
+async fn two_expiring_viewers_of_one_paper_gate_independently(cluster: Arc<Cluster>) {
+    let holder = |subject: &str| subject_holder(subject, &[subject]).with_clock();
+    let case = ParityCase::reading(
+        "runner-two-expiring-viewers",
+        r"
+CREATE TABLE papers (id INT PRIMARY KEY, owner TEXT);
+CREATE TABLE paper_shares (
+    paper_id INT,
+    viewer TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (paper_id, viewer)
+);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
+CREATE POLICY papers_p ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))
+          AND s.expires_at > now()
+    )
+);
+",
+        &[
+            "INSERT INTO papers (id, owner) VALUES (1, 'alice');
+             INSERT INTO paper_shares (paper_id, viewer, expires_at) VALUES
+                 (1, 'viewer_live', now() + interval '1 day'),
+                 (1, 'viewer_gone', now() - interval '1 day')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, paper_shares TO app_reader",
+        ],
+        vec![holder("viewer_live"), holder("viewer_gone")],
+    )
+    .with_attributes(SUBJECTS_ONLY)
+    .also_at(
+        "1 year",
+        "SELECT c.subject, 'papers:' || p.id AS object
+         FROM papers p
+         CROSS JOIN (VALUES ('viewer_live', 'viewer_live'), ('viewer_gone', 'viewer_gone'))
+             AS c(subject, keys)
+         WHERE EXISTS (
+             SELECT 1 FROM paper_shares s
+             WHERE s.paper_id = p.id
+               AND s.viewer = ANY(string_to_array(c.keys, ','))
+               AND s.expires_at > $1::timestamptz)
+         UNION ALL
+         SELECT c.subject, 'paper_shares:' || s.paper_id || '|' || s.viewer AS object
+         FROM paper_shares s
+         CROSS JOIN (VALUES ('viewer_live'), ('viewer_gone')) AS c(subject)",
+    );
+    // The share table's own row security is disclosed, and the answers still agree.
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for (subject, visible) in [("viewer_live", true), ("viewer_gone", false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            "papers:1",
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    support::parity::assert_only_disagreements(&case, &run, &[]);
+}
+
+/// Ported from `two_deadline_witness_parity_postgres18_and_openfga`.
+///
+/// Two deadlines on a membership table whose rows are not uniquely keyed by
+/// `(doc, user)`. `PostgreSQL` grants only where one single row passes both comparisons,
+/// so a model compressing the rows per column grants Bob, whose two rows each pass one
+/// comparison and fail the other.
+async fn two_deadlines_need_one_witnessing_row(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-two-deadline-witness",
+        "
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE members (
+    id INT PRIMARY KEY,
+    doc_id INT NOT NULL REFERENCES docs(id),
+    user_id TEXT NOT NULL,
+    trial_ends TIMESTAMPTZ NOT NULL,
+    support_ends TIMESTAMPTZ NOT NULL
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR SELECT USING (
+    EXISTS (
+        SELECT 1 FROM members m
+        WHERE m.doc_id = docs.id AND m.user_id = current_user
+          AND m.trial_ends > now() AND m.support_ends > now()
+    )
+);
+",
+        &[
+            // Bob's two rows each pass one comparison, Carol's one row passes both.
+            "INSERT INTO docs (id) VALUES (1), (2);
+             INSERT INTO members (id, doc_id, user_id, trial_ends, support_ends) VALUES
+                 (1, 1, 'bob', now() + interval '10 days', now() - interval '10 days'),
+                 (2, 1, 'bob', now() - interval '10 days', now() + interval '10 days'),
+                 (3, 1, 'carol', now() + interval '10 days', now() + interval '10 days'),
+                 (4, 2, 'carol', now() + interval '10 days', now() - interval '10 days')",
+            "CREATE ROLE bob LOGIN; CREATE ROLE carol LOGIN;
+             GRANT SELECT ON docs, members TO bob, carol",
+        ],
+        vec![
+            Principal::as_role("bob", "bob").with_clock(),
+            Principal::as_role("carol", "carol").with_clock(),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        // Each column's latest value alone would admit Bob, one row does not.
+        ("bob", "docs:1", false),
+        ("carol", "docs:1", true),
+        ("carol", "docs:2", false),
     ] {
         support::parity::assert_postgres(
             &case,
