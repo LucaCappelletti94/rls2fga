@@ -19,8 +19,8 @@ use testcontainers::{ContainerAsync, GenericImage};
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
 use rls2fga::types::{
-    records_from_row, ActionAnswer, ActionRelations, ActionStatement, ConfidenceLevel, RowNaming,
-    RowVersion, TableId, ValueSource,
+    records_from_row, ActionAnswer, ActionRelations, ActionStatement, ConfidenceLevel,
+    NoteSeverity, RowNaming, RowVersion, TableId, TranslationNote, ValueSource,
 };
 
 use super::openfga;
@@ -275,6 +275,8 @@ pub(crate) struct Mismatch {
     pub(crate) subject: String,
     /// The object, as the model names it.
     pub(crate) object: String,
+    /// The table that object is a row of, so a note naming a table can be matched to it.
+    pub(crate) table: String,
     /// The statement compared.
     pub(crate) statement: ActionStatement,
     /// What the database answered.
@@ -295,8 +297,41 @@ impl Mismatch {
 pub(crate) struct Run {
     /// Every compared pair, in the order the runner walked them.
     pub(crate) observations: Vec<Mismatch>,
-    /// What the translation said diverges, so a case can require its own gap by name.
-    pub(crate) disclosures: Vec<String>,
+    /// What the translation said diverges, each with what it licenses.
+    pub(crate) disclosures: Vec<Disclosure>,
+}
+
+/// Which way a divergence may go, since a gap is not symmetric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    /// The model answers less than the database. A dropped clause can only do this.
+    Narrower,
+    /// The model answers more. Only a note that says so licenses it.
+    Wider,
+}
+
+/// Where a note says the divergence is, and which way it goes.
+#[derive(Debug, Clone)]
+pub(crate) enum Licence {
+    /// A table, the commands affected, and the direction. The commands are empty where
+    /// the note names none, which then covers every statement on that table.
+    Located {
+        table: String,
+        commands: Vec<String>,
+        direction: Direction,
+    },
+    /// A note that names no guarded table, so it licenses its direction anywhere in the
+    /// case. `MembershipTableGuarded` names the membership table rather than the guarded
+    /// one, and two more name only their policy, so none of them can be placed.
+    Anywhere { direction: Direction },
+}
+
+/// One diverging note, as the property reads it.
+#[derive(Debug, Clone)]
+pub(crate) struct Disclosure {
+    /// The sentence, for a case that requires its gap by name.
+    pub(crate) text: String,
+    pub(crate) licence: Licence,
 }
 
 impl Run {
@@ -880,11 +915,11 @@ async fn run_in(
         &GeneratorSettings::default(),
     )
     .expect("translation should plan");
-    let disclosed: Vec<String> = planned
+    let disclosed: Vec<Disclosure> = planned
         .notes()
         .iter()
         .filter(|note| note.severity().diverges_from_database())
-        .map(ToString::to_string)
+        .map(licence_of)
         .collect();
     match expectation {
         Class::Exact => assert!(
@@ -893,7 +928,7 @@ async fn run_in(
              question. Outside the exactly supported class the property is disclosure, not \
              equality:\n{}",
             case.name,
-            disclosed.join("\n")
+            sentences(&disclosed)
         ),
         Class::Disclosed => assert!(
             !disclosed.is_empty(),
@@ -996,6 +1031,7 @@ async fn run_in(
                 observations.push(Mismatch {
                     subject: principal.subject.clone(),
                     object: object.name.clone(),
+                    table: object.table.clone(),
                     statement,
                     postgres,
                     openfga,
@@ -1024,35 +1060,11 @@ pub(crate) async fn run_disclosing(cluster: &Cluster, case: &ParityCase) -> Run 
     run_with(cluster, case, Class::Disclosed, |answers| answers).await
 }
 
-/// Fail if the model grants anything the database denies.
-///
-/// The property for a disclosed case: a clause the threshold dropped can only make the
-/// model narrower, so an over-grant is a defect however loudly it was disclosed.
-pub(crate) fn assert_no_over_grant(case: &ParityCase, run: &Run) {
-    let over: Vec<_> = run
-        .observations
-        .iter()
-        .filter(|observation| observation.openfga && !observation.postgres)
-        .map(ToString::to_string)
-        .collect();
-    assert!(
-        over.is_empty(),
-        "{}: the model grants what the database denies:\n{}",
-        case.name,
-        over.join("\n")
-    );
-    assert!(
-        run.compared() > 0,
-        "{}: nothing was compared, so narrowness means nothing",
-        case.name
-    );
-}
-
 /// Refuse any disagreement outside `expected`, and refuse an expected one that agreed.
 ///
-/// Narrower than [`assert_no_over_grant`] for a disclosed case whose divergence is known
-/// row by row: it also fails when the model denies something else it used to grant. An
-/// empty `expected` asks for parity from a case that discloses anyway.
+/// Narrower than [`assert_disclosed_where_noted`] for a disclosed case whose divergence is
+/// known row by row: it also fails when the model denies something else it used to grant.
+/// An empty `expected` asks for parity from a case that discloses anyway.
 pub(crate) fn assert_only_disagreements(
     case: &ParityCase,
     run: &Run,
@@ -1147,10 +1159,10 @@ pub(crate) fn assert_discloses(case: &ParityCase, run: &Run, named: &[&str]) {
         assert!(
             run.disclosures
                 .iter()
-                .any(|disclosure| disclosure.contains(name)),
+                .any(|disclosure| disclosure.text.contains(name)),
             "{}: nothing discloses '{name}', so falling closed there is silent:\n{}",
             case.name,
-            run.disclosures.join("\n")
+            sentences(&run.disclosures)
         );
     }
 }
@@ -1225,6 +1237,7 @@ async fn compare_at_future_instant(
             observations.push(Mismatch {
                 subject: principal.subject.clone(),
                 object: object.name.clone(),
+                table: object.table.clone(),
                 statement: ActionStatement::Select,
                 postgres,
                 openfga,
@@ -1540,4 +1553,155 @@ fn names_the_same_table(table: &TableId, spelling: &str) -> bool {
 /// One identifier with its quotes removed, which is not an unquoting of embedded ones.
 fn unquote(spelling: &str) -> &str {
     spelling.trim_matches('"')
+}
+
+/// The sentences of a set of disclosures, for a failure that has to show them.
+fn sentences(disclosures: &[Disclosure]) -> String {
+    disclosures
+        .iter()
+        .map(|disclosure| disclosure.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What one diverging note licenses, and where.
+///
+/// Read off the note's own fields rather than its prose. The direction is the note's
+/// meaning, not its severity: a dropped clause can only narrow, while a guard left to the
+/// caller and a membership table the loader reads as owner both widen, so severity alone
+/// would license the wrong direction for half of them.
+fn licence_of(note: &TranslationNote) -> Disclosure {
+    let licence = match note {
+        // A clause the threshold dropped, and the commands it fed. The machine readable
+        // channel exists for exactly this.
+        TranslationNote::ClauseBelowThreshold {
+            table, commands, ..
+        }
+        | TranslationNote::CoveringPoliciesBelowThreshold { table, commands } => Licence::Located {
+            table: table.sql_name(),
+            commands: commands.clone(),
+            direction: Direction::Narrower,
+        },
+
+        // Two that widen and cannot be placed. The membership table's own security decides
+        // which rows a caller sees while the loader reads them as the owner, and it names
+        // that table rather than the guarded one. The hybrid leaves its attribute guard to
+        // the caller and names only its policy.
+        TranslationNote::MembershipTableGuarded { .. }
+        | TranslationNote::AttributeNeedsRuntimeEnforcement { .. } => Licence::Anywhere {
+            direction: Direction::Wider,
+        },
+        // NULL rows fall closed. Names its policy alone.
+        TranslationNote::NullableBooleanFlagNarrowed { .. } => Licence::Anywhere {
+            direction: Direction::Narrower,
+        },
+        // Three that narrow and name their table: the parent reads its own rows only, so
+        // its children's fall closed on that type, and an expression nobody classified
+        // denies what the database may grant.
+        TranslationNote::InheritanceParentReadsOwnRowsOnly { table, .. }
+        | TranslationNote::BridgeColumnMissing { table, .. }
+        | TranslationNote::RowsCannotBeNamed { table, .. } => Licence::Located {
+            table: table.sql_name(),
+            commands: Vec::new(),
+            direction: Direction::Narrower,
+        },
+        other if other.severity() == NoteSeverity::Unhandled => Licence::Anywhere {
+            direction: Direction::Narrower,
+        },
+        // A note this has not read licenses nothing: the point of the property is that
+        // nothing diverges unnoticed.
+        other => panic!(
+            "a diverging note this property cannot read licenses nothing: {other}\n\
+             give it a licence, or the divergence it stands for is excused everywhere"
+        ),
+    };
+    Disclosure {
+        text: note.to_string(),
+        licence,
+    }
+}
+
+/// Fail unless every disagreement sits where a note puts it and goes the way it says.
+///
+/// The property a disclosed case is held to. Requiring merely that *some* note exists
+/// let one dropped clause excuse a mismatch anywhere in the schema, which is the hole
+/// this closes: a note names a table and the commands it fed, and a mismatch elsewhere is
+/// unlicensed however loudly the case discloses something else.
+pub(crate) fn assert_disclosed_where_noted(case: &ParityCase, run: &Run) {
+    let unlicensed: Vec<String> = run
+        .mismatches()
+        .into_iter()
+        .filter(|mismatch| !licensed(mismatch, &run.disclosures))
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        unlicensed.is_empty(),
+        "{}: no note puts a divergence here, or it goes the other way:\n{}\ndisclosed:\n{}",
+        case.name,
+        unlicensed.join("\n"),
+        sentences(&run.disclosures)
+    );
+    assert!(
+        run.compared() > 0,
+        "{}: nothing was compared, so disclosure means nothing",
+        case.name
+    );
+}
+
+/// Whether some note licenses this disagreement.
+///
+/// A widening needs a note that names the table. Three notes widen without naming one, and
+/// honouring those anywhere would accept every over-grant in the case, which is what the
+/// property this replaces at least refused. Placing them means carrying the guarded table on
+/// the note, so until then a widening they stand for fails and says so.
+fn licensed(mismatch: &Mismatch, disclosures: &[Disclosure]) -> bool {
+    let direction = if mismatch.openfga {
+        Direction::Wider
+    } else {
+        Direction::Narrower
+    };
+    disclosures
+        .iter()
+        .any(|disclosure| match &disclosure.licence {
+            Licence::Anywhere { direction: allowed } => {
+                *allowed == direction && direction == Direction::Narrower
+            }
+            Licence::Located {
+                table,
+                commands,
+                direction: allowed,
+            } => {
+                *allowed == direction
+                    && *table == mismatch.table
+                    && (commands.is_empty()
+                        || commands
+                            .iter()
+                            .any(|command| statement_reads(mismatch.statement, command)))
+            }
+        })
+}
+
+/// Whether a policy on `command` decides `statement`.
+///
+/// `PostgreSQL`'s rule, and the generator's: a per-row `UPDATE` or `DELETE` names the row it
+/// changes, so the `SELECT` policies apply and those relations intersect the read. A dropped
+/// `SELECT` clause therefore explains a narrower write as well. A blanket `UPDATE` names no
+/// row and reads nothing, so it stays `UPDATE` alone. A locking read applies the `UPDATE`
+/// policies on top of the `SELECT` ones, and every `INSERT` shape is decided by the `INSERT`
+/// policy, with the readback and the upsert adding what they read back.
+fn statement_reads(statement: ActionStatement, command: &str) -> bool {
+    match statement {
+        ActionStatement::Select => command == "SELECT",
+        ActionStatement::SelectForUpdate | ActionStatement::Update => {
+            command == "SELECT" || command == "UPDATE"
+        }
+        ActionStatement::Delete => command == "SELECT" || command == "DELETE",
+        ActionStatement::UpdateWithoutWhere => command == "UPDATE",
+        ActionStatement::Insert => command == "INSERT",
+        ActionStatement::InsertReturning => command == "INSERT" || command == "SELECT",
+        ActionStatement::InsertOnConflictUpdate => {
+            command == "INSERT" || command == "SELECT" || command == "UPDATE"
+        }
+        _ => false,
+    }
 }
