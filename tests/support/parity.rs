@@ -97,6 +97,9 @@ pub(crate) struct ParityCase {
     pub(crate) principals: Vec<Principal>,
     /// Per table, keyed by the schema spelling, what a write would attempt.
     pub(crate) mutations: BTreeMap<String, Mutations>,
+    /// Accessor metadata the deployment declares, as a fixture's
+    /// `function_registry.json` holds it.
+    pub(crate) registry_json: Option<String>,
 }
 
 impl ParityCase {
@@ -114,12 +117,33 @@ impl ParityCase {
             seed: seed.iter().map(|sql| (*sql).to_string()).collect(),
             principals,
             mutations: BTreeMap::new(),
+            registry_json: None,
         }
     }
 
     /// The same case, with statements applied before the schema.
     pub(crate) fn after(mut self, prelude: &[&str]) -> Self {
         self.prelude = prelude.iter().map(|sql| (*sql).to_string()).collect();
+        self
+    }
+
+    /// The same case, reading its schema and registry from a fixture directory.
+    pub(crate) fn from_fixture(
+        name: &str,
+        fixture: &str,
+        seed: &[&str],
+        principals: Vec<Principal>,
+    ) -> Self {
+        let mut case = Self::reading(name, &super::read_fixture_sql(fixture), seed, principals);
+        case.registry_json =
+            std::fs::read_to_string(super::fixture_dir(fixture).join("function_registry.json"))
+                .ok();
+        case
+    }
+
+    /// The same case, with the accessor metadata its deployment declares.
+    pub(crate) fn with_registry(mut self, registry_json: &str) -> Self {
+        self.registry_json = Some(registry_json.to_string());
         self
     }
 
@@ -130,7 +154,7 @@ impl ParityCase {
     }
 }
 
-/// One disagreement, named so a failure says which pair it was.
+/// One compared pair and both answers.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Mismatch {
     /// The caller.
@@ -143,6 +167,52 @@ pub(crate) struct Mismatch {
     pub(crate) postgres: bool,
     /// What the model answered.
     pub(crate) openfga: bool,
+}
+
+impl Mismatch {
+    /// Whether the two sides answered differently.
+    pub(crate) fn disagrees(&self) -> bool {
+        self.postgres != self.openfga
+    }
+}
+
+/// Everything one case observed.
+#[derive(Debug)]
+pub(crate) struct Run {
+    /// Every compared pair, in the order the runner walked them.
+    pub(crate) observations: Vec<Mismatch>,
+}
+
+impl Run {
+    /// The pairs the two sides answered differently about.
+    pub(crate) fn mismatches(&self) -> Vec<&Mismatch> {
+        self.observations
+            .iter()
+            .filter(|observation| observation.disagrees())
+            .collect()
+    }
+
+    /// What the database answered for one pair, absent where the runner did not compare it.
+    pub(crate) fn postgres_answered(
+        &self,
+        subject: &str,
+        object: &str,
+        statement: ActionStatement,
+    ) -> Option<bool> {
+        self.observations
+            .iter()
+            .find(|observation| {
+                observation.subject == subject
+                    && observation.object == object
+                    && observation.statement == statement
+            })
+            .map(|observation| observation.postgres)
+    }
+
+    /// How many pairs were compared, which is what stops a case passing vacuously.
+    pub(crate) fn compared(&self) -> usize {
+        self.observations.len()
+    }
 }
 
 impl std::fmt::Display for Mismatch {
@@ -236,6 +306,28 @@ fn objects(conn: &mut PgConnection, naming: &[RowNaming]) -> Vec<Object> {
     out
 }
 
+#[derive(QueryableByName)]
+struct Granted {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    granted: bool,
+}
+
+/// Whether `role` holds `privilege` on `table`.
+///
+/// A table privilege is not row-level security and the model says nothing about it, so a
+/// pair the caller cannot reach at all is not one to compare. Asked of `PostgreSQL` rather
+/// than inferred from an error, so a missing privilege on a table a *policy* reads still
+/// raises and is reported.
+fn holds_privilege(conn: &mut PgConnection, role: &str, table: &str, privilege: &str) -> bool {
+    let answered: Granted = diesel::sql_query("SELECT has_table_privilege($1, $2, $3) AS granted")
+        .bind::<diesel::sql_types::Text, _>(role)
+        .bind::<diesel::sql_types::Text, _>(table)
+        .bind::<diesel::sql_types::Text, _>(privilege)
+        .get_result(conn)
+        .unwrap_or_else(|error| panic!("asking whether {role} may {privilege} {table}: {error}"));
+    answered.granted
+}
+
 /// Switch to the caller's role and apply its session values, local to the transaction.
 fn become_principal(conn: &mut PgConnection, principal: &Principal) -> QueryResult<()> {
     diesel::sql_query(format!("SET LOCAL ROLE {}", principal.login_role)).execute(conn)?;
@@ -261,6 +353,15 @@ fn postgres_allows(
 ) -> Option<bool> {
     let table = &object.table;
     let predicate = &object.predicate;
+    let privilege = match statement {
+        ActionStatement::Select => "SELECT",
+        ActionStatement::SelectForUpdate | ActionStatement::Update => "UPDATE",
+        ActionStatement::Delete => "DELETE",
+        _ => return None,
+    };
+    if !holds_privilege(conn, &principal.login_role, table, privilege) {
+        return None;
+    }
     let sql = match statement {
         ActionStatement::Select => {
             format!("SELECT count(*) AS rows FROM {table} WHERE {predicate}")
@@ -346,10 +447,24 @@ async fn openfga_allows(
 ///
 /// `doctor` sees the translation's own statement answers before they are used, which is
 /// how a test plants a divergence the runner has to find.
+/// Which property a case is asserting.
+///
+/// The notes come from the translator under test, so they cannot be the pass condition.
+/// They can say which of two properties applies, which is a question about the notes
+/// themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Class {
+    /// Inside the exactly supported class: the two sides must agree, note or no note.
+    Exact,
+    /// Outside it: the translation must say so, and the model may only be narrower.
+    Disclosed,
+}
+
 pub(crate) async fn run_with(
     case: &ParityCase,
+    expectation: Class,
     doctor: impl FnOnce(Vec<ActionRelations>) -> Vec<ActionRelations>,
-) -> Vec<Mismatch> {
+) -> Run {
     let postgres = super::containers::start_postgres().await;
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let pg_url = format!(
@@ -371,7 +486,8 @@ pub(crate) async fn run_with(
             .unwrap_or_else(|error| panic!("{}: seed {sql}: {error}", case.name));
     }
 
-    let (classified, db, registry) = super::classify_sql(&case.schema, None);
+    let (classified, db, registry) =
+        super::classify_sql(&case.schema, case.registry_json.as_deref());
     let planned = Translation::plan(
         classified,
         &db,
@@ -386,14 +502,22 @@ pub(crate) async fn run_with(
         .filter(|note| note.severity().diverges_from_database())
         .map(ToString::to_string)
         .collect();
-    assert!(
-        disclosed.is_empty(),
-        "{}: the translation already says it diverges here, so agreement is the wrong \
-         question. Outside the exactly supported class the property is disclosure, not \
-         equality:\n{}",
-        case.name,
-        disclosed.join("\n")
-    );
+    match expectation {
+        Class::Exact => assert!(
+            disclosed.is_empty(),
+            "{}: the translation already says it diverges here, so agreement is the wrong \
+             question. Outside the exactly supported class the property is disclosure, not \
+             equality:\n{}",
+            case.name,
+            disclosed.join("\n")
+        ),
+        Class::Disclosed => assert!(
+            !disclosed.is_empty(),
+            "{}: nothing is disclosed, so this case is inside the exactly supported class \
+             and equality is the property to assert",
+            case.name
+        ),
+    }
     let answers = doctor(planned.action_relations().to_vec());
     let naming = planned.row_naming().to_vec();
     let outputs = planned.outputs_accepting_gaps();
@@ -424,7 +548,7 @@ pub(crate) async fn run_with(
     }
     openfga::write_tuples(&client, writes).await;
 
-    let mut mismatches = Vec::new();
+    let mut observations = Vec::new();
     for principal in &case.principals {
         for object in &objects {
             for statement in COMPARED {
@@ -437,28 +561,58 @@ pub(crate) async fn run_with(
                 else {
                     continue;
                 };
-                if postgres != openfga {
-                    mismatches.push(Mismatch {
-                        subject: principal.subject.clone(),
-                        object: object.name.clone(),
-                        statement,
-                        postgres,
-                        openfga,
-                    });
-                }
+                observations.push(Mismatch {
+                    subject: principal.subject.clone(),
+                    object: object.name.clone(),
+                    statement,
+                    postgres,
+                    openfga,
+                });
             }
         }
     }
-    mismatches
+    Run { observations }
 }
 
 /// Apply the case and compare every pair, taking the translation's answers as they are.
-pub(crate) async fn run(case: &ParityCase) -> Vec<Mismatch> {
-    run_with(case, |answers| answers).await
+pub(crate) async fn run(case: &ParityCase) -> Run {
+    run_with(case, Class::Exact, |answers| answers).await
 }
 
-/// Fail with every disagreement named.
-pub(crate) fn assert_agrees(case: &ParityCase, mismatches: &[Mismatch]) {
+/// Apply a case the translation says it diverges on, and answer with what both sides said.
+///
+/// Refuses a case that discloses nothing, since that one belongs to [`run`].
+pub(crate) async fn run_disclosing(case: &ParityCase) -> Run {
+    run_with(case, Class::Disclosed, |answers| answers).await
+}
+
+/// Fail if the model grants anything the database denies.
+///
+/// The property for a disclosed case: a clause the threshold dropped can only make the
+/// model narrower, so an over-grant is a defect however loudly it was disclosed.
+pub(crate) fn assert_no_over_grant(case: &ParityCase, run: &Run) {
+    let over: Vec<_> = run
+        .observations
+        .iter()
+        .filter(|observation| observation.openfga && !observation.postgres)
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "{}: the model grants what the database denies:\n{}",
+        case.name,
+        over.join("\n")
+    );
+    assert!(
+        run.compared() > 0,
+        "{}: nothing was compared, so narrowness means nothing",
+        case.name
+    );
+}
+
+/// Fail with every disagreement named, and refuse a case that compared nothing.
+pub(crate) fn assert_agrees(case: &ParityCase, run: &Run) {
+    let mismatches = run.mismatches();
     assert!(
         mismatches.is_empty(),
         "{}: PostgreSQL and OpenFGA disagree:\n{}",
@@ -468,5 +622,31 @@ pub(crate) fn assert_agrees(case: &ParityCase, mismatches: &[Mismatch]) {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n")
+    );
+    assert!(
+        run.compared() > 0,
+        "{}: nothing was compared, so agreeing means nothing",
+        case.name
+    );
+}
+
+/// Fail unless the database answered `expected` for one pair.
+///
+/// What a hand-written case pinned with its own `assert!(!expected)`: that the schema
+/// really denies the row, so agreement is not two sides being wrong together.
+pub(crate) fn assert_postgres(
+    case: &ParityCase,
+    run: &Run,
+    subject: &str,
+    object: &str,
+    statement: ActionStatement,
+    expected: bool,
+) {
+    let answered = run.postgres_answered(subject, object, statement);
+    assert_eq!(
+        answered,
+        Some(expected),
+        "{}: PostgreSQL on {subject} {statement:?} {object}",
+        case.name
     );
 }
