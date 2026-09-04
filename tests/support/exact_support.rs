@@ -22,11 +22,14 @@ use core::fmt::Write as _;
 /// 4. Row-level security is on and the reader does not own the table, since an owner is
 ///    exempt from every policy unless the table forces it.
 /// 5. Nothing the clause reads is another table, so no second table's policies apply.
+/// 7. The guarded table is not spelled as a well-known type. The translation refuses that
+///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
+///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
 /// 6. The deployment declares what the request value means. `current_setting('k')` is a
 ///    session key like any other, and only the deployment knows that this one carries the
 ///    caller's identity rather than a tenant or a flag, so an undeclared key is outside
 ///    the class by construction rather than by omission.
-pub(crate) const PRECONDITIONS: usize = 6;
+pub(crate) const PRECONDITIONS: usize = 7;
 
 /// The request-scoped values every admitted case declares, satisfying precondition 6.
 pub(crate) const DECLARED_KEY: &str = r#"[{ "key": "app.who", "kind": "caller_id" }]"#;
@@ -56,8 +59,8 @@ impl KeyType {
     ///
     /// The text keys carry `|` and `~`, which the identity encoder gives meaning to, so a
     /// case in this class also exercises the escaping.
-    fn keys(self) -> Vec<&'static str> {
-        match self {
+    fn keys(self, length: KeyLength) -> Vec<String> {
+        let short = match self {
             Self::Text => vec!["'plain'", "'pipe|key'", "'tilde~key'", "'both|and~key'"],
             Self::Integer => vec!["1", "2", "3", "4"],
             Self::Uuid => vec![
@@ -66,7 +69,18 @@ impl KeyType {
                 "'00000000-0000-0000-0000-00000000000c'::uuid",
                 "'00000000-0000-0000-0000-00000000000d'::uuid",
             ],
+        };
+        if length == KeyLength::Short || self != Self::Text {
+            // Only a text key can be made long. A number and a UUID have the length their
+            // type gives them, so those cases repeat the short keys deliberately rather
+            // than pretending the axis reaches them.
+            return short.into_iter().map(ToString::to_string).collect();
         }
+        // Long enough to exercise the encoder and the name budget, short enough that every
+        // row still has a name: the cap counts the type name and the separator too.
+        (0..4)
+            .map(|at| format!("'{}{at}'", "l".repeat(200)))
+            .collect()
     }
 
     fn label(self) -> &'static str {
@@ -134,6 +148,63 @@ impl Accessor {
     }
 }
 
+/// Whether a second table folds to the same type name as the guarded one.
+///
+/// `PostgreSQL` tells `"guarded"` and `"Guarded"` apart, and a type name folds case, so two
+/// distinct tables arrive at one type and the translation has to keep them apart. Findings
+/// 1 and 2 were both name collisions, which is why the grammar admits this rather than
+/// avoiding it. A table named as a well-known type is a different matter: the translation
+/// refuses that outright, so precondition 7 keeps it outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableName {
+    /// One table, its own name.
+    Plain,
+    /// A second table whose name folds to the first's.
+    FoldedCollision,
+}
+
+impl TableName {
+    pub(crate) const ALL: [Self; 2] = [Self::Plain, Self::FoldedCollision];
+
+    /// The names a case declares, guarded alike. The second folds onto the first.
+    fn tables(self) -> Vec<&'static str> {
+        match self {
+            Self::Plain => vec!["\"guarded\""],
+            Self::FoldedCollision => vec!["\"guarded\"", "\"Guarded\""],
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "one-table",
+            Self::FoldedCollision => "folded-collision",
+        }
+    }
+}
+
+/// How long the key is, in characters before encoding.
+///
+/// An object name is capped, and the report already says a row past the cap is left out
+/// while the database grants it. A key that fits is inside the class; the cap itself is a
+/// boundary the runner cannot compare at all, since naming such a row raises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyLength {
+    Short,
+    /// Long, and still inside the cap once the type name and separator are counted.
+    NearTheCap,
+}
+
+impl KeyLength {
+    pub(crate) const ALL: [Self; 2] = [Self::Short, Self::NearTheCap];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Short => "short-key",
+            Self::NearTheCap => "long-key",
+        }
+    }
+}
+
 /// One caller state the generated case compares.
 pub(crate) struct Caller {
     /// Subject key, and the login role's name.
@@ -177,27 +248,73 @@ pub(crate) struct ExactCase {
 /// whole, and a failure names a point rather than a seed.
 pub(crate) fn every_case() -> Vec<ExactCase> {
     let mut cases = Vec::new();
+    // Key type against accessor spelling against nullability, whole.
     for key in KeyType::ALL {
         for accessor in Accessor::ALL {
             for nullable in [false, true] {
-                cases.push(case(key, accessor, nullable));
+                cases.push(case(
+                    key,
+                    accessor,
+                    nullable,
+                    TableName::Plain,
+                    KeyLength::Short,
+                ));
             }
         }
+    }
+    // The two axes that only interact with naming, against the spellings and key types that
+    // reach it. Crossing all five whole would be 108 cases against two containers for no
+    // more coverage than this: a name collision is decided by the table's name and its key
+    // type, and neither knows how the caller was spelled.
+    for key in KeyType::ALL {
+        for length in KeyLength::ALL {
+            cases.push(case(
+                key,
+                Accessor::MissingOkSetting,
+                false,
+                TableName::FoldedCollision,
+                length,
+            ));
+        }
+    }
+    for key in KeyType::ALL {
+        cases.push(case(
+            key,
+            Accessor::BareSetting,
+            true,
+            TableName::Plain,
+            KeyLength::NearTheCap,
+        ));
     }
     cases
 }
 
-fn case(key: KeyType, accessor: Accessor, nullable: bool) -> ExactCase {
+fn case(
+    key: KeyType,
+    accessor: Accessor,
+    nullable: bool,
+    name: TableName,
+    length: KeyLength,
+) -> ExactCase {
     let null = if nullable { "" } else { " NOT NULL" };
-    let schema = format!(
-        "CREATE TABLE guarded (id {} PRIMARY KEY, who TEXT{null});
-{}ALTER TABLE guarded ENABLE ROW LEVEL SECURITY;
-CREATE POLICY guarded_own ON guarded FOR SELECT USING (who = {});
-",
-        key.column(),
-        accessor.declaration(),
-        accessor.expression()
-    );
+    let tables = name.tables();
+    let mut schema = String::new();
+    for table in &tables {
+        let _ = writeln!(
+            schema,
+            "CREATE TABLE {table} (id {} PRIMARY KEY, who TEXT{null});",
+            key.column()
+        );
+    }
+    schema.push_str(accessor.declaration());
+    for (at, table) in tables.iter().enumerate() {
+        let _ = write!(
+            schema,
+            "ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY own_{at} ON {table} FOR SELECT USING (who = {});\n",
+            accessor.expression()
+        );
+    }
 
     // The values a row can carry: the caller's own, another, the empty string, and NULL
     // where the column admits it. NULL and the empty string are where an equality stops
@@ -206,7 +323,7 @@ CREATE POLICY guarded_own ON guarded FOR SELECT USING (who = {});
     if nullable {
         values.push("NULL");
     }
-    let keys = key.keys();
+    let keys = key.keys(length);
     assert!(
         values.len() <= keys.len(),
         "one key per row, or the seed collides on the primary key"
@@ -216,20 +333,38 @@ CREATE POLICY guarded_own ON guarded FOR SELECT USING (who = {});
         let joiner = if at == 0 { "" } else { ", " };
         let _ = write!(rows, "{joiner}({}, {value})", keys[at]);
     }
+    // The second table carries the same keys with the values rotated, so one type standing
+    // for both tables would hand a caller the other table's row under a name it owns.
+    let mut mirrored = String::new();
+    for (at, value) in values.iter().rev().enumerate() {
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(mirrored, "{joiner}({}, {value})", keys[at]);
+    }
+    let mut seed = String::new();
+    let mut grants = String::new();
+    for (at, table) in tables.iter().enumerate() {
+        let values = if at == 0 { &rows } else { &mirrored };
+        let _ = write!(seed, "INSERT INTO {table} (id, who) VALUES {values}; ");
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(grants, "{joiner}{table}");
+    }
 
     ExactCase {
         name: format!(
-            "exact-{}-{}-{}",
+            "exact-{}-{}-{}-{}-{}",
             key.label(),
             accessor.label(),
-            if nullable { "nullable" } else { "not-null" }
+            if nullable { "nullable" } else { "not-null" },
+            name.label(),
+            length.label()
         ),
         schema,
         seed: [
-            format!("INSERT INTO guarded (id, who) VALUES {rows}"),
-            "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-             GRANT SELECT ON guarded TO alice, mallory, silent"
-                .to_string(),
+            seed,
+            format!(
+                "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
+                 GRANT SELECT ON {grants} TO alice, mallory, silent"
+            ),
         ],
         accessor,
     }
