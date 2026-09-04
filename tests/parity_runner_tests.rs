@@ -734,3 +734,216 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
     );
     support::parity::assert_no_over_grant(&case, &run);
 }
+
+/// Two readers of one fixture, told apart by the setting alone.
+fn two_setting_readers(first: &str, second: &str) -> Vec<Principal> {
+    vec![
+        Principal::with_setting(first, "app_user", "app.current_user_id", first),
+        Principal::with_setting(second, "app_user", "app.current_user_id", second),
+    ]
+}
+
+/// Rows two owners hold, and the role that may read them.
+const OWNED_NOTES_SEED: &str = "INSERT INTO users(id) VALUES ('alice'), ('bob');
+     INSERT INTO notes(id, owner_id) VALUES ('note-alice', 'alice'), ('note-bob', 'bob')";
+
+/// Ported from `absent_clause_parity_postgres18_and_openfga`.
+///
+/// An `UPDATE` policy storing only `WITH CHECK` says nothing about the existing row, so
+/// no row is updatable however the check reads.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn an_update_policy_without_using_updates_nothing() {
+    let case = ParityCase::from_fixture(
+        "runner-clause-absent",
+        "clause_absent",
+        &[
+            OWNED_NOTES_SEED,
+            "CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    )
+    .writing(
+        "notes",
+        Mutations {
+            update_set: Some("owner_id = owner_id".to_string()),
+            insert: None,
+        },
+    );
+    let run = support::parity::run(&case).await;
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:note-alice",
+        ActionStatement::Select,
+        true,
+    );
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:note-alice",
+        ActionStatement::Update,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `locking_read_parity_postgres18_and_openfga`.
+///
+/// A locking read is filtered by the `UPDATE` policies' `USING` clause on top of the
+/// `SELECT` policies, so it returns fewer rows than a plain read.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn a_locking_read_applies_the_update_policy() {
+    let case = ParityCase::from_fixture(
+        "runner-locking-read",
+        "locking_read",
+        &[
+            OWNED_NOTES_SEED,
+            "CREATE ROLE app_user LOGIN; GRANT SELECT, UPDATE ON notes TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    );
+    let run = support::parity::run(&case).await;
+    // Every row reads, only the caller's own row locks.
+    for (row, plain, locking) in [("note-alice", true, true), ("note-bob", true, false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::Select,
+            plain,
+        );
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::SelectForUpdate,
+            locking,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `altered_policy_parity_postgres18_and_openfga`.
+///
+/// `ALTER POLICY` supersedes the clause the policy was created with, so the rule enforced
+/// is the narrowed one and never the original.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn an_altered_policy_is_read_as_altered() {
+    let case = ParityCase::from_fixture(
+        "runner-policy-altered",
+        "policy_altered",
+        &[
+            OWNED_NOTES_SEED,
+            "CREATE ROLE app_user LOGIN; GRANT SELECT ON notes TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    );
+    let run = support::parity::run(&case).await;
+    // The original clause admitted everything; the altered one admits the owner alone.
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "alice",
+        "notes:note-bob",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `folded_identifier_parity_postgres18_and_openfga`.
+///
+/// `PostgreSQL` folds an unquoted identifier, so the schema's spelling is not the stored
+/// name, and every comparison has to use the stored one.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn folded_identifiers_name_one_table() {
+    let case = ParityCase::from_fixture(
+        "runner-folded-identifiers",
+        "folded_identifiers",
+        &[
+            "INSERT INTO users(id) VALUES ('alice'), ('bob');
+             INSERT INTO notes(id, owner_id) VALUES ('own', 'alice'), ('shared', 'bob');
+             INSERT INTO note_members(id, note_id, user_id) VALUES ('m1', 'shared', 'alice')",
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON notes, note_members TO app_user",
+        ],
+        two_setting_readers("alice", "bob"),
+    );
+    let run = support::parity::run(&case).await;
+    // Alice owns one row and is a member of the other, so both read for her.
+    for row in ["own", "shared"] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "alice",
+            &format!("notes:{row}"),
+            ActionStatement::Select,
+            true,
+        );
+    }
+    support::parity::assert_postgres(
+        &case,
+        &run,
+        "bob",
+        "notes:own",
+        ActionStatement::Select,
+        false,
+    );
+    assert_agrees(&case, &run);
+}
+
+/// Ported from `two_owner_columns_parity_postgres18_and_openfga`.
+///
+/// One table judged through two owner values with different thresholds, so a delegate
+/// needs a higher role than an owner to read the same row.
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn two_owner_columns_grant_independently() {
+    const ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
+    const BOB: &str = "00000000-0000-0000-0000-0000000000a2";
+    const CAROL: &str = "00000000-0000-0000-0000-0000000000a3";
+    const RECORD: &str = "00000000-0000-0000-0000-00000000ee01";
+
+    let case = ParityCase::from_fixture(
+        "runner-two-owner-columns",
+        "two_owner_columns",
+        &[
+            &format!(
+                "INSERT INTO users(id) VALUES ('{ALICE}'), ('{BOB}'), ('{CAROL}');
+                 INSERT INTO records(id, owner_id, delegate_id)
+                     VALUES ('{RECORD}', '{ALICE}', '{BOB}');
+                 INSERT INTO owner_grants(grantee_owner_id, granted_owner_id, role_id)
+                     VALUES ('{CAROL}', '{BOB}', 2)"
+            ),
+            "CREATE ROLE app_user LOGIN;
+             GRANT SELECT ON records, users, owner_grants TO app_user",
+        ],
+        vec![
+            Principal::with_setting(ALICE, "app_user", "app.current_user_id", ALICE),
+            Principal::with_setting(BOB, "app_user", "app.current_user_id", BOB),
+            Principal::with_setting(CAROL, "app_user", "app.current_user_id", CAROL),
+        ],
+    );
+    let run = support::parity::run(&case).await;
+    // The owner reads at 2, the delegate itself reads at 4, and a viewer of the delegate
+    // holds only 2, which the delegate pointer does not admit.
+    for (subject, visible) in [(ALICE, true), (BOB, true), (CAROL, false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            &format!("records:{RECORD}"),
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
