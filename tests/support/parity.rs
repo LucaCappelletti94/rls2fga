@@ -1649,6 +1649,11 @@ pub(crate) fn assert_disclosed_where_noted(case: &ParityCase, run: &Run) {
 }
 
 /// Whether some note licenses this disagreement.
+///
+/// A widening needs a note that names the table. Three notes widen without naming one, and
+/// honouring those anywhere would accept every over-grant in the case, which is what the
+/// property this replaces at least refused. Placing them means carrying the guarded table on
+/// the note, so until then a widening they stand for fails and says so.
 fn licensed(mismatch: &Mismatch, disclosures: &[Disclosure]) -> bool {
     let direction = if mismatch.openfga {
         Direction::Wider
@@ -1658,7 +1663,9 @@ fn licensed(mismatch: &Mismatch, disclosures: &[Disclosure]) -> bool {
     disclosures
         .iter()
         .any(|disclosure| match &disclosure.licence {
-            Licence::Anywhere { direction: allowed } => *allowed == direction,
+            Licence::Anywhere { direction: allowed } => {
+                *allowed == direction && direction == Direction::Narrower
+            }
             Licence::Located {
                 table,
                 commands,
@@ -1676,15 +1683,20 @@ fn licensed(mismatch: &Mismatch, disclosures: &[Disclosure]) -> bool {
 
 /// Whether a policy on `command` decides `statement`.
 ///
-/// `PostgreSQL`'s rule: a locking read applies the `UPDATE` policies on top of the
-/// `SELECT` ones, and every `INSERT` shape is decided by the `INSERT` policy, with the
-/// readback and the upsert adding `SELECT` and `UPDATE`.
+/// `PostgreSQL`'s rule, and the generator's: a per-row `UPDATE` or `DELETE` names the row it
+/// changes, so the `SELECT` policies apply and those relations intersect the read. A dropped
+/// `SELECT` clause therefore explains a narrower write as well. A blanket `UPDATE` names no
+/// row and reads nothing, so it stays `UPDATE` alone. A locking read applies the `UPDATE`
+/// policies on top of the `SELECT` ones, and every `INSERT` shape is decided by the `INSERT`
+/// policy, with the readback and the upsert adding what they read back.
 fn statement_reads(statement: ActionStatement, command: &str) -> bool {
     match statement {
         ActionStatement::Select => command == "SELECT",
-        ActionStatement::SelectForUpdate => command == "SELECT" || command == "UPDATE",
-        ActionStatement::Update | ActionStatement::UpdateWithoutWhere => command == "UPDATE",
-        ActionStatement::Delete => command == "DELETE",
+        ActionStatement::SelectForUpdate | ActionStatement::Update => {
+            command == "SELECT" || command == "UPDATE"
+        }
+        ActionStatement::Delete => command == "SELECT" || command == "DELETE",
+        ActionStatement::UpdateWithoutWhere => command == "UPDATE",
         ActionStatement::Insert => command == "INSERT",
         ActionStatement::InsertReturning => command == "INSERT" || command == "SELECT",
         ActionStatement::InsertOnConflictUpdate => {

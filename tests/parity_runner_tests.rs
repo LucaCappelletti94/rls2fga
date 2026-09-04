@@ -3805,6 +3805,8 @@ CREATE POLICY refused_own ON refused FOR SELECT
     USING (owner_id = current_setting('app.user_id', true));
 CREATE POLICY refused_delete ON refused FOR DELETE
     USING (owner_id = current_setting('app.user_id', true));
+CREATE POLICY refused_insert ON refused FOR INSERT
+    WITH CHECK (owner_id = current_setting('app.user_id', true));
 ";
     let planted = |name: &'static str,
                    doctor: fn(
@@ -3820,7 +3822,8 @@ CREATE POLICY refused_delete ON refused FOR DELETE
                      INSERT INTO refused(id, owner_id, archived) VALUES
                          ('r1', 'alice', FALSE), ('r2', 'alice', TRUE),
                          ('r3', 'bob', TRUE)",
-                    "CREATE ROLE alice LOGIN; GRANT SELECT, DELETE ON plain, refused TO alice",
+                    "CREATE ROLE alice LOGIN;
+                     GRANT SELECT, INSERT, DELETE ON plain, refused TO alice",
                 ],
                 vec![Principal::with_setting(
                     "alice",
@@ -3828,6 +3831,14 @@ CREATE POLICY refused_delete ON refused FOR DELETE
                     "app.user_id",
                     "alice",
                 )],
+            )
+            // So the insert probe is compared: the policies read the owner, never the key.
+            .writing(
+                "refused",
+                Mutations {
+                    update_set: None,
+                    check_neutral: true,
+                },
             );
             let outcome = tokio::spawn(async move {
                 let run = support::parity::run_with(
@@ -3879,14 +3890,15 @@ CREATE POLICY refused_delete ON refused FOR DELETE
     })
     .await;
 
-    // Another command. The dropped clause fed SELECT, and the DELETE policy translated, so
-    // denying deletes is a divergence the note does not reach.
+    // Another command. The dropped clause fed SELECT, and a per-row DELETE reads the SELECT
+    // policies, so that one is explained by the note. A plain INSERT reads nothing back, so
+    // denying inserts is the divergence the note cannot reach.
     planted("runner-plant-other-command", |answers| {
         answers
             .into_iter()
             .map(|mut entry| {
                 if entry.type_name.as_str() == "refused"
-                    && entry.statement == ActionStatement::Delete
+                    && entry.statement == ActionStatement::Insert
                 {
                     entry.answer = ActionAnswer::Denied;
                 }
