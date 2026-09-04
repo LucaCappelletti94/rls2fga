@@ -1082,6 +1082,53 @@ CREATE POLICY events_visible ON events FOR SELECT USING (tenant = current_user);
     }
 }
 
+/// A subpartition is as directly readable as a partition, and the policies sit further up.
+///
+/// `PostgreSQL` applies the policies of the table a read names, so a leaf two levels down
+/// is filtered by nothing whether its own parent carries policies or not. Looking one level
+/// up finds an unprotected middle table and reports nothing at all, which is the route the
+/// note exists to name.
+#[test]
+fn a_subpartition_of_a_protected_root_discloses_its_direct_read() {
+    let db = db_of(
+        "
+CREATE TABLE events (id TEXT, tenant TEXT NOT NULL, region TEXT NOT NULL, day DATE NOT NULL,
+                     PRIMARY KEY (id, region, day)) PARTITION BY LIST (region);
+CREATE TABLE events_eu PARTITION OF events FOR VALUES IN ('eu') PARTITION BY RANGE (day);
+CREATE TABLE events_eu_2026 PARTITION OF events_eu
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY events_visible ON events FOR SELECT USING (tenant = current_user);
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    let disclosed: Vec<String> = outputs
+        .notes()
+        .iter()
+        .filter(|note| {
+            matches!(
+                note,
+                TranslationNote::PartitionReadDirectlyIsUnfiltered { .. }
+            )
+        })
+        .map(ToString::to_string)
+        .collect();
+    // The middle table and the leaf are both readable by name, and the note names the
+    // ancestor that carries the policies rather than the nearest one.
+    for partition in ["events_eu", "events_eu_2026"] {
+        assert!(
+            disclosed
+                .iter()
+                .any(|note| note.starts_with(&format!("'{partition}' is a partition of 'events',"))),
+            "nothing discloses the direct read of '{partition}': {disclosed:#?}"
+        );
+    }
+}
+
 /// A partition of a root that restricts nothing is already reported as unrestricted, so it
 /// needs no second note.
 #[test]

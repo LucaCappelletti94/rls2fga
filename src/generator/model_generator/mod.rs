@@ -1798,15 +1798,32 @@ fn report_row_level_security_bypasses<DB: DatabaseLike>(db: &DB, notes: &mut Vec
         // unrestricted tables: those show every row by every route, and these rows are
         // filtered through the root, which is the route the model answers for.
         if table.has_row_level_security(db) == Ok(false) {
-            if let Ok(Some(root)) = table.partition_root(db) {
-                if root.has_row_level_security(db) == Ok(true) {
-                    notes.push(TranslationNote::PartitionReadDirectlyIsUnfiltered {
-                        table: table_identity(table),
-                        root: table_identity(root),
-                    });
-                }
+            if let Some(root) = protecting_partition_root(table, db) {
+                notes.push(TranslationNote::PartitionReadDirectlyIsUnfiltered {
+                    table: table_identity(table),
+                    root: table_identity(root),
+                });
             }
         }
+    }
+}
+
+/// The nearest ancestor whose policies filter a read through it, if any.
+///
+/// A read names one table and `PostgreSQL` applies that table's policies, so a partition
+/// several levels down is filtered by nothing while the policies sit at the top. Walking
+/// only one level up finds an unprotected middle table and reports nothing, which leaves
+/// the leaf's direct read undisclosed.
+fn protecting_partition_root<'db, DB: DatabaseLike>(
+    table: &'db DB::Table,
+    db: &'db DB,
+) -> Option<&'db DB::Table> {
+    let mut current = table.partition_root(db).ok()??;
+    loop {
+        if current.has_row_level_security(db) == Ok(true) {
+            return Some(current);
+        }
+        current = current.partition_root(db).ok()??;
     }
 }
 
