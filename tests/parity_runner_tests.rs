@@ -3032,11 +3032,13 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_unexpired ON docs FOR SELECT USING ("Foo" > now());
 "#,
         &[
-            // The quoted column carries the boundary, the unquoted one is a decoy.
+            // The quoted column carries the boundary, the unquoted one is a decoy. The
+            // middle row is relative to the run clock: an absolute date passes into the
+            // past and takes both the assertion and the took-away guard with it.
             "INSERT INTO docs (id, foo, \"Foo\") VALUES
                  ('d-live', 'text', '2099-01-01T00:00:00+00:00'),
                  ('d-stale', 'text', '2000-01-01T00:00:00+00:00'),
-                 ('d-soon', 'text', '2027-01-01T00:00:00+00:00'),
+                 ('d-soon', 'text', now() + interval '6 months'),
                  ('d-null', 'text', NULL)",
             "CREATE ROLE app_user LOGIN; GRANT SELECT ON docs TO app_user",
         ],
