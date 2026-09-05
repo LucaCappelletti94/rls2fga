@@ -540,6 +540,8 @@ fn postgres_allows(
     object: &Object,
     statement: ActionStatement,
     mutations: Option<&Mutations>,
+    // Set where a read raised because the caller set nothing, asked once per caller.
+    raised: &mut bool,
 ) -> Option<bool> {
     let table = &object.table;
     let predicate = &object.predicate;
@@ -600,22 +602,18 @@ fn postgres_allows(
         Ok(()) => unreachable!("the transaction body always rolls back"),
     };
     match answered {
-        Ok(granted) => {
-            assert!(
-                !(principal.reads_an_unset_setting && statement == ActionStatement::Select),
-                "{}: {} reads a setting it never set, yet the read succeeded, so the \
-                 case's claim is stale",
-                case.name,
-                principal.subject
-            );
-            Some(granted)
-        }
+        // Not asserted per read: `PostgreSQL` may settle a correlated EXISTS from the join
+        // alone and never evaluate the accessor, so a row no membership row mentions is
+        // denied without raising. Whether the claim still holds is asked once per caller,
+        // which is a question about the caller rather than about the planner's order.
+        Ok(granted) => Some(granted),
         // Row-level security raises on exactly one thing when reading: a policy that
         // expands into itself. The read returns no row, so it is a denial, and the model
         // has to deny too.
         Err(error) if reads_as_a_policy_refusal(&error) => Some(false),
         // A caller that set nothing the policy reads is denied, where the case says so.
         Err(error) if principal.reads_an_unset_setting && reads_an_unset_setting(&error) => {
+            *raised = true;
             Some(false)
         }
         // Otherwise a plain read never raises, so an error is a case that granted no
@@ -1051,12 +1049,19 @@ async fn compare_every_pair(
         // callers were declared in.
         let mut owned = super::containers::connect_postgres_with_retry(&cluster.url(database));
         let conn = &mut owned;
+        let mut raised = false;
         for object in objects {
             for statement in COMPARED {
                 let candidate = mutations.get(&object.table).copied();
-                let Some(postgres) =
-                    postgres_allows(conn, case, principal, object, statement, candidate)
-                else {
+                let Some(postgres) = postgres_allows(
+                    conn,
+                    case,
+                    principal,
+                    object,
+                    statement,
+                    candidate,
+                    &mut raised,
+                ) else {
                     continue;
                 };
                 let Some(openfga) = openfga_allows(
@@ -1081,6 +1086,13 @@ async fn compare_every_pair(
                 });
             }
         }
+        assert!(
+            !principal.reads_an_unset_setting || raised,
+            "{}: {} claims to read a setting it never set, and no read of any row raised, \
+             so the claim is stale",
+            case.name,
+            principal.subject
+        );
     }
     observations
 }
