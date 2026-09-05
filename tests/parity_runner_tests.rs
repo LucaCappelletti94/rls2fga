@@ -3533,8 +3533,16 @@ async fn every_exact_support_case_agrees(cluster: Arc<Cluster>) {
                 None => Principal::as_role(caller.subject, caller.subject),
             })
             .collect();
+        let partitions: Vec<&str> = generated
+            .not_read_directly
+            .iter()
+            .map(String::as_str)
+            .collect();
         let case = ParityCase::reading(&generated.name, &generated.schema, &seed, principals)
-            .with_attributes(support::exact_support::DECLARED_KEY);
+            .with_attributes(support::exact_support::DECLARED_KEY)
+            // A partition is filtered by nothing when a read names it, so the case compares
+            // reads through the root, which is what the model answers for.
+            .not_reading_directly(&partitions);
         let run = support::parity::run(&cluster, &case).await;
         support::parity::assert_two_sided(&case, &run);
         assert_agrees(&case, &run);

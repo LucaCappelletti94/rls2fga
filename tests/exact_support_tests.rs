@@ -13,7 +13,9 @@ use support::exact_support::{
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
 use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
-use rls2fga::types::{ActionAnswer, ActionStatement, ConfidenceLevel, NoteSeverity};
+use rls2fga::types::{
+    ActionAnswer, ActionStatement, ConfidenceLevel, NoteSeverity, TranslationNote,
+};
 
 /// Plan one generated schema at the threshold the parity runner uses.
 fn plan(schema: &str) -> Translation {
@@ -98,9 +100,16 @@ fn the_grammar_covers_every_axis_value_it_declares() {
         cases.len(),
         Shape::ALL.len() * KeyType::ALL.len() * Accessor::ALL.len() * 2
             + KeyType::ALL.len() * KeyLength::ALL.len()
-            + KeyType::ALL.len(),
+            + KeyType::ALL.len()
+            + 2 * KeyType::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
     );
+    for depth in ["depth-two", "depth-three"] {
+        assert!(
+            cases.iter().any(|case| case.name.contains(depth)),
+            "no case puts its rows at {depth}"
+        );
+    }
     for shape in ["self", "membership"] {
         assert!(
             cases.iter().any(|case| case.name.contains(shape)),
@@ -309,5 +318,69 @@ fn a_membership_case_leaves_its_membership_table_open_and_one_row_unnamed() {
              for want of one",
             case.name
         );
+    }
+}
+
+/// Every partition of a depth case is disclosed as directly readable, naming the root.
+///
+/// The guard that makes depth an axis rather than decoration: the rows sit in partitions,
+/// a read naming one is filtered by nothing, and the note has to name the ancestor that
+/// carries the policies rather than the nearest parent. At depth three the nearest parent
+/// carries none, which is where walking one level stopped being enough.
+#[test]
+fn every_partition_of_a_depth_case_is_disclosed_against_its_root() {
+    for case in every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("depth-t"))
+    {
+        // From the case's name and its schema, not from the list the notes are compared
+        // against: reading the expectation off that list would let the whole axis shrink
+        // and still agree with itself.
+        let levels = if case.name.contains("depth-three") {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            case.not_read_directly.len(),
+            levels,
+            "{}: the depth its name claims is not the depth it declares",
+            case.name
+        );
+        if levels == 2 {
+            assert!(
+                case.schema.contains("PARTITION OF guarded_eu"),
+                "{}: nothing is a partition of a partition, so the nearest parent still                  carries the policies",
+                case.name
+            );
+        }
+        let planned = plan(&case.schema);
+        let disclosed: Vec<String> = planned
+            .notes()
+            .iter()
+            .filter(|note| {
+                matches!(
+                    note,
+                    TranslationNote::PartitionReadDirectlyIsUnfiltered { .. }
+                )
+            })
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            disclosed.len(),
+            levels,
+            "{}: one note per partition, got {disclosed:#?}",
+            case.name
+        );
+        for partition in &case.not_read_directly {
+            assert!(
+                disclosed
+                    .iter()
+                    .any(|note| note
+                        .starts_with(&format!("'{partition}' is a partition of 'guarded',"))),
+                "{}: nothing discloses '{partition}' against the root that carries the policies",
+                case.name
+            );
+        }
     }
 }
