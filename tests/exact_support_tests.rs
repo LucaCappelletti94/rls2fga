@@ -103,8 +103,13 @@ fn the_grammar_covers_every_axis_value_it_declares() {
             + KeyType::ALL.len()
             + 2 * KeyType::ALL.len()
             + 2 * Accessor::ALL.len()
+            + Accessor::ALL.len()
             + Accessor::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
+    );
+    assert!(
+        cases.iter().any(|case| case.name.contains("every-command")),
+        "no case declares a policy per command"
     );
     assert!(
         cases.iter().any(|case| case.name.contains("forced-owner")),
@@ -505,4 +510,54 @@ fn owner_exemptions(schema: &str) -> Vec<String> {
         .filter(|note| note.severity() == NoteSeverity::Exempt && note.message().contains("owner"))
         .map(TranslationNote::message)
         .collect()
+}
+
+/// A write case declares every command, and changes what no policy reads.
+///
+/// Two claims the runner takes on trust. It asks the model about the row that exists rather
+/// than the row a write would produce, which holds only where neither the key nor the
+/// changed column is read by a policy. And a command whose policy is missing falls to
+/// `no_access`, which the database mirrors, so the parity run would agree while comparing
+/// nothing: the four answers have to be judged.
+#[test]
+fn a_write_case_judges_every_command_and_changes_what_no_policy_reads() {
+    let writing: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.writes.is_some())
+        .collect();
+    assert!(!writing.is_empty(), "no write case to check");
+    for case in writing {
+        let set = &case.writes.as_ref().expect("filtered on it").update_set;
+        let changed = set
+            .split('=')
+            .next()
+            .expect("a SET clause names a column")
+            .trim();
+        let planned = plan(&case.schema);
+        for policy in case.schema.lines().filter(|line| line.contains("POLICY")) {
+            assert!(
+                !policy.contains(changed) && !policy.contains("id"),
+                "{}: a policy reads {changed} or the key, so a write is not settled by the \
+                 existing row: {policy}",
+                case.name
+            );
+        }
+        for statement in [
+            ActionStatement::Select,
+            ActionStatement::Insert,
+            ActionStatement::Update,
+            ActionStatement::Delete,
+        ] {
+            let answer = planned
+                .action_relations()
+                .iter()
+                .find(|entry| entry.statement == statement)
+                .map(|entry| &entry.answer);
+            assert!(
+                matches!(answer, Some(ActionAnswer::Judged(_))),
+                "{}: {statement:?} is {answer:?}, so the case compares nothing for it",
+                case.name
+            );
+        }
+    }
 }

@@ -566,7 +566,13 @@ fn postgres_allows(
             | ActionStatement::InsertReturning
             | ActionStatement::InsertOnConflictUpdate
     ) {
-        return postgres_allows_write_probe(conn, case, principal, object, statement);
+        let attempt = Attempt {
+            case,
+            principal,
+            object,
+            statement,
+        };
+        return postgres_allows_write_probe(conn, &attempt, raised);
     }
     let sql = match statement {
         ActionStatement::Select => {
@@ -1400,6 +1406,15 @@ fn tuples_replaying_pure_queries(
     loaded.into_iter().collect()
 }
 
+/// One question put to the database: who asks, about which row, with which statement.
+#[derive(Clone, Copy)]
+struct Attempt<'ask> {
+    case: &'ask ParityCase,
+    principal: &'ask Principal,
+    object: &'ask Object,
+    statement: ActionStatement,
+}
+
 /// Whether the caller may write a row copied from `object` onto a fresh key.
 ///
 /// A write is about a row that does not exist yet, so the probe is the existing row with
@@ -1412,11 +1427,16 @@ fn tuples_replaying_pure_queries(
 /// plain `INSERT`.
 fn postgres_allows_write_probe(
     conn: &mut PgConnection,
-    case: &ParityCase,
-    principal: &Principal,
-    object: &Object,
-    statement: ActionStatement,
+    attempt: &Attempt,
+    // Set where the write raised because the caller set nothing, as a read does.
+    raised: &mut bool,
 ) -> Option<bool> {
+    let Attempt {
+        case,
+        object,
+        statement,
+        ..
+    } = *attempt;
     let table = &object.table;
     let row = object.row.as_object()?;
     let keys = &object.keys;
@@ -1458,7 +1478,7 @@ fn postgres_allows_write_probe(
     let payload = serde_json::Value::Object(probe).to_string();
     let answers: Vec<bool> = spellings
         .iter()
-        .map(|sql| attempt_write(conn, case, principal, object, statement, sql, &payload))
+        .map(|sql| attempt_write(conn, attempt, sql, &payload, raised))
         .collect();
     assert_eq!(
         answers[0], answers[1],
@@ -1472,13 +1492,17 @@ fn postgres_allows_write_probe(
 /// Run one write spelling as the caller and roll it back, reading a refusal as a denial.
 fn attempt_write(
     conn: &mut PgConnection,
-    case: &ParityCase,
-    principal: &Principal,
-    object: &Object,
-    statement: ActionStatement,
+    attempt: &Attempt,
     sql: &str,
     payload: &str,
+    raised: &mut bool,
 ) -> bool {
+    let Attempt {
+        case,
+        principal,
+        object,
+        statement,
+    } = *attempt;
     let outcome = conn.transaction::<(), diesel::result::Error, _>(|conn| {
         become_principal(conn, principal)?;
         diesel::sql_query(sql)
@@ -1489,6 +1513,12 @@ fn attempt_write(
     });
     match outcome {
         Err(diesel::result::Error::RollbackTransaction) => true,
+        // A caller that set nothing the policy reads raises rather than being filtered,
+        // exactly as a read does, and the write does not happen either way.
+        Err(error) if principal.reads_an_unset_setting && reads_an_unset_setting(&error) => {
+            *raised = true;
+            false
+        }
         Err(error) => {
             let rendered = error.to_string();
             assert!(
