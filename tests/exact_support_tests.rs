@@ -7,7 +7,7 @@
 mod support;
 
 use support::exact_support::{
-    every_case, Accessor, KeyLength, KeyType, Shape, DECLARED_KEY, PRECONDITIONS,
+    every_case, Accessor, KeyLength, KeyType, Shape, CALLERS, DECLARED_KEY, PRECONDITIONS,
 };
 
 use rls2fga::generator::model_generator::GeneratorSettings;
@@ -101,9 +101,16 @@ fn the_grammar_covers_every_axis_value_it_declares() {
         Shape::ALL.len() * KeyType::ALL.len() * Accessor::ALL.len() * 2
             + KeyType::ALL.len() * KeyLength::ALL.len()
             + KeyType::ALL.len()
-            + 2 * KeyType::ALL.len(),
+            + 2 * KeyType::ALL.len()
+            + 2 * Accessor::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
     );
+    for composition in ["two-policies", "or-clause"] {
+        assert!(
+            cases.iter().any(|case| case.name.contains(composition)),
+            "no case composes its grants as {composition}"
+        );
+    }
     for depth in ["depth-two", "depth-three"] {
         assert!(
             cases.iter().any(|case| case.name.contains(depth)),
@@ -383,4 +390,70 @@ fn every_partition_of_a_depth_case_is_disclosed_against_its_root() {
             );
         }
     }
+}
+
+/// No seed carries a caller's own value except the caller the case is about.
+///
+/// The runner asks the model about `user:<subject>` while `PostgreSQL` compares the row
+/// against the caller's *setting*. Those line up only for the caller whose subject and
+/// setting are the same string, so a row carrying another caller's setting is granted by the
+/// database and denied by the model, and the case would report a disagreement about its own
+/// seed rather than about the translation.
+#[test]
+fn no_seed_carries_another_callers_value() {
+    let stray: Vec<&str> = CALLERS
+        .iter()
+        .filter_map(|caller| caller.value)
+        .filter(|value| *value != "alice")
+        .collect();
+    assert!(!stray.is_empty(), "no caller holds a value of its own");
+    for case in every_case() {
+        for value in &stray {
+            assert!(
+                !case.seed[0].contains(&format!("'{value}'")),
+                "{}: the seed carries '{value}', which is a caller's own setting",
+                case.name
+            );
+        }
+    }
+}
+
+/// A composed case translates both of its arms.
+///
+/// A parity run cannot prove this: dropping an arm from the schema changes what
+/// `PostgreSQL` grants and what the model grants alike, so the two still agree and the case
+/// passes while measuring half of what it claims. The translation is where the second arm is
+/// either present or absent, so that is where the axis is guarded.
+#[test]
+fn a_composed_case_translates_both_of_its_arms() {
+    let composed: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("two-policies") || case.name.contains("or-clause"))
+        .collect();
+    assert!(!composed.is_empty(), "no composed case to check");
+    for case in composed {
+        let sources = arm_sources(&case.schema);
+        assert_eq!(
+            sources, 2,
+            "{}: the two arms have to reach the model as two sources, got {sources}",
+            case.name
+        );
+    }
+    // And the uncomposed shape carries one, so the count above is about composition rather
+    // than about every table having two.
+    let single = every_case()
+        .into_iter()
+        .find(|case| case.name.contains("one-clause") && case.name.contains("self"))
+        .expect("a one-clause case");
+    assert_eq!(arm_sources(&single.schema), 1);
+}
+
+/// How many ownership sources a schema's read is built from.
+fn arm_sources(schema: &str) -> usize {
+    plan(schema)
+        .outputs_accepting_gaps()
+        .tuple_queries()
+        .iter()
+        .filter(|query| query.comment.contains("ownership"))
+        .count()
 }
