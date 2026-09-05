@@ -6,10 +6,13 @@
 
 mod support;
 
-use support::exact_support::{every_case, Accessor, KeyType, DECLARED_KEY, PRECONDITIONS};
+use support::exact_support::{
+    every_case, Accessor, KeyLength, KeyType, DECLARED_KEY, PRECONDITIONS,
+};
 
 use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::translator::Translation;
+use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 use rls2fga::types::{ActionAnswer, ActionStatement, ConfidenceLevel, NoteSeverity};
 
 /// Plan one generated schema at the threshold the parity runner uses.
@@ -93,8 +96,20 @@ fn the_grammar_covers_every_axis_value_it_declares() {
     let cases = every_case();
     assert_eq!(
         cases.len(),
-        KeyType::ALL.len() * Accessor::ALL.len() * 2,
-        "the enumeration has to cover the axes whole, or a point goes unmeasured"
+        KeyType::ALL.len() * Accessor::ALL.len() * 2
+            + KeyType::ALL.len() * KeyLength::ALL.len()
+            + KeyType::ALL.len(),
+        "the enumeration has to cover its axes, or a point goes unmeasured"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name.contains("folded-collision")),
+        "no case makes two tables fold onto one type name"
+    );
+    assert!(
+        cases.iter().any(|case| case.name.contains("long-key")),
+        "no case carries a key near the name cap"
     );
     for key in KeyType::ALL {
         for accessor in Accessor::ALL {
@@ -109,7 +124,7 @@ fn the_grammar_covers_every_axis_value_it_declares() {
         }
     }
     assert_eq!(
-        PRECONDITIONS, 6,
+        PRECONDITIONS, 7,
         "the documented preconditions are the class"
     );
 }
@@ -158,4 +173,98 @@ fn an_undeclared_request_key_falls_outside_the_class() {
             .any(|note| note.severity().diverges_from_database()),
         "falling closed on an undeclared key has to be disclosed, not silent"
     );
+}
+
+/// A table spelled as a well-known type is refused, not renamed.
+///
+/// Precondition 7, and the reason the grammar does not admit it: the caller type and the
+/// role type are configurable, so a table arriving with one of those names cannot be
+/// disambiguated without deciding which of the two the operator meant.
+#[test]
+fn a_table_named_as_a_reserved_type_is_refused() {
+    for name in ["user", "pg_role"] {
+        let schema = format!(
+            "CREATE TABLE \"{name}\" (id TEXT PRIMARY KEY, who TEXT NOT NULL);
+ALTER TABLE \"{name}\" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON \"{name}\" FOR SELECT USING (who = current_setting('app.who', true));
+"
+        );
+        let (classified, db, registry) =
+            support::classify_sql_with_session_attributes(&schema, DECLARED_KEY);
+        let refusal = Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .expect_err("a table named as a well-known type has to be refused");
+        assert!(
+            format!("{refusal:?}").contains("ReservedTypeName"),
+            "the refusal has to name the collision, got {refusal:?}"
+        );
+    }
+}
+
+/// A folded collision reaches the translation as two types, not one.
+///
+/// The axis is worthless if the two tables arrive as one type or if one of them is dropped:
+/// the parity that follows would then be about a single table and would pass whatever the
+/// collision did.
+#[test]
+fn a_folded_collision_plans_two_distinct_types() {
+    let collisions: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("folded-collision"))
+        .collect();
+    assert!(!collisions.is_empty(), "no collision case to check");
+    for case in collisions {
+        let planned = plan(&case.schema);
+        let types: Vec<String> = planned
+            .row_naming()
+            .iter()
+            .map(|entry| entry.type_name.as_str().to_string())
+            .collect();
+        // The names themselves, not merely two of them: the first table keeps the
+        // canonical name and the second carries the suffix, and a regression in either the
+        // base or the suffix has to fail here.
+        assert_eq!(
+            types,
+            vec!["guarded".to_string(), "guarded_e788216f".to_string()],
+            "{}: the collision has to resolve to the canonical name and one suffixed",
+            case.name
+        );
+    }
+}
+
+/// A long-key case really carries a long key.
+///
+/// The axis exists to push an object name towards its cap, so a seed that quietly went back
+/// to short keys would measure nothing.
+#[test]
+fn a_long_key_case_seeds_a_key_near_the_cap() {
+    let long: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("long-key") && case.name.contains("text"))
+        .collect();
+    assert!(!long.is_empty(), "no long-key text case to check");
+    for case in long {
+        let width = if case.name.contains("folded-collision") {
+            // `guarded_e788216f` and a separator.
+            MAX_OBJECT_NAME_CHARS - 17
+        } else {
+            // `guarded` and a separator.
+            MAX_OBJECT_NAME_CHARS - 8
+        };
+        assert!(
+            case.seed[0].contains(&"l".repeat(width - 1)),
+            "{}: the seed's key is not at the boundary the cap leaves",
+            case.name
+        );
+        assert!(
+            !case.seed[0].contains(&"l".repeat(width)),
+            "{}: the seed's key is past the boundary, so the row has no name",
+            case.name
+        );
+    }
 }
