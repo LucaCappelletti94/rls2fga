@@ -688,7 +688,7 @@ fn case(point: Point) -> ExactCase {
             .collect(),
         seed: match (shape, depth, composition.has_deputy(), command) {
             (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand) => {
-                commanded_seed_of(&keys, &values)
+                commanded_seed_of(&keys)
             }
             (Shape::SelfIdentity, Depth::One, false, _) => seed_of(&tables, &keys, &values),
             (Shape::SelfIdentity, Depth::One, true, _) => composed_seed_of(&keys),
@@ -975,7 +975,13 @@ fn composed_seed_of(keys: &[String]) -> [String; 2] {
     ]
 }
 
-/// The guarded table with a policy for each of the four commands.
+/// The guarded table with a policy for each of the four commands, each reading its own
+/// column.
+///
+/// One predicate shared by four policies would pass whatever the commands were wired to, so
+/// `UPDATE` and `DELETE` read columns of their own and a row can be readable without being
+/// removable. `INSERT` reads what `SELECT` reads, since `INSERT ... RETURNING` reads the new
+/// row back and a row a caller may write but not see is a different question.
 ///
 /// `UPDATE` carries a `WITH CHECK` as well, since without one `PostgreSQL` checks the
 /// candidate row against the `USING` clause and the two would not be separable. The changed
@@ -984,7 +990,8 @@ fn composed_seed_of(keys: &[String]) -> [String; 2] {
 fn commanded_schema_of(key: KeyType, accessor: Accessor, nullable: bool) -> String {
     let null = if nullable { "" } else { " NOT NULL" };
     let mut schema = format!(
-        "CREATE TABLE \"guarded\" (id {} PRIMARY KEY, who TEXT{null}, title TEXT);\n",
+        "CREATE TABLE \"guarded\" (id {} PRIMARY KEY, who TEXT{null}, editor TEXT,\n\
+        \x20   remover TEXT, title TEXT);\n",
         key.column()
     );
     schema.push_str(accessor.declaration());
@@ -994,22 +1001,35 @@ fn commanded_schema_of(key: KeyType, accessor: Accessor, nullable: bool) -> Stri
         schema,
         "CREATE POLICY own_sel ON \"guarded\" FOR SELECT USING (who = {read});\n\
          CREATE POLICY own_ins ON \"guarded\" FOR INSERT WITH CHECK (who = {read});\n\
-         CREATE POLICY own_upd ON \"guarded\" FOR UPDATE USING (who = {read})\n\
-         \x20   WITH CHECK (who = {read});\n\
-         CREATE POLICY own_del ON \"guarded\" FOR DELETE USING (who = {read});\n"
+         CREATE POLICY own_upd ON \"guarded\" FOR UPDATE USING (editor = {read})\n\
+         \x20   WITH CHECK (editor = {read});\n\
+         CREATE POLICY own_del ON \"guarded\" FOR DELETE USING (remover = {read});\n"
     );
     schema
 }
 
-/// The rows, and every privilege a compared statement needs.
-fn commanded_seed_of(keys: &[String], values: &[&str]) -> [String; 2] {
-    let mut rows = String::new();
-    for (at, value) in values.iter().enumerate() {
+/// One row per subset of the commands, and every privilege a compared statement needs.
+///
+/// Readable and nothing more, readable and changeable, readable and removable, and a row
+/// whose columns name the caller for the writes while hiding it from the read.
+fn commanded_seed_of(keys: &[String]) -> [String; 2] {
+    let rows = [
+        ("'alice'", "'someone_else'", "'someone_else'"),
+        ("'alice'", "'alice'", "'someone_else'"),
+        ("'alice'", "'someone_else'", "'alice'"),
+        ("'someone_else'", "'alice'", "'alice'"),
+    ];
+    let mut values = String::new();
+    for (at, (who, editor, remover)) in rows.iter().enumerate() {
         let joiner = if at == 0 { "" } else { ", " };
-        let _ = write!(rows, "{joiner}({}, {value}, 'kept')", keys[at]);
+        let _ = write!(
+            values,
+            "{joiner}({}, {who}, {editor}, {remover}, 'kept')",
+            keys[at]
+        );
     }
     [
-        format!("INSERT INTO \"guarded\" (id, who, title) VALUES {rows}"),
+        format!("INSERT INTO \"guarded\" (id, who, editor, remover, title) VALUES {values}"),
         "GRANT SELECT, INSERT, UPDATE, DELETE ON \"guarded\" TO alice, mallory, silent".to_string(),
     ]
 }

@@ -512,13 +512,16 @@ fn owner_exemptions(schema: &str) -> Vec<String> {
         .collect()
 }
 
-/// A write case declares every command, and changes what no policy reads.
+/// A write case declares every command, changes what no policy reads, and reads a column of
+/// its own per command.
 ///
-/// Two claims the runner takes on trust. It asks the model about the row that exists rather
+/// Three claims the runner takes on trust. It asks the model about the row that exists rather
 /// than the row a write would produce, which holds only where neither the key nor the
-/// changed column is read by a policy. And a command whose policy is missing falls to
+/// changed column is read by a policy. A command whose policy is missing falls to
 /// `no_access`, which the database mirrors, so the parity run would agree while comparing
-/// nothing: the four answers have to be judged.
+/// nothing: the four answers have to be judged. And one predicate shared by every command
+/// would agree whatever the commands were wired to, so a change and a removal each read a
+/// column the read does not.
 #[test]
 fn a_write_case_judges_every_command_and_changes_what_no_policy_reads() {
     let writing: Vec<_> = every_case()
@@ -539,6 +542,29 @@ fn a_write_case_judges_every_command_and_changes_what_no_policy_reads() {
                 !policy.contains(changed) && !policy.contains("id"),
                 "{}: a policy reads {changed} or the key, so a write is not settled by the \
                  existing row: {policy}",
+                case.name
+            );
+        }
+        for (command, column) in [("UPDATE", "editor"), ("DELETE", "remover")] {
+            let policy = case
+                .schema
+                .lines()
+                .find(|line| line.contains(&format!("FOR {command}")))
+                .unwrap_or_else(|| panic!("{}: no {command} policy", case.name));
+            assert!(
+                policy.contains(column),
+                "{}: {command} reads what the read reads, so a miswired command still \
+                 agrees: {policy}",
+                case.name
+            );
+            let read = case
+                .schema
+                .lines()
+                .find(|line| line.contains("FOR SELECT"))
+                .expect("a read policy");
+            assert!(
+                !read.contains(column),
+                "{}: the read reads {column} too, so the commands are not told apart: {read}",
                 case.name
             );
         }
