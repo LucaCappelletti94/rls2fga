@@ -16,25 +16,27 @@ use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 
 /// Preconditions every admitted case satisfies, each a rule of the database.
 ///
-/// 1. One permissive `SELECT` policy and no restrictive one, so no clause is composed with
-///    another and no barrier can remove a grant.
-/// 2. The clause is an equality between one column of the guarded row and one scalar the
-///    request supplies, so the row's own values settle the answer.
+/// 1. Permissive `SELECT` policies only and no restrictive one, so nothing can remove a
+///    grant. `PostgreSQL` ORs the permissive policies covering a command, so however many
+///    there are they stay a union of grants.
+/// 2. Every clause is an equality between one column of the guarded row and one scalar the
+///    request supplies, joined to any other clause by `OR` alone, so the row's own values
+///    settle the answer.
 /// 3. The key is a single column of a type an object name can carry.
 /// 4. Row-level security is on and the reader does not own the table, since an owner is
 ///    exempt from every policy unless the table forces it.
 /// 5. Nothing the clause reads is another table, so no second table's policies apply.
-/// 8. Where the answer comes from a membership row, that membership table carries no row
-///    security of its own. `PostgreSQL` shows every caller the same membership rows then,
-///    which is what makes a tuple loaded as the owner true for everyone. A guarded
-///    membership table is outside the class, and the translation says so.
-/// 7. The guarded table is not spelled as a well-known type. The translation refuses that
-///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
-///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
 /// 6. The deployment declares what the request value means. `current_setting('k')` is a
 ///    session key like any other, and only the deployment knows that this one carries the
 ///    caller's identity rather than a tenant or a flag, so an undeclared key is outside
 ///    the class by construction rather than by omission.
+/// 7. The guarded table is not spelled as a well-known type. The translation refuses that
+///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
+///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
+/// 8. Where the answer comes from a membership row, that membership table carries no row
+///    security of its own. `PostgreSQL` shows every caller the same membership rows then,
+///    which is what makes a tuple loaded as the owner true for everyone. A guarded
+///    membership table is outside the class, and the translation says so.
 pub(crate) const PRECONDITIONS: usize = 8;
 
 /// The request-scoped values every admitted case declares, satisfying precondition 6.
