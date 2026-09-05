@@ -104,9 +104,16 @@ fn the_grammar_covers_every_axis_value_it_declares() {
             + 2 * KeyType::ALL.len()
             + 2 * Accessor::ALL.len()
             + Accessor::ALL.len()
-            + Accessor::ALL.len(),
+            + Accessor::ALL.len()
+            + 2 * Accessor::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
     );
+    for barrier in ["barrier-on-request", "barrier-on-constant"] {
+        assert!(
+            cases.iter().any(|case| case.name.contains(barrier)),
+            "no case narrows its grant with a {barrier}"
+        );
+    }
     assert!(
         cases.iter().any(|case| case.name.contains("every-command")),
         "no case declares a policy per command"
@@ -585,5 +592,72 @@ fn a_write_case_judges_every_command_and_changes_what_no_policy_reads() {
                 case.name
             );
         }
+    }
+}
+
+/// A barrier reaches the model, and takes a seeded row away.
+///
+/// Removing the barrier from the schema changes what the database grants and what the model
+/// grants alike, so the parity run cannot tell a translation that drops barriers from one
+/// that honours them. The model is where the difference has to show: with the barrier and
+/// without it, the two `OpenFGA` models cannot be the same text.
+///
+/// Reaching the model is not enough either. A barrier reading the column the permissive
+/// clause reads narrows nothing, so it has to read another one, and the seed has to carry a
+/// row the permissive clause grants and both barrier shapes remove.
+#[test]
+fn a_barrier_reaches_the_model() {
+    let barred: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("barrier-on"))
+        .collect();
+    assert!(!barred.is_empty(), "no barrier case to check");
+    for case in barred {
+        let without: String = case
+            .schema
+            .split_inclusive(";\n")
+            .filter(|statement| !statement.contains("AS RESTRICTIVE"))
+            .collect();
+        assert_ne!(
+            without, case.schema,
+            "{}: no restrictive policy to remove",
+            case.name
+        );
+        let permissive = case
+            .schema
+            .lines()
+            .find(|line| line.contains("FOR SELECT USING"))
+            .expect("a permissive clause");
+        let narrowing = case
+            .schema
+            .lines()
+            .find(|line| line.contains("USING (tenant") || line.contains("USING (archived"))
+            .unwrap_or_else(|| panic!("{}: the barrier reads no column of its own", case.name));
+        // The left of each equality, since the accessor spells the request key `app.who`
+        // and the whole line would name the permissive column for that reason alone.
+        let column_of = |clause: &str| {
+            clause
+                .split('=')
+                .next()
+                .expect("an equality has a left side")
+                .to_string()
+        };
+        assert!(
+            !column_of(narrowing).contains("who") && column_of(permissive).contains("who"),
+            "{}: the barrier reads what the permissive clause reads, so it narrows \
+             nothing: {narrowing}",
+            case.name
+        );
+        assert!(
+            case.seed[0].contains("'alice', 'someone_else', true"),
+            "{}: no seeded row is granted by the clause and removed by either barrier",
+            case.name
+        );
+        assert_ne!(
+            plan(&case.schema).outputs_accepting_gaps().model(),
+            plan(&without).outputs_accepting_gaps().model(),
+            "{}: the barrier leaves the model unchanged, so it grants what it narrows",
+            case.name
+        );
     }
 }
