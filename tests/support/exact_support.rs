@@ -16,12 +16,12 @@ use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 
 /// Preconditions every admitted case satisfies, each a rule of the database.
 ///
-/// 1. Permissive `SELECT` policies only and no restrictive one, so nothing can remove a
-///    grant. `PostgreSQL` ORs the permissive policies covering a command, so however many
-///    there are they stay a union of grants.
+/// 1. `PostgreSQL` ORs the permissive policies covering a command and ANDs the restrictive
+///    ones onto that union, so however many there are the answer is a union of grants
+///    narrowed by barriers. A case declares at least one permissive policy per command it
+///    grants, since a command with none is denied outright.
 /// 2. Every clause is an equality between one column of the guarded row and one scalar the
-///    request supplies, joined to any other clause by `OR` alone, so the row's own values
-///    settle the answer.
+///    request supplies or one constant, so the row's own values settle the answer.
 /// 3. The key is a single column of a type an object name can carry.
 /// 4. Row-level security is on and the reader does not own the table, since an owner is
 ///    exempt from every policy unless the table forces it.
@@ -392,6 +392,7 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
     cases.extend(every_composition());
     cases.extend(every_ownership());
     cases.extend(every_command());
+    cases.extend(every_barrier());
     cases
 }
 
@@ -479,6 +480,24 @@ fn every_depth() -> Vec<ExactCase> {
     cases
 }
 
+/// Each barrier shape against every accessor.
+///
+/// A barrier can only take rows away, so the seed carries rows the permissive clause grants
+/// and the barrier removes. A translation that dropped it would hand those rows over.
+fn every_barrier() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
+    for barrier in [Barrier::OnRequest, Barrier::OnConstant] {
+        for accessor in Accessor::ALL {
+            cases.push(case(Point {
+                accessor,
+                barrier,
+                ..Point::base()
+            }));
+        }
+    }
+    cases
+}
+
 /// A policy per command, against every accessor.
 ///
 /// A write is decided by the policies declared for its own command, so this is where the
@@ -544,6 +563,46 @@ pub(crate) struct Write {
     pub(crate) update_set: String,
 }
 
+/// What a `RESTRICTIVE` policy removes from the grant, where the case declares one.
+///
+/// `PostgreSQL` ANDs the restrictive policies onto the union of the permissive ones, so a
+/// barrier can only take rows away. Both shapes stay row local: one compares another column
+/// against the request, the other against a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Barrier {
+    /// None, which every other axis stays at.
+    Absent,
+    /// The request scalar again, on a column the permissive clause does not read.
+    OnRequest,
+    /// A constant, so the barrier answers the same for every caller.
+    OnConstant,
+}
+
+impl Barrier {
+    /// The policy the schema adds, and the clause it carries.
+    fn ddl(self, read: &str) -> String {
+        match self {
+            Self::Absent => String::new(),
+            Self::OnRequest => format!(
+                "CREATE POLICY bar ON \"guarded\" AS RESTRICTIVE FOR SELECT\n\
+                 \x20   USING (tenant = {read});\n"
+            ),
+            Self::OnConstant => "CREATE POLICY bar ON \"guarded\" AS RESTRICTIVE FOR SELECT\n\
+                 \x20   USING (archived = false);\n"
+                .to_string(),
+        }
+    }
+
+    /// Empty where the axis stays at its base, so a name carries only what moved.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Absent => "",
+            Self::OnRequest => "barrier-on-request",
+            Self::OnConstant => "barrier-on-constant",
+        }
+    }
+}
+
 /// Who owns the guarded table, and whether policies reach them.
 ///
 /// An owner is exempt from every policy on its table, so an owner reading is outside the
@@ -596,6 +655,7 @@ pub(crate) struct Point {
     pub(crate) composition: Composition,
     pub(crate) ownership: Ownership,
     pub(crate) command: Command,
+    pub(crate) barrier: Barrier,
 }
 
 impl Point {
@@ -612,6 +672,7 @@ impl Point {
             composition: Composition::OneClause,
             ownership: Ownership::Migration,
             command: Command::ReadOnly,
+            barrier: Barrier::Absent,
         }
     }
 }
@@ -628,6 +689,7 @@ fn case(point: Point) -> ExactCase {
         composition,
         ownership,
         command,
+        barrier,
     } = point;
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
@@ -643,16 +705,23 @@ fn case(point: Point) -> ExactCase {
         "one key per row, or the seed collides on the primary key"
     );
 
-    let mut schema = match (shape, depth, composition.has_deputy(), command) {
-        (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand) => {
+    let mut schema = match (shape, depth, composition.has_deputy(), command, barrier) {
+        (
+            Shape::SelfIdentity,
+            Depth::One,
+            false,
+            Command::ReadOnly,
+            Barrier::OnRequest | Barrier::OnConstant,
+        ) => barred_schema_of(key, accessor, nullable, barrier),
+        (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand, _) => {
             commanded_schema_of(key, accessor, nullable)
         }
-        (Shape::SelfIdentity, Depth::One, false, _) => schema_of(&tables, key, accessor, nullable),
-        (Shape::SelfIdentity, Depth::One, true, _) => {
+        (Shape::SelfIdentity, Depth::One, false, ..) => schema_of(&tables, key, accessor, nullable),
+        (Shape::SelfIdentity, Depth::One, true, ..) => {
             composed_schema_of(key, accessor, nullable, composition)
         }
-        (Shape::SelfIdentity, _, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
-        (Shape::MembershipJoin, _, _, _) => membership_schema_of(&tables, key, accessor, nullable),
+        (Shape::SelfIdentity, ..) => partitioned_schema_of(key, accessor, nullable, depth),
+        (Shape::MembershipJoin, ..) => membership_schema_of(&tables, key, accessor, nullable),
     };
     schema.push_str(ownership.ddl());
 
@@ -669,6 +738,7 @@ fn case(point: Point) -> ExactCase {
             composition.label(),
             ownership.label(),
             command.label(),
+            barrier.label(),
         ]
         .iter()
         .filter(|segment| !segment.is_empty())
@@ -686,14 +756,21 @@ fn case(point: Point) -> ExactCase {
             .iter()
             .map(|caller| format!("CREATE ROLE {} LOGIN", caller.subject))
             .collect(),
-        seed: match (shape, depth, composition.has_deputy(), command) {
-            (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand) => {
+        seed: match (shape, depth, composition.has_deputy(), command, barrier) {
+            (
+                Shape::SelfIdentity,
+                Depth::One,
+                false,
+                Command::ReadOnly,
+                Barrier::OnRequest | Barrier::OnConstant,
+            ) => barred_seed_of(&keys),
+            (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand, _) => {
                 commanded_seed_of(&keys)
             }
-            (Shape::SelfIdentity, Depth::One, false, _) => seed_of(&tables, &keys, &values),
-            (Shape::SelfIdentity, Depth::One, true, _) => composed_seed_of(&keys),
-            (Shape::SelfIdentity, _, _, _) => partitioned_seed_of(&keys, &values),
-            (Shape::MembershipJoin, _, _, _) => membership_seed_of(&tables, &keys, &values),
+            (Shape::SelfIdentity, Depth::One, false, ..) => seed_of(&tables, &keys, &values),
+            (Shape::SelfIdentity, Depth::One, true, ..) => composed_seed_of(&keys),
+            (Shape::SelfIdentity, ..) => partitioned_seed_of(&keys, &values),
+            (Shape::MembershipJoin, ..) => membership_seed_of(&tables, &keys, &values),
         },
         writes: match command {
             Command::ReadOnly => None,
@@ -1031,5 +1108,54 @@ fn commanded_seed_of(keys: &[String]) -> [String; 2] {
     [
         format!("INSERT INTO \"guarded\" (id, who, editor, remover, title) VALUES {values}"),
         "GRANT SELECT, INSERT, UPDATE, DELETE ON \"guarded\" TO alice, mallory, silent".to_string(),
+    ]
+}
+
+/// The guarded table with a permissive clause and a barrier narrowing it.
+///
+/// The barrier reads a column the permissive clause does not, so a row can be granted by one
+/// and removed by the other, which is the only way a dropped barrier shows.
+fn barred_schema_of(key: KeyType, accessor: Accessor, nullable: bool, barrier: Barrier) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
+    let mut schema = format!(
+        "CREATE TABLE \"guarded\" (id {} PRIMARY KEY, who TEXT{null}, tenant TEXT,\n\
+        \x20   archived BOOLEAN NOT NULL);\n",
+        key.column()
+    );
+    schema.push_str(accessor.declaration());
+    schema.push_str("ALTER TABLE \"guarded\" ENABLE ROW LEVEL SECURITY;\n");
+    let read = accessor.expression();
+    let _ = writeln!(
+        schema,
+        "CREATE POLICY own_sel ON \"guarded\" FOR SELECT USING (who = {read});"
+    );
+    schema.push_str(&barrier.ddl(read));
+    schema
+}
+
+/// One row per side of the barrier, so both shapes have rows it removes.
+///
+/// Granted outright, granted by the permissive clause and removed by either barrier, denied
+/// by the permissive clause alone, and granted by the request barrier while the constant one
+/// removes it.
+fn barred_seed_of(keys: &[String]) -> [String; 2] {
+    let rows = [
+        ("'alice'", "'alice'", "false"),
+        ("'alice'", "'someone_else'", "true"),
+        ("'someone_else'", "'alice'", "false"),
+        ("'alice'", "'alice'", "true"),
+    ];
+    let mut values = String::new();
+    for (at, (who, tenant, archived)) in rows.iter().enumerate() {
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(
+            values,
+            "{joiner}({}, {who}, {tenant}, {archived})",
+            keys[at]
+        );
+    }
+    [
+        format!("INSERT INTO \"guarded\" (id, who, tenant, archived) VALUES {values}"),
+        "GRANT SELECT ON \"guarded\" TO alice, mallory, silent".to_string(),
     ]
 }
