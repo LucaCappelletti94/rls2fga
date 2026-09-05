@@ -16,25 +16,27 @@ use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 
 /// Preconditions every admitted case satisfies, each a rule of the database.
 ///
-/// 1. One permissive `SELECT` policy and no restrictive one, so no clause is composed with
-///    another and no barrier can remove a grant.
-/// 2. The clause is an equality between one column of the guarded row and one scalar the
-///    request supplies, so the row's own values settle the answer.
+/// 1. Permissive `SELECT` policies only and no restrictive one, so nothing can remove a
+///    grant. `PostgreSQL` ORs the permissive policies covering a command, so however many
+///    there are they stay a union of grants.
+/// 2. Every clause is an equality between one column of the guarded row and one scalar the
+///    request supplies, joined to any other clause by `OR` alone, so the row's own values
+///    settle the answer.
 /// 3. The key is a single column of a type an object name can carry.
 /// 4. Row-level security is on and the reader does not own the table, since an owner is
 ///    exempt from every policy unless the table forces it.
 /// 5. Nothing the clause reads is another table, so no second table's policies apply.
-/// 8. Where the answer comes from a membership row, that membership table carries no row
-///    security of its own. `PostgreSQL` shows every caller the same membership rows then,
-///    which is what makes a tuple loaded as the owner true for everyone. A guarded
-///    membership table is outside the class, and the translation says so.
-/// 7. The guarded table is not spelled as a well-known type. The translation refuses that
-///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
-///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
 /// 6. The deployment declares what the request value means. `current_setting('k')` is a
 ///    session key like any other, and only the deployment knows that this one carries the
 ///    caller's identity rather than a tenant or a flag, so an undeclared key is outside
 ///    the class by construction rather than by omission.
+/// 7. The guarded table is not spelled as a well-known type. The translation refuses that
+///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
+///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
+/// 8. Where the answer comes from a membership row, that membership table carries no row
+///    security of its own. `PostgreSQL` shows every caller the same membership rows then,
+///    which is what makes a tuple loaded as the owner true for everyone. A guarded
+///    membership table is outside the class, and the translation says so.
 pub(crate) const PRECONDITIONS: usize = 8;
 
 /// The request-scoped values every admitted case declares, satisfying precondition 6.
@@ -159,6 +161,39 @@ impl Accessor {
             Self::BareSetting => "bare",
             Self::MissingOkSetting => "missing-ok",
             Self::DeclaredFunction => "declared",
+        }
+    }
+}
+
+/// How the row's grants are composed.
+///
+/// `PostgreSQL` ORs the permissive policies on a command, so two policies and one policy
+/// carrying an OR are the same database written two ways and have to answer alike. Each arm
+/// is still an equality the row and the request settle, which is what keeps both inside the
+/// class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Composition {
+    /// One clause, one column.
+    OneClause,
+    /// Two permissive policies, which `PostgreSQL` composes.
+    TwoPolicies,
+    /// One policy whose clause carries the OR itself.
+    OrClause,
+}
+
+impl Composition {
+    pub(crate) const ALL: [Self; 3] = [Self::OneClause, Self::TwoPolicies, Self::OrClause];
+
+    /// Whether the row carries a second column a grant can come from.
+    fn has_deputy(self) -> bool {
+        !matches!(self, Self::OneClause)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::OneClause => "one-clause",
+            Self::TwoPolicies => "two-policies",
+            Self::OrClause => "or-clause",
         }
     }
 }
@@ -350,6 +385,25 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
     let mut cases = every_shape_and_spelling();
     cases.extend(every_naming_axis());
     cases.extend(every_depth());
+    cases.extend(every_composition());
+    cases
+}
+
+/// Both spellings of an OR, against every accessor.
+///
+/// Two permissive policies and one policy carrying the OR are the same database, so the two
+/// have to answer alike, and every spelling of the request has to reach both.
+fn every_composition() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
+    for composition in [Composition::TwoPolicies, Composition::OrClause] {
+        for accessor in Accessor::ALL {
+            cases.push(case(Point {
+                accessor,
+                composition,
+                ..Point::base()
+            }));
+        }
+    }
     cases
 }
 
@@ -362,15 +416,13 @@ fn every_shape_and_spelling() -> Vec<ExactCase> {
         for key in KeyType::ALL {
             for accessor in Accessor::ALL {
                 for nullable in [false, true] {
-                    cases.push(case(
+                    cases.push(case(Point {
                         key,
                         accessor,
                         nullable,
-                        TableName::Plain,
-                        KeyLength::Short,
                         shape,
-                        Depth::One,
-                    ));
+                        ..Point::base()
+                    }));
                 }
             }
         }
@@ -387,25 +439,20 @@ fn every_naming_axis() -> Vec<ExactCase> {
     let mut cases = Vec::new();
     for key in KeyType::ALL {
         for length in KeyLength::ALL {
-            cases.push(case(
+            cases.push(case(Point {
                 key,
-                Accessor::MissingOkSetting,
-                false,
-                TableName::FoldedCollision,
+                name: TableName::FoldedCollision,
                 length,
-                Shape::SelfIdentity,
-                Depth::One,
-            ));
+                ..Point::base()
+            }));
         }
-        cases.push(case(
+        cases.push(case(Point {
             key,
-            Accessor::BareSetting,
-            true,
-            TableName::Plain,
-            KeyLength::NearTheCap,
-            Shape::SelfIdentity,
-            Depth::One,
-        ));
+            accessor: Accessor::BareSetting,
+            nullable: true,
+            length: KeyLength::NearTheCap,
+            ..Point::base()
+        }));
     }
     cases
 }
@@ -416,29 +463,60 @@ fn every_depth() -> Vec<ExactCase> {
     let mut cases = Vec::new();
     for depth in [Depth::Two, Depth::Three] {
         for key in KeyType::ALL {
-            cases.push(case(
+            cases.push(case(Point {
                 key,
-                Accessor::MissingOkSetting,
-                false,
-                TableName::Plain,
-                KeyLength::Short,
-                Shape::SelfIdentity,
                 depth,
-            ));
+                ..Point::base()
+            }));
         }
     }
     cases
 }
 
-fn case(
-    key: KeyType,
-    accessor: Accessor,
-    nullable: bool,
-    name: TableName,
-    length: KeyLength,
-    shape: Shape,
-    depth: Depth,
-) -> ExactCase {
+/// One point of the grammar, which is what a case is.
+///
+/// A struct rather than eight arguments: a call site says which axis it is moving, and the
+/// rest come from [`Point::base`], so adding an axis does not touch every family.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Point {
+    pub(crate) key: KeyType,
+    pub(crate) accessor: Accessor,
+    /// Whether the column a clause reads admits NULL.
+    pub(crate) nullable: bool,
+    pub(crate) name: TableName,
+    pub(crate) length: KeyLength,
+    pub(crate) shape: Shape,
+    pub(crate) depth: Depth,
+    pub(crate) composition: Composition,
+}
+
+impl Point {
+    /// The simplest point: one table, one clause, short keys, rows of its own.
+    pub(crate) fn base() -> Self {
+        Self {
+            key: KeyType::Text,
+            accessor: Accessor::MissingOkSetting,
+            nullable: false,
+            name: TableName::Plain,
+            length: KeyLength::Short,
+            shape: Shape::SelfIdentity,
+            depth: Depth::One,
+            composition: Composition::OneClause,
+        }
+    }
+}
+
+fn case(point: Point) -> ExactCase {
+    let Point {
+        key,
+        accessor,
+        nullable,
+        name,
+        length,
+        shape,
+        depth,
+        composition,
+    } = point;
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
     // The values a row can carry: the caller's own, another, the empty string, and NULL
@@ -455,24 +533,29 @@ fn case(
 
     ExactCase {
         name: format!(
-            "exact-{}-{}-{}-{}-{}-{}-{}",
+            "exact-{}-{}-{}-{}-{}-{}-{}-{}",
             shape.label(),
             key.label(),
             accessor.label(),
             if nullable { "nullable" } else { "not-null" },
             name.label(),
             length.label(),
-            depth.label()
+            depth.label(),
+            composition.label()
         ),
-        schema: match (shape, depth) {
-            (Shape::SelfIdentity, Depth::One) => schema_of(&tables, key, accessor, nullable),
-            (Shape::SelfIdentity, _) => partitioned_schema_of(key, accessor, nullable, depth),
-            (Shape::MembershipJoin, _) => membership_schema_of(&tables, key, accessor, nullable),
+        schema: match (shape, depth, composition.has_deputy()) {
+            (Shape::SelfIdentity, Depth::One, false) => schema_of(&tables, key, accessor, nullable),
+            (Shape::SelfIdentity, Depth::One, true) => {
+                composed_schema_of(key, accessor, nullable, composition)
+            }
+            (Shape::SelfIdentity, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
+            (Shape::MembershipJoin, _, _) => membership_schema_of(&tables, key, accessor, nullable),
         },
-        seed: match (shape, depth) {
-            (Shape::SelfIdentity, Depth::One) => seed_of(&tables, &keys, &values),
-            (Shape::SelfIdentity, _) => partitioned_seed_of(&keys, &values),
-            (Shape::MembershipJoin, _) => membership_seed_of(&tables, &keys, &values),
+        seed: match (shape, depth, composition.has_deputy()) {
+            (Shape::SelfIdentity, Depth::One, false) => seed_of(&tables, &keys, &values),
+            (Shape::SelfIdentity, Depth::One, true) => composed_seed_of(&keys),
+            (Shape::SelfIdentity, _, _) => partitioned_seed_of(&keys, &values),
+            (Shape::MembershipJoin, _, _) => membership_seed_of(&tables, &keys, &values),
         },
         accessor,
         not_read_directly: depth
@@ -690,5 +773,70 @@ fn seed_of(tables: &[&str], keys: &[String], values: &[&str]) -> [String; 2] {
             "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
              GRANT SELECT ON {grants} TO alice, mallory, silent"
         ),
+    ]
+}
+
+/// A table whose grant may come from either of two columns, composed two ways.
+fn composed_schema_of(
+    key: KeyType,
+    accessor: Accessor,
+    nullable: bool,
+    composition: Composition,
+) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
+    let mut schema = format!(
+        "CREATE TABLE \"guarded\" (id {} PRIMARY KEY, who TEXT{null}, deputy TEXT);\n",
+        key.column()
+    );
+    schema.push_str(accessor.declaration());
+    schema.push_str("ALTER TABLE \"guarded\" ENABLE ROW LEVEL SECURITY;\n");
+    let read = accessor.expression();
+    match composition {
+        // Two permissive policies, which `PostgreSQL` ORs for the command they share.
+        Composition::TwoPolicies => {
+            let _ = write!(
+                schema,
+                "CREATE POLICY own_0 ON \"guarded\" FOR SELECT USING (who = {read});\n\
+                 CREATE POLICY own_1 ON \"guarded\" FOR SELECT USING (deputy = {read});\n"
+            );
+        }
+        // The same database with the OR written out.
+        Composition::OneClause | Composition::OrClause => {
+            let _ = write!(
+                schema,
+                "CREATE POLICY own_0 ON \"guarded\" FOR SELECT\n\
+                 \x20   USING (who = {read} OR deputy = {read});\n"
+            );
+        }
+    }
+    schema
+}
+
+/// One row granted through each column, one through neither, and one carrying the
+/// boundaries.
+///
+/// The row granted only through `deputy` is what makes the second arm load bearing: drop
+/// that arm and this row's answer changes.
+fn composed_seed_of(keys: &[String]) -> [String; 2] {
+    // The filler is nobody's identity. `'nobody'` would be mallory's, and a row carrying a
+    // caller's value grants that caller a read the model answers under its subject name
+    // rather than its setting, so the two sides would disagree about the seed rather than
+    // about the translation.
+    let rows = [
+        ("'alice'", "'someone_else'"),
+        ("'someone_else'", "'alice'"),
+        ("'someone_else'", "'someone_else'"),
+        ("''", "NULL"),
+    ];
+    let mut values = String::new();
+    for (at, (who, deputy)) in rows.iter().enumerate() {
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(values, "{joiner}({}, {who}, {deputy})", keys[at]);
+    }
+    [
+        format!("INSERT INTO \"guarded\" (id, who, deputy) VALUES {values}"),
+        "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
+         GRANT SELECT ON \"guarded\" TO alice, mallory, silent"
+            .to_string(),
     ]
 }
