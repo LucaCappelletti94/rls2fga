@@ -370,6 +370,8 @@ pub(crate) struct ExactCase {
     /// Names the axes it came from, so a failure says which point of the grammar broke.
     pub(crate) name: String,
     pub(crate) schema: String,
+    /// What runs before the schema, since the schema may name a role.
+    pub(crate) prelude: Vec<String>,
     /// Rows, and the grant the reading role needs.
     pub(crate) seed: [String; 2],
     pub(crate) accessor: Accessor,
@@ -386,6 +388,7 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
     cases.extend(every_naming_axis());
     cases.extend(every_depth());
     cases.extend(every_composition());
+    cases.extend(every_ownership());
     cases
 }
 
@@ -473,9 +476,60 @@ fn every_depth() -> Vec<ExactCase> {
     cases
 }
 
+/// An owner reading its own table, which only `FORCE` brings inside the class.
+///
+/// Against every accessor, since the owner still reads the request the same way.
+fn every_ownership() -> Vec<ExactCase> {
+    Accessor::ALL
+        .into_iter()
+        .map(|accessor| {
+            case(Point {
+                accessor,
+                ownership: Ownership::ForcedOnReader,
+                ..Point::base()
+            })
+        })
+        .collect()
+}
+
+/// Who owns the guarded table, and whether policies reach them.
+///
+/// An owner is exempt from every policy on its table, so an owner reading is outside the
+/// class until the table forces row-level security on itself. `FORCE` alone would change
+/// nothing observable here, since the roles a case compares own nothing, so the two arrive
+/// together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ownership {
+    /// The role that ran the migration, whom no case reads as.
+    Migration,
+    /// A role the case reads as, with the table forcing its policies on it.
+    ForcedOnReader,
+}
+
+impl Ownership {
+    /// What the schema says after the policies.
+    fn ddl(self) -> &'static str {
+        match self {
+            Self::Migration => "",
+            Self::ForcedOnReader => {
+                "ALTER TABLE \"guarded\" OWNER TO alice;\n\
+                 ALTER TABLE \"guarded\" FORCE ROW LEVEL SECURITY;\n"
+            }
+        }
+    }
+
+    /// Empty where the axis stays at its base, so a name carries only what moved.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Migration => "",
+            Self::ForcedOnReader => "forced-owner",
+        }
+    }
+}
+
 /// One point of the grammar, which is what a case is.
 ///
-/// A struct rather than eight arguments: a call site says which axis it is moving, and the
+/// A struct rather than nine arguments: a call site says which axis it is moving, and the
 /// rest come from [`Point::base`], so adding an axis does not touch every family.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Point {
@@ -488,6 +542,7 @@ pub(crate) struct Point {
     pub(crate) shape: Shape,
     pub(crate) depth: Depth,
     pub(crate) composition: Composition,
+    pub(crate) ownership: Ownership,
 }
 
 impl Point {
@@ -502,6 +557,7 @@ impl Point {
             shape: Shape::SelfIdentity,
             depth: Depth::One,
             composition: Composition::OneClause,
+            ownership: Ownership::Migration,
         }
     }
 }
@@ -516,6 +572,7 @@ fn case(point: Point) -> ExactCase {
         shape,
         depth,
         composition,
+        ownership,
     } = point;
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
@@ -531,9 +588,19 @@ fn case(point: Point) -> ExactCase {
         "one key per row, or the seed collides on the primary key"
     );
 
+    let mut schema = match (shape, depth, composition.has_deputy()) {
+        (Shape::SelfIdentity, Depth::One, false) => schema_of(&tables, key, accessor, nullable),
+        (Shape::SelfIdentity, Depth::One, true) => {
+            composed_schema_of(key, accessor, nullable, composition)
+        }
+        (Shape::SelfIdentity, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
+        (Shape::MembershipJoin, _, _) => membership_schema_of(&tables, key, accessor, nullable),
+    };
+    schema.push_str(ownership.ddl());
+
     ExactCase {
-        name: format!(
-            "exact-{}-{}-{}-{}-{}-{}-{}-{}",
+        name: [
+            "exact",
             shape.label(),
             key.label(),
             accessor.label(),
@@ -541,16 +608,25 @@ fn case(point: Point) -> ExactCase {
             name.label(),
             length.label(),
             depth.label(),
-            composition.label()
-        ),
-        schema: match (shape, depth, composition.has_deputy()) {
-            (Shape::SelfIdentity, Depth::One, false) => schema_of(&tables, key, accessor, nullable),
-            (Shape::SelfIdentity, Depth::One, true) => {
-                composed_schema_of(key, accessor, nullable, composition)
+            composition.label(),
+            ownership.label(),
+        ]
+        .iter()
+        .filter(|segment| !segment.is_empty())
+        .fold(String::new(), |mut name, segment| {
+            if !name.is_empty() {
+                name.push('-');
             }
-            (Shape::SelfIdentity, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
-            (Shape::MembershipJoin, _, _) => membership_schema_of(&tables, key, accessor, nullable),
-        },
+            name.push_str(segment);
+            name
+        }),
+        schema,
+        // Every caller is a role before the schema runs, since a schema may name one as the
+        // guarded table's owner.
+        prelude: CALLERS
+            .iter()
+            .map(|caller| format!("CREATE ROLE {} LOGIN", caller.subject))
+            .collect(),
         seed: match (shape, depth, composition.has_deputy()) {
             (Shape::SelfIdentity, Depth::One, false) => seed_of(&tables, &keys, &values),
             (Shape::SelfIdentity, Depth::One, true) => composed_seed_of(&keys),
@@ -623,9 +699,7 @@ fn partitioned_seed_of(keys: &[String], values: &[&str]) -> [String; 2] {
     }
     [
         format!("INSERT INTO \"guarded\" (id, region, who) VALUES {rows}"),
-        "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-         GRANT SELECT ON \"guarded\" TO alice, mallory, silent"
-            .to_string(),
+        "GRANT SELECT ON \"guarded\" TO alice, mallory, silent".to_string(),
     ]
 }
 
@@ -708,10 +782,7 @@ fn membership_seed_of(tables: &[&str], keys: &[String], values: &[&str]) -> [Str
     }
     [
         seed,
-        format!(
-            "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-             GRANT SELECT ON {grants} TO alice, mallory, silent"
-        ),
+        format!("GRANT SELECT ON {grants} TO alice, mallory, silent"),
     ]
 }
 
@@ -769,10 +840,7 @@ fn seed_of(tables: &[&str], keys: &[String], values: &[&str]) -> [String; 2] {
     }
     [
         seed,
-        format!(
-            "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-             GRANT SELECT ON {grants} TO alice, mallory, silent"
-        ),
+        format!("GRANT SELECT ON {grants} TO alice, mallory, silent"),
     ]
 }
 
@@ -835,8 +903,6 @@ fn composed_seed_of(keys: &[String]) -> [String; 2] {
     }
     [
         format!("INSERT INTO \"guarded\" (id, who, deputy) VALUES {values}"),
-        "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
-         GRANT SELECT ON \"guarded\" TO alice, mallory, silent"
-            .to_string(),
+        "GRANT SELECT ON \"guarded\" TO alice, mallory, silent".to_string(),
     ]
 }

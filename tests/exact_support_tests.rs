@@ -102,8 +102,13 @@ fn the_grammar_covers_every_axis_value_it_declares() {
             + KeyType::ALL.len() * KeyLength::ALL.len()
             + KeyType::ALL.len()
             + 2 * KeyType::ALL.len()
-            + 2 * Accessor::ALL.len(),
+            + 2 * Accessor::ALL.len()
+            + Accessor::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
+    );
+    assert!(
+        cases.iter().any(|case| case.name.contains("forced-owner")),
+        "no case reads as the guarded table's owner"
     );
     for composition in ["two-policies", "or-clause"] {
         assert!(
@@ -456,4 +461,48 @@ fn arm_sources(schema: &str) -> usize {
         .iter()
         .filter(|query| query.comment.contains("ownership"))
         .count()
+}
+
+/// A forced case hands its owner no bypass, and an unforced one names them.
+///
+/// The parity run alone cannot prove the axis: `FORCE` matters only because a role the case
+/// reads as owns the table, and dropping either half leaves a case that still agrees. So the
+/// translation answers both halves here. With `FORCE` there is nothing to report, and with it
+/// removed the report has to name `alice`, which it can only do if the schema handed her the
+/// table.
+#[test]
+fn a_forced_case_hands_its_owner_no_bypass() {
+    let owned: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("forced-owner"))
+        .collect();
+    assert!(!owned.is_empty(), "no owned case to check");
+    for case in owned {
+        let forced = owner_exemptions(&case.schema);
+        assert!(
+            forced.is_empty(),
+            "{}: FORCE leaves no owner exempt, got {forced:?}",
+            case.name
+        );
+        let unforced = case
+            .schema
+            .replace("ALTER TABLE \"guarded\" FORCE ROW LEVEL SECURITY;\n", "");
+        let reported = owner_exemptions(&unforced);
+        assert!(
+            reported.iter().any(|note| note.contains("alice")),
+            "{}: unforced, the exempt owner is the role the case reads as, got {reported:?}",
+            case.name
+        );
+    }
+}
+
+/// What a schema reports about owners the policies do not reach.
+fn owner_exemptions(schema: &str) -> Vec<String> {
+    plan(schema)
+        .outputs_accepting_gaps()
+        .notes()
+        .iter()
+        .filter(|note| note.severity() == NoteSeverity::Exempt && note.message().contains("owner"))
+        .map(TranslationNote::message)
+        .collect()
 }
