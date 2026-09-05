@@ -347,9 +347,17 @@ pub(crate) struct ExactCase {
 /// Deliberately an enumeration rather than a sampler: the axes are small enough to cover
 /// whole, and a failure names a point rather than a seed.
 pub(crate) fn every_case() -> Vec<ExactCase> {
+    let mut cases = every_shape_and_spelling();
+    cases.extend(every_naming_axis());
+    cases.extend(every_depth());
+    cases
+}
+
+/// Key type against accessor spelling against nullability against shape, whole.
+///
+/// The shape decides which row settles the answer, and every spelling has to reach both.
+fn every_shape_and_spelling() -> Vec<ExactCase> {
     let mut cases = Vec::new();
-    // Key type against accessor spelling against nullability against shape, whole. The
-    // shape decides which row settles the answer, and every spelling has to reach both.
     for shape in Shape::ALL {
         for key in KeyType::ALL {
             for accessor in Accessor::ALL {
@@ -367,10 +375,16 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
             }
         }
     }
-    // The two axes that only interact with naming, against the spellings and key types that
-    // reach it. Crossing all five whole would be 108 cases against two containers for no
-    // more coverage than this: a name collision is decided by the table's name and its key
-    // type, and neither knows how the caller was spelled.
+    cases
+}
+
+/// The two axes that only interact with naming, against the key types that reach it.
+///
+/// Crossing all five axes whole would be over a hundred cases against two containers for no
+/// more coverage than this: a name collision is decided by the table's name and its key
+/// type, and neither knows how the caller was spelled.
+fn every_naming_axis() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
     for key in KeyType::ALL {
         for length in KeyLength::ALL {
             cases.push(case(
@@ -383,8 +397,6 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
                 Depth::One,
             ));
         }
-    }
-    for key in KeyType::ALL {
         cases.push(case(
             key,
             Accessor::BareSetting,
@@ -395,8 +407,13 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
             Depth::One,
         ));
     }
-    // Depth, against every key type, since a composite key is how a partitioned table
-    // names its rows and the encoder joins the parts.
+    cases
+}
+
+/// Depth against every key type, since a composite key is how a partitioned table names its
+/// rows and the encoder joins the parts.
+fn every_depth() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
     for depth in [Depth::Two, Depth::Three] {
         for key in KeyType::ALL {
             cases.push(case(
