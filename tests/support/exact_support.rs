@@ -478,23 +478,7 @@ fn partitioned_schema_of(key: KeyType, accessor: Accessor, nullable: bool, depth
         \x20   PRIMARY KEY (id, region)) PARTITION BY LIST (region);\n",
         key.column()
     );
-    for (at, partition) in depth.partitions().iter().enumerate() {
-        let parent = if at == 0 {
-            "\"guarded\""
-        } else {
-            depth.partitions()[at - 1]
-        };
-        // The last one holds the rows; the ones above it partition further.
-        let further = if at + 1 == depth.partitions().len() {
-            String::new()
-        } else {
-            " PARTITION BY LIST (region)".to_string()
-        };
-        let _ = writeln!(
-            schema,
-            "CREATE TABLE {partition} PARTITION OF {parent} FOR VALUES IN ('eu'){further};"
-        );
-    }
+    schema.push_str(&partition_ddl(depth));
     schema.push_str(accessor.declaration());
     let _ = write!(
         schema,
@@ -503,6 +487,31 @@ fn partitioned_schema_of(key: KeyType, accessor: Accessor, nullable: bool, depth
         accessor.expression()
     );
     schema
+}
+
+/// Each partition, a child of the one before it, the last holding the rows.
+fn partition_ddl(depth: Depth) -> String {
+    let partitions = depth.partitions();
+    let mut ddl = String::new();
+    for (at, partition) in partitions.iter().enumerate() {
+        let parent = if at == 0 {
+            "\"guarded\""
+        } else {
+            partitions[at - 1]
+        };
+        // The ones above the last partition further, so the nearest parent of the leaf
+        // carries no policies of its own.
+        let further = if at + 1 == partitions.len() {
+            ""
+        } else {
+            " PARTITION BY LIST (region)"
+        };
+        let _ = writeln!(
+            ddl,
+            "CREATE TABLE {partition} PARTITION OF {parent} FOR VALUES IN ('eu'){further};"
+        );
+    }
+    ddl
 }
 
 /// Rows inserted through the root, which routes them to the partition that holds them.
