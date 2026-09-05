@@ -3538,8 +3538,11 @@ async fn every_exact_support_case_agrees(cluster: Arc<Cluster>) {
             .iter()
             .map(String::as_str)
             .collect();
+        let prelude: Vec<&str> = generated.prelude.iter().map(String::as_str).collect();
         let case = ParityCase::reading(&generated.name, &generated.schema, &seed, principals)
             .with_attributes(support::exact_support::DECLARED_KEY)
+            // The roles exist before the schema, which may name one as the table's owner.
+            .after(&prelude)
             // A partition is filtered by nothing when a read names it, so the case compares
             // reads through the root, which is what the model answers for.
             .not_reading_directly(&partitions);
