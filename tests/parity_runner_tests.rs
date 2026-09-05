@@ -3546,6 +3546,18 @@ async fn every_exact_support_case_agrees(cluster: Arc<Cluster>) {
             // A partition is filtered by nothing when a read names it, so the case compares
             // reads through the root, which is what the model answers for.
             .not_reading_directly(&partitions);
+        // The grammar's write cases change a column no policy reads, and the probe changes
+        // the key alone, so the row a write produces carries the existing row's facts.
+        let case = match &generated.writes {
+            Some(write) => case.writing(
+                "guarded",
+                Mutations {
+                    update_set: Some(write.update_set.clone()),
+                    check_neutral: true,
+                },
+            ),
+            None => case,
+        };
         let run = support::parity::run(&cluster, &case).await;
         support::parity::assert_two_sided(&case, &run);
         assert_agrees(&case, &run);

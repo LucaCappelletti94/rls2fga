@@ -375,6 +375,8 @@ pub(crate) struct ExactCase {
     /// Rows, and the grant the reading role needs.
     pub(crate) seed: [String; 2],
     pub(crate) accessor: Accessor,
+    /// The change a write attempts, absent where the case grants reads alone.
+    pub(crate) writes: Option<Write>,
     /// Tables whose rows are reached through their root rather than by name.
     pub(crate) not_read_directly: Vec<String>,
 }
@@ -389,6 +391,7 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
     cases.extend(every_depth());
     cases.extend(every_composition());
     cases.extend(every_ownership());
+    cases.extend(every_command());
     cases
 }
 
@@ -476,6 +479,23 @@ fn every_depth() -> Vec<ExactCase> {
     cases
 }
 
+/// A policy per command, against every accessor.
+///
+/// A write is decided by the policies declared for its own command, so this is where the
+/// three that no other axis reaches are compared at all.
+fn every_command() -> Vec<ExactCase> {
+    Accessor::ALL
+        .into_iter()
+        .map(|accessor| {
+            case(Point {
+                accessor,
+                command: Command::EveryCommand,
+                ..Point::base()
+            })
+        })
+        .collect()
+}
+
 /// An owner reading its own table, which only `FORCE` brings inside the class.
 ///
 /// Against every accessor, since the owner still reads the request the same way.
@@ -490,6 +510,38 @@ fn every_ownership() -> Vec<ExactCase> {
             })
         })
         .collect()
+}
+
+/// Which commands the guarded table declares policies for.
+///
+/// Every other axis reads, so the answers come from one clause. Here each of the four
+/// commands carries a policy of its own, and a write is compared as well as a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    /// `SELECT` alone, which every other axis stays at.
+    ReadOnly,
+    /// A policy per command, and the privileges to reach them.
+    EveryCommand,
+}
+
+impl Command {
+    /// Empty where the axis stays at its base, so a name carries only what moved.
+    fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "",
+            Self::EveryCommand => "every-command",
+        }
+    }
+}
+
+/// The change a write attempts, where the case grants writes at all.
+///
+/// The column it names is read by no policy, and neither is the key, which is all the
+/// `INSERT` probe changes. That is what makes the candidate row's facts the existing row's,
+/// so the question can be asked of the object that exists.
+pub(crate) struct Write {
+    /// `SET` clause an `UPDATE` applies.
+    pub(crate) update_set: String,
 }
 
 /// Who owns the guarded table, and whether policies reach them.
@@ -543,6 +595,7 @@ pub(crate) struct Point {
     pub(crate) depth: Depth,
     pub(crate) composition: Composition,
     pub(crate) ownership: Ownership,
+    pub(crate) command: Command,
 }
 
 impl Point {
@@ -558,6 +611,7 @@ impl Point {
             depth: Depth::One,
             composition: Composition::OneClause,
             ownership: Ownership::Migration,
+            command: Command::ReadOnly,
         }
     }
 }
@@ -573,6 +627,7 @@ fn case(point: Point) -> ExactCase {
         depth,
         composition,
         ownership,
+        command,
     } = point;
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
@@ -588,13 +643,16 @@ fn case(point: Point) -> ExactCase {
         "one key per row, or the seed collides on the primary key"
     );
 
-    let mut schema = match (shape, depth, composition.has_deputy()) {
-        (Shape::SelfIdentity, Depth::One, false) => schema_of(&tables, key, accessor, nullable),
-        (Shape::SelfIdentity, Depth::One, true) => {
+    let mut schema = match (shape, depth, composition.has_deputy(), command) {
+        (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand) => {
+            commanded_schema_of(key, accessor, nullable)
+        }
+        (Shape::SelfIdentity, Depth::One, false, _) => schema_of(&tables, key, accessor, nullable),
+        (Shape::SelfIdentity, Depth::One, true, _) => {
             composed_schema_of(key, accessor, nullable, composition)
         }
-        (Shape::SelfIdentity, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
-        (Shape::MembershipJoin, _, _) => membership_schema_of(&tables, key, accessor, nullable),
+        (Shape::SelfIdentity, _, _, _) => partitioned_schema_of(key, accessor, nullable, depth),
+        (Shape::MembershipJoin, _, _, _) => membership_schema_of(&tables, key, accessor, nullable),
     };
     schema.push_str(ownership.ddl());
 
@@ -610,6 +668,7 @@ fn case(point: Point) -> ExactCase {
             depth.label(),
             composition.label(),
             ownership.label(),
+            command.label(),
         ]
         .iter()
         .filter(|segment| !segment.is_empty())
@@ -627,11 +686,20 @@ fn case(point: Point) -> ExactCase {
             .iter()
             .map(|caller| format!("CREATE ROLE {} LOGIN", caller.subject))
             .collect(),
-        seed: match (shape, depth, composition.has_deputy()) {
-            (Shape::SelfIdentity, Depth::One, false) => seed_of(&tables, &keys, &values),
-            (Shape::SelfIdentity, Depth::One, true) => composed_seed_of(&keys),
-            (Shape::SelfIdentity, _, _) => partitioned_seed_of(&keys, &values),
-            (Shape::MembershipJoin, _, _) => membership_seed_of(&tables, &keys, &values),
+        seed: match (shape, depth, composition.has_deputy(), command) {
+            (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand) => {
+                commanded_seed_of(&keys)
+            }
+            (Shape::SelfIdentity, Depth::One, false, _) => seed_of(&tables, &keys, &values),
+            (Shape::SelfIdentity, Depth::One, true, _) => composed_seed_of(&keys),
+            (Shape::SelfIdentity, _, _, _) => partitioned_seed_of(&keys, &values),
+            (Shape::MembershipJoin, _, _, _) => membership_seed_of(&tables, &keys, &values),
+        },
+        writes: match command {
+            Command::ReadOnly => None,
+            Command::EveryCommand => Some(Write {
+                update_set: "title = 'changed'".to_string(),
+            }),
         },
         accessor,
         not_read_directly: depth
@@ -904,5 +972,64 @@ fn composed_seed_of(keys: &[String]) -> [String; 2] {
     [
         format!("INSERT INTO \"guarded\" (id, who, deputy) VALUES {values}"),
         "GRANT SELECT ON \"guarded\" TO alice, mallory, silent".to_string(),
+    ]
+}
+
+/// The guarded table with a policy for each of the four commands, each reading its own
+/// column.
+///
+/// One predicate shared by four policies would pass whatever the commands were wired to, so
+/// `UPDATE` and `DELETE` read columns of their own and a row can be readable without being
+/// removable. `INSERT` reads what `SELECT` reads, since `INSERT ... RETURNING` reads the new
+/// row back and a row a caller may write but not see is a different question.
+///
+/// `UPDATE` carries a `WITH CHECK` as well, since without one `PostgreSQL` checks the
+/// candidate row against the `USING` clause and the two would not be separable. The changed
+/// column is read by no policy, so what the write produces is decided by the row it started
+/// from.
+fn commanded_schema_of(key: KeyType, accessor: Accessor, nullable: bool) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
+    let mut schema = format!(
+        "CREATE TABLE \"guarded\" (id {} PRIMARY KEY, who TEXT{null}, editor TEXT,\n\
+        \x20   remover TEXT, title TEXT);\n",
+        key.column()
+    );
+    schema.push_str(accessor.declaration());
+    schema.push_str("ALTER TABLE \"guarded\" ENABLE ROW LEVEL SECURITY;\n");
+    let read = accessor.expression();
+    let _ = write!(
+        schema,
+        "CREATE POLICY own_sel ON \"guarded\" FOR SELECT USING (who = {read});\n\
+         CREATE POLICY own_ins ON \"guarded\" FOR INSERT WITH CHECK (who = {read});\n\
+         CREATE POLICY own_upd ON \"guarded\" FOR UPDATE USING (editor = {read})\n\
+         \x20   WITH CHECK (editor = {read});\n\
+         CREATE POLICY own_del ON \"guarded\" FOR DELETE USING (remover = {read});\n"
+    );
+    schema
+}
+
+/// One row per subset of the commands, and every privilege a compared statement needs.
+///
+/// Readable and nothing more, readable and changeable, readable and removable, and a row
+/// whose columns name the caller for the writes while hiding it from the read.
+fn commanded_seed_of(keys: &[String]) -> [String; 2] {
+    let rows = [
+        ("'alice'", "'someone_else'", "'someone_else'"),
+        ("'alice'", "'alice'", "'someone_else'"),
+        ("'alice'", "'someone_else'", "'alice'"),
+        ("'someone_else'", "'alice'", "'alice'"),
+    ];
+    let mut values = String::new();
+    for (at, (who, editor, remover)) in rows.iter().enumerate() {
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(
+            values,
+            "{joiner}({}, {who}, {editor}, {remover}, 'kept')",
+            keys[at]
+        );
+    }
+    [
+        format!("INSERT INTO \"guarded\" (id, who, editor, remover, title) VALUES {values}"),
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON \"guarded\" TO alice, mallory, silent".to_string(),
     ]
 }
