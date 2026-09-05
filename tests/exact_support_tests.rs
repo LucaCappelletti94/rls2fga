@@ -7,7 +7,7 @@
 mod support;
 
 use support::exact_support::{
-    every_case, Accessor, KeyLength, KeyType, DECLARED_KEY, PRECONDITIONS,
+    every_case, Accessor, KeyLength, KeyType, Shape, DECLARED_KEY, PRECONDITIONS,
 };
 
 use rls2fga::generator::model_generator::GeneratorSettings;
@@ -96,11 +96,17 @@ fn the_grammar_covers_every_axis_value_it_declares() {
     let cases = every_case();
     assert_eq!(
         cases.len(),
-        KeyType::ALL.len() * Accessor::ALL.len() * 2
+        Shape::ALL.len() * KeyType::ALL.len() * Accessor::ALL.len() * 2
             + KeyType::ALL.len() * KeyLength::ALL.len()
             + KeyType::ALL.len(),
         "the enumeration has to cover its axes, or a point goes unmeasured"
     );
+    for shape in ["self", "membership"] {
+        assert!(
+            cases.iter().any(|case| case.name.contains(shape)),
+            "no case is shaped {shape}"
+        );
+    }
     assert!(
         cases
             .iter()
@@ -124,7 +130,7 @@ fn the_grammar_covers_every_axis_value_it_declares() {
         }
     }
     assert_eq!(
-        PRECONDITIONS, 7,
+        PRECONDITIONS, 8,
         "the documented preconditions are the class"
     );
 }
@@ -264,6 +270,43 @@ fn a_long_key_case_seeds_a_key_near_the_cap() {
         assert!(
             !case.seed[0].contains(&"l".repeat(width)),
             "{}: the seed's key is past the boundary, so the row has no name",
+            case.name
+        );
+    }
+}
+
+/// The membership shape leaves its membership table unguarded, and one row unnamed.
+///
+/// Precondition 8 is an `ALTER TABLE` that must stay absent: with row security on and no
+/// policy the membership table shows nobody anything, every read falls closed, and the case
+/// would measure the refusal path instead of the join. The unnamed guarded row is the other
+/// half: a model keyed on the table rather than the row would grant it.
+#[test]
+fn a_membership_case_leaves_its_membership_table_open_and_one_row_unnamed() {
+    let joins: Vec<_> = every_case()
+        .into_iter()
+        .filter(|case| case.name.contains("membership") && case.name.contains("text"))
+        .collect();
+    assert!(!joins.is_empty(), "no membership case to check");
+    for case in joins {
+        assert!(
+            !case
+                .schema
+                .contains("ALTER TABLE members_0 ENABLE ROW LEVEL SECURITY"),
+            "{}: the membership table carries security of its own",
+            case.name
+        );
+        assert!(
+            case.schema.contains("EXISTS ("),
+            "{}: the policy does not read a membership row",
+            case.name
+        );
+        // The last key is a guarded row no membership row mentions.
+        assert_eq!(
+            case.seed[0].matches("'unnamed'").count(),
+            1,
+            "{}: every guarded row is named by a membership row, so nothing is denied \
+             for want of one",
             case.name
         );
     }

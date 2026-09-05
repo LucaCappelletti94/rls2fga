@@ -24,6 +24,10 @@ use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 /// 4. Row-level security is on and the reader does not own the table, since an owner is
 ///    exempt from every policy unless the table forces it.
 /// 5. Nothing the clause reads is another table, so no second table's policies apply.
+/// 8. Where the answer comes from a membership row, that membership table carries no row
+///    security of its own. `PostgreSQL` shows every caller the same membership rows then,
+///    which is what makes a tuple loaded as the owner true for everyone. A guarded
+///    membership table is outside the class, and the translation says so.
 /// 7. The guarded table is not spelled as a well-known type. The translation refuses that
 ///    outright with `ReservedTypeName` rather than renaming anything, so it belongs outside
 ///    the class, and `a_table_named_as_a_reserved_type_is_refused` pins the refusal.
@@ -31,7 +35,7 @@ use rls2fga::types::identity::MAX_OBJECT_NAME_CHARS;
 ///    session key like any other, and only the deployment knows that this one carries the
 ///    caller's identity rather than a tenant or a flag, so an undeclared key is outside
 ///    the class by construction rather than by omission.
-pub(crate) const PRECONDITIONS: usize = 7;
+pub(crate) const PRECONDITIONS: usize = 8;
 
 /// The request-scoped values every admitted case declares, satisfying precondition 6.
 pub(crate) const DECLARED_KEY: &str = r#"[{ "key": "app.who", "kind": "caller_id" }]"#;
@@ -62,14 +66,23 @@ impl KeyType {
     /// The text keys carry `|` and `~`, which the identity encoder gives meaning to, so a
     /// case in this class also exercises the escaping.
     fn keys(self, length: KeyLength, base_type: &str, disambiguated: bool) -> Vec<String> {
+        // One more key than a case has values, so the membership shape always leaves a
+        // guarded row no membership row mentions.
         let short = match self {
-            Self::Text => vec!["'plain'", "'pipe|key'", "'tilde~key'", "'both|and~key'"],
-            Self::Integer => vec!["1", "2", "3", "4"],
+            Self::Text => vec![
+                "'plain'",
+                "'pipe|key'",
+                "'tilde~key'",
+                "'both|and~key'",
+                "'unnamed'",
+            ],
+            Self::Integer => vec!["1", "2", "3", "4", "5"],
             Self::Uuid => vec![
                 "'00000000-0000-0000-0000-00000000000a'::uuid",
                 "'00000000-0000-0000-0000-00000000000b'::uuid",
                 "'00000000-0000-0000-0000-00000000000c'::uuid",
                 "'00000000-0000-0000-0000-00000000000d'::uuid",
+                "'00000000-0000-0000-0000-00000000000e'::uuid",
             ],
         };
         if length == KeyLength::Short || self != Self::Text {
@@ -80,7 +93,7 @@ impl KeyType {
         }
         // At the boundary, not near it: one more character and the row has no name.
         let width = length.characters(base_type, disambiguated);
-        (0..4)
+        (0..5)
             .map(|at| format!("'{}{at}'", "l".repeat(width - 1)))
             .collect()
     }
@@ -146,6 +159,30 @@ impl Accessor {
             Self::BareSetting => "bare",
             Self::MissingOkSetting => "missing-ok",
             Self::DeclaredFunction => "declared",
+        }
+    }
+}
+
+/// Where the answer comes from.
+///
+/// Either the guarded row settles it alone, or one row of a membership table does. Both are
+/// decided by a single row plus the request, which is what puts them in the class, and the
+/// join is where most of the review's findings lived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    /// A column of the guarded row against the request.
+    SelfIdentity,
+    /// A membership row naming the guarded row and the caller.
+    MembershipJoin,
+}
+
+impl Shape {
+    pub(crate) const ALL: [Self; 2] = [Self::SelfIdentity, Self::MembershipJoin];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::SelfIdentity => "self",
+            Self::MembershipJoin => "membership",
         }
     }
 }
@@ -270,17 +307,21 @@ pub(crate) struct ExactCase {
 /// whole, and a failure names a point rather than a seed.
 pub(crate) fn every_case() -> Vec<ExactCase> {
     let mut cases = Vec::new();
-    // Key type against accessor spelling against nullability, whole.
-    for key in KeyType::ALL {
-        for accessor in Accessor::ALL {
-            for nullable in [false, true] {
-                cases.push(case(
-                    key,
-                    accessor,
-                    nullable,
-                    TableName::Plain,
-                    KeyLength::Short,
-                ));
+    // Key type against accessor spelling against nullability against shape, whole. The
+    // shape decides which row settles the answer, and every spelling has to reach both.
+    for shape in Shape::ALL {
+        for key in KeyType::ALL {
+            for accessor in Accessor::ALL {
+                for nullable in [false, true] {
+                    cases.push(case(
+                        key,
+                        accessor,
+                        nullable,
+                        TableName::Plain,
+                        KeyLength::Short,
+                        shape,
+                    ));
+                }
             }
         }
     }
@@ -296,6 +337,7 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
                 false,
                 TableName::FoldedCollision,
                 length,
+                Shape::SelfIdentity,
             ));
         }
     }
@@ -306,6 +348,7 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
             true,
             TableName::Plain,
             KeyLength::NearTheCap,
+            Shape::SelfIdentity,
         ));
     }
     cases
@@ -317,6 +360,7 @@ fn case(
     nullable: bool,
     name: TableName,
     length: KeyLength,
+    shape: Shape,
 ) -> ExactCase {
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
@@ -334,17 +378,110 @@ fn case(
 
     ExactCase {
         name: format!(
-            "exact-{}-{}-{}-{}-{}",
+            "exact-{}-{}-{}-{}-{}-{}",
+            shape.label(),
             key.label(),
             accessor.label(),
             if nullable { "nullable" } else { "not-null" },
             name.label(),
             length.label()
         ),
-        schema: schema_of(&tables, key, accessor, nullable),
-        seed: seed_of(&tables, &keys, &values),
+        schema: match shape {
+            Shape::SelfIdentity => schema_of(&tables, key, accessor, nullable),
+            Shape::MembershipJoin => membership_schema_of(&tables, key, accessor, nullable),
+        },
+        seed: match shape {
+            Shape::SelfIdentity => seed_of(&tables, &keys, &values),
+            Shape::MembershipJoin => membership_seed_of(&tables, &keys, &values),
+        },
         accessor,
     }
+}
+
+/// The guarded table, a membership table with no security of its own, and the join.
+///
+/// Precondition 8 is the `ALTER TABLE` that is absent: with row security off, every caller
+/// sees the same membership rows, which is what makes a tuple loaded as the owner true for
+/// everyone. Turning it on puts the case outside the class, and the translation says so.
+fn membership_schema_of(
+    tables: &[&str],
+    key: KeyType,
+    accessor: Accessor,
+    nullable: bool,
+) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
+    let mut schema = String::new();
+    for table in tables {
+        let _ = writeln!(
+            schema,
+            "CREATE TABLE {table} (id {} PRIMARY KEY);",
+            key.column()
+        );
+    }
+    for (at, table) in tables.iter().enumerate() {
+        let _ = writeln!(
+            schema,
+            "CREATE TABLE members_{at} (doc_id {} REFERENCES {table}(id), who TEXT{null});",
+            key.column()
+        );
+    }
+    schema.push_str(accessor.declaration());
+    for (at, table) in tables.iter().enumerate() {
+        let _ = write!(
+            schema,
+            "ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY own_{at} ON {table} FOR SELECT USING (EXISTS (\n\
+             \x20   SELECT 1 FROM members_{at} m\n\
+             \x20   WHERE m.doc_id = {table}.id AND m.who = {}));\n",
+            accessor.expression()
+        );
+    }
+    schema
+}
+
+/// Guarded rows, and one membership row for all but the last of them.
+///
+/// The unnamed row is the boundary that matters most here: a guarded row no membership row
+/// mentions is denied to everybody, and a model keyed on the table rather than the row
+/// would grant it.
+fn membership_seed_of(tables: &[&str], keys: &[String], values: &[&str]) -> [String; 2] {
+    let mut seed = String::new();
+    let mut grants = String::new();
+    for (at, table) in tables.iter().enumerate() {
+        let rows: Vec<String> = keys.iter().map(|key| format!("({key})")).collect();
+        let _ = write!(
+            seed,
+            "INSERT INTO {table} (id) VALUES {}; ",
+            rows.join(", ")
+        );
+        // One membership row per value, and the final key left unmentioned.
+        let members: Vec<String> = values
+            .iter()
+            .enumerate()
+            .map(|(row, value)| {
+                let value = if at == 0 {
+                    value
+                } else {
+                    &values[values.len() - 1 - row]
+                };
+                format!("({}, {value})", keys[row])
+            })
+            .collect();
+        let _ = write!(
+            seed,
+            "INSERT INTO members_{at} (doc_id, who) VALUES {}; ",
+            members.join(", ")
+        );
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(grants, "{joiner}{table}, members_{at}");
+    }
+    [
+        seed,
+        format!(
+            "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
+             GRANT SELECT ON {grants} TO alice, mallory, silent"
+        ),
+    ]
 }
 
 /// The tables, the accessor they read and the policy each carries.
