@@ -163,6 +163,45 @@ impl Accessor {
     }
 }
 
+/// How far the guarded rows sit below the table that carries the policies.
+///
+/// `PostgreSQL` applies the policies of the table a read names, so a read through the root
+/// is filtered while a read naming a partition is filtered by nothing. The model answers
+/// for the row, which is the read through the root, and the partitions are declared as
+/// tables the case does not read directly. Depth is an axis because a boundary tested at
+/// one level is not tested: walking one ancestor and walking to the top are the same thing
+/// there, which is how the subpartition disclosure was missed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Depth {
+    /// The guarded table holds its own rows.
+    One,
+    /// One partition below the root.
+    Two,
+    /// A partition of a partition.
+    Three,
+}
+
+impl Depth {
+    pub(crate) const ALL: [Self; 3] = [Self::One, Self::Two, Self::Three];
+
+    /// The partitions a case declares, root first, each a child of the one before.
+    fn partitions(self) -> &'static [&'static str] {
+        match self {
+            Self::One => &[],
+            Self::Two => &["guarded_eu"],
+            Self::Three => &["guarded_eu", "guarded_eu_gold"],
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::One => "depth-one",
+            Self::Two => "depth-two",
+            Self::Three => "depth-three",
+        }
+    }
+}
+
 /// Where the answer comes from.
 ///
 /// Either the guarded row settles it alone, or one row of a membership table does. Both are
@@ -299,6 +338,8 @@ pub(crate) struct ExactCase {
     /// Rows, and the grant the reading role needs.
     pub(crate) seed: [String; 2],
     pub(crate) accessor: Accessor,
+    /// Tables whose rows are reached through their root rather than by name.
+    pub(crate) not_read_directly: Vec<String>,
 }
 
 /// Every case the grammar admits, one per point of its axes.
@@ -306,9 +347,17 @@ pub(crate) struct ExactCase {
 /// Deliberately an enumeration rather than a sampler: the axes are small enough to cover
 /// whole, and a failure names a point rather than a seed.
 pub(crate) fn every_case() -> Vec<ExactCase> {
+    let mut cases = every_shape_and_spelling();
+    cases.extend(every_naming_axis());
+    cases.extend(every_depth());
+    cases
+}
+
+/// Key type against accessor spelling against nullability against shape, whole.
+///
+/// The shape decides which row settles the answer, and every spelling has to reach both.
+fn every_shape_and_spelling() -> Vec<ExactCase> {
     let mut cases = Vec::new();
-    // Key type against accessor spelling against nullability against shape, whole. The
-    // shape decides which row settles the answer, and every spelling has to reach both.
     for shape in Shape::ALL {
         for key in KeyType::ALL {
             for accessor in Accessor::ALL {
@@ -320,15 +369,22 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
                         TableName::Plain,
                         KeyLength::Short,
                         shape,
+                        Depth::One,
                     ));
                 }
             }
         }
     }
-    // The two axes that only interact with naming, against the spellings and key types that
-    // reach it. Crossing all five whole would be 108 cases against two containers for no
-    // more coverage than this: a name collision is decided by the table's name and its key
-    // type, and neither knows how the caller was spelled.
+    cases
+}
+
+/// The two axes that only interact with naming, against the key types that reach it.
+///
+/// Crossing all five axes whole would be over a hundred cases against two containers for no
+/// more coverage than this: a name collision is decided by the table's name and its key
+/// type, and neither knows how the caller was spelled.
+fn every_naming_axis() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
     for key in KeyType::ALL {
         for length in KeyLength::ALL {
             cases.push(case(
@@ -338,10 +394,9 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
                 TableName::FoldedCollision,
                 length,
                 Shape::SelfIdentity,
+                Depth::One,
             ));
         }
-    }
-    for key in KeyType::ALL {
         cases.push(case(
             key,
             Accessor::BareSetting,
@@ -349,7 +404,28 @@ pub(crate) fn every_case() -> Vec<ExactCase> {
             TableName::Plain,
             KeyLength::NearTheCap,
             Shape::SelfIdentity,
+            Depth::One,
         ));
+    }
+    cases
+}
+
+/// Depth against every key type, since a composite key is how a partitioned table names its
+/// rows and the encoder joins the parts.
+fn every_depth() -> Vec<ExactCase> {
+    let mut cases = Vec::new();
+    for depth in [Depth::Two, Depth::Three] {
+        for key in KeyType::ALL {
+            cases.push(case(
+                key,
+                Accessor::MissingOkSetting,
+                false,
+                TableName::Plain,
+                KeyLength::Short,
+                Shape::SelfIdentity,
+                depth,
+            ));
+        }
     }
     cases
 }
@@ -361,6 +437,7 @@ fn case(
     name: TableName,
     length: KeyLength,
     shape: Shape,
+    depth: Depth,
 ) -> ExactCase {
     let tables = name.tables();
     let keys = key.keys(length, "guarded", name == TableName::FoldedCollision);
@@ -378,24 +455,95 @@ fn case(
 
     ExactCase {
         name: format!(
-            "exact-{}-{}-{}-{}-{}-{}",
+            "exact-{}-{}-{}-{}-{}-{}-{}",
             shape.label(),
             key.label(),
             accessor.label(),
             if nullable { "nullable" } else { "not-null" },
             name.label(),
-            length.label()
+            length.label(),
+            depth.label()
         ),
-        schema: match shape {
-            Shape::SelfIdentity => schema_of(&tables, key, accessor, nullable),
-            Shape::MembershipJoin => membership_schema_of(&tables, key, accessor, nullable),
+        schema: match (shape, depth) {
+            (Shape::SelfIdentity, Depth::One) => schema_of(&tables, key, accessor, nullable),
+            (Shape::SelfIdentity, _) => partitioned_schema_of(key, accessor, nullable, depth),
+            (Shape::MembershipJoin, _) => membership_schema_of(&tables, key, accessor, nullable),
         },
-        seed: match shape {
-            Shape::SelfIdentity => seed_of(&tables, &keys, &values),
-            Shape::MembershipJoin => membership_seed_of(&tables, &keys, &values),
+        seed: match (shape, depth) {
+            (Shape::SelfIdentity, Depth::One) => seed_of(&tables, &keys, &values),
+            (Shape::SelfIdentity, _) => partitioned_seed_of(&keys, &values),
+            (Shape::MembershipJoin, _) => membership_seed_of(&tables, &keys, &values),
         },
         accessor,
+        not_read_directly: depth
+            .partitions()
+            .iter()
+            .map(|partition| (*partition).to_string())
+            .collect(),
     }
+}
+
+/// The guarded table partitioned, with the policy on the root alone.
+///
+/// A partitioned table's key has to contain its partition key, so the rows are named by two
+/// columns here, which the object encoder joins. Only the root carries a policy, since that
+/// is the layout the model answers for: the partitions hold the rows and filter nothing.
+fn partitioned_schema_of(key: KeyType, accessor: Accessor, nullable: bool, depth: Depth) -> String {
+    let null = if nullable { "" } else { " NOT NULL" };
+    let mut schema = format!(
+        "CREATE TABLE \"guarded\" (id {} NOT NULL, region TEXT NOT NULL, who TEXT{null},\n\
+        \x20   PRIMARY KEY (id, region)) PARTITION BY LIST (region);\n",
+        key.column()
+    );
+    schema.push_str(&partition_ddl(depth));
+    schema.push_str(accessor.declaration());
+    let _ = write!(
+        schema,
+        "ALTER TABLE \"guarded\" ENABLE ROW LEVEL SECURITY;\n\
+         CREATE POLICY own_0 ON \"guarded\" FOR SELECT USING (who = {});\n",
+        accessor.expression()
+    );
+    schema
+}
+
+/// Each partition, a child of the one before it, the last holding the rows.
+fn partition_ddl(depth: Depth) -> String {
+    let partitions = depth.partitions();
+    let mut ddl = String::new();
+    for (at, partition) in partitions.iter().enumerate() {
+        let parent = if at == 0 {
+            "\"guarded\""
+        } else {
+            partitions[at - 1]
+        };
+        // The ones above the last partition further, so the nearest parent of the leaf
+        // carries no policies of its own.
+        let further = if at + 1 == partitions.len() {
+            ""
+        } else {
+            " PARTITION BY LIST (region)"
+        };
+        let _ = writeln!(
+            ddl,
+            "CREATE TABLE {partition} PARTITION OF {parent} FOR VALUES IN ('eu'){further};"
+        );
+    }
+    ddl
+}
+
+/// Rows inserted through the root, which routes them to the partition that holds them.
+fn partitioned_seed_of(keys: &[String], values: &[&str]) -> [String; 2] {
+    let mut rows = String::new();
+    for (at, value) in values.iter().enumerate() {
+        let joiner = if at == 0 { "" } else { ", " };
+        let _ = write!(rows, "{joiner}({}, 'eu', {value})", keys[at]);
+    }
+    [
+        format!("INSERT INTO \"guarded\" (id, region, who) VALUES {rows}"),
+        "CREATE ROLE alice LOGIN; CREATE ROLE mallory LOGIN; CREATE ROLE silent LOGIN;
+         GRANT SELECT ON \"guarded\" TO alice, mallory, silent"
+            .to_string(),
+    ]
 }
 
 /// The guarded table, a membership table with no security of its own, and the join.

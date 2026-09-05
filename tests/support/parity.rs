@@ -998,7 +998,7 @@ async fn provision(
     tuples: &[super::LoadedTuple],
 ) -> openfga::Client {
     let mut service = openfga::connect(cluster.grpc_port).await;
-    let store_id = openfga::create_store(&mut service, &case.name).await;
+    let store_id = openfga::create_store(&mut service, store_name(&case.name)).await;
     let model_id = openfga::write_authorization_model(&mut service, &store_id, model).await;
     let client = service.into_client(&store_id, &model_id);
 
@@ -1028,6 +1028,15 @@ async fn provision(
     }
     openfga::write_tuples(&client, writes).await;
     client
+}
+
+/// A store name the service accepts, which caps them at 64 characters.
+///
+/// The tail is kept rather than the head: a generated case's name ends in the axes it came
+/// from, which is what tells two of them apart.
+fn store_name(case: &str) -> &str {
+    let from = case.char_indices().rev().nth(63).map_or(0, |(at, _)| at);
+    &case[from..]
 }
 
 /// Ask both sides about every caller, every object and every statement.
