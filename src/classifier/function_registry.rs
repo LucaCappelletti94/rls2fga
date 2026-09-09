@@ -12,7 +12,7 @@ use crate::parser::function_analyzer::{
 use crate::parser::names::stored_relation_name;
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
 use crate::types::{ConditionParameterName, ConditionParameterNameError};
-use sql_traits::structs::TargetName;
+use sql_traits::structs::{IdentifierCase, TargetName};
 use sqlparser::ast::FunctionSecurity;
 
 /// What a declared request-scoped source holds.
@@ -483,7 +483,7 @@ impl FunctionRegistry {
 
             let call = TargetName::new(target.name(), target.name_is_quoted());
             let wins = db
-                .resolve_target_function(call)
+                .resolve_target_function(call, IdentifierCase::AsWritten)
                 .ok()
                 .flatten()
                 .is_some_and(|winner| canonical_key(&winner.target_name()) == canonical);
