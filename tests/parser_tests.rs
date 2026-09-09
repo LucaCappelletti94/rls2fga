@@ -3,23 +3,33 @@ use sql_traits::prelude::*;
 
 mod support;
 
+fn table<'db, DB: DatabaseLike>(db: &'db DB, name: &str) -> Option<&'db DB::Table> {
+    db.table_by_target(TargetName::new(name, false), IdentifierCase::AsWritten)
+        .expect("table lookup does not error against a fixture's own database")
+}
+
+fn function<'db, DB: DatabaseLike>(db: &'db DB, name: &str) -> Option<&'db DB::Function> {
+    db.function_by_target(TargetName::new(name, false), IdentifierCase::AsWritten)
+        .expect("function lookup does not error against a fixture's own database")
+}
+
 #[test]
 fn parse_emi_schema_tables() {
     let db = support::parse_fixture_db("earth_metabolome");
 
     assert_eq!(db.number_of_tables(), 5, "Expected 5 tables");
-    assert!(db.table(None, "users").is_some());
-    assert!(db.table(None, "teams").is_some());
-    assert!(db.table(None, "team_members").is_some());
-    assert!(db.table(None, "ownables").is_some());
-    assert!(db.table(None, "owner_grants").is_some());
+    assert!(table(&db, "users").is_some());
+    assert!(table(&db, "teams").is_some());
+    assert!(table(&db, "team_members").is_some());
+    assert!(table(&db, "ownables").is_some());
+    assert!(table(&db, "owner_grants").is_some());
 }
 
 #[test]
 fn parse_emi_schema_columns() {
     let db = support::parse_fixture_db("earth_metabolome");
 
-    let ownables = db.table(None, "ownables").expect("ownables table");
+    let ownables = table(&db, "ownables").expect("ownables table");
     let cols: Vec<String> = ownables
         .columns(&db)
         .expect("ownables columns")
@@ -29,7 +39,7 @@ fn parse_emi_schema_columns() {
     assert_eq!(cols[0], "id");
     assert_eq!(cols[1], "owner_id");
 
-    let team_members = db.table(None, "team_members").expect("team_members table");
+    let team_members = table(&db, "team_members").expect("team_members table");
     let tm_col_count = team_members
         .columns(&db)
         .expect("team_members columns")
@@ -41,7 +51,7 @@ fn parse_emi_schema_columns() {
 fn parse_emi_schema_foreign_keys() {
     let db = support::parse_fixture_db("earth_metabolome");
 
-    let team_members = db.table(None, "team_members").expect("team_members table");
+    let team_members = table(&db, "team_members").expect("team_members table");
     let fk_count = team_members
         .foreign_keys(&db)
         .expect("team_members foreign keys")
@@ -58,8 +68,8 @@ fn parse_emi_functions() {
 
     // sql-traits tracks all function references, not just CREATE FUNCTION statements.
     // Verify the two user-defined functions are present.
-    assert!(db.function(None, "auth_current_user_id").is_some());
-    assert!(db.function(None, "get_owner_role").is_some());
+    assert!(function(&db, "auth_current_user_id").is_some());
+    assert!(function(&db, "get_owner_role").is_some());
 }
 
 #[test]
@@ -292,7 +302,7 @@ fn a_table_queried_against_another_database_is_reported() {
         .expect("schema should parse");
     let other = parse_schema("CREATE TABLE notes(id UUID PRIMARY KEY);").expect("schema parses");
 
-    let docs = owning.table(None, "docs").expect("docs table");
+    let docs = table(&owning, "docs").expect("docs table");
     assert!(
         docs.columns(&owning).is_ok(),
         "its own database resolves it"

@@ -35,7 +35,7 @@ use crate::parser::names::{
     yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
-    ColumnLike, DatabaseLike, ForeignKeyLike, PolicyLike, RoleLike, TableLike,
+    ColumnLike, DatabaseLike, ForeignKeyLike, IdentifierCase, PolicyLike, RoleLike, TableLike,
 };
 use crate::types::{
     stable_hex_suffix, ColumnKind, ColumnName, ConditionParameterName, RelationName,
@@ -773,7 +773,7 @@ fn declared_permissive_policies<DB: DatabaseLike>(db: &DB) -> BTreeMap<String, V
         let target = policy.target_table_name();
         let spelled = target.to_string();
         let key = db
-            .resolve_target_table(target)
+            .resolve_target_table(target, IdentifierCase::AsWritten)
             .ok()
             .flatten()
             .map_or(spelled, qualified_table_name);

@@ -7,7 +7,7 @@ use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
 use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::names::{stored_ident_name, table_identity};
-use crate::parser::sql_parser::{DatabaseLike, PolicyLike};
+use crate::parser::sql_parser::{DatabaseLike, IdentifierCase, PolicyLike};
 pub(crate) use crate::types::{
     AttributeLiteral, AttributeOperator, AttributePredicate, ColumnName, ConfidenceLevel,
     RolePrivilege, TableId,
@@ -804,7 +804,7 @@ impl ClassifiedPolicy {
             name: policy.name().to_string(),
             table: target.to_string(),
             resolved_table: db
-                .resolve_target_table(target)
+                .resolve_target_table(target, IdentifierCase::AsWritten)
                 .ok()
                 .flatten()
                 .map(table_identity),

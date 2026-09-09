@@ -333,7 +333,12 @@ pub fn lookup_table<'db, DB>(
 where
     DB: sql_traits::prelude::DatabaseLike,
 {
-    db.resolve_target_table(parse_target(name)?).ok().flatten()
+    db.resolve_target_table(
+        parse_target(name)?,
+        sql_traits::prelude::IdentifierCase::AsWritten,
+    )
+    .ok()
+    .flatten()
 }
 
 pub(crate) fn table_identity<T>(table: &T) -> TableId
