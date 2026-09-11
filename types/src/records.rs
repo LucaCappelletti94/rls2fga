@@ -1658,12 +1658,32 @@ mod tests {
 
     #[test]
     fn the_object_budget_shrinks_as_the_type_name_grows() {
-        // The cap covers the whole `type:id` string, so the same value fits one
-        // type and not another.
+        // The 256-char cap covers `type:id`, so each type char costs one id char.
         let key = ObjectKey::column("id");
-        let row = Row::of(&[("id", &"a".repeat(250))]);
-        assert!(key.render(&named("d"), &row).unwrap().is_some());
-        assert!(key.render(&named("a_much_longer_type_name"), &row).is_err());
+
+        assert!(
+            key.render(&named("a"), &Row::of(&[("id", &"a".repeat(254))]))
+                .unwrap()
+                .is_some(),
+            "254-char id fits when type name is 1 char"
+        );
+        assert_eq!(
+            key.render(&named("a"), &Row::of(&[("id", &"a".repeat(255))])),
+            Err(RecordError::RowCannotBeNamed(257)),
+            "255-char id (one over budget) is refused; 257 = 1 + 1 + 255"
+        );
+
+        assert!(
+            key.render(&named("ab"), &Row::of(&[("id", &"a".repeat(253))]))
+                .unwrap()
+                .is_some(),
+            "253-char id fits when type name is 2 chars"
+        );
+        assert_eq!(
+            key.render(&named("ab"), &Row::of(&[("id", &"a".repeat(254))])),
+            Err(RecordError::RowCannotBeNamed(257)),
+            "254-char id (one over budget) is refused; 257 = 2 + 1 + 254"
+        );
     }
 
     #[test]
@@ -1677,10 +1697,11 @@ mod tests {
 
         // Bytes, not characters: two-byte runes spend the budget twice as fast.
         let long = Row::of(&[("owner", &"e".repeat(600))]);
-        assert!(matches!(
+        assert_eq!(
             key.render(&named("user"), &long),
-            Err(RecordError::RowCannotBeNamed(_))
-        ));
+            Err(RecordError::RowCannotBeNamed(605)),
+            "4 + 1 + 600 = 605 bytes, over the 512-byte subject cap"
+        );
     }
 
     #[test]
@@ -1709,20 +1730,17 @@ mod tests {
 
     #[test]
     fn the_two_caps_are_different_numbers() {
-        // 300 characters fits a subject and not an object, which is the difference that
-        // is live. Both numbers were measured against v1.11.6.
-        let long = Row::of(&[("id", &"a".repeat(300)), ("owner", &"a".repeat(300))]);
-        assert!(
-            ObjectKey::column("id")
-                .render(&named("docs"), &long)
-                .is_err(),
-            "an object is capped at 256 including its type"
+        // Same 300-char value crosses the object cap (chars) but not the subject cap (bytes).
+        let a300 = &"a".repeat(300);
+        assert_eq!(
+            ObjectKey::column("id").render(&named("docs"), &Row::of(&[("id", a300)])),
+            Err(RecordError::RowCannotBeNamed(305)),
+            "docs:aaa...300 = 305 chars, over the 256-char object cap"
         );
-        assert!(
-            SubjectKey::column("owner")
-                .render(&named("user"), &long)
-                .is_ok(),
-            "a subject is capped at 512, so the same value fits"
+        assert_eq!(
+            SubjectKey::column("owner").render(&named("user"), &Row::of(&[("owner", a300)])),
+            Ok(vec![format!("user:{}", a300)]),
+            "user:aaa...300 = 305 bytes, under the 512-byte subject cap"
         );
     }
 

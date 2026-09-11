@@ -1053,11 +1053,24 @@ CREATE TABLE s2(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT N
 
     let classified = recognize_p4(&exists_expr, &db, &registry, "p2", &ExpansionState::new())
         .expect("a two-column composite-key join is the one-column shape scoped by tenant");
+    let PatternClass::P4ExistsMembership(membership) = &classified.pattern else {
+        panic!("expected P4ExistsMembership, got {:?}", classified.pattern);
+    };
     assert_eq!(
-        classified.confidence,
-        ConfidenceLevel::A,
-        "one added equality between two key columns narrows the relationship"
+        membership.pairs,
+        vec![
+            MembershipJoinPair {
+                join_column: ColumnName::from_stored("tenant_id"),
+                outer_column: ColumnName::from_stored("tenant_id"),
+            },
+            MembershipJoinPair {
+                join_column: ColumnName::from_stored("paper_id"),
+                outer_column: ColumnName::from_stored("id"),
+            },
+        ],
+        "recognizer must emit both composite-key columns in PK order"
     );
+    assert_eq!(membership.user_column, ColumnName::from_stored("viewer"));
 }
 
 /// Three key columns behave as two do: the join names one guarded row per share row.
@@ -1088,7 +1101,28 @@ CREATE TABLE s3(region_id INT NOT NULL, tenant_id INT NOT NULL, paper_id INT NOT
 
     let classified = recognize_p4(&exists_expr, &db, &registry, "p3", &ExpansionState::new())
         .expect("a three-column composite-key join is the same shape again");
-    assert_eq!(classified.confidence, ConfidenceLevel::A);
+    let PatternClass::P4ExistsMembership(membership) = &classified.pattern else {
+        panic!("expected P4ExistsMembership, got {:?}", classified.pattern);
+    };
+    assert_eq!(
+        membership.pairs,
+        vec![
+            MembershipJoinPair {
+                join_column: ColumnName::from_stored("region_id"),
+                outer_column: ColumnName::from_stored("region_id"),
+            },
+            MembershipJoinPair {
+                join_column: ColumnName::from_stored("tenant_id"),
+                outer_column: ColumnName::from_stored("tenant_id"),
+            },
+            MembershipJoinPair {
+                join_column: ColumnName::from_stored("paper_id"),
+                outer_column: ColumnName::from_stored("id"),
+            },
+        ],
+        "recognizer must emit all three composite-key columns in PK order"
+    );
+    assert_eq!(membership.user_column, ColumnName::from_stored("viewer"));
 }
 
 /// The join columns carry one declared composite foreign key to a parent table, so
@@ -2344,15 +2378,14 @@ fn strip_qualifier_from_expr_strips_join_alias_and_handles_quoted_identifiers() 
         "alias-qualified column should be stripped"
     );
 
-    // Double-quoted alias: `"dm"."status"` → the qualifier `"dm"` doesn't
-    // match the unquoted alias string `dm` through `qualifier_matches_table`,
-    // so the predicate is left unchanged, correct, since double-quoted
-    // identifiers are preserved as-is.
+    // `stored_ident_name` strips quotes before the comparison, so `"dm"` matches alias `dm` and is stripped.
     let mut quoted_expr = parse_expr(r#""dm"."status" = 'active'"#);
     strip_qualifier_from_expr(&mut quoted_expr, "doc_members", Some("dm"));
-    // After parsing, qualifier `"dm"` and alias `dm` share the unquoted token, so it
-    // is stripped.
-    let _ = quoted_expr.to_string(); // must not panic
+    assert_eq!(
+        quoted_expr.to_string(),
+        r#""status" = 'active'"#,
+        "quoted alias should be stripped; column keeps its quote style"
+    );
 
     // Table-name qualifying: `doc_members.status` → `status`
     let mut tbl_expr = parse_expr("doc_members.status = 1");

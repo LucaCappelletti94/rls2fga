@@ -394,8 +394,45 @@ CREATE POLICY p ON tasks FOR SELECT
         WHERE p.id = tasks.project_id AND p.val + mystery() > 0
     ));
 ";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+    let (classified, db, registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
+    let c = classified[0]
+        .using_classification()
+        .expect("should have USING classification");
+    assert!(
+        matches!(
+            &c.pattern,
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+                if reason.contains("The rule inherited from 'projects' is not translatable")
+        ),
+        "P5-shaped EXISTS with untranslatable inner should classify as Unknown, got: {:?}",
+        c.pattern
+    );
+    let outputs = rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &rls2fga::generator::model_generator::GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.model();
+    assert!(
+        model.contains("define can_select: no_access"),
+        "model should deny can_select via no_access, got:\n{model}"
+    );
+    let tuples = rls2fga::generator::tuple_generator::format_tuples(outputs.tuple_queries());
+    assert!(
+        tuples.contains(
+            "TODO [Level D]: skipped tuple generation for tasks (unsupported pattern Unknown)"
+        ),
+        "tuple SQL should carry the TODO marker naming the table and pattern, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("The rule inherited from 'projects' is not translatable"),
+        "tuple SQL body should name the reason the inner predicate was refused, got:\n{tuples}"
+    );
 }
 
 // ── Confidence filtering ─────────────────────────────────────────────────────
@@ -801,7 +838,7 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 #[test]
-fn diagnose_p4_with_current_user_but_ambiguous_membership() {
+fn p13_uncorrelated_membership_when_subquery_has_no_fk_to_guarded_table() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE log(id UUID PRIMARY KEY, doc_id UUID, editor UUID);
@@ -813,6 +850,21 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
+    let c = classified[0]
+        .using_classification()
+        .expect("should have USING classification");
+    assert!(
+        matches!(
+            &c.pattern,
+            PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
+                member_table,
+                user_column,
+                ..
+            }) if member_table.name() == "log" && user_column == "editor"
+        ),
+        "subquery with no FK back to the guarded table should classify as P13, got: {:?}",
+        c.pattern
+    );
 }
 
 // ── P5 variations ────────────────────────────────────────────────────────────

@@ -2970,8 +2970,8 @@ fn an_expiring_share_settles_from_its_row_with_the_clock_in_its_condition() {
     let dsl = outputs.model();
     assert!(
         dsl.lines()
-            .any(|line| line.contains(" in ") && line.contains("> request_time")),
-        "the condition composes the viewer set and the clock:\n{dsl}"
+            .any(|line| line.contains("viewer in app_subjects && expires_at > request_time")),
+        "the condition joins the viewer set and clock with &&, not ||:\n{dsl}"
     );
 
     let queries = outputs.tuple_queries();
@@ -3044,10 +3044,9 @@ fn a_membership_grace_window_rides_the_clock_as_a_duration() {
     .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert!(
-        dsl.lines().any(|line| {
-            line.contains(" in ") && line.contains("expires_at > request_time - duration(\"720h\")")
-        }),
-        "the membership condition composes the viewer set and the grace offset:\n{dsl}"
+        dsl.lines().any(|line| line
+            .contains("viewer in app_subjects && expires_at > request_time - duration(\"720h\")")),
+        "the membership condition joins the viewer set and grace offset with &&, not ||:\n{dsl}"
     );
 
     let queries = outputs.tuple_queries();
