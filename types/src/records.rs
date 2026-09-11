@@ -327,27 +327,7 @@ impl ObjectKey {
     }
 
     fn evaluate<R: RowValues + ?Sized>(&self, object_type: &TypeName, row: &R) -> Eval<String> {
-        let mut values = Vec::with_capacity(self.parts.len());
-        for part in &self.parts {
-            match single_value(part, row) {
-                Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
-                Eval::Value(cell) => {
-                    let Some(value) = render_sql_text(&cell) else {
-                        return Eval::Refuse(render_source_failure(part, &cell));
-                    };
-                    values.push(value);
-                }
-                Eval::Refuse(error) => return Eval::Refuse(error),
-            }
-        }
-        let name = format!(
-            "{object_type}:{}",
-            encode_identity(values.iter().map(String::as_str))
-        );
-        match fit_object_name(name) {
-            Ok(name) => Eval::Value(name),
-            Err(error) => Eval::Refuse(error),
-        }
+        render_identity(&self.parts, row, object_type, fit_object_name)
     }
 }
 
@@ -456,26 +436,15 @@ impl SubjectKey {
             return Eval::Value(vec![format!("{subject_type}:{WILDCARD_SUBJECT_ID}")]);
         }
         if !self.rest.is_empty() {
-            let mut values = Vec::with_capacity(1 + self.rest.len());
-            for source in core::iter::once(&self.part).chain(&self.rest) {
-                match single_value(source, row) {
-                    Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
-                    Eval::Value(cell) => {
-                        let Some(value) = render_sql_text(&cell) else {
-                            return Eval::Refuse(render_source_failure(source, &cell));
-                        };
-                        values.push(value);
-                    }
-                    Eval::Refuse(error) => return Eval::Refuse(error),
-                }
-            }
-            let name = format!(
-                "{subject_type}:{}",
-                encode_identity(values.iter().map(String::as_str))
-            );
-            return match fit_subject_name(name) {
-                Ok(name) => Eval::Value(vec![name]),
-                Err(error) => Eval::Refuse(error),
+            return match render_identity(
+                core::iter::once(&self.part).chain(&self.rest),
+                row,
+                subject_type,
+                fit_subject_name,
+            ) {
+                Eval::Value(name) => Eval::Value(vec![name]),
+                Eval::Empty => Eval::Empty,
+                Eval::Refuse(error) => Eval::Refuse(error),
             };
         }
         match expand(&self.part, row) {
@@ -852,6 +821,36 @@ fn fit_subject_name(name: String) -> Result<String, RecordError> {
         Ok(name)
     } else {
         Err(RecordError::RowCannotBeNamed(name.len()))
+    }
+}
+
+fn render_identity<'r, R: RowValues + ?Sized>(
+    sources: impl IntoIterator<Item = &'r ValueSource>,
+    row: &R,
+    type_name: &TypeName,
+    fit: fn(String) -> Result<String, RecordError>,
+) -> Eval<String> {
+    let iter = sources.into_iter();
+    let mut values = Vec::with_capacity(iter.size_hint().0);
+    for source in iter {
+        match single_value(source, row) {
+            Eval::Value(RowCell::Null) | Eval::Empty => return Eval::Empty,
+            Eval::Value(cell) => {
+                let Some(value) = render_sql_text(&cell) else {
+                    return Eval::Refuse(render_source_failure(source, &cell));
+                };
+                values.push(value);
+            }
+            Eval::Refuse(error) => return Eval::Refuse(error),
+        }
+    }
+    let name = format!(
+        "{type_name}:{}",
+        encode_identity(values.iter().map(String::as_str))
+    );
+    match fit(name) {
+        Ok(name) => Eval::Value(name),
+        Err(error) => Eval::Refuse(error),
     }
 }
 
@@ -1299,10 +1298,9 @@ fn render_source_failure(source: &ValueSource, cell: &RowCell<'_>) -> RecordErro
 
 fn type_mismatch_source(source: &ValueSource, cell: &RowCell<'_>) -> RecordError {
     match source {
-        ValueSource::Column(column) | ValueSource::ListElements(column) => {
-            type_mismatch(column, cell)
-        }
-        ValueSource::JsonPath { column, .. } => type_mismatch(column, cell),
+        ValueSource::Column(column)
+        | ValueSource::ListElements(column)
+        | ValueSource::JsonPath { column, .. } => type_mismatch(column, cell),
         ValueSource::Literal(_) => RecordError::ColumnTypeMismatch {
             column: "literal".to_string(),
             expected: ColumnKind::Text,
@@ -1311,7 +1309,7 @@ fn type_mismatch_source(source: &ValueSource, cell: &RowCell<'_>) -> RecordError
     }
 }
 
-fn render_sql_text(cell: &RowCell<'_>) -> Option<String> {
+fn render_cell_text(cell: &RowCell<'_>, rendering: ContextRendering) -> Option<String> {
     match cell {
         RowCell::Absent | RowCell::Null | RowCell::Undecodable => None,
         RowCell::Text(value)
@@ -1321,33 +1319,24 @@ fn render_sql_text(cell: &RowCell<'_>) -> Option<String> {
         | RowCell::Date(value)
         | RowCell::Time(value) => Some(value.to_string()),
         RowCell::Bool(flag) => Some(if *flag { "true" } else { "false" }.to_string()),
-        RowCell::Timestamp(value) => Some(timestamp_sql_text(value.as_ref())),
-        RowCell::TimestampTz(value) => timestamptz_sql_text(value.as_ref()),
+        RowCell::Timestamp(value) => Some(match rendering {
+            ContextRendering::SqlText => timestamp_sql_text(value.as_ref()),
+            ContextRendering::Json => timestamp_json_text(value.as_ref()),
+        }),
+        RowCell::TimestampTz(value) => match rendering {
+            ContextRendering::SqlText => timestamptz_sql_text(value.as_ref()),
+            ContextRendering::Json => timestamptz_json_text(value.as_ref()),
+        },
         RowCell::Bytea(bytes) => Some(bytea_sql_text(bytes.as_ref())),
     }
+}
+
+fn render_sql_text(cell: &RowCell<'_>) -> Option<String> {
+    render_cell_text(cell, ContextRendering::SqlText)
 }
 
 fn render_context_cell(cell: &RowCell<'_>, rendering: ContextRendering) -> Option<String> {
-    match rendering {
-        ContextRendering::SqlText => render_sql_text(cell),
-        ContextRendering::Json => render_json_text(cell),
-    }
-}
-
-fn render_json_text(cell: &RowCell<'_>) -> Option<String> {
-    match cell {
-        RowCell::Absent | RowCell::Null | RowCell::Undecodable => None,
-        RowCell::Text(value)
-        | RowCell::Uuid(value)
-        | RowCell::Integer(value)
-        | RowCell::Decimal(value)
-        | RowCell::Date(value)
-        | RowCell::Time(value) => Some(value.to_string()),
-        RowCell::Bool(flag) => Some(if *flag { "true" } else { "false" }.to_string()),
-        RowCell::Timestamp(value) => Some(timestamp_json_text(value.as_ref())),
-        RowCell::TimestampTz(value) => timestamptz_json_text(value.as_ref()),
-        RowCell::Bytea(bytes) => Some(bytea_sql_text(bytes.as_ref())),
-    }
+    render_cell_text(cell, rendering)
 }
 
 fn timestamp_sql_text(value: &str) -> String {
@@ -1950,7 +1939,10 @@ mod tests {
             Some("2026-01-01T00:00:00+00:00".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Bytea(Cow::Owned(vec![0, 15, 255]))),
+            render_cell_text(
+                &RowCell::Bytea(Cow::Owned(vec![0, 15, 255])),
+                ContextRendering::Json
+            ),
             Some("\\x000fff".to_string())
         );
         assert_eq!(timestamptz_sql_text("2026-01-01T00:00:00+01:00"), None);
@@ -2664,41 +2656,69 @@ mod tests {
             render_sql_text(&RowCell::Bytea(Cow::Owned(vec![222, 173]))),
             Some("\\xdead".to_string())
         );
-        assert_eq!(render_json_text(&RowCell::Absent), None);
-        assert_eq!(render_json_text(&RowCell::Null), None);
-        assert_eq!(render_json_text(&RowCell::Undecodable), None);
         assert_eq!(
-            render_json_text(&RowCell::Text(Cow::Borrowed("alice"))),
+            render_cell_text(&RowCell::Absent, ContextRendering::Json),
+            None
+        );
+        assert_eq!(
+            render_cell_text(&RowCell::Null, ContextRendering::Json),
+            None
+        );
+        assert_eq!(
+            render_cell_text(&RowCell::Undecodable, ContextRendering::Json),
+            None
+        );
+        assert_eq!(
+            render_cell_text(
+                &RowCell::Text(Cow::Borrowed("alice")),
+                ContextRendering::Json
+            ),
             Some("alice".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Uuid(Cow::Borrowed(
-                "00000000-0000-0000-0000-000000000001"
-            ))),
+            render_cell_text(
+                &RowCell::Uuid(Cow::Borrowed("00000000-0000-0000-0000-000000000001")),
+                ContextRendering::Json,
+            ),
             Some("00000000-0000-0000-0000-000000000001".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Integer(Cow::Borrowed("42"))),
+            render_cell_text(
+                &RowCell::Integer(Cow::Borrowed("42")),
+                ContextRendering::Json
+            ),
             Some("42".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Decimal(Cow::Borrowed("42.5"))),
+            render_cell_text(
+                &RowCell::Decimal(Cow::Borrowed("42.5")),
+                ContextRendering::Json
+            ),
             Some("42.5".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Date(Cow::Borrowed("2026-01-01"))),
+            render_cell_text(
+                &RowCell::Date(Cow::Borrowed("2026-01-01")),
+                ContextRendering::Json
+            ),
             Some("2026-01-01".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Time(Cow::Borrowed("12:34:56"))),
+            render_cell_text(
+                &RowCell::Time(Cow::Borrowed("12:34:56")),
+                ContextRendering::Json
+            ),
             Some("12:34:56".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Bool(false)),
+            render_cell_text(&RowCell::Bool(false), ContextRendering::Json),
             Some("false".to_string())
         );
         assert_eq!(
-            render_json_text(&RowCell::Timestamp(Cow::Borrowed("2026-01-01 12:34:56"))),
+            render_cell_text(
+                &RowCell::Timestamp(Cow::Borrowed("2026-01-01 12:34:56")),
+                ContextRendering::Json,
+            ),
             Some("2026-01-01T12:34:56".to_string())
         );
     }

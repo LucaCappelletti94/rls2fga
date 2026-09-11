@@ -49,15 +49,7 @@ fn attribute_gate_key(predicate: &AttributePredicate) -> Option<String> {
         AttributeLiteral::Boolean(value) => format!("b:{value}"),
         _ => return None,
     };
-    let operator = match predicate.operator {
-        AttributeOperator::Eq => "eq",
-        AttributeOperator::NotEq => "ne",
-        AttributeOperator::Gt => "gt",
-        AttributeOperator::GtEq => "ge",
-        AttributeOperator::Lt => "lt",
-        AttributeOperator::LtEq => "le",
-        _ => return None,
-    };
+    let operator = predicate.operator.gate_token();
     Some(format!("attr:{}:{column}:{operator}:{value}", column.len()))
 }
 

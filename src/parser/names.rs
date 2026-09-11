@@ -302,21 +302,14 @@ pub fn is_user_related_column_name(name: &str) -> bool {
 
 /// True when the name looks like a direct ownership column.
 ///
-/// Uses underscore-delimited word-boundary matching to avoid false positives
-/// on names like `ownership_status` (contains "owner") or `abuser_id`
-/// (contains `user_id` as substring).
+/// A superset of [`is_user_related_column_name`]: bare `owner` as a whole token, or any
+/// name that predicate accepts.
 pub fn is_owner_like_column_name(name: &str) -> bool {
-    let lower = name.trim().to_ascii_lowercase();
-    let tokens: Vec<&str> = lower.split('_').collect();
-    // "owner" must appear as a complete token
-    let has_owner = tokens.contains(&"owner");
-    // "user_id" must be the last two tokens ("user", "id")
-    let has_user_id = has_token_pair(&tokens, "user", "id");
-    // "created_by" must appear as two consecutive tokens
-    let has_created_by = has_token_pair(&tokens, "created", "by");
-    // "author_id" is an exact match of the two-token form
-    let has_author_id = has_token_pair(&tokens, "author", "id");
-    has_owner || has_user_id || has_created_by || has_author_id
+    name.trim()
+        .to_ascii_lowercase()
+        .split('_')
+        .any(|token| token == "owner")
+        || is_user_related_column_name(name)
 }
 
 fn has_token_pair(tokens: &[&str], first: &str, second: &str) -> bool {

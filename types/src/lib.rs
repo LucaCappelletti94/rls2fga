@@ -50,7 +50,8 @@ pub use identifiers::{
 };
 pub use notes::{NoteSeverity, TranslationNote};
 pub use patterns::{
-    AttributeLiteral, AttributeOperator, AttributePredicate, ConfidenceLevel, RolePrivilege,
+    AttributeLiteral, AttributeOperator, AttributePredicate, ConfidenceLevel, ContextWitness,
+    RolePrivilege,
 };
 pub use records::{
     records_from_row, BoundQuery, BoundQueryError, ColumnKind, ColumnRead, ContextRendering, Guard,

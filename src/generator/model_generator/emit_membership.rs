@@ -222,6 +222,47 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     }
 }
 
+struct MembershipReadScopeInput<'a> {
+    read_scope_roles: &'a [String],
+    join_table: &'a TableId,
+}
+
+/// Applies the membership read scope gate, returning the scoped or unscoped expression.
+fn apply_membership_read_scope<DB: DatabaseLike>(
+    membership: UsersetExpr,
+    input: &MembershipReadScopeInput<'_>,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    notes: &mut Vec<TranslationNote>,
+) -> UsersetExpr {
+    if input.read_scope_roles.is_empty() {
+        return membership;
+    }
+    let scope_relation =
+        membership_read_scope_relation_name(ctx.table_types.resolve(input.join_table).as_str());
+    register_pg_role_scope(
+        table_plan,
+        all_types,
+        notes,
+        ctx.source_table,
+        ctx.db,
+        RoleScopeSpec {
+            scope_relation: &scope_relation,
+            walked: &RolePrivilege::Usage.relation_name(),
+            role_names: input.read_scope_roles,
+            scope_note: TranslationNote::MembershipReadScope {
+                policy: ctx.policy_name.to_string(),
+                join_table: input.join_table.clone(),
+                roles: input.read_scope_roles.to_vec(),
+                relation: scope_relation.clone(),
+            },
+            missing_object_what: "membership read scope tuples",
+        },
+    );
+    scoped_policy_expr(membership, &scope_relation)
+}
+
 /// Membership through a join table, bridged on the column the policy correlates.
 pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     exists_membership: &ExistsMembership,
@@ -480,31 +521,17 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             tupleset: parent_relation,
             computed: witness_member,
         };
-        if read_scope_roles.is_empty() {
-            return membership;
-        }
-        let scope_relation =
-            membership_read_scope_relation_name(ctx.table_types.resolve(join_table).as_str());
-        register_pg_role_scope(
+        return apply_membership_read_scope(
+            membership,
+            &MembershipReadScopeInput {
+                read_scope_roles: &read_scope_roles,
+                join_table,
+            },
+            ctx,
             table_plan,
             all_types,
             notes,
-            source_table,
-            db,
-            RoleScopeSpec {
-                scope_relation: &scope_relation,
-                walked: &RolePrivilege::Usage.relation_name(),
-                role_names: &read_scope_roles,
-                scope_note: TranslationNote::MembershipReadScope {
-                    policy: policy_name.to_string(),
-                    join_table: join_table.clone(),
-                    roles: read_scope_roles.clone(),
-                    relation: scope_relation.clone(),
-                },
-                missing_object_what: "membership read scope tuples",
-            },
         );
-        return scoped_policy_expr(membership, &scope_relation);
     }
 
     // Membership rows: add to table_plan first (for correct ordering in IR renderer),
@@ -540,34 +567,17 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         tupleset: parent_relation,
         computed: member_relation(),
     };
-    if read_scope_roles.is_empty() {
-        return membership;
-    }
-
-    // Only those roles can read the membership rows, so only they inherit
-    // the grant.
-    let scope_relation =
-        membership_read_scope_relation_name(ctx.table_types.resolve(join_table).as_str());
-    register_pg_role_scope(
+    apply_membership_read_scope(
+        membership,
+        &MembershipReadScopeInput {
+            read_scope_roles: &read_scope_roles,
+            join_table,
+        },
+        ctx,
         table_plan,
         all_types,
         notes,
-        source_table,
-        db,
-        RoleScopeSpec {
-            scope_relation: &scope_relation,
-            walked: &RolePrivilege::Usage.relation_name(),
-            role_names: &read_scope_roles,
-            scope_note: TranslationNote::MembershipReadScope {
-                policy: policy_name.to_string(),
-                join_table: join_table.clone(),
-                roles: read_scope_roles.clone(),
-                relation: scope_relation.clone(),
-            },
-            missing_object_what: "membership read scope tuples",
-        },
-    );
-    scoped_policy_expr(membership, &scope_relation)
+    )
 }
 
 /// A parent's rule reached through a foreign key, gated by the parent's own read.

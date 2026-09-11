@@ -1,4 +1,4 @@
-use crate::classifier::patterns::{AttributeLiteral, AttributeOperator};
+use crate::classifier::patterns::AttributeLiteral;
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
@@ -9,7 +9,7 @@ use crate::generator::identity::{
     typed_name_literal, typed_name_sql, wildcard_subject_literal, MAX_OBJECT_NAME_CHARS,
     MAX_SUBJECT_NAME_BYTES,
 };
-use crate::generator::ir::{ContextWitness, TupleSource, TupleSourceKey};
+use crate::generator::ir::{MembershipGate, TupleSource, TupleSourceKey};
 use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
 pub use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
@@ -17,7 +17,7 @@ use crate::generator::well_known::{
 };
 use crate::parser::names::{table_id_has_column, table_identity};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
-use crate::types::{ColumnName, RelationName, TableId, TypeName};
+use crate::types::{ColumnName, ContextWitness, RelationName, TableId, TypeName};
 use crate::types::{Record, RecordContextValue, RecordDescription};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
@@ -1022,33 +1022,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             // comparison and carries each column the check reads it against. When several
             // rows can key the same (object, user) it groups by that key and carries the
             // latest deadline, since MAX(deadline) is unpassed exactly when some row is.
-            let mut context = String::new();
-            let mut clauses: Vec<String> = extra_predicates
-                .sql_excluding_requests()
-                .into_iter()
-                .collect();
-            for (index, column) in gate.context.iter().enumerate() {
-                let column_sql = quote_sql_identifier(column.column.as_str());
-                let key_sql = quote_sql_string_literal(&column.parameter);
-                let carried = if gate.aggregate {
-                    match column.witness {
-                        ContextWitness::Latest => format!("MAX({column_sql})"),
-                        ContextWitness::Earliest => format!("MIN({column_sql})"),
-                    }
-                } else {
-                    column_sql.clone()
-                };
-                if index > 0 {
-                    context.push_str(", ");
-                }
-                let _ = write!(context, "{key_sql}, {carried}");
-                clauses.push(format!("{column_sql} IS NOT NULL"));
-            }
-            let where_clause = if clauses.is_empty() {
-                format!("\nWHERE {null_guards}")
-            } else {
-                format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
-            };
+            let (context, where_clause) = gate_context_sql(
+                gate,
+                &null_guards,
+                extra_predicates
+                    .sql_excluding_requests()
+                    .into_iter()
+                    .collect(),
+            );
             let group_by = if gate.aggregate {
                 format!("\nGROUP BY {}, {user_col_sql}", fk_parts.join(", "))
             } else {
@@ -1309,33 +1290,14 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     skipped: None,
                 });
             };
-            let mut context = String::new();
-            let mut clauses: Vec<String> = extra_predicates
-                .sql_excluding_requests()
-                .into_iter()
-                .collect();
-            for (index, column) in gate.context.iter().enumerate() {
-                let column_sql = quote_sql_identifier(column.column.as_str());
-                let key_sql = quote_sql_string_literal(&column.parameter);
-                let carried = if gate.aggregate {
-                    match column.witness {
-                        ContextWitness::Latest => format!("MAX({column_sql})"),
-                        ContextWitness::Earliest => format!("MIN({column_sql})"),
-                    }
-                } else {
-                    column_sql.clone()
-                };
-                if index > 0 {
-                    context.push_str(", ");
-                }
-                let _ = write!(context, "{key_sql}, {carried}");
-                clauses.push(format!("{column_sql} IS NOT NULL"));
-            }
-            let where_clause = if clauses.is_empty() {
-                format!("\nWHERE {null_guards}")
-            } else {
-                format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
-            };
+            let (context, where_clause) = gate_context_sql(
+                gate,
+                &null_guards,
+                extra_predicates
+                    .sql_excluding_requests()
+                    .into_iter()
+                    .collect(),
+            );
             // Grouping by the user collapses several deadlines to their latest, which the
             // one holder object needs. Where the row already keys the user, DISTINCT is
             // enough and the row alone decides the record.
@@ -1548,7 +1510,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             let (table_sql, object_sql, key_not_null) =
                 owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
             let column_sql = quote_sql_identifier(predicate.column.as_str());
-            let operator = render_attribute_operator(predicate.operator)?;
+            let operator = predicate.operator.sql();
             let value_sql = render_attribute_literal(&predicate.value)?;
             Some(TupleQuery {
                 comment: format!(
@@ -1777,19 +1739,6 @@ fn quote_sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// SQL spelling of an attribute guard's comparison.
-fn render_attribute_operator(operator: AttributeOperator) -> Option<&'static str> {
-    match operator {
-        AttributeOperator::Eq => Some("="),
-        AttributeOperator::NotEq => Some("<>"),
-        AttributeOperator::Gt => Some(">"),
-        AttributeOperator::GtEq => Some(">="),
-        AttributeOperator::Lt => Some("<"),
-        AttributeOperator::LtEq => Some("<="),
-        _ => None,
-    }
-}
-
 /// SQL spelling of the literal an attribute guard compares against.
 ///
 /// A number keeps its source spelling, so `priority >= 3` compares against `3` rather
@@ -1817,6 +1766,39 @@ fn render_jsonb_path(column_sql: &str, path: &[String]) -> Option<String> {
     Some(out)
 }
 
+/// The condition-context argument string and the `WHERE` clause a gate's columns require.
+fn gate_context_sql(
+    gate: &MembershipGate,
+    null_guards: &str,
+    extra: Vec<String>,
+) -> (String, String) {
+    let mut context = String::new();
+    let mut clauses = extra;
+    for (index, column) in gate.context.iter().enumerate() {
+        let column_sql = quote_sql_identifier(column.column.as_str());
+        let key_sql = quote_sql_string_literal(&column.parameter);
+        clauses.push(format!("{column_sql} IS NOT NULL"));
+        let carried = if gate.aggregate {
+            match column.witness {
+                ContextWitness::Latest => format!("MAX({column_sql})"),
+                ContextWitness::Earliest => format!("MIN({column_sql})"),
+            }
+        } else {
+            column_sql
+        };
+        if index > 0 {
+            context.push_str(", ");
+        }
+        let _ = write!(context, "{key_sql}, {carried}");
+    }
+    let where_clause = if clauses.is_empty() {
+        format!("\nWHERE {null_guards}")
+    } else {
+        format!("\nWHERE {null_guards}\nAND ({})", clauses.join(" AND "))
+    };
+    (context, where_clause)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1832,6 +1814,64 @@ mod tests {
     }
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
     use crate::translator::Translation;
+
+    fn plan_queries<DB: DatabaseLike>(db: &DB, registry: &FunctionRegistry) -> Vec<TupleQuery> {
+        let classified = crate::classifier::policy_classifier::classify_policies(db, registry);
+        Translation::plan(
+            classified,
+            db,
+            registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .tuple_queries()
+        .to_vec()
+    }
+
+    fn role_threshold_registry() -> FunctionRegistry {
+        let mut registry = FunctionRegistry::new();
+        registry
+            .load_from_json(
+                r#"{
+  "role_level": {
+    "kind": "role_threshold",
+    "user_param_index": 0,
+    "resource_param_index": 1,
+    "role_levels": {"viewer": 1, "editor": 2},
+    "grant_table": "object_grants",
+    "grant_grantee_col": "grantee_id",
+    "grant_resource_col": "resource_id",
+    "grant_role_col": "role_level"
+  },
+  "auth_current_user_id": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}"#,
+            )
+            .expect("registry json should parse");
+        registry
+    }
+
+    fn render_explicit_grants(
+        source: &TupleSource,
+        owner_type: &TypeName,
+        well_known: &WellKnownTypes,
+    ) -> TupleQuery {
+        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
+        let bounds = UnboundedColumns::resolve(&db);
+        render_tuple_source(
+            source,
+            owner_type,
+            false,
+            well_known,
+            NameContext::new(&bounds),
+            &db,
+        )
+        .expect("should produce a query")
+    }
 
     #[test]
     fn rendered_source_key_scopes_only_owner_type_objects() {
@@ -2080,18 +2120,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO app_user, auditors
         )
         .expect("schema should parse");
 
-        let classified =
-            crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &FunctionRegistry::new(),
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let queries = plan_queries(&db, &FunctionRegistry::new());
         let scope_relation =
             role_scope_name("usage", &["app_user".to_string(), "auditors".to_string()]);
 
@@ -2120,39 +2149,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
         )
         .expect("schema should parse");
 
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1, "editor": 2},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  },
-  "auth_current_user_id": {
-    "kind": "current_user_accessor",
-    "returns": "uuid"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let registry = role_threshold_registry();
+        let queries = plan_queries(&db, &registry);
 
         let pointer = queries
             .iter()
@@ -2193,39 +2191,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
         )
         .expect("schema should parse");
 
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1, "editor": 2},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  },
-  "auth_current_user_id": {
-    "kind": "current_user_accessor",
-    "returns": "uuid"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let registry = role_threshold_registry();
+        let queries = plan_queries(&db, &registry);
 
         let pointer = queries
             .iter()
@@ -2258,39 +2225,8 @@ CREATE POLICY docs_select_project ON docs FOR SELECT
         )
         .expect("schema should parse");
 
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1, "editor": 2},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  },
-  "auth_current_user_id": {
-    "kind": "current_user_accessor",
-    "returns": "uuid"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let registry = role_threshold_registry();
+        let queries = plan_queries(&db, &registry);
 
         let pointers: Vec<&str> = queries
             .iter()
@@ -2340,39 +2276,8 @@ CREATE POLICY docs_select ON docs FOR SELECT
         )
         .expect("schema should parse");
 
-        let mut registry = FunctionRegistry::new();
-        registry
-            .load_from_json(
-                r#"{
-  "role_level": {
-    "kind": "role_threshold",
-    "user_param_index": 0,
-    "resource_param_index": 1,
-    "role_levels": {"viewer": 1, "editor": 2},
-    "grant_table": "object_grants",
-    "grant_grantee_col": "grantee_id",
-    "grant_resource_col": "resource_id",
-    "grant_role_col": "role_level"
-  },
-  "auth_current_user_id": {
-    "kind": "current_user_accessor",
-    "returns": "uuid"
-  }
-}"#,
-            )
-            .expect("registry json should parse");
-
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let registry = role_threshold_registry();
+        let queries = plan_queries(&db, &registry);
 
         let pointers: Vec<&str> = queries
             .iter()
@@ -2412,18 +2317,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
         )
         .expect("schema should parse");
 
-        let registry = FunctionRegistry::new();
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let queries = plan_queries(&db, &FunctionRegistry::new());
 
         let membership_query = queries
             .iter()
@@ -2467,18 +2361,7 @@ CREATE POLICY docs_select ON app.docs USING (owner_id = current_user);
         )
         .expect("schema should parse");
 
-        let classified =
-            crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &FunctionRegistry::new(),
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let queries = plan_queries(&db, &FunctionRegistry::new());
 
         let ownership_query = queries
             .iter()
@@ -2503,18 +2386,7 @@ CREATE POLICY docs_select ON "Doc Items" FOR SELECT
         )
         .expect("schema should parse");
 
-        let classified =
-            crate::classifier::policy_classifier::classify_policies(&db, &FunctionRegistry::new());
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &FunctionRegistry::new(),
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let queries = plan_queries(&db, &FunctionRegistry::new());
 
         let ownership_query = queries
             .iter()
@@ -2554,18 +2426,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
         )
         .expect("schema should parse");
 
-        let registry = FunctionRegistry::new();
-        let classified = crate::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
+        let queries = plan_queries(&db, &FunctionRegistry::new());
 
         assert!(
             queries
@@ -2609,19 +2470,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
             user_principal: None,
             team_principal: None,
         };
-        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = {
-            let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(
-                &source,
-                &TypeName::canonicalized("docs"),
-                false,
-                &WellKnownTypes::default(),
-                NameContext::new(&bounds),
-                &db,
-            )
-        }
-        .expect("should produce a query");
+        let query = render_explicit_grants(
+            &source,
+            &TypeName::canonicalized("docs"),
+            &WellKnownTypes::default(),
+        );
         assert!(
             query.comment.contains("TODO [Level C]"),
             "expected a TODO comment, got: {}",
@@ -2660,19 +2513,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 identity_col: ColumnName::from_stored("id"),
             }),
         };
-        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = {
-            let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(
-                &source,
-                &TypeName::canonicalized("docs"),
-                false,
-                &WellKnownTypes::default(),
-                NameContext::new(&bounds),
-                &db,
-            )
-        }
-        .expect("should produce a query");
+        let query = render_explicit_grants(
+            &source,
+            &TypeName::canonicalized("docs"),
+            &WellKnownTypes::default(),
+        );
         assert!(
             query.sql.contains("'team:'"),
             "team-only explicit grants should emit team subjects, got: {}",
@@ -2709,19 +2554,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 identity_col: ColumnName::from_stored("id"),
             }),
         };
-        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = {
-            let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(
-                &source,
-                &TypeName::canonicalized("docs"),
-                false,
-                &WellKnownTypes::default(),
-                NameContext::new(&bounds),
-                &db,
-            )
-        }
-        .expect("should produce a query");
+        let query = render_explicit_grants(
+            &source,
+            &TypeName::canonicalized("docs"),
+            &WellKnownTypes::default(),
+        );
         assert!(
             !query.sql.contains("ELSE 'user:'"),
             "mixed-principal explicit grants should not fail open to user subjects, got: {}",
@@ -2758,19 +2595,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 identity_col: ColumnName::from_stored("id"),
             }),
         };
-        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = {
-            let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(
-                &source,
-                &TypeName::canonicalized("doc"),
-                false,
-                &well_known,
-                NameContext::new(&bounds),
-                &db,
-            )
-        }
-        .expect("should produce a query");
+        let query = render_explicit_grants(&source, &TypeName::canonicalized("doc"), &well_known);
         assert!(
             query.sql.contains("'group:'"),
             "configured team type missing: {}",
@@ -2804,19 +2629,11 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 identity_col: ColumnName::from_stored("id"),
             }),
         };
-        let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("parse");
-        let query = {
-            let bounds = UnboundedColumns::resolve(&db);
-            render_tuple_source(
-                &source,
-                &TypeName::canonicalized("doc"),
-                false,
-                &WellKnownTypes::default(),
-                NameContext::new(&bounds),
-                &db,
-            )
-        }
-        .expect("should produce a query");
+        let query = render_explicit_grants(
+            &source,
+            &TypeName::canonicalized("doc"),
+            &WellKnownTypes::default(),
+        );
         assert!(
             query
                 .sql

@@ -10,8 +10,9 @@ use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{member_relation, WellKnownTypes};
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use crate::types::RequestComparison;
-use crate::types::{ColumnName, RelationName, TableId, TypeName};
+use crate::types::{
+    ColumnName, ContextWitness, RelationName, RequestComparison, TableId, TypeName,
+};
 
 /// Principal table (users or teams) named by a role-threshold function.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,17 +20,6 @@ pub(crate) struct PrincipalInfo {
     /// Table that stores the principal entities.
     pub table: TableId,
     pub identity_col: ColumnName,
-}
-
-/// Which value of a compressed column witnesses the comparison when several rows
-/// collapse into one fact. Sound either way, because the carried value is a real
-/// row's value. The direction decides completeness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ContextWitness {
-    /// `MAX`, exact for future comparisons and sound for equality.
-    Latest,
-    /// `MIN`, exact for past comparisons.
-    Earliest,
 }
 
 /// One condition-context entry a conditional membership tuple carries: the parameter
