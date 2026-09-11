@@ -175,7 +175,7 @@ fn a_column_borrowed_from_a_joined_relation_is_refused() {
 #[test]
 fn no_generated_query_reads_a_column_its_table_does_not_declare() {
     let mut checked = 0usize;
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let outputs = rls2fga::translator::Translation::plan(
             classified,
@@ -215,22 +215,6 @@ fn no_generated_query_reads_a_column_its_table_does_not_declare() {
         }
     }
     assert!(checked > 0, "the corpus has to exercise the invariant");
-}
-
-/// Fixture names carrying a parseable schema.
-fn fixture_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir("tests/fixtures")
-        .expect("fixtures directory")
-        .map(|entry| entry.expect("fixture entry").path())
-        .filter(|path| path.join("input.sql").is_file())
-        .filter_map(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .collect();
-    names.sort();
-    assert!(names.len() > 20, "the corpus should not have shrunk");
-    names
 }
 
 fn declared_columns(db: &ParserDB, table_id: &TableId) -> Option<Vec<String>> {

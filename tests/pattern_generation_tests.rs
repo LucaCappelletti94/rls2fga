@@ -30,11 +30,7 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
   )
 );
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -99,23 +95,8 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
   )
 );
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
-    );
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
+    let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
         tuples.contains("'member' AS relation"),
@@ -165,23 +146,8 @@ CREATE POLICY tasks_member ON tasks FOR SELECT TO PUBLIC USING (
   )
 );
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
-    );
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
+    let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
         tuples.contains(r#"'docs:' || CASE WHEN "doc_id"::text"#),
@@ -298,23 +264,8 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
   USING (status = 'active' AND owner_id = auth_current_user_id());
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
-    );
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
+    let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
         tuples.contains("'owner' AS relation"),
@@ -347,18 +298,7 @@ CREATE POLICY docs_owner ON app.docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
-    );
+    let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
         tuples.contains(r#"'docs:' || CASE WHEN "doc_uuid"::text"#),
@@ -389,11 +329,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
   USING (owner_id = CAST(auth_current_user_id() AS UUID));
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, _db, _registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, _db, _registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let policy = classified
         .iter()
         .find(|cp| cp.name() == "p_select")

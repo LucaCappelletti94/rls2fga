@@ -24,6 +24,94 @@ use rls2fga::types::{ColumnKind, RowCell, RowList, RowValues};
 /// `serde_json` view of one row, adapting it to the crate's row interface.
 pub(crate) struct JsonRowValues<'a>(pub(crate) &'a serde_json::Value);
 
+/// The accessor registry the classification tests declare.
+pub(crate) const ACCESSOR_REGISTRY: &str =
+    r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}}"#;
+
+/// A fresh directory under the system temp dir, named so two runs cannot collide.
+pub(crate) fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
+    std::fs::create_dir_all(&dir).expect("the temp directory should be creatable");
+    dir
+}
+
+/// Fixture names carrying a parseable schema.
+pub(crate) fn fixture_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir("tests/fixtures")
+        .expect("fixtures directory")
+        .map(|entry| entry.expect("fixture entry").path())
+        .filter(|path| path.join("input.sql").is_file())
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .collect();
+    names.sort();
+    assert!(names.len() > 20, "the corpus should not have shrunk");
+    names
+}
+
+/// One row of text cells, so a key or a description can be evaluated against it.
+pub(crate) struct Row(Vec<(String, String)>);
+
+impl RowValues for Row {
+    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
+        let Some((_, value)) = self.0.iter().find(|(name, _)| name == column) else {
+            return RowCell::Absent;
+        };
+        match kind {
+            ColumnKind::Text => RowCell::Text(value.as_str().into()),
+            ColumnKind::Integer => RowCell::Integer(value.as_str().into()),
+            ColumnKind::Decimal => RowCell::Decimal(value.as_str().into()),
+            ColumnKind::Date => RowCell::Date(value.as_str().into()),
+            ColumnKind::Time => RowCell::Time(value.as_str().into()),
+            ColumnKind::Timestamp => RowCell::Timestamp(value.as_str().into()),
+            ColumnKind::TimestampTz => RowCell::TimestampTz(value.as_str().into()),
+            ColumnKind::Uuid => RowCell::Uuid(value.as_str().into()),
+            _ => RowCell::Undecodable,
+        }
+    }
+
+    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
+        RowList::Absent
+    }
+
+    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
+        RowCell::Absent
+    }
+}
+
+pub(crate) fn row(pairs: &[(&str, &str)]) -> Row {
+    Row(pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect())
+}
+
+/// The tuple SQL a classification plans at the lowest confidence bar.
+pub(crate) fn plan_tuples(
+    classified: Vec<ClassifiedPolicy>,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+) -> String {
+    rls2fga::generator::tuple_generator::format_tuples(
+        rls2fga::translator::Translation::plan(
+            classified,
+            db,
+            registry,
+            rls2fga::types::ConfidenceLevel::D,
+            &rls2fga::generator::model_generator::GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .tuple_queries(),
+    )
+}
+
 /// Text of a JSON scalar the way `PostgreSQL` renders it in `||` and `->>`.
 pub(crate) fn scalar_text(value: &serde_json::Value) -> Option<Cow<'_, str>> {
     match value {

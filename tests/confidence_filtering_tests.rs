@@ -8,11 +8,7 @@ mod support;
 #[test]
 fn json_model_respects_min_confidence_threshold() {
     let sql = support::read_fixture_sql("multi_policy_table");
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let json = Translation::plan(
         classified.clone(),
         &db,
@@ -43,11 +39,7 @@ fn json_model_respects_min_confidence_threshold() {
 #[test]
 fn model_generation_respects_min_confidence_threshold() {
     let sql = support::read_fixture_sql("multi_policy_table");
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -81,11 +73,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
   USING (status = 'published' AND owner_id = auth_current_user_id());
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let tuples_a = tuple_generator::format_tuples(
         Translation::plan(
             classified.clone(),
@@ -126,11 +114,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
 #[test]
 fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
     let sql = support::read_fixture_sql("multi_policy_table");
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let tuples = tuple_generator::format_tuples(
         Translation::plan(
             classified.clone(),

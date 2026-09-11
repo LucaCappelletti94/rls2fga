@@ -11,6 +11,19 @@ fn load_emi_fixture() -> (rls2fga::parser::sql_parser::ParserDB, FunctionRegistr
     support::load_fixture_db_and_registry("earth_metabolome")
 }
 
+fn p1_threshold_for(policy_name: &str) -> i32 {
+    let (db, registry) = load_emi_fixture();
+    let classified = policy_classifier::classify_policies(&db, &registry);
+    let policy = classified.iter().find(|c| c.name() == policy_name).unwrap();
+    match policy.using_classification() {
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
+            ..
+        }) => *threshold,
+        other => panic!("expected P1NumericThreshold for {policy_name}, got: {other:?}"),
+    }
+}
+
 #[test]
 fn classify_emi_policies_as_p1() {
     let (db, registry) = load_emi_fixture();
@@ -45,42 +58,12 @@ fn classify_emi_policies_as_p1() {
 
 #[test]
 fn classify_emi_select_threshold() {
-    let (db, registry) = load_emi_fixture();
-    let classified = policy_classifier::classify_policies(&db, &registry);
-
-    let select = classified
-        .iter()
-        .find(|c| c.name() == "ownables_select_policy")
-        .unwrap();
-    if let Some(ClassifiedExpr {
-        pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
-        ..
-    }) = select.using_classification()
-    {
-        assert_eq!(*threshold, 2);
-    } else {
-        panic!("Expected P1 with threshold 2");
-    }
+    assert_eq!(p1_threshold_for("ownables_select_policy"), 2);
 }
 
 #[test]
 fn classify_emi_delete_threshold() {
-    let (db, registry) = load_emi_fixture();
-    let classified = policy_classifier::classify_policies(&db, &registry);
-
-    let delete = classified
-        .iter()
-        .find(|c| c.name() == "ownables_delete_policy")
-        .unwrap();
-    if let Some(ClassifiedExpr {
-        pattern: PatternClass::P1NumericThreshold(NumericThreshold { threshold, .. }),
-        ..
-    }) = delete.using_classification()
-    {
-        assert_eq!(*threshold, 4);
-    } else {
-        panic!("Expected P1 with threshold 4");
-    }
+    assert_eq!(p1_threshold_for("ownables_delete_policy"), 4);
 }
 
 #[test]

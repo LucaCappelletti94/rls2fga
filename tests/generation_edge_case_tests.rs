@@ -11,19 +11,6 @@ use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
-// ── Helper ───────────────────────────────────────────────────────────────────
-
-fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
-    std::fs::create_dir_all(&dir).expect("should create temp dir");
-    dir
-}
-
 // ── Output validation ────────────────────────────────────────────────────────
 
 /// A translation of the smallest schema there is, for tests about filenames rather
@@ -44,7 +31,7 @@ fn any_outputs(db: &ParserDB) -> Outputs {
 
 #[test]
 fn write_output_rejects_empty_name() {
-    let dir = unique_temp_dir("rls2fga_empty_name");
+    let dir = support::unique_temp_dir("rls2fga_empty_name");
     let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
     let err = any_outputs(&db)
         .write(&dir, "")
@@ -57,7 +44,7 @@ fn write_output_rejects_empty_name() {
 
 #[test]
 fn write_output_rejects_absolute_path() {
-    let dir = unique_temp_dir("rls2fga_abs_path");
+    let dir = support::unique_temp_dir("rls2fga_abs_path");
     let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
     let err = any_outputs(&db)
         .write(&dir, "/etc/passwd")
@@ -369,7 +356,7 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
     .expect("translation should plan")
     .outputs_accepting_gaps();
 
-    let dir = unique_temp_dir("rls2fga_short_names");
+    let dir = support::unique_temp_dir("rls2fga_short_names");
     outputs.write(&dir, "docs").unwrap();
     let report = std::fs::read_to_string(dir.join("docs_report.md")).unwrap();
 

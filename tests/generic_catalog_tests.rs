@@ -7,6 +7,8 @@
 //! catalog is called here through `DB`, so a concrete catalog reappearing anywhere on
 //! the surface fails to build.
 
+mod support;
+
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::{DirectOwnership, PatternClass, PolicyCommand};
 use rls2fga::classifier::policy_classifier::{classify_expr, classify_policies};
@@ -26,20 +28,6 @@ CREATE FUNCTION auth_current_user_id() RETURNS UUID LANGUAGE sql STABLE
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
 ";
-
-const ACCESSOR_REGISTRY: &str =
-    r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}}"#;
-
-fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is after the epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
-    std::fs::create_dir_all(&dir).expect("the temp dir is creatable");
-    dir
-}
 
 /// What the generic pass produced, so the assertions can see it answered rather than
 /// compiled vacuously.
@@ -62,7 +50,7 @@ struct Driven {
 fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     let mut registry = FunctionRegistry::new();
     registry
-        .load_from_json(ACCESSOR_REGISTRY)
+        .load_from_json(support::ACCESSOR_REGISTRY)
         .expect("the registry parses");
 
     let settings = AccessorInferenceSettings::default();
@@ -114,7 +102,7 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     assert_eq!(outputs.notes().len(), notes);
     let confidence = outputs.confidence_summary().to_vec();
 
-    let dir = unique_temp_dir("rls2fga_generic_catalog");
+    let dir = support::unique_temp_dir("rls2fga_generic_catalog");
     outputs.write(&dir, "docs").expect("the write succeeds");
     let written = std::fs::read_to_string(dir.join("docs.fga")).expect("the model is written");
 

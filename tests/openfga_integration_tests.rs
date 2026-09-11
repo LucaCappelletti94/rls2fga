@@ -41,52 +41,15 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
     // 4. Create scoped client and write tuples
     let client = service_client.into_client(&store_id, &model_id);
 
-    // doc1 is owned by alice and doc2 by team alpha, so each row points at its owner and the
-    // owner carries who it is and what it grants.
-    let tuples = vec![
-        support::openfga::make_tuple("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
-        support::openfga::make_tuple("owner_grants_owner:alice", "owner_user", "user:alice"),
-        support::openfga::make_tuple("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
-        support::openfga::make_tuple("owner_grants_owner:alpha", "owner_team", "team:alpha"),
-        support::openfga::make_tuple("team:alpha", "member", "user:bob"),
-        support::openfga::make_tuple("owner_grants_owner:alice", "grant_editor", "user:carol"),
-        support::openfga::make_tuple("owner_grants_owner:alice", "grant_viewer", "team:beta"),
-        support::openfga::make_tuple("team:beta", "member", "user:dave"),
-        support::openfga::make_tuple("owner_grants_owner:alpha", "grant_admin", "user:eve"),
-    ];
+    let tuples: Vec<_> = support::openfga::EARTH_METABOLOME_TUPLES
+        .iter()
+        .map(|(obj, rel, user)| support::openfga::make_tuple(obj, rel, user))
+        .collect();
 
     support::openfga::write_tuples(&client, tuples).await;
 
     // 5. Check assertions
-    let checks: Vec<(&str, &str, &str, bool)> = vec![
-        // Direct ownership: alice owns doc1 -> admin -> editor -> viewer
-        ("user:alice", "can_select", "ownables:doc1", true),
-        ("user:alice", "can_insert", "ownables:doc1", true),
-        ("user:alice", "can_update", "ownables:doc1", true),
-        ("user:alice", "can_delete", "ownables:doc1", true),
-        // Team ownership: bob is member of team:alpha which owns doc2
-        ("user:bob", "can_select", "ownables:doc2", true),
-        ("user:bob", "can_insert", "ownables:doc2", true),
-        ("user:bob", "can_update", "ownables:doc2", true),
-        ("user:bob", "can_delete", "ownables:doc2", true),
-        // Cross-resource isolation: bob has no relation to doc1
-        ("user:bob", "can_select", "ownables:doc1", false),
-        // Grant escalation: carol has grant_editor on doc1 -> editor -> viewer
-        ("user:carol", "can_select", "ownables:doc1", true),
-        ("user:carol", "can_insert", "ownables:doc1", true),
-        ("user:carol", "can_update", "ownables:doc1", true),
-        ("user:carol", "can_delete", "ownables:doc1", false), // editor != admin
-        // Team-mediated grant: dave is member of team:beta which has grant_viewer on doc1
-        ("user:dave", "can_select", "ownables:doc1", true),
-        ("user:dave", "can_insert", "ownables:doc1", false), // viewer != editor
-        ("user:dave", "can_update", "ownables:doc1", false), // viewer != editor
-        // Admin grant: eve has grant_admin on doc2 -> admin -> editor -> viewer
-        ("user:eve", "can_select", "ownables:doc2", true),
-        ("user:eve", "can_delete", "ownables:doc2", true),
-        // Cross-resource isolation
-        ("user:eve", "can_select", "ownables:doc1", false),
-        ("user:alice", "can_select", "ownables:doc2", false),
-    ];
+    let checks = support::openfga::EARTH_METABOLOME_CHECKS;
 
     let mut failures = Vec::new();
     for (user, relation, object, expected) in &checks {

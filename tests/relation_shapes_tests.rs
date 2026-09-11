@@ -108,13 +108,14 @@ fn parsed_with_session_attributes(
 fn translation(
     db: &ParserDB,
     registry: &FunctionRegistry,
+    level: ConfidenceLevel,
     settings: &GeneratorSettings,
 ) -> Translation {
     Translation::plan(
         classify_policies(db, registry),
         db,
         registry,
-        ConfidenceLevel::B,
+        level,
         settings,
     )
     .expect("translation should plan")
@@ -122,37 +123,28 @@ fn translation(
 
 fn shapes_of(sql: &str, registry_json: &str) -> Vec<RelationShapes> {
     let (db, registry) = parsed(sql, registry_json);
-    translation(&db, &registry, &GeneratorSettings::default())
-        .relations()
-        .to_vec()
-}
-
-fn shapes_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> Vec<RelationShapes> {
-    let (db, registry) = parsed(sql, registry_json);
-    Translation::plan(
-        classify_policies(&db, &registry),
+    translation(
         &db,
         &registry,
-        level,
+        ConfidenceLevel::B,
         &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
     .relations()
     .to_vec()
 }
 
+fn shapes_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> Vec<RelationShapes> {
+    let (db, registry) = parsed(sql, registry_json);
+    translation(&db, &registry, level, &GeneratorSettings::default())
+        .relations()
+        .to_vec()
+}
+
 fn model_at(sql: &str, registry_json: &str, level: ConfidenceLevel) -> String {
     let (db, registry) = parsed(sql, registry_json);
-    Translation::plan(
-        classify_policies(&db, &registry),
-        &db,
-        &registry,
-        level,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .model()
+    translation(&db, &registry, level, &GeneratorSettings::default())
+        .outputs_accepting_gaps()
+        .model()
 }
 
 fn entry<'a>(shapes: &'a [RelationShapes], type_name: &str, relation: &str) -> &'a RelationShapes {
@@ -160,22 +152,6 @@ fn entry<'a>(shapes: &'a [RelationShapes], type_name: &str, relation: &str) -> &
         .iter()
         .find(|entry| entry.type_name.as_str() == type_name && entry.relation == relation)
         .unwrap_or_else(|| panic!("{type_name}#{relation} should be reported"))
-}
-
-/// Fixture names carrying a parseable schema.
-fn fixture_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir("tests/fixtures")
-        .expect("fixtures directory")
-        .map(|entry| entry.expect("fixture entry").path())
-        .filter(|path| path.join("input.sql").is_file())
-        .filter_map(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .collect();
-    names.sort();
-    assert!(names.len() > 20, "the corpus should not have shrunk");
-    names
 }
 
 fn declared_relations(
@@ -426,7 +402,7 @@ fn a_computed_relation_carries_no_shapes_and_keeps_its_own_answer() {
 fn every_relation_the_model_declares_is_reported() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -487,7 +463,7 @@ fn every_relation_the_model_declares_is_reported() {
 fn no_tuple_query_names_an_undeclared_relation() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let outputs = Translation::plan(
             classified,
@@ -565,7 +541,7 @@ fn every_conditional_tuple_filters_its_context_columns() {
 fn no_relation_reports_the_same_shape_twice() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -620,7 +596,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
     let mut compound = 0usize;
     let mut checked = 0usize;
 
-    let mut cases: Vec<(String, ParserDB, FunctionRegistry)> = fixture_names()
+    let mut cases: Vec<(String, ParserDB, FunctionRegistry)> = support::fixture_names()
         .into_iter()
         .map(|fixture| {
             let (_, db, registry) = support::try_load_fixture_classified(&fixture);
@@ -711,7 +687,7 @@ fn every_row_derived_shape_reads_the_row_it_names() {
     let mut checked = 0usize;
     let mut offenders: Vec<String> = Vec::new();
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -938,49 +914,26 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
 fn every_replay_slice_names_the_relation_its_shape_fills() {
     let mut checked = 0usize;
 
-    for (fixture, db, registry) in tuple_contract_cases() {
-        let classified = classify_policies(&db, &registry);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let shapes = planned.relations();
-
-        for entry in shapes {
-            for shape in &entry.shapes {
-                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
-                    continue;
-                };
-                for query in queries {
-                    checked += 1;
-                    let names_relation = match query.scope() {
-                        ReplayScope::Object {
-                            object_type,
-                            relations,
-                        } => {
-                            object_type == entry.type_name.as_str()
-                                && relations.contains(&entry.relation)
-                        }
-                        ReplayScope::Subject {
-                            object_type,
-                            relation,
-                            ..
-                        } => object_type == entry.type_name.as_str() && relation == &entry.relation,
-                    };
-                    assert!(
-                        names_relation,
-                        "{fixture}: {}#{} has a replay slice for {:?}",
-                        entry.type_name,
-                        entry.relation,
-                        query.scope()
-                    );
-                }
-            }
-        }
+    for (fixture, entry, query) in joined_shape_queries() {
+        checked += 1;
+        let names_relation = match query.scope() {
+            ReplayScope::Object {
+                object_type,
+                relations,
+            } => object_type == entry.type_name.as_str() && relations.contains(&entry.relation),
+            ReplayScope::Subject {
+                object_type,
+                relation,
+                ..
+            } => object_type == entry.type_name.as_str() && relation == &entry.relation,
+        };
+        assert!(
+            names_relation,
+            "{fixture}: {}#{} has a replay slice for {:?}",
+            entry.type_name,
+            entry.relation,
+            query.scope()
+        );
     }
 
     assert!(checked > 0, "no fixture produced a joining shape");
@@ -1099,7 +1052,7 @@ CREATE POLICY jobs_sel ON jobs FOR SELECT USING (as_of > now());
         ..GeneratorSettings::default()
     };
 
-    let context_keys: Vec<String> = translation(&db, &registry, &settings)
+    let context_keys: Vec<String> = translation(&db, &registry, ConfidenceLevel::B, &settings)
         .relations()
         .iter()
         .flat_map(|entry| entry.shapes.iter())
@@ -1432,7 +1385,7 @@ fn a_holder_relation_is_never_decidable_from_one_row() {
 fn every_query_the_loader_runs_has_a_shape() {
     let mut checked = 0usize;
     let mut cases: Vec<(String, ParserDB, FunctionRegistry)> = Vec::new();
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (_, db, registry) = support::try_load_fixture_classified(&fixture);
         cases.push((fixture, db, registry));
     }
@@ -1445,9 +1398,14 @@ fn every_query_the_loader_runs_has_a_shape() {
     }
 
     for (label, db, registry) in &cases {
-        for query in translation(db, registry, &GeneratorSettings::default())
-            .outputs_accepting_gaps()
-            .tuple_queries()
+        for query in translation(
+            db,
+            registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        )
+        .outputs_accepting_gaps()
+        .tuple_queries()
         {
             if query.skipped.is_some() {
                 continue;
@@ -1563,7 +1521,7 @@ fn conditional_wildcards(json: &str) -> Vec<(String, String, String)> {
 #[test]
 fn no_condition_is_shared_by_two_types() {
     let mut checked = 0usize;
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -1793,7 +1751,7 @@ fn a_recipe_is_reported_exactly_when_the_flag_says_one_row_decides() {
         }
     };
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -1862,7 +1820,12 @@ fn either_spelling_of_two_ownership_columns_composes_into_any() {
         ("two policies", TWO_SELECT_POLICIES),
     ] {
         let (db, registry) = parsed(sql, ACCESSOR_REGISTRY);
-        let planned = translation(&db, &registry, &GeneratorSettings::default());
+        let planned = translation(
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
         let reported = planned.relations();
         let named: Vec<&str> = recipe_leaves(
             entry(reported, "docs", "can_select")
@@ -1944,7 +1907,7 @@ fn a_computed_relation_inside_a_recipe_flattens_into_what_it_names() {
 fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
     let mut checked = 0usize;
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let planned = Translation::plan(
             classified,
@@ -2343,7 +2306,7 @@ fn every_declared_clause_reaches_the_summary_or_a_note_that_names_it() {
     let mut checked = 0usize;
     let mut unaccounted: Vec<String> = Vec::new();
 
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
         let outputs = Translation::plan(
             classified,
@@ -2770,7 +2733,12 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
 #[test]
 fn a_clock_gated_record_names_the_condition_its_context_carries() {
     let (db, registry) = parsed(CLOCK_GATE_COMPOUND_KEY, "{}");
-    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let planned = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let reported = planned.relations();
     let gate = reported
         .iter()
@@ -2896,11 +2864,34 @@ fn tuple_contract_cases() -> Vec<(String, ParserDB, FunctionRegistry)> {
         ("sql-residual share".to_string(), residual.0, residual.1),
         ("quoted membership".to_string(), plain.0, plain.1),
     ];
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let (_, db, registry) = support::try_load_fixture_classified(&fixture);
         cases.push((fixture, db, registry));
     }
     cases
+}
+
+fn joined_shape_queries() -> Vec<(String, RelationShapes, BoundQuery)> {
+    let mut result = Vec::new();
+    for (fixture, db, registry) in tuple_contract_cases() {
+        let planned = translation(
+            &db,
+            &registry,
+            ConfidenceLevel::B,
+            &GeneratorSettings::default(),
+        );
+        for entry in planned.relations() {
+            for shape in &entry.shapes {
+                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
+                    continue;
+                };
+                for query in queries {
+                    result.push((fixture.clone(), entry.clone(), query.clone()));
+                }
+            }
+        }
+    }
+    result
 }
 
 /// An expiring share settles from the share row: the clock comparison joins the viewer
@@ -2910,7 +2901,12 @@ fn tuple_contract_cases() -> Vec<(String, ParserDB, FunctionRegistry)> {
 #[test]
 fn an_expiring_share_settles_from_its_row_with_the_clock_in_its_condition() {
     let (db, registry) = parsed_with_session_attributes(EXPIRING_SHARE, EXPIRING_SHARE_ATTRIBUTES);
-    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let planned = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let reported = planned.relations();
     let gate = reported
         .iter()
@@ -3039,8 +3035,13 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
 #[test]
 fn a_membership_grace_window_rides_the_clock_as_a_duration() {
     let (db, registry) = parsed_with_session_attributes(GRACE_SHARE, EXPIRING_SHARE_ATTRIBUTES);
-    let outputs =
-        translation(&db, &registry, &GeneratorSettings::default()).outputs_accepting_gaps();
+    let outputs = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps();
     let dsl = outputs.model();
     assert!(
         dsl.lines().any(|line| {
@@ -3090,7 +3091,12 @@ CREATE POLICY docs_p ON docs FOR SELECT USING (
 #[test]
 fn an_expiring_exists_membership_conditions_its_member_tuple() {
     let (db, registry) = parsed(EXPIRING_EXISTS, "{}");
-    let planned = translation(&db, &registry, &GeneratorSettings::default());
+    let planned = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    );
     let reported = planned.relations();
     let member = reported
         .iter()
@@ -3175,53 +3181,34 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
 #[test]
 fn every_replay_declares_the_slice_its_result_determines() {
     let mut swept = 0usize;
-    for (fixture, db, registry) in tuple_contract_cases() {
-        let classified = classify_policies(&db, &registry);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let reported = planned.relations();
-        for entry in reported {
-            for shape in &entry.shapes {
-                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
-                    continue;
-                };
-                for query in queries {
-                    swept += 1;
-                    match query.scope() {
-                        ReplayScope::Object {
-                            object_type,
-                            relations,
-                        } => {
-                            assert!(
-                                !object_type.as_str().is_empty() && !relations.is_empty(),
-                                "{fixture}: {}#{} declares an empty object slice",
-                                entry.type_name,
-                                entry.relation
-                            );
-                        }
-                        ReplayScope::Subject { relation, .. } => {
-                            assert_eq!(
-                                query.key_columns().len(),
-                                1,
-                                "{fixture}: {}#{} keys a subject slice on several columns",
-                                entry.type_name,
-                                entry.relation
-                            );
-                            assert!(
-                                !relation.as_str().is_empty(),
-                                "{fixture}: {}#{} declares an empty subject slice",
-                                entry.type_name,
-                                entry.relation
-                            );
-                        }
-                    }
-                }
+    for (fixture, entry, query) in joined_shape_queries() {
+        swept += 1;
+        match query.scope() {
+            ReplayScope::Object {
+                object_type,
+                relations,
+            } => {
+                assert!(
+                    !object_type.as_str().is_empty() && !relations.is_empty(),
+                    "{fixture}: {}#{} declares an empty object slice",
+                    entry.type_name,
+                    entry.relation
+                );
+            }
+            ReplayScope::Subject { relation, .. } => {
+                assert_eq!(
+                    query.key_columns().len(),
+                    1,
+                    "{fixture}: {}#{} keys a subject slice on several columns",
+                    entry.type_name,
+                    entry.relation
+                );
+                assert!(
+                    !relation.as_str().is_empty(),
+                    "{fixture}: {}#{} declares an empty subject slice",
+                    entry.type_name,
+                    entry.relation
+                );
             }
         }
     }
@@ -3356,42 +3343,23 @@ fn membership_records_carry_the_resolved_table_identity() {
 #[test]
 fn every_bound_query_agrees_with_its_own_projection() {
     let (mut conditional, mut plain) = (0usize, 0usize);
-    for (fixture, db, registry) in tuple_contract_cases() {
-        let classified = classify_policies(&db, &registry);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let reported = planned.relations();
-        for entry in reported {
-            for shape in &entry.shapes {
-                let RecordDerivation::Joined { queries, .. } = &shape.derivation else {
-                    continue;
-                };
-                for query in queries {
-                    let named = format!("{fixture}: {}#{}", entry.type_name, entry.relation);
-                    if let Some(condition) = query.condition() {
-                        conditional += 1;
-                        assert!(
-                            query.sql().contains(&format!("'{condition}' AS condition")),
-                            "{named} names condition '{condition}' for a replay that does \
-                         not project it:\n{}",
-                            query.sql()
-                        );
-                    } else {
-                        plain += 1;
-                        assert!(
-                            !query.sql().contains(" AS condition"),
-                            "{named} projects a condition its replay does not name:\n{}",
-                            query.sql()
-                        );
-                    }
-                }
-            }
+    for (fixture, entry, query) in joined_shape_queries() {
+        let named = format!("{fixture}: {}#{}", entry.type_name, entry.relation);
+        if let Some(condition) = query.condition() {
+            conditional += 1;
+            assert!(
+                query.sql().contains(&format!("'{condition}' AS condition")),
+                "{named} names condition '{condition}' for a replay that does \
+             not project it:\n{}",
+                query.sql()
+            );
+        } else {
+            plain += 1;
+            assert!(
+                !query.sql().contains(" AS condition"),
+                "{named} projects a condition its replay does not name:\n{}",
+                query.sql()
+            );
         }
     }
     assert!(
@@ -3771,10 +3739,15 @@ fn a_cross_row_residual_refuses_a_keyed_replay() {
 #[test]
 fn a_cross_row_residual_discloses_the_relations_its_proof_rests_on() {
     let (db, registry) = parsed(CROSS_ROW_RESIDUAL, "{}");
-    let notes = translation(&db, &registry, &GeneratorSettings::default())
-        .outputs_accepting_gaps()
-        .notes()
-        .to_vec();
+    let notes = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .notes()
+    .to_vec();
     let disclosure = notes
         .iter()
         .find_map(|note| match note {
@@ -3821,10 +3794,15 @@ fn a_caller_set_membership_discloses_the_relations_its_proof_rests_on() {
         CALLER_SET_CROSS_ROW,
         r#"[{ "key": "app.subjects", "kind": "set_attribute" }]"#,
     );
-    let notes = translation(&db, &registry, &GeneratorSettings::default())
-        .outputs_accepting_gaps()
-        .notes()
-        .to_vec();
+    let notes = translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .outputs_accepting_gaps()
+    .notes()
+    .to_vec();
     let disclosure = notes
         .iter()
         .find_map(|note| match note {

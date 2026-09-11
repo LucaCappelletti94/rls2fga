@@ -71,6 +71,26 @@ fn classified_from_policy<DB: DatabaseLike>(
     result
 }
 
+fn plan_from_policy_sql(
+    policy_sql: &str,
+    using: Option<PatternClass>,
+    with_check: Option<PatternClass>,
+) -> (SchemaPlan, TypePlan) {
+    let db = docs_db_with_policy(policy_sql);
+    let policy = db.policies().next().expect("policy should exist");
+    let classified = classified_from_policy(policy, &db, using, with_check);
+    let registry = FunctionRegistry::new();
+    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
+        .expect("translation should plan");
+    let docs = plan
+        .types
+        .iter()
+        .find(|t| t.type_name.as_str() == "docs")
+        .expect("docs type should exist")
+        .clone();
+    (plan, docs)
+}
+
 #[test]
 fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
@@ -486,28 +506,14 @@ fn build_schema_plan_adds_notes_for_non_public_to_and_empty_translation() {
 
 #[test]
 fn build_schema_plan_models_non_public_scope_via_pg_role() {
-    let db = docs_db_with_policy(
-        "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (owner_id = current_user);",
-    );
-    let policy = db.policies().next().expect("policy should exist");
     let scope_relation = role_scope_name("usage", &["app_user".to_string()]);
-    let classified = classified_from_policy(
-        policy,
-        &db,
+    let (plan, docs) = plan_from_policy_sql(
+        "CREATE POLICY docs_select ON docs FOR SELECT TO app_user USING (owner_id = current_user);",
         Some(PatternClass::P3DirectOwnership(DirectOwnership {
             column: ColumnName::from_stored("owner_id"),
         })),
         None,
     );
-    let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
-        .expect("translation should plan");
-
-    let docs = plan
-        .types
-        .iter()
-        .find(|t| t.type_name.as_str() == "docs")
-        .expect("docs type should exist");
     assert!(docs.direct_relations.contains_key(&scope_relation));
     assert!(matches!(
         docs.computed_relations.get("can_select"),
@@ -533,27 +539,13 @@ fn build_schema_plan_models_non_public_scope_via_pg_role() {
 
 #[test]
 fn build_schema_plan_mirrors_update_check_when_only_with_check_is_present() {
-    let db = docs_db_with_policy(
+    let (_, docs) = plan_from_policy_sql(
         "CREATE POLICY docs_update ON docs FOR UPDATE WITH CHECK (owner_id = current_user);",
-    );
-    let policy = db.policies().next().expect("policy should exist");
-    let classified = classified_from_policy(
-        policy,
-        &db,
         None,
         Some(PatternClass::P3DirectOwnership(DirectOwnership {
             column: ColumnName::from_stored("owner_id"),
         })),
     );
-    let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
-        .expect("translation should plan");
-
-    let docs = plan
-        .types
-        .iter()
-        .find(|t| t.type_name.as_str() == "docs")
-        .expect("docs type should exist");
     assert!(
         docs.computed_relations.contains_key("can_update"),
         "update relation should be synthesized from WITH CHECK"
@@ -824,20 +816,11 @@ CREATE POLICY rls_docs_select ON rls_docs USING (owner_id = current_user);
 
 #[test]
 fn build_schema_plan_denies_every_action_when_no_clause_translates() {
-    let db = docs_db_with_policy(
+    let (plan, docs) = plan_from_policy_sql(
         "CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = current_user);",
+        None,
+        None,
     );
-    let policy = db.policies().next().expect("policy should exist");
-    let classified = classified_from_policy(policy, &db, None, None);
-    let registry = FunctionRegistry::new();
-
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
-        .expect("translation should plan");
-    let docs = plan
-        .types
-        .iter()
-        .find(|t| t.type_name.as_str() == "docs")
-        .expect("RLS-enabled table should still be emitted");
     for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert_eq!(
             docs.computed_relations.get(relation),
@@ -900,27 +883,13 @@ CREATE POLICY docs_select ON app.docs FOR SELECT USING (owner_id = current_user)
 
 #[test]
 fn build_schema_plan_mirrors_update_using_when_with_check_absent() {
-    let db = docs_db_with_policy(
+    let (_, docs) = plan_from_policy_sql(
         "CREATE POLICY docs_update ON docs FOR UPDATE USING (owner_id = current_user);",
-    );
-    let policy = db.policies().next().expect("policy should exist");
-    let classified = classified_from_policy(
-        policy,
-        &db,
         Some(PatternClass::P3DirectOwnership(DirectOwnership {
             column: ColumnName::from_stored("owner_id"),
         })),
         None,
     );
-    let registry = FunctionRegistry::new();
-    let plan = build_schema_plan(&[classified], &db, &registry, &GeneratorSettings::default())
-        .expect("translation should plan");
-
-    let docs = plan
-        .types
-        .iter()
-        .find(|t| t.type_name.as_str() == "docs")
-        .expect("docs type should exist");
     assert!(docs.computed_relations.contains_key("can_update"));
 }
 

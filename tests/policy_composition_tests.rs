@@ -1,5 +1,4 @@
 use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::generator::tuple_generator;
 use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
@@ -8,11 +7,7 @@ mod support;
 #[test]
 fn multi_policy_table_combines_patterns_for_select() {
     let sql = support::read_fixture_sql("multi_policy_table");
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -56,11 +51,7 @@ CREATE POLICY p_owner ON docs AS PERMISSIVE FOR SELECT TO PUBLIC
 CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
   USING (is_public = TRUE);
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -171,23 +162,8 @@ CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
     )
   );
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
-    );
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
+    let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
         tuples.contains("'owner' AS relation"),
@@ -214,11 +190,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
   USING (owner_id = auth_current_user_id());
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let model = Translation::plan(
         classified.clone(),
         &db,
@@ -278,11 +250,7 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 #[test]
 fn json_and_dsl_are_semantically_aligned_for_composite() {
     let sql = support::read_fixture_sql("compound_or");
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(&sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let dsl = Translation::plan(
         classified.clone(),
         &db,
@@ -342,11 +310,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
   USING (owner_id = auth_current_user_id())
   WITH CHECK (FALSE);
 ";
-    let reg_json = r#"{
-      "auth_current_user_id": {"kind":"current_user_accessor","returns":"uuid"}
-    }"#;
-
-    let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
+    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let outputs = Translation::plan(
         classified,
         &db,
