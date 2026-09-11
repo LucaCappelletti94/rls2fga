@@ -283,6 +283,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
         relation_definition(&dsl, "docs", read).is_some(),
         "can_delete reads '{read}', which docs does not define:\n{dsl}"
     );
+    assert_ne!(
+        read, "no_access",
+        "the rule the policy reads must survive:\n{dsl}"
+    );
 }
 
 /// A relation carries one kind of subject, so an ownership column must not take the

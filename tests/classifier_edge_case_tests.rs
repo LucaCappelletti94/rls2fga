@@ -715,8 +715,9 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 #[test]
-fn p4_with_user_col_in_on_clause_exercises_code_path() {
-    let sql = r"
+fn p4_on_clause_joining_guarded_table_is_refused() {
+    for sql in [
+        r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -726,10 +727,29 @@ CREATE POLICY p ON docs FOR SELECT
         JOIN docs d ON s.user_id = current_user
         WHERE s.doc_id = docs.id
     ));
-";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
-    assert_eq!(classified.len(), 1);
-    let _ = &classified[0];
+",
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM shares s
+        JOIN docs d ON current_user = s.user_id
+        WHERE s.doc_id = docs.id
+    ));
+",
+    ] {
+        let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+        assert_eq!(classified.len(), 1);
+        let c = classified[0].using_classification().unwrap();
+        assert!(
+            matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+                if reason.contains("infinite recursion")),
+            "joining the guarded table in an ON clause must be refused, got: {:?}",
+            c.pattern
+        );
+    }
 }
 
 #[test]
@@ -771,24 +791,13 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
-}
-
-#[test]
-fn p4_on_clause_reversed_user_col_exercises_code_path() {
-    let sql = r"
-CREATE TABLE docs(id UUID PRIMARY KEY);
-CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON docs FOR SELECT
-    USING (EXISTS (
-        SELECT 1 FROM shares s
-        JOIN docs d ON current_user = s.user_id
-        WHERE s.doc_id = docs.id
-    ));
-";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
-    assert_eq!(classified.len(), 1);
-    let _ = &classified[0];
+    let c = classified[0].using_classification().unwrap();
+    assert!(
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+            if reason.contains("conflicting outer FK join columns")),
+        "two outer correlations with no composite foreign key must be refused, got: {:?}",
+        c.pattern
+    );
 }
 
 #[test]

@@ -1345,6 +1345,40 @@ CREATE TABLE tiers(cutoff INT);
     .expect("schema should parse")
 }
 
+fn papers_membership(residual: &str) -> Expr {
+    parse_expr(&format!(
+        "EXISTS (
+               SELECT 1
+               FROM paper_shares s
+               WHERE s.paper_id = papers.id
+                 AND s.viewer = current_user
+                 AND {residual}
+             )"
+    ))
+}
+
+fn papers_refuses(extra: &str, residual: &str) -> bool {
+    recognize_p4(
+        &papers_membership(residual),
+        &papers_schema(extra),
+        &FunctionRegistry::new(),
+        "papers",
+        &ExpansionState::new(),
+    )
+    .is_none()
+}
+
+fn papers_refuses_on(db: &ParserDB, residual: &str) -> bool {
+    recognize_p4(
+        &papers_membership(residual),
+        db,
+        &FunctionRegistry::new(),
+        "papers",
+        &ExpansionState::new(),
+    )
+    .is_none()
+}
+
 /// Membership qualified by beating the average weight of the whole share table.
 fn average_weight_membership() -> Expr {
     parse_expr(
@@ -1488,34 +1522,13 @@ ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
 /// The root's own flag still governs a query naming the root.
 #[test]
 fn a_residual_over_a_row_secured_root_is_refused() {
-    let db = parse_schema(
-        r"
-CREATE TABLE papers(id UUID PRIMARY KEY);
-CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
-CREATE TABLE weights(weight INT, region TEXT) PARTITION BY LIST (region);
-CREATE TABLE weights_eu PARTITION OF weights FOR VALUES IN ('eu');
-ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
-",
-    )
-    .expect("schema should parse");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT avg(weight) FROM weights)
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses(
+            "CREATE TABLE weights(weight INT, region TEXT) PARTITION BY LIST (region);
+CREATE TABLE weights_eu PARTITION OF weights FOR VALUES IN ('eu');
+ALTER TABLE weights ENABLE ROW LEVEL SECURITY;",
+            "s.weight > (SELECT avg(weight) FROM weights)",
+        ),
         "the root carries the policies the query naming it reads under"
     );
 }
@@ -1523,25 +1536,8 @@ ALTER TABLE weights ENABLE ROW LEVEL SECURITY;
 /// Nothing is proven about a relation the catalog does not carry.
 #[test]
 fn a_residual_naming_an_unresolvable_relation_is_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT avg(weight) FROM elsewhere)
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses("", "s.weight > (SELECT avg(weight) FROM elsewhere)"),
         "an unread relation cannot be proven to answer everyone alike"
     );
 }
@@ -1549,27 +1545,11 @@ fn a_residual_naming_an_unresolvable_relation_is_refused() {
 /// Row security is not the only way an answer can depend on who is asking.
 #[test]
 fn a_residual_whose_subquery_reads_the_caller_is_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (
-                   SELECT avg(weight) FROM paper_shares WHERE viewer = current_user
-                 )
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses(
+            "",
+            "s.weight > (SELECT avg(weight) FROM paper_shares WHERE viewer = current_user)",
+        ),
         "an average over the caller's own rows is the caller's average"
     );
 }
@@ -1577,34 +1557,11 @@ fn a_residual_whose_subquery_reads_the_caller_is_refused() {
 /// A qualifier does not exempt a zoned column from the session's time zone.
 #[test]
 fn a_residual_comparing_a_qualified_zoned_column_is_refused() {
-    let db = parse_schema(
-        r"
-CREATE TABLE papers(id UUID PRIMARY KEY);
-CREATE TABLE paper_shares(paper_id UUID, viewer TEXT, weight INT);
-CREATE TABLE windows(opens_at TIMESTAMPTZ);
-",
-    )
-    .expect("schema should parse");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (
-                   SELECT count(*) FROM windows w WHERE w.opens_at > '2020-01-01'
-                 )
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses(
+            "CREATE TABLE windows(opens_at TIMESTAMPTZ);",
+            "s.weight > (SELECT count(*) FROM windows w WHERE w.opens_at > '2020-01-01')",
+        ),
         "the session's time zone decides the comparison, qualifier or not"
     );
 }
@@ -1684,26 +1641,11 @@ CREATE TABLE bands(band TEXT, floor INT);
 ",
     )
     .expect("schema should parse");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (
-                   SELECT max(cutoff) FROM tiers, bands WHERE band = 'gold'
-                 )
-             )"
-            ),
+        papers_refuses_on(
             &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+            "s.weight > (SELECT max(cutoff) FROM tiers, bands WHERE band = 'gold')",
+        ),
         "an ambiguous name is bound by neither relation"
     );
 }
@@ -1746,25 +1688,11 @@ CREATE TABLE tiers(cutoff INT);
 /// A sample is not the relation the flag was proven about.
 #[test]
 fn a_residual_sampling_its_relation_is_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT avg(weight) FROM paper_shares TABLESAMPLE BERNOULLI (50))
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses(
+            "",
+            "s.weight > (SELECT avg(weight) FROM paper_shares TABLESAMPLE BERNOULLI (50))",
+        ),
         "a sample is not the relation the flag was proven about"
     );
 }
@@ -1807,25 +1735,11 @@ CREATE TABLE tiers(cutoff INT, category TEXT);
 /// An unplaceable function's body may read anything.
 #[test]
 fn a_residual_calling_an_unknown_function_is_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT house_cutoff(weight) FROM paper_shares)
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses(
+            "",
+            "s.weight > (SELECT house_cutoff(weight) FROM paper_shares)"
+        ),
         "a function the crate cannot place may read the caller"
     );
 }
@@ -1833,25 +1747,8 @@ fn a_residual_calling_an_unknown_function_is_refused() {
 /// `LIMIT` picks a row per evaluation rather than per identity.
 #[test]
 fn a_residual_whose_subquery_limits_its_rows_is_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT weight FROM paper_shares LIMIT 1)
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses("", "s.weight > (SELECT weight FROM paper_shares LIMIT 1)"),
         "an unordered single row is whichever row the evaluation reached"
     );
 }
@@ -1870,25 +1767,8 @@ fn a_recognized_residual_qualifies_its_nested_relation() {
 /// The exemption widens which relations may be read, not which expressions.
 #[test]
 fn a_relation_free_residual_the_row_cannot_decide_is_still_refused() {
-    let db = papers_schema("");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND house_cutoff(s.weight)
-             )"
-            ),
-            &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+        papers_refuses("", "house_cutoff(s.weight)"),
         "an unplaceable function is no more decidable for reading no table"
     );
 }
@@ -1904,26 +1784,11 @@ CREATE TABLE tiers(cutoff INT, category TEXT);
 ",
     )
     .expect("schema should parse");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (
-                   SELECT max(cutoff) FROM tiers WHERE category = papers.category
-                 )
-             )"
-            ),
+        papers_refuses_on(
             &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+            "s.weight > (SELECT max(cutoff) FROM tiers WHERE category = papers.category)",
+        ),
         "the generated query scans the membership table alone, so the guarded row is absent"
     );
 }
@@ -1939,24 +1804,11 @@ CREATE TABLE tiers(cutoff INT);
 ",
     )
     .expect("schema should parse");
-    let registry = FunctionRegistry::new();
     assert!(
-        recognize_p4(
-            &parse_expr(
-                "EXISTS (
-               SELECT 1
-               FROM paper_shares s
-               WHERE s.paper_id = papers.id
-                 AND s.viewer = current_user
-                 AND s.weight > (SELECT max(cutoff) FROM tiers WHERE category = 'gold')
-             )"
-            ),
+        papers_refuses_on(
             &db,
-            &registry,
-            "papers",
-            &ExpansionState::new()
-        )
-        .is_none(),
+            "s.weight > (SELECT max(cutoff) FROM tiers WHERE category = 'gold')",
+        ),
         "only the guarded row carries the name, and the generated query never scans it"
     );
 }
@@ -2272,7 +2124,13 @@ fn recognize_p10_and_p6_cover_non_matching_variants() {
     let registry = FunctionRegistry::new();
 
     let p10_true = parse_expr("TRUE");
-    assert!(recognize_p10_constant_bool(&p10_true, &db, &registry).is_some());
+    assert!(matches!(
+        recognize_p10_constant_bool(&p10_true, &db, &registry),
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P10ConstantBool(ConstantBool { value: true }),
+            ..
+        })
+    ));
     let p10_not_true = parse_expr("NOT TRUE");
     assert!(matches!(
         recognize_p10_constant_bool(&p10_not_true, &db, &registry),
@@ -2296,12 +2154,30 @@ fn recognize_p10_and_p6_cover_non_matching_variants() {
     let p6_false = parse_expr("FALSE = is_public");
     assert!(recognize_p6(&p6_false, &db, &registry).is_none());
     let p6_is_true = parse_expr("is_public IS TRUE");
-    assert!(recognize_p6(&p6_is_true, &db, &registry).is_some());
+    assert!(matches!(
+        recognize_p6(&p6_is_true, &db, &registry),
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P6BooleanFlag(BooleanFlag { column, .. }),
+            ..
+        }) if column == "is_public"
+    ));
     let p6_is_not_false = parse_expr("is_public IS NOT FALSE");
-    assert!(recognize_p6(&p6_is_not_false, &db, &registry).is_some());
+    assert!(matches!(
+        recognize_p6(&p6_is_not_false, &db, &registry),
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P6BooleanFlag(BooleanFlag { column, .. }),
+            ..
+        }) if column == "is_public"
+    ));
 
     let p6_ident = parse_expr("published");
-    assert!(recognize_p6(&p6_ident, &db, &registry).is_some());
+    assert!(matches!(
+        recognize_p6(&p6_ident, &db, &registry),
+        Some(ClassifiedExpr {
+            pattern: PatternClass::P6BooleanFlag(BooleanFlag { column, .. }),
+            ..
+        }) if column == "published"
+    ));
 
     let p6_non_public = parse_expr("private_flag");
     assert!(recognize_p6(&p6_non_public, &db, &registry).is_none());
@@ -3355,14 +3231,13 @@ fn extract_parent_join_columns_right_is_parent_left_is_outer() {
 fn diagnose_p4_membership_ambiguity_in_subquery_form() {
     let db = db_with_docs_and_members();
     let registry = registry_with_role_level();
-    // Multiple membership sources -> ambiguous
     let expr = parse_expr("id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)");
-    // The IN-subquery form should at least not panic
     let result =
         diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new());
-    // It should return None (single match) or Some (ambiguous)
-    // either is fine -- we just need the code path exercised
-    let _ = result;
+    assert!(
+        result.is_none(),
+        "a single membership source is unambiguous"
+    );
 }
 
 #[test]
@@ -3619,69 +3494,46 @@ fn extract_membership_columns_where_right_is_join_fk_conflict_returns_none() {
 }
 
 #[test]
-fn flatten_and_predicates_recursive_and() {
-    // a AND b AND c (without parens, sqlparser chains as BinaryOp AND trees)
-    let expr = parse_expr("x = 1 AND y = 2 AND z = 3");
-    let mut out = Vec::new();
-    flatten_and_predicates(&expr, &mut out);
-    assert_eq!(out.len(), 3, "a AND b AND c should flatten to 3 predicates");
+fn flatten_and_predicates_recognizes_and_chains_and_non_and_leaves() {
+    for (sql, expected, msg) in [
+        (
+            "x = 1 AND y = 2 AND z = 3",
+            3usize,
+            "a AND b AND c should flatten to 3 predicates",
+        ),
+        (
+            "a = 1 AND b = 2 AND c = 3 AND d = 4",
+            4,
+            "a AND b AND c AND d should flatten to 4 predicates",
+        ),
+        (
+            "x = 1 OR y = 2",
+            1,
+            "OR should not be flattened, yielding 1 leaf",
+        ),
+    ] {
+        let expr = parse_expr(sql);
+        let mut out = Vec::new();
+        flatten_and_predicates(&expr, &mut out);
+        assert_eq!(out.len(), expected, "{msg}");
+    }
 }
 
 #[test]
-fn flatten_and_predicates_deeply_nested() {
-    // Four-way AND chain, with no parens to avoid sqlparser Nested wrappers.
-    let expr = parse_expr("a = 1 AND b = 2 AND c = 3 AND d = 4");
-    let mut out = Vec::new();
-    flatten_and_predicates(&expr, &mut out);
-    assert_eq!(
-        out.len(),
-        4,
-        "a AND b AND c AND d should flatten to 4 predicates"
-    );
-}
-
-#[test]
-fn flatten_and_predicates_non_and_leaf() {
-    // OR is not flattened, single predicate
-    let expr = parse_expr("x = 1 OR y = 2");
-    let mut out = Vec::new();
-    flatten_and_predicates(&expr, &mut out);
-    assert_eq!(out.len(), 1, "OR should not be flattened, yielding 1 leaf");
-}
-
-// 6. strip_qualifier_from_expr: already tested but ensure we also have the
-#[test]
-fn strip_qualifier_from_expr_handles_nested_expression() {
-    // Nested: (dm.status) → (status)
-    let mut nested = parse_expr("(dm.status)");
-    strip_qualifier_from_expr(&mut nested, "doc_members", Some("dm"));
-    let result = nested.to_string();
-    assert!(
-        !result.contains("dm."),
-        "Nested expression should have qualifier stripped, got: {result}"
-    );
-}
-
-#[test]
-fn strip_qualifier_from_expr_handles_is_distinct_from() {
-    let mut expr = parse_expr("dm.status IS DISTINCT FROM 'archived'");
-    strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
-    let result = expr.to_string();
-    assert!(
-        !result.contains("dm."),
-        "IS DISTINCT FROM should have qualifier stripped, got: {result}"
-    );
-}
-
-#[test]
-fn strip_qualifier_from_expr_handles_is_not_distinct_from() {
-    let mut expr = parse_expr("dm.status IS NOT DISTINCT FROM 'archived'");
-    strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
-    let result = expr.to_string();
-    assert!(
-        !result.contains("dm."),
-        "IS NOT DISTINCT FROM should have qualifier stripped, got: {result}"
-    );
+fn strip_qualifier_from_expr_handles_nested_and_distinct_forms() {
+    for sql in [
+        "(dm.status)",
+        "dm.status IS DISTINCT FROM 'archived'",
+        "dm.status IS NOT DISTINCT FROM 'archived'",
+    ] {
+        let mut expr = parse_expr(sql);
+        strip_qualifier_from_expr(&mut expr, "doc_members", Some("dm"));
+        let result = expr.to_string();
+        assert!(
+            !result.contains("dm."),
+            "qualifier should be stripped from `{sql}`, got: {result}"
+        );
+    }
 }
 
 /// A qualifier is a stored identifier, so it answers for a scan exactly when `PostgreSQL`

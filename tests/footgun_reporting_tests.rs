@@ -132,12 +132,14 @@ CREATE POLICY docs_tenant ON docs FOR ALL USING (tenant = current_setting('app.t
         .expect("translation should plan")
         .outputs_accepting_gaps();
 
-    let can_select = relation_definition(&model.model(), "docs", "can_select")
-        .unwrap_or_else(|| panic!("docs should define can_select:\n{}", model.model()));
-    assert!(
-        can_select.contains("no_access"),
-        "filtered-out policies leave the table denied, got 'define can_select: {can_select}'"
-    );
+    for relation in ["can_select", "can_insert", "can_update", "can_delete"] {
+        let definition = relation_definition(&model.model(), "docs", relation)
+            .unwrap_or_else(|| panic!("docs should define {relation}:\n{}", model.model()));
+        assert!(
+            definition.contains("no_access"),
+            "filtered-out policies leave the table denied, got 'define {relation}: {definition}'"
+        );
+    }
 }
 
 /// A dropped permissive policy leaves the model denying what RLS grants. Saying
@@ -197,8 +199,8 @@ CREATE POLICY docs_tenant ON docs FOR SELECT USING (tenant = current_setting('ap
         "a dropped permissive policy must still be named:\n{report}"
     );
     assert!(
-        report.contains('D'),
-        "the report must state the confidence that caused the drop:\n{report}"
+        report.contains("`docs_tenant` (USING, PERMISSIVE SELECT, confidence D)"),
+        "the dropped-policy line must state the clause, the mode, the command and the confidence that caused the drop:\n{report}"
     );
 }
 
