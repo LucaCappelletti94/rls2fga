@@ -7,8 +7,6 @@
 //! regression in any of them fails here.
 
 use std::collections::BTreeSet;
-use std::thread;
-use std::time::Duration;
 
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
@@ -24,7 +22,7 @@ use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
-use support::containers::{PG_DB, PG_PASSWORD, PG_USER};
+use support::containers::{connect_postgres_with_retry, PG_DB, PG_PASSWORD, PG_USER};
 
 /// Fixtures whose dump cannot parse yet, each waiting on a named sqlparser
 /// gap. An entry whose dump starts parsing fails the run, which is the signal
@@ -47,20 +45,6 @@ const FIXTURE_ROLES: [&str; 4] = ["auditor", "contractor", "editors", "app"];
 
 /// Roles a fixture creates itself, which must be absent when it applies.
 const CREATES_ROLES: [(&str, &str); 1] = [("schema_objects", "auditor")];
-
-fn connect_with_retry(database_url: &str) -> PgConnection {
-    let mut last_error = String::new();
-    for _ in 0..30 {
-        match PgConnection::establish(database_url) {
-            Ok(conn) => return conn,
-            Err(error) => {
-                last_error = error.to_string();
-                thread::sleep(Duration::from_millis(200));
-            }
-        }
-    }
-    panic!("Failed to connect to PostgreSQL after retries: {last_error}");
-}
 
 /// The model and tuple queries one schema translates to under the fixture's
 /// own registry and declared session attributes.
@@ -153,33 +137,17 @@ fn first_divergence(fixture_side: &str, dump_side: &str) -> String {
     )
 }
 
-fn fixture_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir("tests/fixtures")
-        .expect("fixtures directory should be readable")
-        .filter_map(|entry| {
-            let entry = entry.expect("fixture entry should be readable");
-            entry
-                .file_type()
-                .expect("fixture entry type should be readable")
-                .is_dir()
-                .then(|| entry.file_name().to_string_lossy().into_owned())
-        })
-        .collect();
-    names.sort();
-    names
-}
-
 #[tokio::test]
 #[ignore = "requires Docker and the postgres:18 container"]
 async fn every_fixture_round_trips_through_pg_dump() {
     let postgres = support::containers::start_postgres().await;
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
     let admin_url = format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{PG_DB}");
-    let mut admin = connect_with_retry(&admin_url);
+    let mut admin = connect_postgres_with_retry(&admin_url);
 
     let mut failures = Vec::new();
     let mut round_tripped = 0usize;
-    for fixture in fixture_names() {
+    for fixture in support::fixture_names() {
         let fixture = fixture.as_str();
         // A fixture that creates a role itself must find it absent, and every
         // other fixture must find the shared roles present. Databases are
@@ -206,7 +174,7 @@ async fn every_fixture_round_trips_through_pg_dump() {
             .expect("Failed to create a fixture database");
         let fixture_url =
             format!("postgres://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{pg_port}/{database}");
-        let mut conn = connect_with_retry(&fixture_url);
+        let mut conn = connect_postgres_with_retry(&fixture_url);
         // The Supabase fixtures declare functions under `auth` without creating it,
         // exactly as their deployments find it already present.
         conn.batch_execute("CREATE SCHEMA IF NOT EXISTS auth")

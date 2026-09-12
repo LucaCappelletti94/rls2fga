@@ -299,5 +299,7 @@ mod tests {
         assert!(validate_output_name("my_output").is_ok());
         assert!(validate_output_name("schema-v1").is_ok());
         assert!(validate_output_name("report_2024").is_ok());
+        // Internal dot is not a Windows-invalid char; only trailing dot or reserved stem (CON.txt) fails.
+        assert!(validate_output_name("report.md").is_ok());
     }
 }

@@ -81,6 +81,14 @@ use core::fmt;
 /// `Hash` all delegate to the wrapped `String`.
 macro_rules! compares_against_text {
     ($name:ident) => {
+        impl $name {
+            /// The name, for rendering.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)
@@ -126,6 +134,24 @@ macro_rules! compares_against_text {
         impl PartialEq<$name> for &str {
             fn eq(&self, other: &$name) -> bool {
                 *self == other.0
+            }
+        }
+    };
+    ($name:ident, validated) => {
+        compares_against_text!($name);
+
+        impl TryFrom<&str> for $name {
+            type Error = <$name as TryFrom<String>>::Error;
+
+            fn try_from(name: &str) -> Result<Self, Self::Error> {
+                Self::try_from(name.to_string())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let name = String::deserialize(deserializer)?;
+                Self::try_from(name).map_err(serde::de::Error::custom)
             }
         }
     };
@@ -296,12 +322,6 @@ impl TypeName {
         }
         Self(canonical)
     }
-
-    /// The name, for rendering.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl TryFrom<String> for TypeName {
@@ -321,20 +341,7 @@ impl TryFrom<String> for TypeName {
     }
 }
 
-impl TryFrom<&str> for TypeName {
-    type Error = TypeNameError;
-
-    fn try_from(name: &str) -> Result<Self, Self::Error> {
-        Self::try_from(name.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for TypeName {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let name = String::deserialize(deserializer)?;
-        Self::try_from(name).map_err(serde::de::Error::custom)
-    }
-}
+compares_against_text!(TypeName, validated);
 
 /// Why an `OpenFGA` type name was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -379,14 +386,6 @@ fn is_openfga_type_name(name: &str) -> bool {
     !after_separator
 }
 
-impl AsRef<str> for TypeName {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-compares_against_text!(TypeName);
-
 /// A relation of the emitted model, normalised and clamped to what `OpenFGA` accepts.
 ///
 /// Not every use of `clamp_relation_name` or
@@ -417,12 +416,6 @@ impl RelationName {
         }
         Self(canonical)
     }
-
-    /// The name, for rendering.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl TryFrom<String> for RelationName {
@@ -445,20 +438,7 @@ impl TryFrom<String> for RelationName {
     }
 }
 
-impl TryFrom<&str> for RelationName {
-    type Error = RelationNameError;
-
-    fn try_from(name: &str) -> Result<Self, Self::Error> {
-        Self::try_from(name.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for RelationName {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let name = String::deserialize(deserializer)?;
-        Self::try_from(name).map_err(serde::de::Error::custom)
-    }
-}
+compares_against_text!(RelationName, validated);
 
 /// Why an `OpenFGA` relation name was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -480,8 +460,6 @@ pub enum RelationNameError {
         name: String,
     },
 }
-
-compares_against_text!(RelationName);
 
 /// A condition parameter that can be referenced by a `CEL` expression.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
@@ -511,12 +489,6 @@ impl ConditionParameterName {
         }
         Self(name)
     }
-
-    /// The name, for rendering.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl TryFrom<String> for ConditionParameterName {
@@ -531,25 +503,7 @@ impl TryFrom<String> for ConditionParameterName {
     }
 }
 
-impl TryFrom<&str> for ConditionParameterName {
-    type Error = ConditionParameterNameError;
-
-    fn try_from(name: &str) -> Result<Self, Self::Error> {
-        Self::try_from(name.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ConditionParameterName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let name = String::deserialize(deserializer)?;
-        Self::try_from(name).map_err(serde::de::Error::custom)
-    }
-}
-
-compares_against_text!(ConditionParameterName);
+compares_against_text!(ConditionParameterName, validated);
 
 /// Why a condition parameter name was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -631,12 +585,6 @@ impl ColumnName {
     #[doc(hidden)]
     pub fn from_stored(name: impl Into<String>) -> Self {
         Self(name.into())
-    }
-
-    /// The name, for rendering.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 

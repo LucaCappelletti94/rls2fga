@@ -394,8 +394,45 @@ CREATE POLICY p ON tasks FOR SELECT
         WHERE p.id = tasks.project_id AND p.val + mystery() > 0
     ));
 ";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+    let (classified, db, registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
+    let c = classified[0]
+        .using_classification()
+        .expect("should have USING classification");
+    assert!(
+        matches!(
+            &c.pattern,
+            PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+                if reason.contains("The rule inherited from 'projects' is not translatable")
+        ),
+        "P5-shaped EXISTS with untranslatable inner should classify as Unknown, got: {:?}",
+        c.pattern
+    );
+    let outputs = rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::D,
+        &rls2fga::generator::model_generator::GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps();
+    let model = outputs.model();
+    assert!(
+        model.contains("define can_select: no_access"),
+        "model should deny can_select via no_access, got:\n{model}"
+    );
+    let tuples = rls2fga::generator::tuple_generator::format_tuples(outputs.tuple_queries());
+    assert!(
+        tuples.contains(
+            "TODO [Level D]: skipped tuple generation for tasks (unsupported pattern Unknown)"
+        ),
+        "tuple SQL should carry the TODO marker naming the table and pattern, got:\n{tuples}"
+    );
+    assert!(
+        tuples.contains("The rule inherited from 'projects' is not translatable"),
+        "tuple SQL body should name the reason the inner predicate was refused, got:\n{tuples}"
+    );
 }
 
 // ── Confidence filtering ─────────────────────────────────────────────────────
@@ -715,8 +752,9 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 #[test]
-fn p4_with_user_col_in_on_clause_exercises_code_path() {
-    let sql = r"
+fn p4_on_clause_joining_guarded_table_is_refused() {
+    for sql in [
+        r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -726,10 +764,29 @@ CREATE POLICY p ON docs FOR SELECT
         JOIN docs d ON s.user_id = current_user
         WHERE s.doc_id = docs.id
     ));
-";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
-    assert_eq!(classified.len(), 1);
-    let _ = &classified[0];
+",
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM shares s
+        JOIN docs d ON current_user = s.user_id
+        WHERE s.doc_id = docs.id
+    ));
+",
+    ] {
+        let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
+        assert_eq!(classified.len(), 1);
+        let c = classified[0].using_classification().unwrap();
+        assert!(
+            matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+                if reason.contains("infinite recursion")),
+            "joining the guarded table in an ON clause must be refused, got: {:?}",
+            c.pattern
+        );
+    }
 }
 
 #[test]
@@ -771,28 +828,17 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
+    let c = classified[0].using_classification().unwrap();
+    assert!(
+        matches!(&c.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
+            if reason.contains("conflicting outer FK join columns")),
+        "two outer correlations with no composite foreign key must be refused, got: {:?}",
+        c.pattern
+    );
 }
 
 #[test]
-fn p4_on_clause_reversed_user_col_exercises_code_path() {
-    let sql = r"
-CREATE TABLE docs(id UUID PRIMARY KEY);
-CREATE TABLE shares(id UUID PRIMARY KEY, doc_id UUID, user_id UUID);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON docs FOR SELECT
-    USING (EXISTS (
-        SELECT 1 FROM shares s
-        JOIN docs d ON current_user = s.user_id
-        WHERE s.doc_id = docs.id
-    ));
-";
-    let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
-    assert_eq!(classified.len(), 1);
-    let _ = &classified[0];
-}
-
-#[test]
-fn diagnose_p4_with_current_user_but_ambiguous_membership() {
+fn p13_uncorrelated_membership_when_subquery_has_no_fk_to_guarded_table() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
 CREATE TABLE log(id UUID PRIMARY KEY, doc_id UUID, editor UUID);
@@ -804,6 +850,21 @@ CREATE POLICY p ON docs FOR SELECT
 ";
     let (classified, _db, _registry) = support::classify_sql_no_registry(sql);
     assert_eq!(classified.len(), 1);
+    let c = classified[0]
+        .using_classification()
+        .expect("should have USING classification");
+    assert!(
+        matches!(
+            &c.pattern,
+            PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
+                member_table,
+                user_column,
+                ..
+            }) if member_table.name() == "log" && user_column == "editor"
+        ),
+        "subquery with no FK back to the guarded table should classify as P13, got: {:?}",
+        c.pattern
+    );
 }
 
 // ── P5 variations ────────────────────────────────────────────────────────────
@@ -834,14 +895,14 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 /// A read policy that only requires the parent row to exist inherits the parent's own
-/// read rule, since `SELECT` on the parent applies its policies to the subquery. It used
-/// to fall to `Unknown` and deny, which is inventory row 4's over-denial.
+/// read rule, which requires the parent to enforce one.
 #[test]
 fn p5_no_inner_predicates_delegates_to_the_parent() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (EXISTS (
         SELECT 1 FROM orgs o WHERE o.id = docs.org_id

@@ -283,6 +283,10 @@ CREATE POLICY docs_del ON docs FOR DELETE USING (
         relation_definition(&dsl, "docs", read).is_some(),
         "can_delete reads '{read}', which docs does not define:\n{dsl}"
     );
+    assert_ne!(
+        read, "no_access",
+        "the rule the policy reads must survive:\n{dsl}"
+    );
 }
 
 /// A relation carries one kind of subject, so an ownership column must not take the
@@ -1163,4 +1167,67 @@ CREATE POLICY p ON guarded FOR SELECT USING (owner_id = current_user);
             .any(|entry| entry.table.name() == "events_eu"),
         "the partition of an open root is an unrestricted table"
     );
+}
+
+/// A bare parent-existence rule has no gate to delegate to when the parent restricts
+/// nothing, and delegating anyway names a type the model never declares.
+#[test]
+fn a_bare_delegation_to_an_unrestricted_parent_falls_closed() {
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY);
+CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (SELECT 1 FROM orgs o WHERE o.id = docs.org_id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("no_access"),
+        "a delegation with no gate behind it must fall closed:\n{dsl}"
+    );
+    assert!(
+        !type_names(&dsl).iter().any(|name| name == "orgs"),
+        "nothing should reference the unrestricted parent:\n{dsl}"
+    );
+    assert_model_is_internally_consistent(&outputs.json_model());
+    let report = outputs.report();
+    assert!(
+        report.contains("enforces no row security, so there is nothing to inherit"),
+        "the operator has to learn why the delegation was refused:\n{report}"
+    );
+}
+
+/// The parent's own gate is the whole rule where it has one, so an enabled parent keeps
+/// the delegation even when no policy grants through it.
+#[test]
+fn a_bare_delegation_to_a_restricted_parent_keeps_delegating() {
+    let db = db_of(
+        r"
+CREATE TABLE orgs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY op ON orgs FOR SELECT USING (owner_id = current_user);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON docs FOR SELECT
+    USING (EXISTS (SELECT 1 FROM orgs o WHERE o.id = docs.org_id));
+",
+    );
+    let outputs = translator(ConfidenceLevel::B)
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let dsl = outputs.model();
+    assert_eq!(
+        relation_definition(&dsl, "docs", "can_select").as_deref(),
+        Some("can_select from orgs"),
+        "a restricted parent's gate is the whole rule:\n{dsl}"
+    );
+    assert_model_is_internally_consistent(&outputs.json_model());
 }

@@ -53,6 +53,26 @@ fn queries_feeding(tuples: &str, relation: &str) -> Vec<String> {
         .collect()
 }
 
+fn confidence_for_public_flag(registered: &str) -> ConfidenceLevel {
+    let sql = r#"
+CREATE TABLE public.docs (id TEXT PRIMARY KEY, "Public" BOOLEAN NOT NULL);
+ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
+"#;
+    let db = db_of(sql);
+    let mut registry = FunctionRegistry::new();
+    registry.register_public_flag_column(registered);
+    let classified = TranslatorBuilder::new()
+        .with_registry(registry)
+        .with_min_confidence(ConfidenceLevel::B)
+        .build()
+        .classify(&db);
+    classified[0]
+        .using_classification()
+        .expect("USING should classify")
+        .confidence
+}
+
 /// A guarded table quoted so its stored name differs from the alias only by case, beside a
 /// membership table sharing the caller column's name.
 const QUOTED_GUARD_WITH_ALIAS: &str = r#"
@@ -273,26 +293,8 @@ CREATE POLICY p ON public.docs FOR SELECT USING (
 /// confirmation buys is a wildcard grant.
 #[test]
 fn a_public_flag_confirmation_keeps_quoted_identity() {
-    let sql = r#"
-CREATE TABLE public.docs (id TEXT PRIMARY KEY, "Public" BOOLEAN NOT NULL);
-ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
-"#;
-    let db = db_of(sql);
-    let mut registry = FunctionRegistry::new();
-    // Confirms the folded column `public`, which the table does not declare.
-    registry.register_public_flag_column("public");
-    let classified = TranslatorBuilder::new()
-        .with_registry(registry)
-        .with_min_confidence(ConfidenceLevel::B)
-        .build()
-        .classify(&db);
-    let confidence = classified[0]
-        .using_classification()
-        .expect("USING should classify")
-        .confidence;
     assert_ne!(
-        confidence,
+        confidence_for_public_flag("public"),
         ConfidenceLevel::A,
         "confirming `public` says nothing about the column `\"Public\"`"
     );
@@ -301,25 +303,8 @@ CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
 /// The exact spelling still confirms, so the fix cannot make confirmation unreachable.
 #[test]
 fn a_public_flag_confirmation_still_matches_its_own_spelling() {
-    let sql = r#"
-CREATE TABLE public.docs (id TEXT PRIMARY KEY, "Public" BOOLEAN NOT NULL);
-ALTER TABLE public.docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON public.docs FOR SELECT USING ("Public" = TRUE);
-"#;
-    let db = db_of(sql);
-    let mut registry = FunctionRegistry::new();
-    registry.register_public_flag_column("\"Public\"");
-    let classified = TranslatorBuilder::new()
-        .with_registry(registry)
-        .with_min_confidence(ConfidenceLevel::B)
-        .build()
-        .classify(&db);
-    let confidence = classified[0]
-        .using_classification()
-        .expect("USING should classify")
-        .confidence;
     assert_eq!(
-        confidence,
+        confidence_for_public_flag("\"Public\""),
         ConfidenceLevel::A,
         "the column's own stored name confirms it"
     );

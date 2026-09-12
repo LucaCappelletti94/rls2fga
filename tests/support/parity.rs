@@ -1138,6 +1138,42 @@ pub(crate) async fn run_disclosing(cluster: &Cluster, case: &ParityCase) -> Run 
     run_with(cluster, case, Class::Disclosed, |answers| answers).await
 }
 
+/// Run a closed case: the database denies one object, and the disclosure notes are consistent.
+///
+/// Three steps the suite's invariant requires together: any one missing silently weakens the case.
+pub(crate) async fn expect_denied(
+    cluster: &Cluster,
+    case: &ParityCase,
+    subject: &str,
+    object: &str,
+) {
+    let run = run_disclosing(cluster, case).await;
+    assert_postgres(case, &run, subject, object, ActionStatement::Select, false);
+    assert_disclosed_where_noted(case, &run);
+}
+
+/// Run a disclosing case, check pinned pairs, and assert no other disagreements.
+///
+/// Each triple is `(subject, object, visible)`, compared as `SELECT`.
+pub(crate) async fn run_disclosing_and_check(
+    cluster: &Cluster,
+    case: &ParityCase,
+    pairs: &[(&str, &str, bool)],
+) {
+    let run = run_disclosing(cluster, case).await;
+    for &(subject, object, visible) in pairs {
+        assert_postgres(
+            case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_only_disagreements(case, &run, &[]);
+}
+
 /// Refuse any disagreement outside `expected`, and refuse an expected one that agreed.
 ///
 /// Narrower than [`assert_disclosed_where_noted`] for a disclosed case whose divergence is

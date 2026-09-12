@@ -806,6 +806,15 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
         .expect("schema should parse")
     }
 
+    fn assert_unknown_reason(classified: &ClassifiedExpr, expr_sql: &str, expected_fragment: &str) {
+        assert!(
+            matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains(expected_fragment)),
+            "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
+            classified.pattern
+        );
+        assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+    }
+
     #[test]
     fn classify_or_of_level_a_patterns_becomes_level_b_composite() {
         let db = docs_db();
@@ -962,23 +971,21 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
     fn classify_unknown_function_has_specific_reason() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
-        let expr = parse_expr("mystery_auth(owner_id)");
-
+        let expr_sql = "mystery_auth(owner_id)";
+        let expr = parse_expr(expr_sql);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-
-        assert!(matches!(
-            &classified.pattern,
-            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Function 'mystery_auth' not in registry")
-        ));
-        assert_eq!(classified.confidence, ConfidenceLevel::D);
+        assert_unknown_reason(
+            &classified,
+            expr_sql,
+            "Function 'mystery_auth' not in registry",
+        );
     }
 
     #[test]
     fn classify_membership_ambiguity_has_specific_reason() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
-        let expr = parse_expr(
-            "EXISTS (
+        let expr_sql = "EXISTS (
                SELECT 1
                FROM doc_members dm1
                JOIN doc_members dm2 ON dm1.doc_id = dm2.doc_id
@@ -986,68 +993,44 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
                  AND dm1.user_id = current_user
                  AND dm2.doc_id = docs.id
                  AND dm2.user_id = current_user
-             )",
-        );
-
+             )";
+        let expr = parse_expr(expr_sql);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-
-        assert!(matches!(
-            &classified.pattern,
-            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")
-        ));
-        assert_eq!(classified.confidence, ConfidenceLevel::D);
+        assert_unknown_reason(&classified, expr_sql, "Ambiguous membership pattern");
     }
 
     #[test]
     fn classify_membership_reading_the_guarded_table_is_refused() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
-        let expr = parse_expr(
-            "EXISTS (
+        let expr_sql = "EXISTS (
                SELECT 1
                FROM doc_members dm
                JOIN docs d ON dm.doc_id = d.id
                WHERE dm.doc_id = docs.id
                  AND dm.user_id = current_user
                  AND is_public = TRUE
-             )",
-        );
-
+             )";
+        let expr = parse_expr(expr_sql);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-
-        assert!(
-            matches!(
-                &classified.pattern,
-                PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("infinite recursion")
-            ),
-            "reading the guarded table is a read PostgreSQL refuses to plan, got {:?}",
-            classified.pattern
-        );
-        assert_eq!(classified.confidence, ConfidenceLevel::D);
+        assert_unknown_reason(&classified, expr_sql, "infinite recursion");
     }
 
     #[test]
     fn classify_derived_joined_membership_with_unqualified_extra_is_ambiguous() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
-        let expr = parse_expr(
-            "EXISTS (
+        let expr_sql = "EXISTS (
                SELECT 1
                FROM doc_members dm
                JOIN (SELECT id, is_public FROM docs) d ON dm.doc_id = d.id
                WHERE dm.doc_id = docs.id
                  AND dm.user_id = current_user
                  AND is_public = TRUE
-             )",
-        );
-
+             )";
+        let expr = parse_expr(expr_sql);
         let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-
-        assert!(matches!(
-            &classified.pattern,
-            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous membership pattern")
-        ));
-        assert_eq!(classified.confidence, ConfidenceLevel::D);
+        assert_unknown_reason(&classified, expr_sql, "Ambiguous membership pattern");
     }
 
     #[test]
@@ -1066,24 +1049,21 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         )
         .expect("schema should parse");
         let registry = FunctionRegistry::new();
-        let expr = parse_expr(
-            "EXISTS (
+        let expr_sql = "EXISTS (
                SELECT 1
                FROM projects p, accounts a
                WHERE p.id = tasks.project_id
                  AND p.owner_id = current_user
                  AND a.id = tasks.account_id
                  AND a.owner_id = current_user
-             )",
-        );
-
+             )";
+        let expr = parse_expr(expr_sql);
         let classified = classify_expr(&expr, &db, &registry, "tasks", PolicyCommand::Select);
-
-        assert!(matches!(
-            &classified.pattern,
-            PatternClass::Unknown(UnclassifiedExpr { reason, .. }) if reason.contains("Ambiguous parent inheritance pattern")
-        ));
-        assert_eq!(classified.confidence, ConfidenceLevel::D);
+        assert_unknown_reason(
+            &classified,
+            expr_sql,
+            "Ambiguous parent inheritance pattern",
+        );
     }
 
     #[test]
@@ -1109,13 +1089,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         for (expr_sql, expected_fragment) in cases {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            assert!(
-                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
-                    if reason.contains(expected_fragment)),
-                "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
-                classified.pattern
-            );
-            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+            assert_unknown_reason(&classified, expr_sql, expected_fragment);
         }
     }
 
@@ -1142,13 +1116,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
         for (expr_sql, expected_fragment) in cases {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            assert!(
-                matches!(&classified.pattern, PatternClass::Unknown(UnclassifiedExpr { reason, .. })
-                    if reason.contains(expected_fragment)),
-                "`{expr_sql}`: expected reason containing '{expected_fragment}', got: {:?}",
-                classified.pattern
-            );
-            assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
+            assert_unknown_reason(&classified, expr_sql, expected_fragment);
         }
     }
 
@@ -1963,55 +1931,26 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
     }
 
     #[test]
-    fn is_distinct_from_classified_as_p9() {
+    fn p9_attribute_condition_operators() {
         let db = docs_db();
         let registry = FunctionRegistry::new();
-        let expr = parse_expr("status IS DISTINCT FROM 'deleted'");
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
-            "IS DISTINCT FROM should classify as P9, got: {:?}",
-            classified.pattern
-        );
-    }
 
-    #[test]
-    fn is_not_distinct_from_classified_as_p9() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr = parse_expr("status IS NOT DISTINCT FROM 'active'");
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
-            "IS NOT DISTINCT FROM should classify as P9, got: {:?}",
-            classified.pattern
-        );
-    }
+        let cases = [
+            ("status IS DISTINCT FROM 'deleted'", "status"),
+            ("status IS NOT DISTINCT FROM 'active'", "status"),
+            ("priority BETWEEN 1 AND 10", "priority"),
+            ("status > now()", "status"),
+        ];
 
-    #[test]
-    fn between_classified_as_p9_attribute_condition() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr = parse_expr("priority BETWEEN 1 AND 10");
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "priority"),
-            "BETWEEN should classify as P9, got: {:?}",
-            classified.pattern
-        );
-    }
-
-    #[test]
-    fn temporal_comparison_classified_as_p9() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr = parse_expr("status > now()");
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert!(
-            matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == "status"),
-            "temporal comparison should classify as P9, got: {:?}",
-            classified.pattern
-        );
+        for (expr_sql, expected_col) in cases {
+            let expr = parse_expr(expr_sql);
+            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
+            assert!(
+                matches!(&classified.pattern, PatternClass::P9AttributeCondition(AttributeCondition { column, .. }) if column == expected_col),
+                "`{expr_sql}`: expected P9AttributeCondition on '{expected_col}', got: {:?}",
+                classified.pattern
+            );
+        }
     }
 
     // ── Gap 7: Row-value comparison decomposition ─────────────────────────

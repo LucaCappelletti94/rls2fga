@@ -11,9 +11,7 @@ use crate::generator::db_lookup::{
     row_uniquely_keys, single_identity_column,
 };
 use crate::generator::identity::MAX_OBJECT_NAME_CHARS;
-use crate::generator::ir::{
-    ContextWitness, GateContextColumn, MembershipGate, PrincipalInfo, TupleSource,
-};
+use crate::generator::ir::{GateContextColumn, MembershipGate, PrincipalInfo, TupleSource};
 use crate::generator::notes::SkippedTuples;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::tuple_generator::{resolve_bridge_columns, UnboundedColumns};
@@ -38,8 +36,8 @@ use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, IdentifierCase, PolicyLike, RoleLike, TableLike,
 };
 use crate::types::{
-    stable_hex_suffix, ColumnKind, ColumnName, ConditionParameterName, RelationName,
-    RequestComparison, TableId, TranslationNote, TypeName,
+    stable_hex_suffix, ColumnKind, ColumnName, ConditionParameterName, ContextWitness,
+    RelationName, RequestComparison, TableId, TranslationNote, TypeName,
 };
 
 /// Which relation a command reads, and how a policy's clauses reach it.
@@ -1828,19 +1826,24 @@ fn protecting_partition_root<'db, DB: DatabaseLike>(
 }
 
 /// The type standing for everyone listed in `member_table`.
-///
-/// One per member source, so two policies reading the same table share a holder and two
-/// reading different ones cannot pool their members. Disambiguated against the table
-/// types, which are all assigned before any policy is translated, so a schema that
-/// happens to declare a table by this name keeps it.
 fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> TypeName {
-    let base = canonical_fga_type_name(&format!("{member_table}_holder"));
+    disambiguated_kind_type_name(member_table, table_types, "holder")
+}
+
+/// The type standing for the share rows of a caller-set membership on `join_table`.
+fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
+    disambiguated_kind_type_name(join_table, table_types, "share")
+}
+
+/// Builds the base kind-suffix type name and appends a hex hash if `table_types` already claims it.
+fn disambiguated_kind_type_name(table: &TableId, table_types: &TableTypes, kind: &str) -> TypeName {
+    let base = canonical_fga_type_name(&format!("{table}_{kind}"));
     if table_types.claims(&base) {
         // Keyed on the resolved type rather than the spelling, so a dumped
         // qualification cannot move the name.
         return canonical_fga_type_name(&format!(
             "{base}_{}",
-            stable_hex_suffix(table_types.resolve(member_table).as_str())
+            stable_hex_suffix(table_types.resolve(table).as_str())
         ));
     }
     base
@@ -1870,24 +1873,6 @@ fn owner_type_name(
         return base;
     }
     canonical_fga_type_name(&format!("{base}_{}", stable_hex_suffix(function_name)))
-}
-
-/// The type standing for the share rows of a caller-set membership on `join_table`.
-///
-/// One per join table, so two policies sharing it agree and two over different tables do
-/// not pool their rows. Disambiguated against the table types, which are all assigned
-/// before any policy is translated, so a schema declaring this name keeps it.
-fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
-    let base = canonical_fga_type_name(&format!("{join_table}_share"));
-    if table_types.claims(&base) {
-        // Keyed on the resolved type rather than the spelling, so a dumped
-        // qualification cannot move the name.
-        return canonical_fga_type_name(&format!(
-            "{base}_{}",
-            stable_hex_suffix(table_types.resolve(join_table).as_str())
-        ));
-    }
-    base
 }
 
 /// Every `(type, relation)` a permission can consult. Anything unresolved counts as
@@ -2678,18 +2663,27 @@ fn bridge_is_buildable<DB: DatabaseLike>(
     false
 }
 
+fn ensure_user_direct(
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    type_name: &TypeName,
+    relation: &RelationName,
+    well_known: &WellKnownTypes,
+) {
+    all_types
+        .entry(type_name.clone())
+        .or_insert_with(|| TypePlan::new_with_well_known(type_name.clone(), well_known))
+        .ensure_direct(
+            relation.clone(),
+            vec![DirectSubject::Type(well_known.user.clone())],
+        );
+}
+
 fn ensure_member_type(
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     type_name: &TypeName,
     well_known: &WellKnownTypes,
 ) {
-    let entry = all_types
-        .entry(type_name.clone())
-        .or_insert_with(|| TypePlan::new_with_well_known(type_name.clone(), well_known));
-    entry.ensure_direct(
-        member_relation(),
-        vec![DirectSubject::Type(well_known.user.clone())],
-    );
+    ensure_user_direct(all_types, type_name, &member_relation(), well_known);
 }
 
 /// Give `pg_role` a relation holding one kind of role membership, for an operator to load.
@@ -2698,13 +2692,7 @@ fn ensure_pg_role_relation(
     relation: &RelationName,
     well_known: &WellKnownTypes,
 ) {
-    all_types
-        .entry(well_known.pg_role.clone())
-        .or_insert_with(|| TypePlan::new_with_well_known(well_known.pg_role.clone(), well_known))
-        .ensure_direct(
-            relation.clone(),
-            vec![DirectSubject::Type(well_known.user.clone())],
-        );
+    ensure_user_direct(all_types, &well_known.pg_role, relation, well_known);
 }
 
 /// Bind a parent type to the table whose rows it names, in the spelling the plan groups

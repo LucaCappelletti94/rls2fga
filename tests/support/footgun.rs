@@ -291,18 +291,19 @@ pub(crate) fn check_userset_references(
                     reference.type_name
                 );
             }
-            // The relation is evaluated on whatever types the tupleset admits, so
-            // each of them has to define it.
+            // `OpenFGA` yields nothing for an admitted type that lacks the relation.
             let computed = tuple_to_userset.computed_userset.relation.as_str();
-            for target in targets_of(declared_types, type_name, tupleset) {
-                assert!(
-                    declared
-                        .get(target.as_str())
-                        .is_some_and(|rels| rels.contains(computed)),
-                    "{type_name}#{relation} walks '{tupleset}' to '{target}' and reads \
-                     '{computed}', which {target} does not define"
-                );
-            }
+            let targets = targets_of(declared_types, type_name, tupleset);
+            assert!(
+                targets.is_empty()
+                    || targets.iter().any(|target| {
+                        declared
+                            .get(target.as_str())
+                            .is_some_and(|rels| rels.contains(computed))
+                    }),
+                "{type_name}#{relation} walks '{tupleset}' and reads '{computed}', which none \
+                 of {targets:?} defines"
+            );
         }
         Userset::Union { union } => {
             for child in &union.child {

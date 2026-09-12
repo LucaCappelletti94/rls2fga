@@ -498,37 +498,34 @@ fn every_barrier() -> Vec<ExactCase> {
     cases
 }
 
+fn each_accessor(vary: impl Fn(Accessor) -> Point) -> Vec<ExactCase> {
+    Accessor::ALL
+        .into_iter()
+        .map(|accessor| case(vary(accessor)))
+        .collect()
+}
+
 /// A policy per command, against every accessor.
 ///
 /// A write is decided by the policies declared for its own command, so this is where the
 /// three that no other axis reaches are compared at all.
 fn every_command() -> Vec<ExactCase> {
-    Accessor::ALL
-        .into_iter()
-        .map(|accessor| {
-            case(Point {
-                accessor,
-                command: Command::EveryCommand,
-                ..Point::base()
-            })
-        })
-        .collect()
+    each_accessor(|accessor| Point {
+        accessor,
+        command: Command::EveryCommand,
+        ..Point::base()
+    })
 }
 
 /// An owner reading its own table, which only `FORCE` brings inside the class.
 ///
 /// Against every accessor, since the owner still reads the request the same way.
 fn every_ownership() -> Vec<ExactCase> {
-    Accessor::ALL
-        .into_iter()
-        .map(|accessor| {
-            case(Point {
-                accessor,
-                ownership: Ownership::ForcedOnReader,
-                ..Point::base()
-            })
-        })
-        .collect()
+    each_accessor(|accessor| Point {
+        accessor,
+        ownership: Ownership::ForcedOnReader,
+        ..Point::base()
+    })
 }
 
 /// Which commands the guarded table declares policies for.
@@ -705,23 +702,37 @@ fn case(point: Point) -> ExactCase {
         "one key per row, or the seed collides on the primary key"
     );
 
-    let mut schema = match (shape, depth, composition.has_deputy(), command, barrier) {
+    let (mut schema, seed) = match (shape, depth, composition.has_deputy(), command, barrier) {
         (
             Shape::SelfIdentity,
             Depth::One,
             false,
             Command::ReadOnly,
             Barrier::OnRequest | Barrier::OnConstant,
-        ) => barred_schema_of(key, accessor, nullable, barrier),
-        (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand, _) => {
-            commanded_schema_of(key, accessor, nullable)
-        }
-        (Shape::SelfIdentity, Depth::One, false, ..) => schema_of(&tables, key, accessor, nullable),
-        (Shape::SelfIdentity, Depth::One, true, ..) => {
-            composed_schema_of(key, accessor, nullable, composition)
-        }
-        (Shape::SelfIdentity, ..) => partitioned_schema_of(key, accessor, nullable, depth),
-        (Shape::MembershipJoin, ..) => membership_schema_of(&tables, key, accessor, nullable),
+        ) => (
+            barred_schema_of(key, accessor, nullable, barrier),
+            barred_seed_of(&keys),
+        ),
+        (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand, _) => (
+            commanded_schema_of(key, accessor, nullable),
+            commanded_seed_of(&keys),
+        ),
+        (Shape::SelfIdentity, Depth::One, false, ..) => (
+            schema_of(&tables, key, accessor, nullable),
+            seed_of(&tables, &keys, &values),
+        ),
+        (Shape::SelfIdentity, Depth::One, true, ..) => (
+            composed_schema_of(key, accessor, nullable, composition),
+            composed_seed_of(&keys),
+        ),
+        (Shape::SelfIdentity, ..) => (
+            partitioned_schema_of(key, accessor, nullable, depth),
+            partitioned_seed_of(&keys, &values),
+        ),
+        (Shape::MembershipJoin, ..) => (
+            membership_schema_of(&tables, key, accessor, nullable),
+            membership_seed_of(&tables, &keys, &values),
+        ),
     };
     schema.push_str(ownership.ddl());
 
@@ -756,22 +767,7 @@ fn case(point: Point) -> ExactCase {
             .iter()
             .map(|caller| format!("CREATE ROLE {} LOGIN", caller.subject))
             .collect(),
-        seed: match (shape, depth, composition.has_deputy(), command, barrier) {
-            (
-                Shape::SelfIdentity,
-                Depth::One,
-                false,
-                Command::ReadOnly,
-                Barrier::OnRequest | Barrier::OnConstant,
-            ) => barred_seed_of(&keys),
-            (Shape::SelfIdentity, Depth::One, false, Command::EveryCommand, _) => {
-                commanded_seed_of(&keys)
-            }
-            (Shape::SelfIdentity, Depth::One, false, ..) => seed_of(&tables, &keys, &values),
-            (Shape::SelfIdentity, Depth::One, true, ..) => composed_seed_of(&keys),
-            (Shape::SelfIdentity, ..) => partitioned_seed_of(&keys, &values),
-            (Shape::MembershipJoin, ..) => membership_seed_of(&tables, &keys, &values),
-        },
+        seed,
         writes: match command {
             Command::ReadOnly => None,
             Command::EveryCommand => Some(Write {

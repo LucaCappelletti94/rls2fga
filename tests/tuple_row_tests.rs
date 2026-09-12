@@ -13,11 +13,10 @@ use rls2fga::generator::well_known::deny_relation;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Outputs, Translation, TranslatorBuilder};
 use rls2fga::types::ConfidenceLevel;
-use rls2fga::types::{
-    records_from_row, ColumnKind, Record, RecordDerivation, RowCell, RowList, RowValues,
-};
+use rls2fga::types::{records_from_row, Record, RecordDerivation};
 
 mod support;
+use support::row;
 
 const OWNERSHIP: &str = "
 CREATE TABLE users (id TEXT PRIMARY KEY);
@@ -30,43 +29,6 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_
 
 const ACCESSOR_REGISTRY: &str =
     r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#;
-
-/// One row, so a description can be evaluated against it.
-struct Row(Vec<(String, String)>);
-
-impl RowValues for Row {
-    fn cell(&self, column: &str, kind: ColumnKind) -> RowCell<'_> {
-        let Some((_, value)) = self.0.iter().find(|(name, _)| name == column) else {
-            return RowCell::Absent;
-        };
-        match kind {
-            ColumnKind::Text => RowCell::Text(value.as_str().into()),
-            ColumnKind::Integer => RowCell::Integer(value.as_str().into()),
-            ColumnKind::Decimal => RowCell::Decimal(value.as_str().into()),
-            ColumnKind::Date => RowCell::Date(value.as_str().into()),
-            ColumnKind::Time => RowCell::Time(value.as_str().into()),
-            ColumnKind::Timestamp => RowCell::Timestamp(value.as_str().into()),
-            ColumnKind::TimestampTz => RowCell::TimestampTz(value.as_str().into()),
-            ColumnKind::Uuid => RowCell::Uuid(value.as_str().into()),
-            _ => RowCell::Undecodable,
-        }
-    }
-
-    fn list(&self, _column: &str, _kind: ColumnKind) -> RowList<'_> {
-        RowList::Absent
-    }
-
-    fn json_text(&self, _column: &str, _path: &[String]) -> RowCell<'_> {
-        RowCell::Absent
-    }
-}
-
-fn row(pairs: &[(&str, &str)]) -> Row {
-    Row(pairs
-        .iter()
-        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-        .collect())
-}
 
 fn ownership_db() -> ParserDB {
     parse_schema(OWNERSHIP).expect("the schema should parse")

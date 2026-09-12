@@ -142,9 +142,10 @@ CREATE POLICY p ON tasks FOR SELECT USING (EXISTS (
     );
     let can_select =
         relation_definition(&dsl, "tasks", "can_select").expect("tasks defines can_select");
-    assert!(
-        can_select.contains("member") && can_select.contains("from"),
-        "tasks keep reaching the grant through the parent, got `{can_select}`:\n{dsl}"
+    assert_eq!(
+        can_select,
+        format!("{access_relation} from projects"),
+        "tasks must reach the grant through the exact parent indirection:\n{dsl}"
     );
     // One witness query and one link query name the share objects.
     let share_queries = tuples

@@ -1027,6 +1027,26 @@ CREATE POLICY p ON docs FOR SELECT USING (
     );
 }
 
+fn session_attr_plan(sql: &str) -> rls2fga::translator::Outputs {
+    let db = parse_schema(sql).expect("schema should parse");
+    let translator = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build();
+    let (classified, registry) = translator.classify_with_effective_registry(&db);
+    rls2fga::translator::Translation::plan(
+        classified,
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+}
+
 /// The sharing subquery reads its table as the caller, so that table's own rules decide
 /// which sharing rows count. A sharing table nobody can read leaves the subquery nothing
 /// to find, so the parent grants nobody. Emitting facts from rows the caller cannot see
@@ -1047,23 +1067,7 @@ CREATE POLICY papers_shared ON papers FOR SELECT USING (
     )
 );
 ";
-    let db = parse_schema(sql).expect("schema should parse");
-    let translator = TranslatorBuilder::new()
-        .with_session_attributes([SessionAttribute::setting(
-            "app.subjects",
-            SessionAttributeKind::SetAttribute,
-        )])
-        .build();
-    let (classified, registry) = translator.classify_with_effective_registry(&db);
-    let outputs = rls2fga::translator::Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = session_attr_plan(sql);
     let model = outputs.model();
 
     assert!(
@@ -1108,23 +1112,7 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
     )
 );
 ";
-    let db = parse_schema(sql).expect("schema should parse");
-    let translator = TranslatorBuilder::new()
-        .with_session_attributes([SessionAttribute::setting(
-            "app.subjects",
-            SessionAttributeKind::SetAttribute,
-        )])
-        .build();
-    let (classified, registry) = translator.classify_with_effective_registry(&db);
-    let outputs = rls2fga::translator::Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = session_attr_plan(sql);
     let model = outputs.model();
 
     assert!(

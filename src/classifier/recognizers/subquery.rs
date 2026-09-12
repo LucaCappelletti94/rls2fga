@@ -4,9 +4,89 @@ use crate::classifier::function_registry::SessionAttribute;
 use crate::parser::names::{lookup_table_id, resolve_table_id, table_identity};
 use crate::types::{ColumnName, TableId};
 use alloc::collections::BTreeSet;
+use core::ops::ControlFlow;
 use sqlparser::ast::{
-    Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr, TableWithJoins,
+    Distinct, GroupByExpr, Ident, JoinOperator, LimitClause, Query, SetExpr, TableWithJoins, Visit,
+    VisitMut, Visitor, VisitorMut,
 };
+
+/// Immutable visitor that gates `handle` on expressions outside nested subqueries.
+struct TopLevelOnly<F> {
+    depth: usize,
+    descend: bool,
+    handle: F,
+}
+
+impl<F: FnMut(&Expr) -> ControlFlow<()>> TopLevelOnly<F> {
+    fn top_level(handle: F) -> Self {
+        Self {
+            depth: 0,
+            descend: false,
+            handle,
+        }
+    }
+}
+
+impl<F: FnMut(&Expr) -> ControlFlow<()>> Visitor for TopLevelOnly<F> {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+        self.depth += 1;
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+        self.depth -= 1;
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+        if self.depth == 0 || self.descend {
+            (self.handle)(expr)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+/// As [`TopLevelOnly`], but for mutable traversal via [`VisitorMut`].
+struct TopLevelOnlyMut<F> {
+    depth: usize,
+    descend: bool,
+    handle: F,
+}
+
+impl<F: FnMut(&mut Expr) -> ControlFlow<()>> TopLevelOnlyMut<F> {
+    fn new(descend: bool, handle: F) -> Self {
+        Self {
+            depth: 0,
+            descend,
+            handle,
+        }
+    }
+}
+
+impl<F: FnMut(&mut Expr) -> ControlFlow<()>> VisitorMut for TopLevelOnlyMut<F> {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
+        self.depth += 1;
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
+        self.depth -= 1;
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+        if self.depth == 0 || self.descend {
+            (self.handle)(expr)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+}
 
 /// EXISTS membership check.
 pub fn recognize_p4<DB: DatabaseLike>(
@@ -106,6 +186,15 @@ pub fn recognize_p5<DB: DatabaseLike>(
         let Some(parent_id) = resolve_table_id(db, &parent_table) else {
             continue;
         };
+        // A bare delegation needs a gate behind it, and only a definite yes is one: an
+        // unrestricted parent declares no relation for the walk to reach.
+        if matches!(
+            inner_classified.pattern,
+            PatternClass::P10ConstantBool(ConstantBool { value: true })
+        ) && !parent_enforces_row_security(db, &parent_id)
+        {
+            continue;
+        }
 
         matches.push(ClassifiedExpr {
             confidence: inner_classified.confidence,
@@ -121,6 +210,12 @@ pub fn recognize_p5<DB: DatabaseLike>(
         return matches.into_iter().next();
     }
     None
+}
+
+/// Whether the parent positively enforces row security, which is what gives a bare
+/// delegation a gate to walk to.
+fn parent_enforces_row_security<DB: DatabaseLike>(db: &DB, parent: &TableId) -> bool {
+    lookup_table_id(db, parent).is_some_and(|table| table.has_row_level_security(db) == Ok(true))
 }
 
 /// Whether an inherited parent rule is a relationship the P5 gate may carry.
@@ -429,66 +524,35 @@ fn foreign_references(
     parent_table: &str,
     parent_alias: Option<&str>,
 ) -> Vec<(String, ColumnName)> {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{Query, Visit, Visitor};
-
-    struct ForeignCollector<'a> {
-        parent_table: &'a str,
-        parent_alias: Option<&'a str>,
-        subquery_depth: usize,
-        found: Vec<(String, ColumnName)>,
-    }
-
-    impl Visitor for ForeignCollector<'_> {
-        type Break = ();
-
-        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth += 1;
-            ControlFlow::Continue(())
-        }
-        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth -= 1;
-            ControlFlow::Continue(())
-        }
-        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
-            if self.subquery_depth == 0 {
-                if let Expr::CompoundIdentifier(parts) = expr {
-                    if let [.., qualifier, last] = parts.as_slice() {
-                        if !qualifier_matches_table(
-                            stored_ident_name(qualifier).as_ref(),
-                            self.parent_table,
-                            self.parent_alias,
-                        ) {
-                            let found = (
-                                stored_ident_name(qualifier).into_owned(),
-                                ColumnName::from_stored(stored_ident_name(last)),
-                            );
-                            if !self.found.contains(&found) {
-                                self.found.push(found);
-                            }
-                        }
+    let mut found: Vec<(String, ColumnName)> = Vec::new();
+    let mut v = TopLevelOnly::top_level(|expr: &Expr| {
+        if let Expr::CompoundIdentifier(parts) = expr {
+            if let [.., qualifier, last] = parts.as_slice() {
+                if !qualifier_matches_table(
+                    stored_ident_name(qualifier).as_ref(),
+                    parent_table,
+                    parent_alias,
+                ) {
+                    let pair = (
+                        stored_ident_name(qualifier).into_owned(),
+                        ColumnName::from_stored(stored_ident_name(last)),
+                    );
+                    if !found.contains(&pair) {
+                        found.push(pair);
                     }
                 }
             }
-            ControlFlow::Continue(())
         }
-    }
-
-    let mut collector = ForeignCollector {
-        parent_table,
-        parent_alias,
-        subquery_depth: 0,
-        found: Vec::new(),
-    };
-    let _ = expr.visit(&mut collector);
-    collector.found
+        ControlFlow::Continue(())
+    });
+    let _ = expr.visit(&mut v);
+    found
 }
 
 /// Replace every `qualifier`.`column` reference with the bare identifier `to`.
+///
+/// Unlike `strip_qualifier`, rewrites at every nesting depth.
 fn replace_compound_identifier(expr: &mut Expr, from: (&str, &str), to: &Ident) {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{VisitMut, VisitorMut};
-
     struct Replacer<'a> {
         qualifier: &'a str,
         column: &'a str,
@@ -1538,7 +1602,8 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     // has to read the same expression they refused.
     let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table);
     let expr = rewritten.as_ref().unwrap_or(expr);
-    let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
+    let select = readable_exists_select(expr)?;
+    let analysis = analyze_p5_parent_inheritance(select, db, outer_table)?;
 
     if analysis.candidates.len() > 1 {
         return Some(
@@ -1556,7 +1621,20 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     // why. Without this the operator reads "could not infer a unique membership join"
     // for a filter whose parent was inferred perfectly well.
     analysis.candidates.into_iter().find_map(|candidate| {
-        let mut inner = combine_predicates_with_and(candidate.inner_predicates)?;
+        let rule = combine_predicates_with_and(candidate.inner_predicates);
+        // Only where the recognizer would otherwise have accepted, so a shape refused for
+        // another reason keeps its own.
+        let reached = joins_drop_no_row(
+            select,
+            rule.as_ref(),
+            &candidate.parent_table,
+            candidate.parent_alias.as_deref(),
+            db,
+        ) && !resolve_table_id(db, &candidate.parent_table)
+            .is_some_and(|parent| parent_enforces_row_security(db, &parent));
+        let Some(mut inner) = rule else {
+            return reached.then(|| nothing_to_inherit(&candidate.parent_table));
+        };
         strip_qualifier_from_expr_deep(
             &mut inner,
             &candidate.parent_table,
@@ -1583,9 +1661,20 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
                 "The rule inherited from '{}' is not translatable: {reason}",
                 candidate.parent_table
             )),
+            PatternClass::P10ConstantBool(ConstantBool { value: true }) if reached => {
+                Some(nothing_to_inherit(&candidate.parent_table))
+            }
             _ => None,
         }
     })
+}
+
+/// Why a bare delegation to a parent that enforces nothing is refused.
+fn nothing_to_inherit(parent_table: &str) -> String {
+    format!(
+        "The rule inherited from '{parent_table}' is that table's own read rule, and \
+         '{parent_table}' enforces no row security, so there is nothing to inherit"
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -2286,51 +2375,20 @@ fn strip_qualifier(
     join_alias: Option<&str>,
     descend_into_subqueries: bool,
 ) {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{Query, VisitMut, VisitorMut};
-
-    struct QualifierStripper<'a> {
-        join_table: &'a str,
-        join_alias: Option<&'a str>,
-        subquery_depth: usize,
-        descend_into_subqueries: bool,
-    }
-
-    impl VisitorMut for QualifierStripper<'_> {
-        type Break = ();
-
-        fn pre_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
-            self.subquery_depth += 1;
-            ControlFlow::Continue(())
-        }
-        fn post_visit_query(&mut self, _: &mut Query) -> ControlFlow<()> {
-            self.subquery_depth -= 1;
-            ControlFlow::Continue(())
-        }
-        fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-            if self.subquery_depth == 0 || self.descend_into_subqueries {
-                if let Expr::CompoundIdentifier(parts) = &*expr {
-                    if let [.., qualifier, last] = parts.as_slice() {
-                        if qualifier_matches_table(
-                            stored_ident_name(qualifier).as_ref(),
-                            self.join_table,
-                            self.join_alias,
-                        ) {
-                            *expr = Expr::Identifier(last.clone());
-                        }
-                    }
+    let mut v = TopLevelOnlyMut::new(descend_into_subqueries, |expr: &mut Expr| {
+        if let Expr::CompoundIdentifier(parts) = &*expr {
+            if let [.., qualifier, last] = parts.as_slice() {
+                if qualifier_matches_table(
+                    stored_ident_name(qualifier).as_ref(),
+                    join_table,
+                    join_alias,
+                ) {
+                    *expr = Expr::Identifier(last.clone());
                 }
             }
-            ControlFlow::Continue(())
         }
-    }
-
-    let mut v = QualifierStripper {
-        join_table,
-        join_alias,
-        subquery_depth: 0,
-        descend_into_subqueries,
-    };
+        ControlFlow::Continue(())
+    });
     let _ = expr.visit(&mut v);
 }
 
@@ -2339,50 +2397,21 @@ pub(super) fn predicate_references_other_table(
     join_table: &str,
     join_alias: Option<&str>,
 ) -> bool {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{Query, Visit, Visitor};
-
-    struct OtherTableChecker<'a> {
-        join_table: &'a str,
-        join_alias: Option<&'a str>,
-        subquery_depth: usize,
-    }
-
-    impl Visitor for OtherTableChecker<'_> {
-        type Break = ();
-
-        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth += 1;
-            ControlFlow::Continue(())
-        }
-        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth -= 1;
-            ControlFlow::Continue(())
-        }
-        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
-            if self.subquery_depth == 0 {
-                if let Expr::CompoundIdentifier(parts) = expr {
-                    if let [.., qualifier, _] = parts.as_slice() {
-                        if !qualifier_matches_table(
-                            stored_ident_name(qualifier).as_ref(),
-                            self.join_table,
-                            self.join_alias,
-                        ) {
-                            return ControlFlow::Break(());
-                        }
-                    }
+    let mut v = TopLevelOnly::top_level(|expr: &Expr| {
+        if let Expr::CompoundIdentifier(parts) = expr {
+            if let [.., qualifier, _] = parts.as_slice() {
+                if !qualifier_matches_table(
+                    stored_ident_name(qualifier).as_ref(),
+                    join_table,
+                    join_alias,
+                ) {
+                    return ControlFlow::Break(());
                 }
             }
-            ControlFlow::Continue(())
         }
-    }
-
-    let mut checker = OtherTableChecker {
-        join_table,
-        join_alias,
-        subquery_depth: 0,
-    };
-    expr.visit(&mut checker).is_break()
+        ControlFlow::Continue(())
+    });
+    expr.visit(&mut v).is_break()
 }
 
 #[derive(Debug, Default)]
@@ -2444,49 +2473,21 @@ fn predicate_has_ambiguous_unqualified_column(
     expr: &Expr,
     scope: &UnqualifiedMembershipScope,
 ) -> bool {
-    use core::ops::ControlFlow;
-    use sqlparser::ast::{Query, Visit, Visitor};
-
-    struct UnqualifiedChecker<'a> {
-        scope: &'a UnqualifiedMembershipScope,
-        subquery_depth: usize,
-    }
-
-    impl Visitor for UnqualifiedChecker<'_> {
-        type Break = ();
-
-        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth += 1;
-            ControlFlow::Continue(())
-        }
-        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
-            self.subquery_depth -= 1;
-            ControlFlow::Continue(())
-        }
-        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
-            if self.subquery_depth == 0 {
-                if let Expr::Identifier(ident) = expr {
-                    let col = stored_ident_name(ident).into_owned();
-                    let in_join = self.scope.join_columns.contains(&col);
-                    let in_other = self.scope.other_columns.contains(&col);
-                    if !in_join || in_other || self.scope.unknown_other_source {
-                        return ControlFlow::Break(());
-                    }
-                }
-            }
-            ControlFlow::Continue(())
-        }
-    }
-
     if !scope.enforce {
         return false;
     }
-
-    let mut checker = UnqualifiedChecker {
-        scope,
-        subquery_depth: 0,
-    };
-    expr.visit(&mut checker).is_break()
+    let mut v = TopLevelOnly::top_level(|expr: &Expr| {
+        if let Expr::Identifier(ident) = expr {
+            let col = stored_ident_name(ident).into_owned();
+            let in_join = scope.join_columns.contains(&col);
+            let in_other = scope.other_columns.contains(&col);
+            if !in_join || in_other || scope.unknown_other_source {
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    });
+    expr.visit(&mut v).is_break()
 }
 
 /// Whether a column qualifier names this scan.

@@ -32,43 +32,8 @@ async fn openfga_semantic_checks_all_patterns() {
             name: "P1_emi_role_threshold",
             fixture: "earth_metabolome",
             min_confidence: ConfidenceLevel::B,
-            tuples: vec![
-                // doc1 is owned by alice and doc2 by team alpha, so each row points at its
-                // owner and the owner carries who it is and what it grants.
-                ("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
-                ("owner_grants_owner:alice", "owner_user", "user:alice"),
-                ("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
-                ("owner_grants_owner:alpha", "owner_team", "team:alpha"),
-                ("team:alpha", "member", "user:bob"),
-                ("owner_grants_owner:alice", "grant_editor", "user:carol"),
-                ("owner_grants_owner:alice", "grant_viewer", "team:beta"),
-                ("team:beta", "member", "user:dave"),
-                ("owner_grants_owner:alpha", "grant_admin", "user:eve"),
-            ],
-            checks: vec![
-                // Direct ownership: alice owns doc1
-                ("user:alice", "can_select", "ownables:doc1", true),
-                ("user:alice", "can_insert", "ownables:doc1", true),
-                ("user:alice", "can_update", "ownables:doc1", true),
-                ("user:alice", "can_delete", "ownables:doc1", true),
-                // Team ownership: bob via team:alpha owns doc2
-                ("user:bob", "can_select", "ownables:doc2", true),
-                ("user:bob", "can_insert", "ownables:doc2", true),
-                ("user:bob", "can_update", "ownables:doc2", true),
-                ("user:bob", "can_delete", "ownables:doc2", true),
-                // Cross-resource isolation
-                ("user:bob", "can_select", "ownables:doc1", false),
-                // Grant escalation: carol has grant_editor
-                ("user:carol", "can_select", "ownables:doc1", true),
-                ("user:carol", "can_insert", "ownables:doc1", true),
-                ("user:carol", "can_update", "ownables:doc1", true),
-                ("user:carol", "can_delete", "ownables:doc1", false),
-                // Team-mediated grant: dave via team:beta grant_viewer
-                ("user:dave", "can_select", "ownables:doc1", true),
-                ("user:dave", "can_insert", "ownables:doc1", false),
-                // Cross-resource isolation
-                ("user:eve", "can_select", "ownables:doc1", false),
-            ],
+            tuples: support::openfga::EARTH_METABOLOME_TUPLES.to_vec(),
+            checks: support::openfga::EARTH_METABOLOME_CHECKS.to_vec(),
         },
         // P2: Role IN-list
         Scenario {

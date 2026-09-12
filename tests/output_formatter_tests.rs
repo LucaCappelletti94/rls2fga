@@ -8,17 +8,6 @@ use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
-fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
-    std::fs::create_dir_all(&dir).expect("should create temp dir");
-    dir
-}
-
 #[test]
 fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
@@ -35,7 +24,7 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     .outputs_accepting_gaps();
     let expected = tuple_generator::format_tuples(outputs.tuple_queries());
 
-    let out_dir = unique_temp_dir("rls2fga_formatter");
+    let out_dir = support::unique_temp_dir("rls2fga_formatter");
     outputs.write(&out_dir, "emi").unwrap();
     let written = std::fs::read_to_string(out_dir.join("emi_tuples.sql")).unwrap();
 
@@ -71,7 +60,7 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
     .expect("translation should plan")
     .outputs_accepting_gaps();
 
-    let out_dir = unique_temp_dir("rls2fga_formatter_report_threshold");
+    let out_dir = support::unique_temp_dir("rls2fga_formatter_report_threshold");
     outputs
         .write(&out_dir, "docs")
         .expect("write should succeed");

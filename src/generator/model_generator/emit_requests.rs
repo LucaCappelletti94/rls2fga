@@ -170,7 +170,7 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     let request_parameter = request_time_parameter.clone();
     let mut namespace = condition_parameters.namespace([&request_parameter]);
     let row_parameter = namespace.allocate_row(request.column.as_str());
-    let operator = condition_operator(request.operator)?;
+    let operator = request.operator.cel();
 
     let condition = declare_condition(
         table_plan,
@@ -217,19 +217,6 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
     Some(UsersetExpr::Computed(relation))
 }
 
-/// `CEL` spelling of the comparison, which matches SQL for the operators reaching here.
-pub(crate) fn condition_operator(operator: AttributeOperator) -> Option<&'static str> {
-    match operator {
-        AttributeOperator::Eq => Some("=="),
-        AttributeOperator::NotEq => Some("!="),
-        AttributeOperator::Gt => Some(">"),
-        AttributeOperator::GtEq => Some(">="),
-        AttributeOperator::Lt => Some("<"),
-        AttributeOperator::LtEq => Some("<="),
-        _ => None,
-    }
-}
-
 /// The request clock as a CEL expression, shifted by a fixed offset when the guard
 /// carried one (`now() - interval '30 days'` becomes `request_time - duration("720h")`).
 pub(crate) fn clock_expr(request_time_parameter: &str, offset: Option<&TemporalOffset>) -> String {
@@ -263,19 +250,6 @@ pub(crate) struct TemporalGate {
     pub(crate) witness: ContextWitness,
 }
 
-/// The compressing aggregate's direction for one comparison, `None` for an operator
-/// no condition can carry.
-fn context_witness(operator: AttributeOperator) -> Option<ContextWitness> {
-    match operator {
-        AttributeOperator::Gt
-        | AttributeOperator::GtEq
-        | AttributeOperator::Eq
-        | AttributeOperator::NotEq => Some(ContextWitness::Latest),
-        AttributeOperator::Lt | AttributeOperator::LtEq => Some(ContextWitness::Earliest),
-        _ => None,
-    }
-}
-
 /// Turn a residual's temporal comparisons (`col > now()`) into condition fragments
 /// against the clock the request supplies.
 ///
@@ -299,11 +273,11 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
         gates.push(TemporalGate {
             fragment: format!(
                 "{parameter} {} {}",
-                condition_operator(request.operator)?,
+                request.operator.cel(),
                 clock_expr(request_time_parameter.as_str(), request.offset.as_ref())
             ),
             column: request.column.clone(),
-            witness: context_witness(request.operator)?,
+            witness: request.operator.context_witness(),
             parameter,
         });
     }

@@ -137,3 +137,45 @@ pub(crate) async fn read_authorization_model(
         .authorization_model
         .expect("authorization model should be present")
 }
+
+pub(crate) const EARTH_METABOLOME_TUPLES: [(&str, &str, &str); 9] = [
+    ("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
+    ("owner_grants_owner:alice", "owner_user", "user:alice"),
+    ("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
+    ("owner_grants_owner:alpha", "owner_team", "team:alpha"),
+    ("team:alpha", "member", "user:bob"),
+    ("owner_grants_owner:alice", "grant_editor", "user:carol"),
+    ("owner_grants_owner:alice", "grant_viewer", "team:beta"),
+    ("team:beta", "member", "user:dave"),
+    ("owner_grants_owner:alpha", "grant_admin", "user:eve"),
+];
+
+pub(crate) const EARTH_METABOLOME_CHECKS: [(&str, &str, &str, bool); 20] = [
+    // Direct ownership: alice owns doc1 -> admin -> editor -> viewer
+    ("user:alice", "can_select", "ownables:doc1", true),
+    ("user:alice", "can_insert", "ownables:doc1", true),
+    ("user:alice", "can_update", "ownables:doc1", true),
+    ("user:alice", "can_delete", "ownables:doc1", true),
+    // Team ownership: bob via team:alpha owns doc2
+    ("user:bob", "can_select", "ownables:doc2", true),
+    ("user:bob", "can_insert", "ownables:doc2", true),
+    ("user:bob", "can_update", "ownables:doc2", true),
+    ("user:bob", "can_delete", "ownables:doc2", true),
+    // Cross-resource isolation: bob has no relation to doc1
+    ("user:bob", "can_select", "ownables:doc1", false),
+    // Grant escalation: carol has grant_editor on doc1 -> editor -> viewer
+    ("user:carol", "can_select", "ownables:doc1", true),
+    ("user:carol", "can_insert", "ownables:doc1", true),
+    ("user:carol", "can_update", "ownables:doc1", true),
+    ("user:carol", "can_delete", "ownables:doc1", false), // editor != admin
+    // Team-mediated grant: dave via team:beta grant_viewer on doc1
+    ("user:dave", "can_select", "ownables:doc1", true),
+    ("user:dave", "can_insert", "ownables:doc1", false), // viewer != editor
+    ("user:dave", "can_update", "ownables:doc1", false), // viewer != editor
+    // Admin grant: eve has grant_admin on doc2 -> admin -> editor -> viewer
+    ("user:eve", "can_select", "ownables:doc2", true),
+    ("user:eve", "can_delete", "ownables:doc2", true),
+    // Cross-resource isolation
+    ("user:eve", "can_select", "ownables:doc1", false),
+    ("user:alice", "can_select", "ownables:doc2", false),
+];

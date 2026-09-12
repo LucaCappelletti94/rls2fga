@@ -8,21 +8,9 @@ use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::translator::{Outputs, Translation};
 use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::TranslationNote;
 
 mod support;
-
-// ── Helper ───────────────────────────────────────────────────────────────────
-
-fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
-    std::fs::create_dir_all(&dir).expect("should create temp dir");
-    dir
-}
 
 // ── Output validation ────────────────────────────────────────────────────────
 
@@ -44,7 +32,7 @@ fn any_outputs(db: &ParserDB) -> Outputs {
 
 #[test]
 fn write_output_rejects_empty_name() {
-    let dir = unique_temp_dir("rls2fga_empty_name");
+    let dir = support::unique_temp_dir("rls2fga_empty_name");
     let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
     let err = any_outputs(&db)
         .write(&dir, "")
@@ -57,7 +45,7 @@ fn write_output_rejects_empty_name() {
 
 #[test]
 fn write_output_rejects_absolute_path() {
-    let dir = unique_temp_dir("rls2fga_abs_path");
+    let dir = support::unique_temp_dir("rls2fga_abs_path");
     let db = parse_schema("CREATE TABLE docs(id uuid primary key);").expect("schema parses");
     let err = any_outputs(&db)
         .write(&dir, "/etc/passwd")
@@ -207,15 +195,13 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
     let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(
-        formatted.to_lowercase().contains("todo")
-            || formatted.to_lowercase().contains("object identifier")
-            || formatted.to_lowercase().contains("skipped"),
-        "Missing PK should produce a TODO comment in tuples, got:\n{formatted}"
+        formatted.contains("-- TODO [Level D]: skipped public-flag tuples for items (missing object identifier column)"),
+        "missing PK should emit exact skipped-tuple comment, got:\n{formatted}"
     );
 }
 
 #[test]
-fn parent_bridge_missing_fk_column_generates_note_tuple() {
+fn a_declared_parent_fk_emits_its_tuple_to_userset_bridge() {
     let sql = r"
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
 CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
@@ -241,7 +227,10 @@ CREATE POLICY p ON tasks FOR SELECT
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
-    assert!(!formatted.is_empty(), "Should produce some tuple queries");
+    assert!(
+        formatted.contains("-- tasks to projects bridge for tuple-to-userset"),
+        "expected tasks-to-projects bridge tuple in output, got:\n{formatted}"
+    );
 }
 
 #[test]
@@ -369,7 +358,7 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
     .expect("translation should plan")
     .outputs_accepting_gaps();
 
-    let dir = unique_temp_dir("rls2fga_short_names");
+    let dir = support::unique_temp_dir("rls2fga_short_names");
     outputs.write(&dir, "docs").unwrap();
     let report = std::fs::read_to_string(dir.join("docs_report.md")).unwrap();
 
@@ -442,12 +431,18 @@ CREATE POLICY p ON docs FOR SELECT
     .expect("translation should plan")
     .outputs_accepting_gaps();
 
-    let has_no_access_or_note = model.model().contains("no_access")
-        || model
-            .notes()
-            .iter()
-            .any(|t| t.message().contains("no_access") || t.message().contains("unknown inner"));
-    let _ = has_no_access_or_note;
+    assert!(
+        model.model().contains("define can_select: no_access"),
+        "docs should define can_select as no_access:\n{}",
+        model.model()
+    );
+    assert!(
+        model.notes().iter().any(|t| t.message().contains(
+            "Every permissive policy on 'docs' covering SELECT fell below the confidence threshold, so the model denies what RLS grants"
+        )),
+        "expected threshold note, got:\n{:?}",
+        model.notes().iter().map(TranslationNote::message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -478,11 +473,25 @@ CREATE POLICY p ON docs FOR SELECT
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
-    let _ = formatted;
+    assert!(
+        formatted.contains(
+            "-- TODO [Level D]: skipped docs to orgs bridge (missing object identifier column)"
+        ),
+        "expected skipped-bridge comment, got:\n{formatted}"
+    );
+    assert!(
+        outputs.notes().iter().any(|t| t.message().contains(
+            "No tuple can name a row of 'docs' (missing object identifier column), so bridge tuples to 'orgs' cannot be loaded"
+        )),
+        "expected bridge note, got:\n{:?}",
+        outputs.notes().iter().map(TranslationNote::message).collect::<Vec<_>>()
+    );
 }
 
+/// A constant conjunct leaves the parent's own rule as the whole requirement, so an
+/// unrestricted parent offers no gate and the read falls closed with its reason named.
 #[test]
-fn p5_inner_p10_constant_generates_model_without_panic() {
+fn p5_with_a_constant_inner_falls_closed_on_an_unrestricted_parent() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
@@ -496,17 +505,8 @@ CREATE POLICY p ON docs FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
     let outputs = Translation::plan(
-        classified.clone(),
+        classified,
         &db,
         &registry,
         ConfidenceLevel::B,
@@ -514,9 +514,17 @@ CREATE POLICY p ON docs FOR SELECT
     )
     .expect("translation should plan")
     .outputs_accepting_gaps();
-    let tuples = outputs.tuple_queries();
-    let _ = model;
-    let _ = tuples;
+
+    let model = outputs.model();
+    assert!(
+        model.contains("define can_select: no_access"),
+        "a delegation with no gate behind it must fall closed:\n{model}"
+    );
+    let report = outputs.report();
+    assert!(
+        report.contains("enforces no row security, so there is nothing to inherit"),
+        "the operator has to learn why the read was refused:\n{report}"
+    );
 }
 
 // ── P1 generation edge cases ─────────────────────────────────────────────────
@@ -563,9 +571,7 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
     let formatted = tuple_generator::format_tuples(tuples);
 
     assert!(
-        formatted.to_lowercase().contains("todo")
-            || formatted.to_lowercase().contains("skipped")
-            || formatted.to_lowercase().contains("object identifier"),
-        "Missing PK should produce TODO for explicit grants, got:\n{formatted}"
+        formatted.contains("-- TODO [Level D]: skipped items to object_grants_owner bridge (missing object identifier column)"),
+        "missing PK should emit exact grant-bridge comment, got:\n{formatted}"
     );
 }

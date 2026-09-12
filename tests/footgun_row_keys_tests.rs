@@ -548,6 +548,7 @@ fn a_bridge_names_a_row_by_its_whole_key() {
     let db = db_of(
         "CREATE TABLE public.papers(id INT PRIMARY KEY);
 CREATE TABLE public.paper_shares(paper_id INT REFERENCES papers(id), viewer TEXT, PRIMARY KEY (paper_id, viewer));
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON paper_shares FOR SELECT USING (
   EXISTS (SELECT 1 FROM papers p WHERE p.id = paper_id));

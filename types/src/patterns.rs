@@ -85,6 +85,67 @@ pub enum AttributeOperator {
     LtEq,
 }
 
+impl AttributeOperator {
+    /// SQL spelling.
+    #[must_use]
+    pub fn sql(self) -> &'static str {
+        match self {
+            Self::Eq => "=",
+            Self::NotEq => "<>",
+            Self::Gt => ">",
+            Self::GtEq => ">=",
+            Self::Lt => "<",
+            Self::LtEq => "<=",
+        }
+    }
+
+    /// `CEL` spelling.
+    #[must_use]
+    pub fn cel(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::NotEq => "!=",
+            Self::Gt => ">",
+            Self::GtEq => ">=",
+            Self::Lt => "<",
+            Self::LtEq => "<=",
+        }
+    }
+
+    /// Spelling for a generated name, where no operator character may appear.
+    #[must_use]
+    pub fn gate_token(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::NotEq => "ne",
+            Self::Gt => "gt",
+            Self::GtEq => "ge",
+            Self::Lt => "lt",
+            Self::LtEq => "le",
+        }
+    }
+
+    /// Which compressed value witnesses this comparison.
+    #[must_use]
+    pub fn context_witness(self) -> ContextWitness {
+        match self {
+            Self::Eq | Self::NotEq | Self::Gt | Self::GtEq => ContextWitness::Latest,
+            Self::Lt | Self::LtEq => ContextWitness::Earliest,
+        }
+    }
+}
+
+/// Which value of a compressed column witnesses the comparison when several rows
+/// collapse into one fact. Sound either way, because the carried value is a real
+/// row's value. The direction decides completeness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ContextWitness {
+    /// `MAX`, exact for future comparisons and sound for equality.
+    Latest,
+    /// `MIN`, exact for past comparisons.
+    Earliest,
+}
+
 /// A literal constant an attribute guard compares against.
 ///
 /// A number keeps its source spelling, so the generated SQL reproduces the literal

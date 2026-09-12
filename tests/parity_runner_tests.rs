@@ -436,16 +436,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "docs:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "docs:d1").await;
 }
 
 /// Ported from `quoted_definer_owner_parity_postgres18_and_openfga`.
@@ -485,16 +476,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (is_member(id));
         )],
     )
     .after(&[r#"CREATE ROLE actor; CREATE ROLE "Actor""#]);
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "docs:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "docs:d1").await;
 }
 
 /// Ported from `strict_function_null_parity_postgres18_and_openfga`.
@@ -625,6 +607,11 @@ fn app_reader() -> Vec<Principal> {
     )]
 }
 
+/// A caller identified by `app.current_user_id`, logged in as `login`.
+fn setting_reader(subject: &str, login: &str) -> Principal {
+    Principal::with_setting(subject, login, "app.current_user_id", subject)
+}
+
 /// Ported from `qualified_registry_identity_parity_postgres18_and_openfga`.
 ///
 /// `other.uid()` is not the accessor the registry names, so the policy is not an
@@ -650,16 +637,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (owner_id = other.uid());
         app_reader(),
     )
     .with_registry(r#"{"auth.uid": {"kind": "current_user_accessor", "returns": "text"}}"#);
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "docs:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "docs:d1").await;
 }
 
 /// Ported from `function_local_search_path_parity_postgres18_and_openfga`.
@@ -840,16 +818,7 @@ CREATE POLICY p ON docs FOR SELECT USING (expires_at > app.now());
         ],
         vec![Principal::as_role("alice", "alice").with_clock()],
     );
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "alice",
-        "docs:1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "alice", "docs:1").await;
 }
 
 /// Two readers of one fixture, told apart by the setting alone.
@@ -1318,16 +1287,7 @@ CREATE POLICY m_owner ON "M" FOR SELECT USING (
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "m:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "m:d1").await;
 }
 
 /// Ported from `read_recursion_parity_postgres18_and_openfga`.
@@ -1585,16 +1545,6 @@ CREATE POLICY p ON memos FOR SELECT TO "Admin" USING (TRUE);
 /// One policy unioning the caller's own id with the set of keys it holds. A caller holding
 /// no key leaves the setting unset, so the second arm is NULL rather than true.
 async fn a_declared_session_set_grants_beside_the_owner(cluster: Arc<Cluster>) {
-    /// The caller's held keys, as the condition's list parameter and as the setting.
-    fn holder(subject: &str, keys: &[&str]) -> Principal {
-        let mut principal = Principal::with_setting(subject, "app_writer", "app.user_id", subject)
-            .with_context(serde_json::json!({ "app_subjects": keys }));
-        principal
-            .session
-            .push(("app.subjects".to_string(), keys.join(",")));
-        principal
-    }
-
     let case = ParityCase::from_fixture(
         "runner-session-attribute",
         "connetto_or_policy",
@@ -1605,8 +1555,8 @@ async fn a_declared_session_set_grants_beside_the_owner(cluster: Arc<Cluster>) {
         ],
         vec![
             // The owner arm alone, the set arm alone, and both together.
-            holder("alice", &[]),
-            holder("bob", &["team-a"]),
+            user_holder("alice", "app_writer", &[]),
+            user_holder("bob", "app_writer", &["team-a"]),
         ],
     );
     let run = support::parity::run(&cluster, &case).await;
@@ -1878,16 +1828,7 @@ CREATE POLICY docs_members ON docs FOR SELECT USING (
         vec![Principal::as_role("app_reader", "app_reader")],
     )
     .after(&["CREATE ROLE tenant_a"]);
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "docs:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "docs:d1").await;
 }
 
 /// Ported from `computed_argument_capture_parity_postgres18_and_openfga`.
@@ -1918,17 +1859,8 @@ CREATE POLICY p ON leveled_docs FOR SELECT USING (can_see(id, coalesce(level, 0)
         ],
         vec![Principal::as_role("app_reader", "app_reader")],
     );
-    let run = support::parity::run_disclosing(&cluster, &case).await;
     // `min_level` 50 against the row's level 0, so the database denies.
-    support::parity::assert_postgres(
-        &case,
-        &run,
-        "app_reader",
-        "leveled_docs:d1",
-        ActionStatement::Select,
-        false,
-    );
-    support::parity::assert_disclosed_where_noted(&case, &run);
+    support::parity::expect_denied(&cluster, &case, "app_reader", "leveled_docs:d1").await;
 }
 
 /// A case that fails must still drop its database and roles.
@@ -1990,9 +1922,6 @@ async fn a_failed_case_leaves_no_role_behind(cluster: Arc<Cluster>) {
 /// Only `auditor` may read the membership table, so a caller outside that role sees no
 /// membership row and the parent policy grants nothing.
 async fn a_role_scoped_membership_read_gates_the_parent(cluster: Arc<Cluster>) {
-    let reader = |subject: &str, login: &str| {
-        Principal::with_setting(subject, login, "app.current_user_id", subject)
-    };
     let case = ParityCase::from_fixture(
         "runner-role-scoped-membership",
         "role_scoped_membership",
@@ -2008,31 +1937,25 @@ async fn a_role_scoped_membership_read_gates_the_parent(cluster: Arc<Cluster>) {
              GRANT SELECT ON docs, doc_members TO app_bob",
         ],
         vec![
-            reader("alice", "app_alice").holding(&["auditor"]),
-            reader("bob", "app_bob"),
+            setting_reader("alice", "app_alice").holding(&["auditor"]),
+            setting_reader("bob", "app_bob"),
         ],
     )
     // The policy names the role, so it exists before the schema.
     .after(&["CREATE ROLE auditor"]);
     // The membership table's own row security is disclosed, and the answers still agree:
     // the tuple loader reads only the rows the auditor scope exposes.
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    for (subject, object, visible) in [
-        ("alice", "docs:d1", true),
-        ("alice", "docs:d2", false),
-        // Bob's membership row exists and he cannot see it, so the parent denies.
-        ("bob", "docs:d1", false),
-    ] {
-        support::parity::assert_postgres(
-            &case,
-            &run,
-            subject,
-            object,
-            ActionStatement::Select,
-            visible,
-        );
-    }
-    support::parity::assert_only_disagreements(&case, &run, &[]);
+    support::parity::run_disclosing_and_check(
+        &cluster,
+        &case,
+        &[
+            ("alice", "docs:d1", true),
+            ("alice", "docs:d2", false),
+            // Bob's membership row exists and he cannot see it, so the parent denies.
+            ("bob", "docs:d1", false),
+        ],
+    )
+    .await;
 }
 
 /// Ported from `noinherit_member_parity_postgres18_and_openfga`.
@@ -2081,16 +2004,6 @@ async fn a_noinherit_member_of_a_scoped_role_reads_nothing(cluster: Arc<Cluster>
 /// One policy carrying two arms, ownership by the caller's identity and a share row whose
 /// viewer is in the caller's held set, beside the share table's own set policy.
 async fn a_shared_paper_reads_through_either_arm(cluster: Arc<Cluster>) {
-    /// The caller's identity and held keys, as the setting and the condition parameter.
-    fn holder(subject: &str, keys: &[&str]) -> Principal {
-        let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
-            .with_context(serde_json::json!({ "app_subjects": keys }));
-        principal
-            .session
-            .push(("app.subjects".to_string(), keys.join(",")));
-        principal
-    }
-
     let case = ParityCase::from_fixture(
         "runner-shared-paper",
         "connetto_capability",
@@ -2101,27 +2014,24 @@ async fn a_shared_paper_reads_through_either_arm(cluster: Arc<Cluster>) {
             "CREATE ROLE app_reader LOGIN;
              GRANT SELECT ON papers, paper_shares TO app_reader",
         ],
-        vec![holder("alice", &["team-a"]), holder("carol", &[])],
+        vec![
+            user_holder("alice", "app_reader", &["team-a"]),
+            user_holder("carol", "app_reader", &[]),
+        ],
     );
     // The share table carries its own set policy, which is disclosed, and the answers
     // still agree because the loader reads the shares each caller may see.
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    for (subject, object, visible) in [
-        ("alice", "papers:1", true),
-        ("alice", "papers:2", true),
-        ("alice", "papers:3", false),
-        ("carol", "papers:1", false),
-    ] {
-        support::parity::assert_postgres(
-            &case,
-            &run,
-            subject,
-            object,
-            ActionStatement::Select,
-            visible,
-        );
-    }
-    support::parity::assert_only_disagreements(&case, &run, &[]);
+    support::parity::run_disclosing_and_check(
+        &cluster,
+        &case,
+        &[
+            ("alice", "papers:1", true),
+            ("alice", "papers:2", true),
+            ("alice", "papers:3", false),
+            ("carol", "papers:1", false),
+        ],
+    )
+    .await;
 }
 
 /// Ported from `token_claim_set_parity_postgres18_and_openfga`.
@@ -2435,15 +2345,19 @@ const CALLER_AND_SUBJECTS: &str = r#"[
       { "key": "app.subjects", "kind": "set_attribute" }
     ]"#;
 
-/// A caller identified by `app.user_id` and holding `keys` as `app.subjects`.
-fn key_holder(subject: &str, keys: &[&str]) -> Principal {
-    let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
-        .with_context(serde_json::json!({ "app_subjects": keys }))
-        .with_clock();
+/// A caller identified by `app.user_id` and holding `keys` as `app.subjects`, logged in as `login`.
+fn user_holder(subject: &str, login: &str, keys: &[&str]) -> Principal {
+    let mut principal = Principal::with_setting(subject, login, "app.user_id", subject)
+        .with_context(serde_json::json!({ "app_subjects": keys }));
     principal
         .session
         .push(("app.subjects".to_string(), keys.join(",")));
     principal
+}
+
+/// A caller identified by `app.user_id` and holding `keys` as `app.subjects`.
+fn key_holder(subject: &str, keys: &[&str]) -> Principal {
+    user_holder(subject, "app_reader", keys).with_clock()
 }
 
 /// Ported from `request_time_condition_parity_postgres18_and_openfga`.
@@ -2829,9 +2743,6 @@ fn subject_holder(subject: &str, keys: &[&str]) -> Principal {
 /// refuse to plan runs as the owner. The third caller holds no grant on the membership
 /// table at all and the definer still answers for its docs.
 async fn a_definer_wrapper_answers_for_a_caller_without_the_grant(cluster: Arc<Cluster>) {
-    let reader = |subject: &str, login: &str| {
-        Principal::with_setting(subject, login, "app.current_user_id", subject)
-    };
     let case = ParityCase::from_fixture(
         "runner-definer-membership",
         "definer_membership",
@@ -2851,9 +2762,9 @@ async fn a_definer_wrapper_answers_for_a_caller_without_the_grant(cluster: Arc<C
              GRANT SELECT ON docs TO app_carol",
         ],
         vec![
-            reader("alice", "app_alice"),
-            reader("bob", "app_bob"),
-            reader("carol", "app_carol"),
+            setting_reader("alice", "app_alice"),
+            setting_reader("bob", "app_bob"),
+            setting_reader("carol", "app_carol"),
         ],
     );
     let run = support::parity::run(&cluster, &case).await;
@@ -2884,9 +2795,6 @@ async fn a_definer_wrapper_answers_for_a_caller_without_the_grant(cluster: Arc<C
 /// A RESTRICTIVE policy scoped to `contractor` binds only that role, so an owner outside
 /// it keeps the read the permissive policy grants.
 async fn a_restrictive_policy_binds_only_its_role(cluster: Arc<Cluster>) {
-    let reader = |subject: &str, login: &str| {
-        Principal::with_setting(subject, login, "app.current_user_id", subject)
-    };
     let case = ParityCase::from_fixture(
         "runner-role-scoped-restrictive",
         "role_scoped_restrictive",
@@ -2903,8 +2811,8 @@ async fn a_restrictive_policy_binds_only_its_role(cluster: Arc<Cluster>) {
              GRANT SELECT ON users, notes TO app_bob",
         ],
         vec![
-            reader("alice", "app_alice").holding(&["contractor"]),
-            reader("bob", "app_bob"),
+            setting_reader("alice", "app_alice").holding(&["contractor"]),
+            setting_reader("bob", "app_bob"),
         ],
     )
     .after(&["CREATE ROLE contractor"]);
@@ -3023,24 +2931,18 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
     .with_attributes(SUBJECTS_ONLY);
     // The share table's own row security is disclosed, and the answers still agree: its
     // policy exposes every share, so the loader reads what each caller would.
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    for (subject, object, visible) in [
-        ("viewer_x", "papers:1", true),
-        ("viewer_y", "papers:1", true),
-        ("viewer_x", "papers:2", false),
-        ("viewer_z", "papers:2", true),
-        ("viewer_z", "papers:1", false),
-    ] {
-        support::parity::assert_postgres(
-            &case,
-            &run,
-            subject,
-            object,
-            ActionStatement::Select,
-            visible,
-        );
-    }
-    support::parity::assert_only_disagreements(&case, &run, &[]);
+    support::parity::run_disclosing_and_check(
+        &cluster,
+        &case,
+        &[
+            ("viewer_x", "papers:1", true),
+            ("viewer_y", "papers:1", true),
+            ("viewer_x", "papers:2", false),
+            ("viewer_z", "papers:2", true),
+            ("viewer_z", "papers:1", false),
+        ],
+    )
+    .await;
 }
 
 /// Ported from
@@ -3101,18 +3003,15 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
          CROSS JOIN (VALUES ('viewer_live'), ('viewer_gone')) AS c(subject)",
     );
     // The share table's own row security is disclosed, and the answers still agree.
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    for (subject, visible) in [("viewer_live", true), ("viewer_gone", false)] {
-        support::parity::assert_postgres(
-            &case,
-            &run,
-            subject,
-            "papers:1",
-            ActionStatement::Select,
-            visible,
-        );
-    }
-    support::parity::assert_only_disagreements(&case, &run, &[]);
+    support::parity::run_disclosing_and_check(
+        &cluster,
+        &case,
+        &[
+            ("viewer_live", "papers:1", true),
+            ("viewer_gone", "papers:1", false),
+        ],
+    )
+    .await;
 }
 
 /// Ported from `two_deadline_witness_parity_postgres18_and_openfga`.
@@ -3239,16 +3138,6 @@ CREATE POLICY readings_visible ON readings FOR SELECT TO PUBLIC USING (starts_at
 /// type's object. The share arm replays from the share row and nothing runs its whole-table
 /// query, while the owner arm and the share table's own rows still load whole.
 async fn a_share_record_replays_onto_another_types_object(cluster: Arc<Cluster>) {
-    /// The caller's identity and held keys, as the setting and the condition parameter.
-    fn holder(subject: &str, keys: &[&str]) -> Principal {
-        let mut principal = Principal::with_setting(subject, "app_reader", "app.user_id", subject)
-            .with_context(serde_json::json!({ "app_subjects": keys }));
-        principal
-            .session
-            .push(("app.subjects".to_string(), keys.join(",")));
-        principal
-    }
-
     let case = ParityCase::from_fixture(
         "runner-shared-paper-from-row",
         "connetto_capability",
@@ -3258,29 +3147,26 @@ async fn a_share_record_replays_onto_another_types_object(cluster: Arc<Cluster>)
             "CREATE ROLE app_reader LOGIN;
              GRANT SELECT ON papers, paper_shares TO app_reader",
         ],
-        vec![holder("alice", &["team-a"]), holder("carol", &[])],
+        vec![
+            user_holder("alice", "app_reader", &["team-a"]),
+            user_holder("carol", "app_reader", &[]),
+        ],
     )
     .loading_from_rows();
     // The share table carries its own set policy, which is disclosed, and the answers agree.
-    let run = support::parity::run_disclosing(&cluster, &case).await;
-    for (subject, object, visible) in [
-        // The owner arm, which loads whole.
-        ("alice", "papers:1", true),
-        // The share arm, which only the replay loads.
-        ("alice", "papers:2", true),
-        ("alice", "papers:3", false),
-        ("carol", "papers:1", false),
-    ] {
-        support::parity::assert_postgres(
-            &case,
-            &run,
-            subject,
-            object,
-            ActionStatement::Select,
-            visible,
-        );
-    }
-    support::parity::assert_only_disagreements(&case, &run, &[]);
+    support::parity::run_disclosing_and_check(
+        &cluster,
+        &case,
+        &[
+            // The owner arm, which loads whole.
+            ("alice", "papers:1", true),
+            // The share arm, which only the replay loads.
+            ("alice", "papers:2", true),
+            ("alice", "papers:3", false),
+            ("carol", "papers:1", false),
+        ],
+    )
+    .await;
 }
 
 /// Ported from `translated_schema_parity_postgres18_and_openfga`.
@@ -3366,9 +3252,6 @@ async fn a_role_ladder_answers_four_thresholds(cluster: Arc<Cluster>) {
 /// it. `PostgreSQL` applies both to `INSERT ... RETURNING`, and only the `WITH CHECK` to a
 /// plain `INSERT`, which is what leaves one relation ungated and the other not.
 async fn an_insert_that_reads_back_applies_the_select_policy(cluster: Arc<Cluster>) {
-    let reader = |subject: &str| {
-        Principal::with_setting(subject, "app_user", "app.current_user_id", subject)
-    };
     let case = ParityCase::from_fixture(
         "runner-insert-readback",
         "insert_readback",
@@ -3382,7 +3265,10 @@ async fn an_insert_that_reads_back_applies_the_select_policy(cluster: Arc<Cluste
                  ('note-neither', 'bob', 'bob')",
             "CREATE ROLE app_user LOGIN; GRANT SELECT, INSERT ON notes TO app_user",
         ],
-        vec![reader("alice"), reader("bob")],
+        vec![
+            setting_reader("alice", "app_user"),
+            setting_reader("bob", "app_user"),
+        ],
     )
     .writing(
         "notes",
@@ -3433,9 +3319,6 @@ async fn an_insert_that_reads_back_applies_the_select_policy(cluster: Arc<Cluste
 /// on top of the `INSERT` one. A row the author may insert and the editor may not change
 /// separates the two relations.
 async fn an_upsert_applies_the_update_policy_too(cluster: Arc<Cluster>) {
-    let reader = |subject: &str| {
-        Principal::with_setting(subject, "app_user", "app.current_user_id", subject)
-    };
     let case = ParityCase::from_fixture(
         "runner-upsert",
         "upsert",
@@ -3450,7 +3333,10 @@ async fn an_upsert_applies_the_update_policy_too(cluster: Arc<Cluster>) {
             "CREATE ROLE app_user LOGIN;
              GRANT SELECT, INSERT, UPDATE ON notes TO app_user",
         ],
-        vec![reader("alice"), reader("bob")],
+        vec![
+            setting_reader("alice", "app_user"),
+            setting_reader("bob", "app_user"),
+        ],
     )
     .writing(
         "notes",

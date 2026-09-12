@@ -780,3 +780,68 @@ CREATE POLICY docs_read ON docs FOR SELECT USING (owner_id = current_user);
         "nobody reaches nothing, or an object of it would carry access:\n{dsl}"
     );
 }
+
+/// Every fixture's model must satisfy the same structural invariants the hand-picked
+/// shapes are checked against, since a dangling reference makes `OpenFGA` refuse the write.
+#[test]
+fn every_fixture_model_is_internally_consistent() {
+    let names = support::fixture_names();
+    for fixture in &names {
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let outputs = rls2fga::translator::Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+        assert_model_is_internally_consistent(&outputs.json_model());
+    }
+}
+
+/// Row security off on one table must not leave a reference to a type nothing declares,
+/// which is how a delegation to an unrestricted parent escaped every other check.
+#[test]
+fn every_fixture_stays_consistent_without_one_row_security_flag() {
+    for fixture in support::fixture_names() {
+        let sql = support::read_fixture_sql(&fixture);
+        let flags: Vec<usize> = sql
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.to_ascii_uppercase()
+                    .contains("ENABLE ROW LEVEL SECURITY")
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for dropped in flags {
+            let mut variant = String::with_capacity(sql.len());
+            for (_, line) in sql
+                .lines()
+                .enumerate()
+                .filter(|(index, _)| *index != dropped)
+            {
+                variant.push_str(line);
+                variant.push('\n');
+            }
+            let Ok(db) = rls2fga::parser::sql_parser::parse_schema(&variant) else {
+                continue;
+            };
+            let registry = support::try_load_fixture_classified(&fixture).2;
+            let classified =
+                rls2fga::classifier::policy_classifier::classify_policies(&db, &registry);
+            let outputs = rls2fga::translator::Translation::plan(
+                classified,
+                &db,
+                &registry,
+                ConfidenceLevel::D,
+                &GeneratorSettings::default(),
+            )
+            .expect("translation should plan")
+            .outputs_accepting_gaps();
+            assert_model_is_internally_consistent(&outputs.json_model());
+        }
+    }
+}
