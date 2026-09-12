@@ -92,9 +92,13 @@ fn validate_output_name(name: &str) -> Result<OutputName<'_>, WriteError> {
     if name.chars().any(char::is_control) {
         return refuse("control characters are not allowed");
     }
-    // Reject a bare dot (current directory reference).
-    if name == "." || name == ".." {
-        return refuse("'.' and '..' are not allowed");
+    // Substring rather than component form, which is what CodeQL's path-injection query
+    // recognises as a barrier. The component check below is the one that actually holds.
+    if name.contains("..") {
+        return refuse("'..' is not allowed");
+    }
+    if name == "." {
+        return refuse("'.' is not allowed");
     }
     // Reject invalid filename characters on Windows.
     if name
@@ -205,6 +209,18 @@ mod tests {
             validate_output_name("..").is_err(),
             "dotdot should be rejected"
         );
+    }
+
+    /// A double dot anywhere is refused, not only as a whole component, so the check is the
+    /// substring form the path-injection query recognises as a barrier.
+    #[test]
+    fn validate_output_name_rejects_any_double_dot() {
+        for name in ["a..b", "v1..2", "....//....//etc", "report..md"] {
+            assert!(
+                validate_output_name(name).is_err(),
+                "{name} carries a double dot and must be refused"
+            );
+        }
     }
 
     #[test]
