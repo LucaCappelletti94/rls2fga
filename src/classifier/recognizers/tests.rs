@@ -3765,6 +3765,7 @@ fn analyze_p5_reads_a_bare_correlation_as_delegation_to_the_parent() {
 CREATE TABLE users(id UUID PRIMARY KEY);
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID REFERENCES users(id));
 CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ",
     )
     .unwrap();
@@ -3801,6 +3802,32 @@ CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id))
     );
 }
 
+/// The parent's gate is the whole rule, so a parent enforcing nothing offers none and the
+/// delegation is refused rather than emitted against a type the model never declares.
+#[test]
+fn analyze_p5_refuses_a_bare_correlation_to_an_unrestricted_parent() {
+    let db = parse_schema(
+        r"
+CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID REFERENCES projects(id));
+",
+    )
+    .unwrap();
+    let expr = parse_expr("EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id)");
+    assert!(
+        recognize_p5(
+            &expr,
+            &db,
+            &FunctionRegistry::new(),
+            "tasks",
+            PolicyCommand::Select,
+            &ExpansionState::new(),
+        )
+        .is_none(),
+        "an unrestricted parent has no gate to delegate to"
+    );
+}
+
 /// A bare correlation is taken at the policy's word, declared key or not: the policy
 /// names the parent and says which columns join, and nothing else competes for that
 /// reading, because a membership lookup always carries a predicate naming the caller.
@@ -3814,6 +3841,7 @@ fn analyze_p5_reads_a_bare_correlation_without_a_declared_key() {
         r"
 CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID);
 CREATE TABLE tasks(id UUID PRIMARY KEY, project_id UUID);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ",
     )
     .unwrap();

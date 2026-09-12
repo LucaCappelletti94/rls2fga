@@ -780,3 +780,23 @@ CREATE POLICY docs_read ON docs FOR SELECT USING (owner_id = current_user);
         "nobody reaches nothing, or an object of it would carry access:\n{dsl}"
     );
 }
+
+/// Every fixture's model must satisfy the same structural invariants the hand-picked
+/// shapes are checked against, since a dangling reference makes `OpenFGA` refuse the write.
+#[test]
+fn every_fixture_model_is_internally_consistent() {
+    let names = support::fixture_names();
+    for fixture in &names {
+        let (classified, db, registry) = support::try_load_fixture_classified(fixture);
+        let outputs = rls2fga::translator::Translation::plan(
+            classified,
+            &db,
+            &registry,
+            ConfidenceLevel::D,
+            &GeneratorSettings::default(),
+        )
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+        assert_model_is_internally_consistent(&outputs.json_model());
+    }
+}

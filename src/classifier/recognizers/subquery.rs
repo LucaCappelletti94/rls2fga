@@ -186,6 +186,15 @@ pub fn recognize_p5<DB: DatabaseLike>(
         let Some(parent_id) = resolve_table_id(db, &parent_table) else {
             continue;
         };
+        // A bare delegation needs a gate behind it, and only a definite yes is one: an
+        // unrestricted parent declares no relation for the walk to reach.
+        if matches!(
+            inner_classified.pattern,
+            PatternClass::P10ConstantBool(ConstantBool { value: true })
+        ) && !parent_enforces_row_security(db, &parent_id)
+        {
+            continue;
+        }
 
         matches.push(ClassifiedExpr {
             confidence: inner_classified.confidence,
@@ -201,6 +210,12 @@ pub fn recognize_p5<DB: DatabaseLike>(
         return matches.into_iter().next();
     }
     None
+}
+
+/// Whether the parent positively enforces row security, which is what gives a bare
+/// delegation a gate to walk to.
+fn parent_enforces_row_security<DB: DatabaseLike>(db: &DB, parent: &TableId) -> bool {
+    lookup_table_id(db, parent).is_some_and(|table| table.has_row_level_security(db) == Ok(true))
 }
 
 /// Whether an inherited parent rule is a relationship the P5 gate may carry.
@@ -1587,7 +1602,8 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     // has to read the same expression they refused.
     let rewritten = membership_exists_from_in_subquery(expr, registry, outer_table);
     let expr = rewritten.as_ref().unwrap_or(expr);
-    let analysis = analyze_p5_parent_inheritance(readable_exists_select(expr)?, db, outer_table)?;
+    let select = readable_exists_select(expr)?;
+    let analysis = analyze_p5_parent_inheritance(select, db, outer_table)?;
 
     if analysis.candidates.len() > 1 {
         return Some(
@@ -1605,7 +1621,26 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     // why. Without this the operator reads "could not infer a unique membership join"
     // for a filter whose parent was inferred perfectly well.
     analysis.candidates.into_iter().find_map(|candidate| {
-        let mut inner = combine_predicates_with_and(candidate.inner_predicates)?;
+        let parent_restricts = resolve_table_id(db, &candidate.parent_table)
+            .is_some_and(|parent| parent_enforces_row_security(db, &parent));
+        let Some(mut inner) = combine_predicates_with_and(candidate.inner_predicates) else {
+            // Only where the recognizer would otherwise have accepted, so a shape refused
+            // for another reason keeps its own.
+            let reached = joins_drop_no_row(
+                select,
+                None,
+                &candidate.parent_table,
+                candidate.parent_alias.as_deref(),
+                db,
+            );
+            return (reached && !parent_restricts).then(|| {
+                format!(
+                    "The rule inherited from '{}' is that table's own read rule, and '{}' \
+                     enforces no row security, so there is nothing to inherit",
+                    candidate.parent_table, candidate.parent_table
+                )
+            });
+        };
         strip_qualifier_from_expr_deep(
             &mut inner,
             &candidate.parent_table,

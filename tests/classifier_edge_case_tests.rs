@@ -895,14 +895,14 @@ CREATE POLICY p ON docs FOR SELECT
 }
 
 /// A read policy that only requires the parent row to exist inherits the parent's own
-/// read rule, since `SELECT` on the parent applies its policies to the subquery. It used
-/// to fall to `Unknown` and deny, which is inventory row 4's over-denial.
+/// read rule, which requires the parent to enforce one.
 #[test]
 fn p5_no_inner_predicates_delegates_to_the_parent() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orgs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT
     USING (EXISTS (
         SELECT 1 FROM orgs o WHERE o.id = docs.org_id
