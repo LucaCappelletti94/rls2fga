@@ -488,8 +488,10 @@ CREATE POLICY p ON docs FOR SELECT
     );
 }
 
+/// A constant conjunct leaves the parent's own rule as the whole requirement, so an
+/// unrestricted parent offers no gate and the read falls closed with its reason named.
 #[test]
-fn p5_inner_p10_constant_generates_model_without_panic() {
+fn p5_with_a_constant_inner_falls_closed_on_an_unrestricted_parent() {
     let sql = r"
 CREATE TABLE orgs(id UUID PRIMARY KEY);
 CREATE TABLE docs(id UUID PRIMARY KEY, org_id UUID REFERENCES orgs(id));
@@ -503,17 +505,8 @@ CREATE POLICY p ON docs FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
     let outputs = Translation::plan(
-        classified.clone(),
+        classified,
         &db,
         &registry,
         ConfidenceLevel::B,
@@ -521,9 +514,17 @@ CREATE POLICY p ON docs FOR SELECT
     )
     .expect("translation should plan")
     .outputs_accepting_gaps();
-    let tuples = outputs.tuple_queries();
-    let _ = model;
-    let _ = tuples;
+
+    let model = outputs.model();
+    assert!(
+        model.contains("define can_select: no_access"),
+        "a delegation with no gate behind it must fall closed:\n{model}"
+    );
+    let report = outputs.report();
+    assert!(
+        report.contains("enforces no row security, so there is nothing to inherit"),
+        "the operator has to learn why the read was refused:\n{report}"
+    );
 }
 
 // ── P1 generation edge cases ─────────────────────────────────────────────────

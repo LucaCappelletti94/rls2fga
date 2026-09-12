@@ -1621,25 +1621,19 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
     // why. Without this the operator reads "could not infer a unique membership join"
     // for a filter whose parent was inferred perfectly well.
     analysis.candidates.into_iter().find_map(|candidate| {
-        let parent_restricts = resolve_table_id(db, &candidate.parent_table)
+        let rule = combine_predicates_with_and(candidate.inner_predicates);
+        // Only where the recognizer would otherwise have accepted, so a shape refused for
+        // another reason keeps its own.
+        let reached = joins_drop_no_row(
+            select,
+            rule.as_ref(),
+            &candidate.parent_table,
+            candidate.parent_alias.as_deref(),
+            db,
+        ) && !resolve_table_id(db, &candidate.parent_table)
             .is_some_and(|parent| parent_enforces_row_security(db, &parent));
-        let Some(mut inner) = combine_predicates_with_and(candidate.inner_predicates) else {
-            // Only where the recognizer would otherwise have accepted, so a shape refused
-            // for another reason keeps its own.
-            let reached = joins_drop_no_row(
-                select,
-                None,
-                &candidate.parent_table,
-                candidate.parent_alias.as_deref(),
-                db,
-            );
-            return (reached && !parent_restricts).then(|| {
-                format!(
-                    "The rule inherited from '{}' is that table's own read rule, and '{}' \
-                     enforces no row security, so there is nothing to inherit",
-                    candidate.parent_table, candidate.parent_table
-                )
-            });
+        let Some(mut inner) = rule else {
+            return reached.then(|| nothing_to_inherit(&candidate.parent_table));
         };
         strip_qualifier_from_expr_deep(
             &mut inner,
@@ -1667,9 +1661,20 @@ pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
                 "The rule inherited from '{}' is not translatable: {reason}",
                 candidate.parent_table
             )),
+            PatternClass::P10ConstantBool(ConstantBool { value: true }) if reached => {
+                Some(nothing_to_inherit(&candidate.parent_table))
+            }
             _ => None,
         }
     })
+}
+
+/// Why a bare delegation to a parent that enforces nothing is refused.
+fn nothing_to_inherit(parent_table: &str) -> String {
+    format!(
+        "The rule inherited from '{parent_table}' is that table's own read rule, and \
+         '{parent_table}' enforces no row security, so there is nothing to inherit"
+    )
 }
 
 #[derive(Debug, Clone)]
