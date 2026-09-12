@@ -42,21 +42,33 @@ pub(crate) fn write_output(
     tuples: &[TupleQuery],
     report: &str,
 ) -> Result<(), WriteError> {
-    validate_output_name(name)?;
+    let name = validate_output_name(name)?;
 
     std::fs::create_dir_all(output_dir).map_err(|source| WriteError::CreateDirectory { source })?;
 
     let write_file = |path: PathBuf, contents: &str| {
         std::fs::write(&path, contents).map_err(|source| WriteError::WriteFile { path, source })
     };
-    write_file(output_dir.join(format!("{name}.fga")), dsl)?;
+    write_file(name.file_in(output_dir, ".fga"), dsl)?;
     write_file(
-        output_dir.join(format!("{name}_tuples.sql")),
+        name.file_in(output_dir, "_tuples.sql"),
         &tuple_generator::format_tuples(tuples),
     )?;
-    write_file(output_dir.join(format!("{name}_report.md")), report)?;
+    write_file(name.file_in(output_dir, "_report.md"), report)?;
 
     Ok(())
+}
+
+/// An output name [`validate_output_name`] has accepted.
+///
+/// Holding one is the proof that a path built from it stays inside its directory, so
+/// nothing else in this module may join a caller's name onto a path.
+struct OutputName<'a>(&'a str);
+
+impl OutputName<'_> {
+    fn file_in(&self, dir: &Path, suffix: &str) -> PathBuf {
+        dir.join(format!("{}{suffix}", self.0))
+    }
 }
 
 /// Windows reserved device names that must not be used as output names.
@@ -66,7 +78,7 @@ const WINDOWS_RESERVED: &[&str] = &[
 ];
 const WINDOWS_INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-fn validate_output_name(name: &str) -> Result<(), WriteError> {
+fn validate_output_name(name: &str) -> Result<OutputName<'_>, WriteError> {
     let refuse = |reason: &'static str| {
         Err(WriteError::InvalidName {
             name: name.to_string(),
@@ -80,9 +92,13 @@ fn validate_output_name(name: &str) -> Result<(), WriteError> {
     if name.chars().any(char::is_control) {
         return refuse("control characters are not allowed");
     }
-    // Reject a bare dot (current directory reference).
-    if name == "." || name == ".." {
-        return refuse("'.' and '..' are not allowed");
+    // Substring rather than component form, which is what CodeQL's path-injection query
+    // recognises as a barrier. The component check below is the one that actually holds.
+    if name.contains("..") {
+        return refuse("'..' is not allowed");
+    }
+    if name == "." {
+        return refuse("'.' is not allowed");
     }
     // Reject invalid filename characters on Windows.
     if name
@@ -116,7 +132,7 @@ fn validate_output_name(name: &str) -> Result<(), WriteError> {
     }) {
         return refuse("traversal segments are not allowed");
     }
-    Ok(())
+    Ok(OutputName(name))
 }
 
 #[cfg(test)]
@@ -193,6 +209,18 @@ mod tests {
             validate_output_name("..").is_err(),
             "dotdot should be rejected"
         );
+    }
+
+    /// A double dot anywhere is refused, not only as a whole component, so the check is the
+    /// substring form the path-injection query recognises as a barrier.
+    #[test]
+    fn validate_output_name_rejects_any_double_dot() {
+        for name in ["a..b", "v1..2", "....//....//etc", "report..md"] {
+            assert!(
+                validate_output_name(name).is_err(),
+                "{name} carries a double dot and must be refused"
+            );
+        }
     }
 
     #[test]
