@@ -408,15 +408,7 @@ CREATE POLICY p ON tasks FOR SELECT
         "P5-shaped EXISTS with untranslatable inner should classify as Unknown, got: {:?}",
         c.pattern
     );
-    let outputs = rls2fga::translator::Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &rls2fga::generator::model_generator::GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::D);
     let model = outputs.model();
     assert!(
         model.contains("define can_select: no_access"),

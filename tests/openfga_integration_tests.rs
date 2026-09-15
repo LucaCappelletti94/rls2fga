@@ -1,11 +1,9 @@
 #![cfg(not(target_os = "windows"))]
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::well_known::{
     WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
 };
-use rls2fga::translator::Translation;
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
 
@@ -25,16 +23,8 @@ async fn openfga_accepts_generated_model_and_checks_pass() {
 
     // 3. Write authorization model
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .json_model();
+    let model =
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B).json_model();
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 

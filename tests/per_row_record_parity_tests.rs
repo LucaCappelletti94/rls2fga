@@ -18,9 +18,8 @@ use testcontainers::GenericImage;
 use openfga_client::client::OpenFgaClient;
 use openfga_client::tonic::transport::Channel;
 use rls2fga::generator::json_model::AuthorizationModel;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleQuery, TupleRow};
-use rls2fga::translator::{Outputs, Translation};
+use rls2fga::translator::Outputs;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::RowDecision;
 use rls2fga::types::{
@@ -753,15 +752,7 @@ async fn every_row_shape_description_matches_its_own_sql() {
         ROW_SHAPES_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -804,15 +795,7 @@ async fn a_cross_row_residual_description_matches_its_own_sql() {
         .expect("failed to seed the cross-row residual schema");
 
     let (classified, db, registry) = support::try_load_fixture_classified("cross_row_residual");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let unnarrowed = queries
@@ -877,15 +860,7 @@ async fn a_request_gated_description_matches_its_own_sql() {
             .unwrap_or_else(|error| panic!("failed to seed {fixture}: {error}"));
 
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
         let queries = outputs.tuple_queries();
 
         // Non-vacuous: without this the comparison below could pass by comparing two
@@ -956,15 +931,7 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
         .expect("failed to seed the clock-gate schema");
 
     let (classified, db, registry) = support::classify_sql(CLOCK_GATE_SCHEMA, None);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let gated: Vec<&TupleQuery> = queries
@@ -1055,15 +1022,7 @@ async fn an_expiring_share_settles_and_matches_its_own_sql() {
       { "key": "app.subjects", "kind": "set_attribute" }
     ]"#,
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     // Non-vacuous: the clock now rides the share arm's condition and the row still decides
@@ -1116,15 +1075,7 @@ async fn a_settled_share_arm_matches_its_own_sql() {
     .expect("failed to seed the papers and shares");
 
     let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -1176,15 +1127,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
 
     let (classified, db, registry) =
         support::load_fixture_classified("role_threshold_compound_key");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     // Non-vacuous: the pointer and both identity facts follow from one row and are
@@ -1268,15 +1211,7 @@ INSERT INTO owner_grants (grantee_owner_id, granted_owner_id, role_id) VALUES
     .expect("failed to seed the earth_metabolome schema");
 
     let (classified, db, registry) = support::load_fixture_classified("earth_metabolome");
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, _) =
@@ -1368,15 +1303,7 @@ async fn holder_shapes_match_their_own_sql() {
         HOLDER_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -1436,15 +1363,7 @@ INSERT INTO doc_members (doc_id, user_id, member_id, role) VALUES
 
     let (classified, db, registry) =
         support::try_load_fixture_classified("membership_wrapped_function_safe");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -1549,15 +1468,7 @@ async fn a_composite_key_membership_matches_its_own_sql() {
         COMPOSITE_KEY_MEMBERSHIP_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) = assert_descriptions_match_their_sql(
@@ -1612,15 +1523,7 @@ INSERT INTO docs (id, title) VALUES
     .expect("failed to seed the rows the scope judges");
 
     let (classified, db, registry) = support::classify_sql(schema, None);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let mut pointers = 0usize;
     let mut role_facts = 0usize;
@@ -1736,15 +1639,7 @@ async fn a_compound_identity_matches_between_the_sql_and_the_evaluator() {
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -1776,15 +1671,7 @@ async fn a_timestamptz_identity_matches_between_the_sql_and_the_evaluator() {
         TIMESTAMPTZ_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let (pure, joined, records) =
@@ -1987,27 +1874,19 @@ async fn every_recipe_grants_the_subjects_the_model_grants() {
         RECIPE_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let reported = planned.relations();
-    let outputs = planned.clone().outputs_accepting_gaps();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let reported = planned.translation().relations();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
-    for query in outputs.tuple_queries() {
-        tuples.extend(records_from_sql(&outputs, &mut conn, query));
+    for query in planned.tuple_queries() {
+        tuples.extend(records_from_sql(&planned, &mut conn, query));
     }
     assert!(
         !tuples.is_empty(),
         "the loader must produce tuples, otherwise every check answers no"
     );
 
-    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+    let (_openfga, client) = start_openfga(&planned.json_model(), &tuples).await;
 
     // Every user any tuple names, which bounds the comparison: a subject outside it
     // could only reach the relation through a tuple, and every tuple is in here.
@@ -2121,15 +2000,7 @@ async fn a_compound_identity_loads_and_answers_against_the_service() {
         COMPOUND_IDENTITY_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
     for query in outputs.tuple_queries() {
@@ -2225,15 +2096,8 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         NAMING_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let translation = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let naming = translation.row_naming().to_vec();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let naming = planned.translation().row_naming().to_vec();
     assert_eq!(
         naming.len(),
         3,
@@ -2252,12 +2116,11 @@ async fn a_row_naming_entry_spells_the_object_its_own_sql_writes() {
         "one table has to be keyed by two columns: {naming:?}"
     );
 
-    let outputs = translation.outputs_accepting_gaps();
-    let queries = outputs.tuple_queries();
+    let queries = planned.tuple_queries();
     let written: BTreeSet<String> = queries
         .iter()
         .filter(|query| query.skipped.is_none())
-        .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
+        .flat_map(|query| records_from_sql(&planned, &mut conn, query))
         .map(|record| record.object)
         .collect();
 
@@ -2342,22 +2205,14 @@ async fn a_partition_is_named_by_the_object_its_root_s_sql_writes() {
         PARTITION_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let translation = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let naming = translation.row_naming().to_vec();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let naming = planned.translation().row_naming().to_vec();
 
-    let outputs = translation.outputs_accepting_gaps();
-    let queries = outputs.tuple_queries();
+    let queries = planned.tuple_queries();
     let written: BTreeSet<String> = queries
         .iter()
         .filter(|query| query.skipped.is_none())
-        .flat_map(|query| records_from_sql(&outputs, &mut conn, query))
+        .flat_map(|query| records_from_sql(&planned, &mut conn, query))
         .map(|record| record.object)
         .collect();
 
@@ -2437,22 +2292,14 @@ async fn every_judgement_together_answers_as_the_action_relation_does() {
         REPLACEMENT_SCHEMA,
         Some(r#"{"auth_current_user_id": {"kind": "current_user_accessor", "returns": "text"}}"#),
     );
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let outputs = planned.outputs_accepting_gaps();
-    let reported = outputs.translation().action_relations();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let reported = planned.translation().action_relations();
 
     let mut tuples: BTreeSet<Record> = BTreeSet::new();
-    for query in outputs.tuple_queries() {
-        tuples.extend(records_from_sql(&outputs, &mut conn, query));
+    for query in planned.tuple_queries() {
+        tuples.extend(records_from_sql(&planned, &mut conn, query));
     }
-    let (_openfga, client) = start_openfga(&outputs.json_model(), &tuples).await;
+    let (_openfga, client) = start_openfga(&planned.json_model(), &tuples).await;
 
     let update = reported
         .iter()
@@ -2551,15 +2398,7 @@ INSERT INTO docs (id, title) VALUES
     .expect("failed to seed the rows the scope judges");
 
     let (classified, db, registry) = support::classify_sql(schema, None);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let queries = outputs.tuple_queries();
 
     let role_fact = queries

@@ -3,8 +3,6 @@
 use openfga_client::client::{OpenFgaClient, TupleKey};
 use openfga_client::tonic::transport::Channel;
 
-use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -299,16 +297,8 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
 
     // 3. Generate and upload JSON model
     let (classified, db, registry) = support::try_load_fixture_classified(scenario.fixture);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        scenario.min_confidence,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .json_model();
+    let model =
+        support::plan_at(classified.clone(), &db, &registry, scenario.min_confidence).json_model();
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 

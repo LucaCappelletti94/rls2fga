@@ -92,6 +92,27 @@ pub(crate) fn row(pairs: &[(&str, &str)]) -> Row {
         .collect())
 }
 
+/// Plan a classification at the given confidence bar, gaps and all.
+///
+/// The level stays visible at every call because it decides which clauses earn a
+/// gap note instead of silently shaping the model.
+pub(crate) fn plan_at(
+    classified: Vec<ClassifiedPolicy>,
+    db: &ParserDB,
+    registry: &FunctionRegistry,
+    level: rls2fga::types::ConfidenceLevel,
+) -> rls2fga::translator::Outputs {
+    rls2fga::translator::Translation::plan(
+        classified,
+        db,
+        registry,
+        level,
+        &rls2fga::generator::model_generator::GeneratorSettings::default(),
+    )
+    .expect("translation should plan")
+    .outputs_accepting_gaps()
+}
+
 /// The tuple SQL a classification plans at the lowest confidence bar.
 pub(crate) fn plan_tuples(
     classified: Vec<ClassifiedPolicy>,
@@ -99,16 +120,7 @@ pub(crate) fn plan_tuples(
     registry: &FunctionRegistry,
 ) -> String {
     rls2fga::generator::tuple_generator::format_tuples(
-        rls2fga::translator::Translation::plan(
-            classified,
-            db,
-            registry,
-            rls2fga::types::ConfidenceLevel::D,
-            &rls2fga::generator::model_generator::GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        plan_at(classified, db, registry, rls2fga::types::ConfidenceLevel::D).tuple_queries(),
     )
 }
 
@@ -281,21 +293,11 @@ pub(crate) fn classify_sql(
     sql: &str,
     registry_json: Option<&str>,
 ) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
-    let db = sql_parser::parse_schema(sql).expect("schema should parse");
-    let mut registry = FunctionRegistry::new();
-    if let Some(json) = registry_json {
-        registry
-            .load_from_json(json)
-            .expect("registry json should parse");
-    }
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry)
+    classify_with(sql, registry_json, None)
 }
 
 /// Classify SQL with both the accessor metadata and the session attributes a deployment
 /// declares.
-///
-/// The two existing helpers each take one of them, and a fixture may declare both.
 pub(crate) fn classify_with(
     sql: &str,
     registry_json: Option<&str>,
@@ -322,13 +324,7 @@ pub(crate) fn classify_sql_with_session_attributes(
     sql: &str,
     attributes_json: &str,
 ) -> (Vec<ClassifiedPolicy>, ParserDB, FunctionRegistry) {
-    let db = sql_parser::parse_schema(sql).expect("schema should parse");
-    let mut registry = FunctionRegistry::new();
-    let attributes: Vec<SessionAttribute> =
-        serde_json::from_str(attributes_json).expect("session attributes should parse");
-    registry.declare_session_attributes(attributes);
-    let classified = policy_classifier::classify_policies(&db, &registry);
-    (classified, db, registry)
+    classify_with(sql, None, Some(attributes_json))
 }
 
 /// Classify SQL with an empty function registry, for the common case where no registry

@@ -1,11 +1,9 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::names::role_scope_name;
 use rls2fga::parser::sql_parser;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -25,15 +23,7 @@ fn fixture_model_and_tuples(
 ) {
     let db = support::parse_fixture_db(fixture);
     let classified = policy_classifier::classify_policies(&db, registry);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        registry,
-        confidence,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, registry, confidence);
     insta::assert_snapshot!(format!("generate_{fixture}_model"), outputs.model().trim());
     insta::assert_snapshot!(
         format!("generate_{fixture}_tuples"),
@@ -44,15 +34,7 @@ fn fixture_model_and_tuples(
 #[test]
 fn generate_emi_model() {
     let (classified, db, registry) = load_emi();
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.model().trim());
 }
 
@@ -61,15 +43,7 @@ fn generate_emi_tuples() {
     let db = support::parse_fixture_db("earth_metabolome");
     let registry = support::load_fixture_registry("earth_metabolome");
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     insta::assert_snapshot!(tuple_generator::format_tuples(tuples));
 }
@@ -77,16 +51,8 @@ fn generate_emi_tuples() {
 #[test]
 fn generate_emi_json_model() {
     let (classified, db, registry) = load_emi();
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .json_model();
+    let model =
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B).json_model();
     insta::assert_json_snapshot!(model);
 }
 
@@ -103,15 +69,7 @@ fn generate_simple_ownership_model() {
     );
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.model().trim());
 }
 
@@ -121,15 +79,7 @@ fn generate_public_flag_model() {
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     insta::assert_snapshot!(model.model().trim());
 }
 
@@ -174,15 +124,7 @@ fn generate_public_flag_tuples() {
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     insta::assert_snapshot!(tuple_generator::format_tuples(tuples));
 }
@@ -226,15 +168,7 @@ CREATE POLICY auth_users_select ON auth.users FOR SELECT USING (owner_id = curre
     let db = sql_parser::parse_schema(sql).expect("schema should parse");
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
 
     // Both tables must have a type in the DSL. They should NOT be merged.
     let type_count = model.model().matches("type users").count()
@@ -282,15 +216,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 ";
     let (classified, db, registry) = support::classify_sql(sql, None);
 
-    let model = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     assert_eq!(
         support::footgun::relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some(
@@ -330,15 +256,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 }"#;
     let (classified, db, registry) = support::classify_sql(sql, Some(registry_json));
 
-    let model = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     assert_eq!(
         support::footgun::relation_definition(&model.model(), "docs", "can_select").as_deref(),
         Some(
@@ -389,16 +307,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 "
         );
         let (classified, db, registry) = support::classify_sql(&sql, None);
-        let dsl = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .model();
+        let dsl = support::plan_at(classified, &db, &registry, ConfidenceLevel::B).model();
 
         let expected = format!(
             "{relation} from {}",
@@ -436,16 +345,7 @@ CREATE POLICY docs_admin ON docs FOR DELETE
     USING (pg_has_role(current_user, 'editor', 'MEMBER WITH ADMIN OPTION'));
 ";
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let dsl = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .model();
+    let dsl = support::plan_at(classified, &db, &registry, ConfidenceLevel::B).model();
 
     assert_eq!(
         support::footgun::relation_definition(&dsl, "docs", "can_select").as_deref(),
@@ -498,16 +398,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
 "
         );
         let (classified, db, registry) = support::classify_sql(&sql, None);
-        let dsl = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .model();
+        let dsl = support::plan_at(classified, &db, &registry, ConfidenceLevel::B).model();
         assert_eq!(
             support::footgun::relation_definition(&dsl, "docs", "can_select").as_deref(),
             Some("no_access"),
@@ -553,15 +444,7 @@ fn generate_shared_owner_grants_model_and_tuples() {
     let registry = support::load_fixture_registry("shared_owner_grants");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let dsl = model.model();
     assert_eq!(
         dsl.matches("type owner_grants_owner").count(),
@@ -610,15 +493,7 @@ fn generate_two_owner_columns_model_and_tuples() {
     let registry = support::load_fixture_registry("two_owner_columns");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let dsl = model.model();
     assert!(
         dsl.contains("define owner_id: [owner_grants_owner]")
@@ -659,15 +534,7 @@ fn generate_two_role_functions_keeps_their_ladders_apart() {
     let (db, registry) = support::load_fixture_db_and_registry("two_role_functions");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let dsl = model.model();
     let owners: Vec<&str> = dsl
         .lines()
@@ -721,15 +588,7 @@ fn generate_two_role_functions_tuples() {
     let registry = support::load_fixture_registry("two_role_functions");
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     insta::assert_snapshot!(
         "generate_two_role_functions_tuples",
@@ -780,15 +639,12 @@ fn generate_simple_ownership_tuples() {
             returns: "uuid".to_string(),
         },
     );
-    let outputs = Translation::plan(
+    let outputs = support::plan_at(
         policy_classifier::classify_policies(&db, &registry),
         &db,
         &registry,
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    );
     let tuples = outputs.tuple_queries();
     insta::assert_snapshot!(tuple_generator::format_tuples(tuples));
 }

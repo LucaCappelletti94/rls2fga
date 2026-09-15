@@ -23,9 +23,10 @@ pub(crate) fn translator(min_confidence: ConfidenceLevel) -> Translator {
         .build()
 }
 
-/// Return the right-hand side of `define <relation>:` inside `type <type_name>`.
-pub(crate) fn relation_definition(dsl: &str, type_name: &str, relation: &str) -> Option<String> {
+/// The `define <name>: <body>` lines inside `type <type_name>`, in declaration order.
+pub(crate) fn defines_in_type<'a>(dsl: &'a str, type_name: &str) -> Vec<(&'a str, &'a str)> {
     let mut in_type = false;
+    let mut defines = Vec::new();
     for line in dsl.lines() {
         let trimmed = line.trim();
         if let Some(name) = trimmed.strip_prefix("type ") {
@@ -33,12 +34,22 @@ pub(crate) fn relation_definition(dsl: &str, type_name: &str, relation: &str) ->
             continue;
         }
         if in_type {
-            if let Some(rest) = trimmed.strip_prefix(&format!("define {relation}:")) {
-                return Some(rest.trim().to_string());
+            if let Some(rest) = trimmed.strip_prefix("define ") {
+                if let Some((name, body)) = rest.split_once(':') {
+                    defines.push((name.trim(), body.trim()));
+                }
             }
         }
     }
-    None
+    defines
+}
+
+/// Return the right-hand side of `define <relation>:` inside `type <type_name>`.
+pub(crate) fn relation_definition(dsl: &str, type_name: &str, relation: &str) -> Option<String> {
+    defines_in_type(dsl, type_name)
+        .into_iter()
+        .find(|(name, _)| *name == relation)
+        .map(|(_, body)| body.to_string())
 }
 
 /// Whether a relation of `type_name` grants nobody, resolving the body through the
@@ -74,45 +85,18 @@ fn body_denies(dsl: &str, type_name: &str, body: &str, depth: usize) -> bool {
 
 /// Every relation `type_name` defines, paired with its body, in declaration order.
 pub(crate) fn relation_definitions(dsl: &str, type_name: &str) -> Vec<(String, String)> {
-    let mut in_type = false;
-    let mut defined = Vec::new();
-    for line in dsl.lines() {
-        let trimmed = line.trim();
-        if let Some(name) = trimmed.strip_prefix("type ") {
-            in_type = name.trim() == type_name;
-            continue;
-        }
-        if in_type {
-            if let Some(rest) = trimmed.strip_prefix("define ") {
-                if let Some((name, body)) = rest.split_once(':') {
-                    defined.push((name.trim().to_string(), body.trim().to_string()));
-                }
-            }
-        }
-    }
-    defined
+    defines_in_type(dsl, type_name)
+        .into_iter()
+        .map(|(name, body)| (name.to_string(), body.to_string()))
+        .collect()
 }
 
 /// Name of the relation `type_name` declares to reach its database-role scope, if any.
 pub(crate) fn pg_role_relation(dsl: &str, type_name: &str) -> Option<String> {
-    let mut in_type = false;
-    for line in dsl.lines() {
-        let trimmed = line.trim();
-        if let Some(name) = trimmed.strip_prefix("type ") {
-            in_type = name.trim() == type_name;
-            continue;
-        }
-        if in_type {
-            if let Some(rest) = trimmed.strip_prefix("define ") {
-                if let Some((name, subjects)) = rest.split_once(':') {
-                    if subjects.trim() == "[pg_role_scope]" {
-                        return Some(name.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+    defines_in_type(dsl, type_name)
+        .into_iter()
+        .find(|(_, body)| *body == "[pg_role_scope]")
+        .map(|(name, _)| name.to_string())
 }
 
 /// Whether the scope `scope_relation` reaches admits `role`, in both halves: a row of

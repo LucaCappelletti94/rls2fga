@@ -1,12 +1,11 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::output::formatter::WriteError;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::parser::sql_parser::ParserDB;
-use rls2fga::translator::{Outputs, Translation};
+use rls2fga::translator::Outputs;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::TranslationNote;
 
@@ -19,15 +18,7 @@ mod support;
 fn any_outputs(db: &ParserDB) -> Outputs {
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(db, &registry);
-    Translation::plan(
-        classified,
-        db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
+    support::plan_at(classified, db, &registry, ConfidenceLevel::D)
 }
 
 #[test]
@@ -94,15 +85,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
 
     let grant_count = model
         .model()
@@ -154,15 +137,7 @@ CREATE POLICY p ON docs FOR SELECT USING (role_level(current_user, id) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
@@ -182,15 +157,7 @@ CREATE POLICY p ON items FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
@@ -215,15 +182,7 @@ CREATE POLICY p ON tasks FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
@@ -263,15 +222,7 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
@@ -314,15 +265,7 @@ CREATE POLICY p ON docs FOR SELECT
         using.pattern
     );
 
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let has_invalid_membership_filter = tuples.iter().any(|query| {
         let lower = query.sql.to_ascii_lowercase();
@@ -348,15 +291,7 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let dir = support::unique_temp_dir("rls2fga_short_names");
     outputs.write(&dir, "docs").unwrap();
@@ -373,28 +308,12 @@ CREATE POLICY p_flag ON docs FOR SELECT USING (is_public = TRUE);
 #[test]
 fn multi_policy_table_generates_combined_model() {
     let (classified, db, registry) = support::try_load_fixture_classified("multi_policy_table");
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     assert!(
         !model.model().is_empty(),
         "Multi-policy table should produce DSL output"
     );
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
     assert!(
@@ -421,15 +340,7 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
 
     assert!(
         model.model().contains("define can_select: no_access"),
@@ -461,15 +372,7 @@ CREATE POLICY p ON docs FOR SELECT
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
 
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 
@@ -505,15 +408,7 @@ CREATE POLICY p ON docs FOR SELECT
     let db = parse_schema(sql).unwrap();
     let registry = FunctionRegistry::new();
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let model = outputs.model();
     assert!(
@@ -558,15 +453,7 @@ CREATE POLICY p ON items FOR SELECT USING (role_level(current_user, val) >= 1);
         .unwrap();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     let formatted = tuple_generator::format_tuples(tuples);
 

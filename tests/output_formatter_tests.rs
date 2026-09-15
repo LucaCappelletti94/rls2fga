@@ -1,9 +1,7 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::sql_parser::parse_schema;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -13,15 +11,7 @@ fn formatter_uses_same_tuple_format_as_tuple_generator_helper() {
     let (db, registry) = support::load_fixture_db_and_registry("earth_metabolome");
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::D);
     let expected = tuple_generator::format_tuples(outputs.tuple_queries());
 
     let out_dir = support::unique_temp_dir("rls2fga_formatter");
@@ -50,15 +40,7 @@ CREATE POLICY p_unknown ON docs FOR SELECT USING (owner_id IS NULL);
     let registry = FunctionRegistry::new();
 
     let classified = policy_classifier::classify_policies(&db, &registry);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let out_dir = support::unique_temp_dir("rls2fga_formatter_report_threshold");
     outputs

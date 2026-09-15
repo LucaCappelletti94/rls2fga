@@ -14,9 +14,7 @@
 //! census that greps variant names misses that test, because it asserts the message text,
 //! which is how this one came to look unreached.
 
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::SkippedTuples;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::TranslationNote;
 
@@ -29,15 +27,13 @@ fn reported(
     level: ConfidenceLevel,
 ) -> (Vec<String>, Vec<String>) {
     let (classified, db, reg) = support::classify_sql(sql, registry);
-    let planned = Translation::plan(classified, &db, &reg, level, &GeneratorSettings::default())
-        .expect("translation should plan");
+    let planned = support::plan_at(classified, &db, &reg, level);
     let notes = planned
         .notes()
         .iter()
         .map(TranslationNote::message)
         .collect::<Vec<_>>();
     let skips = planned
-        .outputs_accepting_gaps()
         .tuple_queries()
         .iter()
         .filter(|query| query.skipped.is_some())
@@ -203,16 +199,8 @@ CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = current_user);
 CREATE POLICY memos_owner ON memos FOR SELECT USING (owner_id = current_user);",
         None,
     );
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let outputs = planned.outputs_accepting_gaps();
-    let queries = outputs.tuple_queries();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let queries = planned.tuple_queries();
 
     assert!(
         queries.iter().any(|query| matches!(
@@ -338,21 +326,13 @@ CREATE POLICY ownables_update ON ownables FOR UPDATE
         ),
         Some(GRANTS),
     );
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::C,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::C);
     let notes: Vec<String> = planned
         .notes()
         .iter()
         .map(TranslationNote::message)
         .collect();
     let skips: Vec<String> = planned
-        .outputs_accepting_gaps()
         .tuple_queries()
         .iter()
         .filter(|query| query.skipped.is_some())

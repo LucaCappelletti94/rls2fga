@@ -1,6 +1,4 @@
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -9,16 +7,8 @@ mod support;
 fn json_model_respects_min_confidence_threshold() {
     let sql = support::read_fixture_sql("multi_policy_table");
     let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
-    let json = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::A,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .json_model();
+    let json =
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::A).json_model();
 
     let posts = json
         .type_definitions
@@ -40,15 +30,7 @@ fn json_model_respects_min_confidence_threshold() {
 fn model_generation_respects_min_confidence_threshold() {
     let sql = support::read_fixture_sql("multi_policy_table");
     let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::A,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::A);
 
     assert!(
         !model.model().contains("public_viewer"),
@@ -75,16 +57,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
 ";
     let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
     let tuples_a = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::A,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::A).tuple_queries(),
     );
 
     assert!(
@@ -93,16 +66,7 @@ CREATE POLICY docs_select ON docs FOR SELECT TO PUBLIC
     );
 
     let tuples_d = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).tuple_queries(),
     );
 
     assert!(
@@ -116,16 +80,7 @@ fn p9_attribute_policy_does_not_emit_placeholder_tuple_sql() {
     let sql = support::read_fixture_sql("multi_policy_table");
     let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
     let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).tuple_queries(),
     );
 
     assert!(
@@ -181,15 +136,7 @@ CREATE POLICY pb ON docs FOR SELECT USING (unreadable(owner_b));
 
 fn can_select_of(sql: &str, min: ConfidenceLevel) -> String {
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        min,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, min);
     outputs
         .model()
         .lines()
@@ -282,17 +229,9 @@ fn one_surviving_arm_keeps_its_own_grade() {
 /// The grades the report says are in the model.
 fn summary_of(sql: &str, min: ConfidenceLevel) -> Vec<ConfidenceLevel> {
     let (classified, db, registry) = support::classify_sql(sql, None);
-    Translation::plan(
-        classified,
-        &db,
-        &registry,
-        min,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .confidence_summary()
-    .iter()
-    .map(|(_, level)| *level)
-    .collect()
+    support::plan_at(classified, &db, &registry, min)
+        .confidence_summary()
+        .iter()
+        .map(|(_, level)| *level)
+        .collect()
 }
