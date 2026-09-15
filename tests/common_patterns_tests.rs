@@ -1,7 +1,6 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
 use rls2fga::parser::sql_parser;
@@ -9,7 +8,6 @@ use rls2fga::parser::sql_parser;
 ///
 /// Each test verifies that the translator correctly classifies and generates
 /// output for patterns commonly found in production `PostgreSQL` deployments.
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -111,15 +109,7 @@ fn compound_or_owner_or_public() {
     }
 
     // Verify model contains the composite relation
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     assert!(
         model.model().contains("owner or public_when_is_public"),
         "Model should contain 'owner or public_when_is_public', got:\n{}",
@@ -127,15 +117,7 @@ fn compound_or_owner_or_public() {
     );
 
     // Verify tuple generation
-    let outputs = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::B);
     let tuples = outputs.tuple_queries();
     assert!(!tuples.is_empty(), "Should generate tuple queries");
 }
@@ -233,16 +215,7 @@ fn fixture_wrapped_membership_predicate_translates_without_alias_leak() {
     );
 
     let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).tuple_queries(),
     );
     let tuples_lower = tuples.to_ascii_lowercase();
     assert!(
@@ -355,15 +328,7 @@ fn multi_policy_table_classification() {
     );
 
     // Check that the model generates something reasonable
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
     assert!(
         !model.model().is_empty(),
         "Should generate a non-empty model"
@@ -401,15 +366,7 @@ fn role_in_list_classification() {
     }
 
     // Verify model generation produces role threshold output
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
     assert!(
         !model.model().is_empty(),
         "Should generate a non-empty model"
@@ -439,24 +396,8 @@ fn pipeline_summary_all_common_patterns() {
         );
 
         let classified = policy_classifier::classify_policies(&db, &registry);
-        let model = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let outputs = Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
+        let outputs = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
         let tuples = outputs.tuple_queries();
 
         let all_a = classified.iter().all(|cp| {

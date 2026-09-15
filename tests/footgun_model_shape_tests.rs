@@ -3,7 +3,6 @@
 //!
 //! Structural invariants every emitted model keeps.
 
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::parser::sql_parser::ParserDB;
 use rls2fga::types::ConfidenceLevel;
 
@@ -466,19 +465,10 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
         // the analysis never saw. Building it through a registry-less translator was
         // exactly that mistake: the analysis saw `member from docs` while the model
         // said `no_access`, and a wrongly true flag passed unnoticed.
-        let planned = rls2fga::translator::Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let shapes = planned.relations();
-        let json = planned.clone().outputs_accepting_gaps().json_model();
-        let outputs = planned.clone().outputs_accepting_gaps();
-        let queries = outputs.tuple_queries();
-
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        let shapes = planned.translation().relations();
+        let json = planned.json_model();
+        let queries = planned.tuple_queries();
         for row in shapes {
             if !row.from_one_row {
                 falses += 1;
@@ -687,17 +677,7 @@ fn no_type_declares_a_relation_no_permission_names() {
             registry.load_from_json(json).expect("registry parses");
         }
         let classified = rls2fga::classifier::policy_classifier::classify_policies(&db, &registry);
-        let outputs = rls2fga::translator::Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-        let dsl = outputs.model();
-
+        let dsl = support::plan_at(classified, &db, &registry, ConfidenceLevel::B).model();
         // Not `assert_model_is_internally_consistent` here: its tupleset-assignability
         // rule is stricter than `OpenFGA` v1.11.6, which accepts this fixture's model
         // in the `P2_role_in_list` container scenario. Pruning too much would show up
@@ -788,15 +768,7 @@ fn every_fixture_model_is_internally_consistent() {
     let names = support::fixture_names();
     for fixture in &names {
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
-        let outputs = rls2fga::translator::Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::D);
         assert_model_is_internally_consistent(&outputs.json_model());
     }
 }
@@ -832,15 +804,7 @@ fn every_fixture_stays_consistent_without_one_row_security_flag() {
             let registry = support::try_load_fixture_classified(&fixture).2;
             let classified =
                 rls2fga::classifier::policy_classifier::classify_policies(&db, &registry);
-            let outputs = rls2fga::translator::Translation::plan(
-                classified,
-                &db,
-                &registry,
-                ConfidenceLevel::D,
-                &GeneratorSettings::default(),
-            )
-            .expect("translation should plan")
-            .outputs_accepting_gaps();
+            let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::D);
             assert_model_is_internally_consistent(&outputs.json_model());
         }
     }

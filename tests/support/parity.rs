@@ -16,8 +16,6 @@ use diesel::prelude::*;
 use diesel::sql_types::Jsonb;
 use testcontainers::{ContainerAsync, GenericImage};
 
-use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::translator::Translation;
 use rls2fga::types::{
     records_from_row, ActionAnswer, ActionRelations, ActionStatement, ConfidenceLevel,
     NoteSeverity, RowNaming, RowVersion, TableId, TranslationNote, ValueSource,
@@ -898,17 +896,16 @@ async fn run_in(
     apply_case(conn, case);
     let (planned, disclosed) = plan_case(case, expectation);
 
-    let answers = doctor(planned.action_relations().to_vec());
-    let naming = planned.row_naming().to_vec();
-    let outputs = planned.outputs_accepting_gaps();
+    let answers = doctor(planned.translation().action_relations().to_vec());
+    let naming = planned.translation().row_naming().to_vec();
 
     let objects = objects(conn, &naming, &case.not_read_directly);
     let tuples = if case.loading_from_rows {
-        tuples_replaying_pure_queries(conn, case, outputs.tuple_queries(), &objects)
+        tuples_replaying_pure_queries(conn, case, planned.tuple_queries(), &objects)
     } else {
-        super::execute_tuple_queries_for_parity(conn, outputs.tuple_queries())
+        super::execute_tuple_queries_for_parity(conn, planned.tuple_queries())
     };
-    let client = provision(cluster, case, &outputs.json_model(), &tuples).await;
+    let client = provision(cluster, case, &planned.json_model(), &tuples).await;
 
     let clock: Instant =
         diesel::sql_query("SELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF:00') AS instant")
@@ -946,20 +943,16 @@ fn apply_case(conn: &mut PgConnection, case: &ParityCase) {
 }
 
 /// Translate the case, and hold it to the class it declared.
-fn plan_case(case: &ParityCase, expectation: Class) -> (Translation, Vec<Disclosure>) {
+fn plan_case(
+    case: &ParityCase,
+    expectation: Class,
+) -> (rls2fga::translator::Outputs, Vec<Disclosure>) {
     let (classified, db, registry) = super::classify_with(
         &case.schema,
         case.registry_json.as_deref(),
         case.attributes_json.as_deref(),
     );
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
+    let planned = super::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let disclosed: Vec<Disclosure> = planned
         .notes()
         .iter()

@@ -6,10 +6,11 @@ use rls2fga::classifier::oracle::{
 use rls2fga::classifier::patterns::{
     ClassifiedExpr, ClassifiedPolicy, ConstantBool, ParentInheritance, PatternClass,
 };
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+
+mod support;
 use rls2fga::types::ConfidenceLevel;
 
 /// Answers the bit test this crate has no translation for, claiming every marked row is
@@ -54,29 +55,23 @@ fn translator() -> Translator {
 }
 
 fn dsl_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
-    rls2fga::translator::Translation::plan(
+    support::plan_at(
         classified.to_vec(),
         db,
         translator().registry(),
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
     .model()
 }
 
 fn tuples_of(db: &ParserDB, classified: &[ClassifiedPolicy]) -> String {
     format_tuples(
-        rls2fga::translator::Translation::plan(
+        support::plan_at(
             classified.to_vec(),
             db,
             translator().registry(),
             ConfidenceLevel::B,
-            &GeneratorSettings::default(),
         )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
         .tuple_queries(),
     )
 }
@@ -277,15 +272,12 @@ fn an_oracle_that_denies_deliberately_reports_no_gap() {
 /// Whether the report still claims the model is narrower than the database, which is
 /// the sentence a deliberate denial makes untrue.
 fn claims_the_model_is_narrower_than_rls(db: &ParserDB, classified: &[ClassifiedPolicy]) -> bool {
-    rls2fga::translator::Translation::plan(
+    support::plan_at(
         classified.to_vec(),
         db,
         translator().registry(),
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
     .notes()
     .iter()
     .any(|note| note.message().contains("the model denies what RLS grants"))

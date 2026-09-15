@@ -1,7 +1,5 @@
 use rls2fga::classifier::patterns::{DirectOwnership, ParentInheritance};
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -31,26 +29,9 @@ CREATE POLICY p ON projects FOR ALL TO PUBLIC USING (
 );
 ";
     let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
     let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).tuple_queries(),
     );
 
     assert!(
@@ -207,15 +188,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
         using.pattern
     );
 
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
     assert!(
         model.model().contains("type tasks"),
         "expected tasks type in model, got:\n{}",
@@ -231,16 +204,7 @@ CREATE POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (
     );
 
     let tuples = tuple_generator::format_tuples(
-        Translation::plan(
-            classified.clone(),
-            &db,
-            &registry,
-            ConfidenceLevel::D,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps()
-        .tuple_queries(),
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).tuple_queries(),
     );
     assert!(
         tuples.contains("'projects' AS relation"),
@@ -354,15 +318,7 @@ fn p2_role_in_list_generates_action_permissions() {
     let reg_json = support::read_fixture_registry_json("role_in_list");
 
     let (classified, db, registry) = support::classify_sql(&sql, Some(&reg_json));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.model().contains("define can_select:"),
@@ -402,15 +358,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.model().contains("define can_select: role_admin"),
@@ -450,15 +398,7 @@ CREATE POLICY p_select ON docs FOR SELECT TO PUBLIC
     }"#;
 
     let (classified, db, registry) = support::classify_sql(sql, Some(reg_json));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         !model.model().contains("define can_select: role_viewer"),

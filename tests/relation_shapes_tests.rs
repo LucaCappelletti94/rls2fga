@@ -404,21 +404,15 @@ fn every_relation_the_model_declares_is_reported() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
         let reported: BTreeSet<(TypeName, RelationName)> = planned
+            .translation()
             .relations()
             .iter()
             .map(|entry| (entry.type_name.clone(), entry.relation.clone()))
             .collect();
 
-        let outputs = planned.clone().outputs_accepting_gaps();
+        let outputs = &planned;
         let declared: BTreeSet<(TypeName, RelationName)> = outputs
             .json_model()
             .type_definitions
@@ -465,15 +459,7 @@ fn no_tuple_query_names_an_undeclared_relation() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
         let declared = declared_relations(&outputs.json_model());
 
         for query in outputs.tuple_queries() {
@@ -501,15 +487,7 @@ fn every_conditional_tuple_filters_its_context_columns() {
 
     for (fixture, db, registry) in tuple_contract_cases() {
         let classified = classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
         for query in outputs.tuple_queries() {
             if query.condition.is_none() {
@@ -543,15 +521,8 @@ fn no_relation_reports_the_same_shape_twice() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        for entry in planned.relations() {
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        for entry in planned.translation().relations() {
             for (index, shape) in entry.shapes.iter().enumerate() {
                 checked += 1;
                 assert!(
@@ -607,17 +578,16 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
     cases.push(("composite_key_grants".to_string(), db, registry));
 
     for (name, db, registry) in &cases {
-        let planned = Translation::plan(
+        let planned = support::plan_at(
             classify_policies(db, registry),
             db,
             registry,
             ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
+        );
         // Keyed by type, not by table: the same table is the object's own in one shape
         // and the join table of another type's shape in the next.
         let keys: Vec<(TableId, TypeName, Vec<ColumnName>)> = planned
+            .translation()
             .row_naming()
             .iter()
             .map(|naming| {
@@ -634,7 +604,7 @@ fn a_shape_naming_the_guarded_table_names_its_whole_key() {
             })
             .collect();
 
-        for entry in planned.relations() {
+        for entry in planned.translation().relations() {
             for shape in &entry.shapes {
                 let RecordDerivation::FromRow {
                     table, template, ..
@@ -689,15 +659,8 @@ fn every_row_derived_shape_reads_the_row_it_names() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        for entry in planned.relations() {
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        for entry in planned.translation().relations() {
             for shape in &entry.shapes {
                 let RecordDerivation::FromRow {
                     table, template, ..
@@ -749,15 +712,8 @@ fn every_row_derived_shape_reads_the_row_it_names() {
 #[test]
 fn a_constant_fact_is_reported_without_claiming_a_row_decides_it() {
     let (classified, db, registry) = support::try_load_fixture_classified("pg_role_gate");
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let shapes = planned.relations();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let shapes = planned.translation().relations();
 
     let roles = entry(shapes, PG_ROLE_SCOPE_TYPE, "roles");
     let [shape] = roles.shapes.as_slice() else {
@@ -863,18 +819,9 @@ fn a_bound_query_is_its_whole_table_query_plus_one_condition() {
 
     for (fixture, db, registry) in tuple_contract_cases() {
         let classified = classify_policies(&db, &registry);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let shapes = planned.relations();
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        let shapes = planned.translation().relations();
         let whole_table: Vec<String> = planned
-            .clone()
-            .outputs_accepting_gaps()
             .tuple_queries()
             .iter()
             .map(|query| query.sql.clone())
@@ -987,18 +934,14 @@ fn appended_predicate_identifier(sql: &str) -> String {
 #[test]
 fn a_bound_condition_quotes_its_column_the_way_the_query_does() {
     let (db, registry) = parsed(QUOTED_MEMBERSHIP, ACCESSOR_REGISTRY);
-    let planned = Translation::plan(
+    let planned = support::plan_at(
         classify_policies(&db, &registry),
         &db,
         &registry,
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let shapes = planned.relations();
+    );
+    let shapes = planned.translation().relations();
     let whole_table: Vec<String> = planned
-        .clone()
-        .outputs_accepting_gaps()
         .tuple_queries()
         .iter()
         .map(|query| query.sql.clone())
@@ -1523,16 +1466,8 @@ fn no_condition_is_shared_by_two_types() {
     let mut checked = 0usize;
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        let json = serde_json::to_string(&planned.outputs_accepting_gaps().json_model())
-            .expect("the model serializes");
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        let json = serde_json::to_string(&planned.json_model()).expect("the model serializes");
         let mut owners: std::collections::BTreeMap<String, BTreeSet<String>> =
             std::collections::BTreeMap::new();
         for (type_name, _, condition) in conditional_wildcards(&json) {
@@ -1563,15 +1498,7 @@ fn every_condition_parameter_is_supplied_by_its_own_tuples() {
     let residual = parsed_with_session_attributes(SQL_RESIDUAL_SHARE, EXPIRING_SHARE_ATTRIBUTES);
     for (fixture, db, registry) in [("sql-residual share".to_string(), residual.0, residual.1)] {
         let classified = classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
         let json = serde_json::to_string(&outputs.json_model()).expect("the model serializes");
         let model: serde_json::Value = serde_json::from_str(&json).expect("parses");
         let queries = outputs.tuple_queries();
@@ -1753,15 +1680,8 @@ fn a_recipe_is_reported_exactly_when_the_flag_says_one_row_decides() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        check(&fixture, planned.relations());
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        check(&fixture, planned.translation().relations());
     }
     for (label, sql) in [
         ("or_columns", OR_COLUMNS),
@@ -1909,15 +1829,8 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
-        for reported in planned.relations() {
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+        for reported in planned.translation().relations() {
             let Some(decision) = reported.decision.as_ref() else {
                 continue;
             };
@@ -2254,15 +2167,8 @@ CREATE POLICY a_team ON a.docs FOR SELECT USING (team_id = auth_current_user_id(
             }
         })
         .collect();
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let shapes = planned.relations();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let shapes = planned.translation().relations();
 
     for type_name in ["docs", "docs_09be04be"] {
         assert!(
@@ -2308,15 +2214,7 @@ fn every_declared_clause_reaches_the_summary_or_a_note_that_names_it() {
 
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
         let surviving: BTreeSet<String> = outputs
             .confidence_summary()
@@ -2506,16 +2404,10 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
 
     for (fixture, scars, decidable) in expected {
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
-        let planned = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan");
+        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
         let reported: Vec<String> = planned
+            .translation()
             .relations()
             .iter()
             .filter(|shape| shape.from_one_row)
@@ -2526,7 +2418,7 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
             "{fixture}: the relations the model fills from one row"
         );
 
-        let outputs = planned.outputs_accepting_gaps();
+        let outputs = &planned;
         let mut named: Vec<String> = outputs
             .notes()
             .iter()
@@ -2557,15 +2449,8 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
 #[test]
 fn a_share_recorded_elsewhere_settles_from_the_share_row() {
     let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let reported = planned.relations();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let reported = planned.translation().relations();
     let gate = reported
         .iter()
         .find(|shape| {
@@ -2640,8 +2525,7 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
         "the object key guards the share's own key, leaving the member NULL guard: {guards:?}"
     );
 
-    let json = serde_json::to_string(&planned.clone().outputs_accepting_gaps().json_model())
-        .expect("the model serializes");
+    let json = serde_json::to_string(&planned.json_model()).expect("the model serializes");
     let declared: Vec<String> = conditional_wildcards(&json)
         .into_iter()
         .filter(|(type_name, relation, _)| {
@@ -2663,15 +2547,7 @@ fn a_share_recorded_elsewhere_settles_from_the_share_row() {
 #[test]
 fn a_caller_set_share_gets_its_own_object_reached_by_userset() {
     let (classified, db, registry) = support::try_load_fixture_classified("connetto_capability");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let dsl = outputs.model();
 
     assert!(
@@ -3214,15 +3090,8 @@ fn every_replay_declares_the_slice_its_result_determines() {
     assert!(swept > 0, "the corpus produces joining shapes");
 
     let (classified, db, registry) = support::try_load_fixture_classified("earth_metabolome");
-    let planned = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan");
-    let reported = planned.relations();
+    let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
+    let reported = planned.translation().relations();
     let joined: Vec<&BoundQuery> = reported
         .iter()
         .flat_map(|entry| &entry.shapes)
@@ -3290,15 +3159,12 @@ CREATE POLICY docs_member ON public.docs FOR SELECT USING (
 
 fn resolved_membership_query() -> TupleQuery {
     let (db, registry) = parsed(RESOLVED_MEMBERSHIP, ACCESSOR_REGISTRY);
-    Translation::plan(
+    support::plan_at(
         classify_policies(&db, &registry),
         &db,
         &registry,
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
     )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
     .tuple_queries()
     .iter()
     .find(|query| query.sql.contains("lower("))
@@ -3388,15 +3254,7 @@ fn every_tuple_query_states_the_shape_of_its_own_rows() {
     cases.push(("expiring share".to_string(), expiring.0, expiring.1));
     for (fixture, db, registry) in cases {
         let classified = classify_policies(&db, &registry);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
         for query in outputs.tuple_queries() {
             let named = format!("{fixture}: {}", query.comment.trim());
             if query.skipped.is_some() {
@@ -3479,15 +3337,7 @@ fn every_request_scoped_gate_states_its_contract_with_the_caller() {
         ("function_carried_set", vec![("app_teams", Some(","))]),
     ] {
         let (classified, db, registry) = support::try_load_fixture_classified(fixture);
-        let outputs = Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
         let mut stated: Vec<(String, Option<String>)> = outputs
             .notes()
@@ -3538,15 +3388,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_unexpired ON docs FOR SELECT USING (expires_at > now());
 ";
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     assert!(
         outputs.notes().iter().any(|note| matches!(
             note,
@@ -3655,15 +3497,12 @@ CREATE POLICY docs_member ON docs FOR SELECT USING (
 #[test]
 fn unqualified_table_declaration_does_not_produce_search_path_dependent_sql() {
     let (db, registry) = parsed(UNQUALIFIED_MEMBERSHIPS, ACCESSOR_REGISTRY);
-    let outputs = Translation::plan(
+    let outputs = support::plan_at(
         classify_policies(&db, &registry),
         &db,
         &registry,
         ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    );
     for query in outputs.tuple_queries() {
         assert!(
             !query.sql.contains(r#"FROM "memberships""#),

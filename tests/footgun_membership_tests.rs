@@ -5,7 +5,6 @@
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::patterns::{ExistsMembership, PatternClass};
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
@@ -1036,15 +1035,7 @@ fn session_attr_plan(sql: &str) -> rls2fga::translator::Outputs {
         )])
         .build();
     let (classified, registry) = translator.classify_with_effective_registry(&db);
-    rls2fga::translator::Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
+    support::plan_at(classified, &db, &registry, ConfidenceLevel::B)
 }
 
 /// The sharing subquery reads its table as the caller, so that table's own rules decide

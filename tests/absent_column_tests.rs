@@ -177,15 +177,7 @@ fn no_generated_query_reads_a_column_its_table_does_not_declare() {
     let mut checked = 0usize;
     for fixture in support::fixture_names() {
         let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let outputs = rls2fga::translator::Translation::plan(
-            classified,
-            &db,
-            &registry,
-            ConfidenceLevel::B,
-            &rls2fga::generator::model_generator::GeneratorSettings::default(),
-        )
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
+        let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
         for query in outputs.tuple_queries() {
             let Some(description) = query.description.as_ref() else {

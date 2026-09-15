@@ -1,5 +1,3 @@
-use rls2fga::generator::model_generator::GeneratorSettings;
-use rls2fga::translator::Translation;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
@@ -8,15 +6,7 @@ mod support;
 fn multi_policy_table_combines_patterns_for_select() {
     let sql = support::read_fixture_sql("multi_policy_table");
     let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     // `author_id` yields an `author` relation, and the status check compares a column
     // against a literal constant, which the row decides, so it contributes the same
@@ -52,15 +42,7 @@ CREATE POLICY p_public ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC
   USING (is_public = TRUE);
 ";
     let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model
@@ -106,15 +88,7 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
     let reg_json = support::read_fixture_registry_json("earth_metabolome");
 
     let (classified, db, registry) = support::classify_sql(sql, Some(&reg_json));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         model.model().contains("define can_update_using:"),
@@ -191,15 +165,7 @@ CREATE POLICY p_all ON docs FOR ALL TO PUBLIC
   USING (owner_id = auth_current_user_id());
 ";
     let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     for action in ["can_select", "can_insert", "can_update", "can_delete"] {
         assert!(
@@ -225,15 +191,7 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 ";
 
     let (classified, db, registry) = support::classify_sql(sql, None);
-    let model = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let model = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D);
 
     assert!(
         !model.model().contains("TODO [Level D]"),
@@ -251,26 +209,9 @@ CREATE POLICY p_false ON docs AS RESTRICTIVE FOR SELECT TO PUBLIC USING (FALSE);
 fn json_and_dsl_are_semantically_aligned_for_composite() {
     let sql = support::read_fixture_sql("compound_or");
     let (classified, db, registry) = support::classify_sql(&sql, Some(support::ACCESSOR_REGISTRY));
-    let dsl = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .model();
-    let json = Translation::plan(
-        classified.clone(),
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps()
-    .json_model();
+    let dsl = support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).model();
+    let json =
+        support::plan_at(classified.clone(), &db, &registry, ConfidenceLevel::D).json_model();
 
     assert!(dsl.contains("type documents"), "dsl missing documents type");
     let doc_type = json
@@ -311,15 +252,7 @@ CREATE POLICY p_upd ON docs FOR UPDATE TO PUBLIC
   WITH CHECK (FALSE);
 ";
     let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::D,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::D);
     let report_md = outputs.report();
 
     assert!(

@@ -7,11 +7,10 @@
 use rls2fga::classifier::function_registry::FunctionRegistry;
 use rls2fga::classifier::patterns::ClassifiedPolicy;
 use rls2fga::classifier::policy_classifier;
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::generator::tuple_generator::{TupleCondition, TupleRow, TupleRowError};
 use rls2fga::generator::well_known::deny_relation;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
-use rls2fga::translator::{Outputs, Translation, TranslatorBuilder};
+use rls2fga::translator::{Outputs, TranslatorBuilder};
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::{records_from_row, Record, RecordDerivation};
 
@@ -209,15 +208,7 @@ fn a_condition_on_a_relation_that_names_none_is_refused() {
 #[test]
 fn a_gated_record_names_the_condition_its_tuple_has_to_carry() {
     let (classified, db, registry) = qualified_tenant_setting();
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let queries = outputs.tuple_queries();
     let query = queries
@@ -262,15 +253,7 @@ fn a_gated_record_names_the_condition_its_tuple_has_to_carry() {
 #[test]
 fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
     let (classified, db, registry) = support::try_load_fixture_classified("tenant_setting");
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let mut checked = 0usize;
     for query in outputs.tuple_queries() {
@@ -326,15 +309,7 @@ fn every_record_a_row_yields_survives_the_trip_through_its_own_sql_row() {
 #[test]
 fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
     let (classified, db, registry) = qualified_tenant_setting();
-    let outputs = Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
 
     let queries = outputs.tuple_queries();
     let query = queries

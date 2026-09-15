@@ -3,7 +3,6 @@
 //!
 //! Parent rules through a foreign key, `INHERITS` children, and partitions.
 
-use rls2fga::generator::model_generator::GeneratorSettings;
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
@@ -993,15 +992,7 @@ CREATE POLICY shares_insert ON paper_shares FOR INSERT WITH CHECK (
     let db = parse_schema(sql).expect("schema should parse");
     let translator = TranslatorBuilder::new().build();
     let (classified, registry) = translator.classify_with_effective_registry(&db);
-    let outputs = rls2fga::translator::Translation::plan(
-        classified,
-        &db,
-        &registry,
-        ConfidenceLevel::B,
-        &GeneratorSettings::default(),
-    )
-    .expect("translation should plan")
-    .outputs_accepting_gaps();
+    let outputs = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
     let model = outputs.model();
 
     assert!(
