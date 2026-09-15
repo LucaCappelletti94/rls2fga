@@ -95,7 +95,7 @@ pub(crate) fn row(pairs: &[(&str, &str)]) -> Row {
 /// Plan a classification at the given confidence bar, gaps and all.
 ///
 /// The level stays visible at every call because it decides which clauses earn a
-/// `TODO` note instead of silently shaping the model.
+/// gap note instead of silently shaping the model.
 pub(crate) fn plan_at(
     classified: Vec<ClassifiedPolicy>,
     db: &ParserDB,
