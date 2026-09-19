@@ -280,6 +280,7 @@ fn notes_for_policy(notes: &[TranslationNote], policy_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
     use crate::classifier::patterns::*;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
     use crate::types::{ColumnName, TableId};
@@ -397,6 +398,36 @@ CREATE POLICY {name} ON docs USING (TRUE);
             (
                 PatternClass::P10ConstantBool(ConstantBool { value: true }),
                 "P10 (constant true)",
+            ),
+            (
+                PatternClass::P14RowValueInCallerSet(RowValueInCallerSet {
+                    column: ColumnName::from_stored("owner"),
+                    separator: Some(",".to_string()),
+                    source: SessionAttribute::setting(
+                        "app.subjects",
+                        SessionAttributeKind::SetAttribute,
+                    ),
+                }),
+                "P14 (owner in caller set app_subjects)",
+            ),
+            (
+                PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+                    membership: ExistsMembership {
+                        join_table: TableId::from_stored(None, "shares".to_string()),
+                        pairs: vec![MembershipJoinPair {
+                            join_column: ColumnName::from_stored("paper_id"),
+                            outer_column: ColumnName::from_stored("id"),
+                        }],
+                        user_column: ColumnName::from_stored("viewer"),
+                        extra_predicates: ResidualPredicates::default(),
+                    },
+                    separator: Some(",".to_string()),
+                    source: SessionAttribute::setting(
+                        "app.subjects",
+                        SessionAttributeKind::SetAttribute,
+                    ),
+                }),
+                "P18 (shares.viewer in caller set app_subjects)",
             ),
             (
                 PatternClass::Unknown(UnclassifiedExpr {
