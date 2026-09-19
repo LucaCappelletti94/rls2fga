@@ -335,7 +335,7 @@ pub struct ExistsMembership {
     /// The equalities linking the scanned table to the guarded table, ordered by
     /// the key that names the parent object.
     pub pairs: Vec<MembershipJoinPair>,
-    /// Column of `join_table` identifying the user.
+    /// Column of `join_table` holding the member the row grants to.
     pub user_column: ColumnName,
     /// Residual filter such as `role = 'admin'`, structured where a row
     /// image alone decides it.
@@ -502,26 +502,18 @@ pub struct CallerScalarEqualsConstant {
 /// to contain: `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND
 /// s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ',')))`.
 ///
-/// The membership row is the table's authority and the set is the request's, so the
-/// grant is a request-completed gate on the parent rather than a subject named by
-/// the row: the member value is not a person.
+/// The membership is the one [`ExistsMembership`] describes, compared against the
+/// caller's set rather than the caller. Who completes that comparison is the
+/// generator's [`CallerSetCompletion`](crate::generator::model_generator::CallerSetCompletion).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MembershipInCallerSet {
-    /// Table whose rows record the grants.
-    pub join_table: TableId,
-    /// Column of `join_table` naming the guarded row.
-    pub fk_column: ColumnName,
-    /// Column of the guarded table the policy compares against `fk_column`.
-    pub outer_column: ColumnName,
-    /// Column of `join_table` holding the value the caller's set must contain.
-    pub member_column: ColumnName,
+    /// The membership row and its bridge to the guarded row, whose
+    /// [`user_column`](ExistsMembership::user_column) holds the value the set must contain.
+    pub membership: ExistsMembership,
     /// Separator the policy splits the setting on, absent for a list source.
     pub separator: Option<String>,
     /// The declared source, carrying the parameter the caller supplies.
     pub source: SessionAttribute,
-    /// Residual filter on the membership row, structured where a row image
-    /// alone decides it.
-    pub extra_predicates: ResidualPredicates,
 }
 
 /// No known pattern matched.

@@ -23,14 +23,15 @@ use crate::no_std_prelude::*;
 
 use sqlparser::ast::Expr;
 
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::{
-    filter_policies_for_output, ClassifiedExpr, ClassifiedPolicy, ConfidenceLevel, PatternClass,
-    PolicyCommand, PolicyMode, UnclassifiedExpr,
+    filter_policies_for_output, AbacAnd, ClassifiedExpr, ClassifiedPolicy, Composite,
+    ConfidenceLevel, ExpandedFunction, MembershipInCallerSet, ParentInheritance, PatternClass,
+    PolicyCommand, PolicyMode, RowValueInCallerSet, UnclassifiedExpr,
 };
 use crate::classifier::policy_classifier::classify_expr;
 use crate::generator::model_generator::{
-    build_plan_typing, GeneratorSettings, SchemaPlan, TypeScope, UsersetExpr,
+    build_plan_typing, CallerSetCompletion, GeneratorSettings, SchemaPlan, TypeScope, UsersetExpr,
 };
 use crate::generator::relations::relation_shapes;
 use crate::generator::row_naming::row_naming;
@@ -54,6 +55,8 @@ pub struct TermShapes {
     pub object_type: TypeName,
     /// How a row of that type reaches the caller the filter admits it for.
     pub chain: TermChain,
+    /// Which of the caller's values the chain's last record is matched against.
+    pub caller: TermCaller,
     /// The relations the chain names, with the shapes whose records fill them. Same
     /// meaning as [`crate::translator::Translation::relations`], and exactly the shapes a
     /// consumer's store has to keep current.
@@ -84,6 +87,26 @@ pub enum TermChain {
         through_type: TypeName,
         /// Relation on `through_type` whose records name the caller.
         member: RelationName,
+    },
+}
+
+/// Which of the caller's values a record's subject is matched against.
+///
+/// Both compile to the same subject-keyed records, since the consumer holds the values
+/// and runs the comparison itself. What differs is the comparison the filter's own SQL
+/// runs, and a consumer that ran the other one would answer the filter differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermCaller {
+    /// The caller's identity: a record names the caller when its subject is the caller.
+    Identity,
+    /// The set a declared `SetAttribute` holds: a record names the caller when its
+    /// subject is any element of it.
+    Subjects {
+        /// The declaration the filter reads the set from.
+        source: SessionAttribute,
+        /// Separator the filter splits the setting on, absent where the source is
+        /// already a list.
+        separator: Option<String>,
     },
 }
 
@@ -130,11 +153,17 @@ pub fn describe_membership_term<DB: DatabaseLike>(
 
     let policy = synthetic_policy(guarded_table, expr, &classified, db);
     let bounds = UnboundedColumns::resolve(db);
+    // The consumer holds the caller's subjects and matches a record against them, so a
+    // declared set names the caller here rather than travelling as a request parameter.
+    let settings = GeneratorSettings {
+        caller_set: CallerSetCompletion::Subjects,
+        ..GeneratorSettings::default()
+    };
     let plan = build_plan_typing(
         &filter_policies_for_output(&[policy], min_confidence),
         db,
         registry,
-        &GeneratorSettings::default(),
+        &settings,
         &bounds,
         TypeScope::AndAlso(guarded_table),
     )
@@ -207,6 +236,29 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         })
     })?;
 
+    // Asked before the rule shape, since two caller sides collapse onto one relation and
+    // the union then looks like the chain.
+    let mut callers = term_callers(&classified);
+    let caller = match callers.len() {
+        1 => callers.swap_remove(0),
+        0 => {
+            return Err(refuse(format!(
+                "nothing in this filter names the caller a row of '{guarded_table}' is \
+                 admitted for"
+            )))
+        }
+        _ => {
+            return Err(refuse(format!(
+                "this filter compares the caller more than one way ({}), and one chain of \
+                 records is matched one way",
+                callers
+                    .iter()
+                    .map(TermCaller::describe)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        }
+    };
     // The chain answers the filter only when it is the whole rule. An intersection asks
     // for more than the chain reaches, and a union is satisfied without it, so serving
     // the chain alone is a wrong allow in one direction or a wrong deny in the other.
@@ -217,6 +269,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
     Ok(TermShapes {
         object_type,
         chain,
+        caller,
         relations: named,
         notes: plan
             .notes
@@ -224,6 +277,77 @@ pub fn describe_membership_term<DB: DatabaseLike>(
             .filter(describes_the_filter)
             .collect(),
     })
+}
+
+impl TermCaller {
+    /// The comparison, worded for a refusal.
+    fn describe(&self) -> String {
+        match self {
+            Self::Identity => "its identity".to_string(),
+            Self::Subjects { source, .. } => {
+                format!("the set current_setting('{}') holds", source.setting_key())
+            }
+        }
+    }
+}
+
+/// The distinct caller sides the filter compares against, in the order first met.
+///
+/// Every leaf naming the caller answers. Leaves naming nobody (a flag, an attribute, a
+/// constant, a request-completed gate) are silent, since the chain they are refused or
+/// admitted beside is what names the caller.
+fn term_callers(classified: &ClassifiedExpr) -> Vec<TermCaller> {
+    let mut found: Vec<TermCaller> = Vec::new();
+    let mut leaves = vec![classified];
+    while let Some(leaf) = leaves.pop() {
+        let caller = match &leaf.pattern {
+            PatternClass::P14RowValueInCallerSet(RowValueInCallerSet {
+                source, separator, ..
+            })
+            | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+                source,
+                separator,
+                ..
+            }) => TermCaller::Subjects {
+                source: source.clone(),
+                separator: separator.clone(),
+            },
+            PatternClass::P1NumericThreshold(_)
+            | PatternClass::P2RoleNameInList(_)
+            | PatternClass::P3DirectOwnership(_)
+            | PatternClass::P4ExistsMembership(_)
+            | PatternClass::P11ArrayMembership(_)
+            | PatternClass::P12JsonbFieldOwnership(_)
+            | PatternClass::P13UncorrelatedMembership(_) => TermCaller::Identity,
+            PatternClass::P5ParentInheritance(ParentInheritance { inner_pattern, .. })
+            | PatternClass::ExpandedFunction(ExpandedFunction {
+                inner: inner_pattern,
+                ..
+            })
+            | PatternClass::P7AbacAnd(AbacAnd {
+                relationship_part: inner_pattern,
+                ..
+            }) => {
+                leaves.push(inner_pattern);
+                continue;
+            }
+            PatternClass::P8Composite(Composite { parts, .. }) => {
+                leaves.extend(parts.iter().rev());
+                continue;
+            }
+            PatternClass::P6BooleanFlag(_)
+            | PatternClass::P9AttributeCondition(_)
+            | PatternClass::P10ConstantBool(_)
+            | PatternClass::P15RowValueEqualsCallerScalar(_)
+            | PatternClass::P16ConstantInCallerSet(_)
+            | PatternClass::P17CallerScalarEqualsConstant(_)
+            | PatternClass::Unknown(_) => continue,
+        };
+        if !found.contains(&caller) {
+            found.push(caller);
+        }
+    }
+    found
 }
 
 /// Whether a note says something about the compiled filter rather than about the

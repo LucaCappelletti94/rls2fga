@@ -627,6 +627,13 @@ fn classify_expr_inner<DB: DatabaseLike>(
         };
     }
 
+    // A set read that no declaration covers is refused naming the declaration, since the
+    // splitter and the setting reader it calls are not what is missing.
+    let undeclared_sets = recognizers::undeclared_set_reads(expr, registry);
+    if !undeclared_sets.is_empty() {
+        return unknown_d(expr, undeclared_sets.join(". "));
+    }
+
     let mut blamed: Vec<String> = recognizers::subquery_set_constructors(expr)
         .into_iter()
         .map(|name| describe_set_constructor(&name))
@@ -1121,7 +1128,9 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
     }
 
     /// `ARRAY(subquery)` parses as a function named `array`, so blaming it as a call sent
-    /// the operator after a registry entry that cannot exist.
+    /// the operator after a registry entry that cannot exist. A projection that reads a
+    /// setting as a set is blamed on the missing declaration instead, since declaring it
+    /// is what makes the constructor translate.
     #[test]
     fn a_set_the_array_constructor_builds_is_not_blamed_on_a_missing_function() {
         let db = docs_db();
@@ -1131,7 +1140,7 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
                          current_setting('request.jwt.claims')::jsonb -> 'teams')))";
         let function_set = "owner_id = ANY (ARRAY(SELECT user_teams()))";
 
-        for expr_sql in [claim_set, function_set] {
+        let reason_for = |expr_sql: &str| {
             let expr = parse_expr(expr_sql);
             let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
             let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
@@ -1141,23 +1150,27 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
                 );
             };
             assert!(
-                reason.contains("'array(subquery)'"),
-                "`{expr_sql}`: the reason must name the constructor, got: {reason}"
-            );
-            assert!(
                 !reason.contains("Function 'array'"),
                 "`{expr_sql}`: a constructor is not a call an operator can register, got: {reason}"
             );
             assert_eq!(classified.confidence, ConfidenceLevel::D, "`{expr_sql}`");
-        }
+            reason.clone()
+        };
+
+        let reason = reason_for(claim_set);
+        assert!(
+            reason.contains("field 'teams' of current_setting('request.jwt.claims')")
+                && reason.contains("no SetAttribute declares it"),
+            "the declaration is what is missing, got: {reason}"
+        );
 
         // The genuine call inside the second spelling still earns its own blame, so the
         // constructor arm cannot pass by silencing everything under it.
-        let expr = parse_expr(function_set);
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        let PatternClass::Unknown(UnclassifiedExpr { reason, .. }) = &classified.pattern else {
-            panic!("expected Unknown, got {:?}", classified.pattern);
-        };
+        let reason = reason_for(function_set);
+        assert!(
+            reason.contains("'array(subquery)'"),
+            "the reason must name the constructor, got: {reason}"
+        );
         assert!(
             reason.contains("Function 'user_teams' not in registry"),
             "an unregistered function is still named, got: {reason}"

@@ -32,6 +32,28 @@ pub(crate) fn emit_row_ownership<DB: DatabaseLike>(
     UsersetExpr::Computed(relation)
 }
 
+/// A column of the row naming the caller, which is P3 and a caller set the caller's
+/// subjects complete.
+pub(crate) fn emit_direct_ownership<DB: DatabaseLike>(
+    column: &ColumnName,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+) -> UsersetExpr {
+    emit_row_ownership(
+        column.as_str(),
+        column.as_str(),
+        "ownership tuples",
+        ctx,
+        table_plan,
+        |identity_cols, relation| TupleSource::DirectOwnership {
+            table: ctx.source_table.clone(),
+            identity_cols,
+            owner_col: column.clone(),
+            relation,
+        },
+    )
+}
+
 /// Structural identity of a boolean flag gate: every P6 spelling loads `col = TRUE`.
 fn flag_gate_key(column: &ColumnName) -> String {
     format!("flag:{}:{}", column.as_str().len(), column.as_str())

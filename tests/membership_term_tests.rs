@@ -8,7 +8,7 @@ use rls2fga::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
 };
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
-use rls2fga::term::{describe_membership_term, TermChain, TermShapes};
+use rls2fga::term::{describe_membership_term, TermCaller, TermChain, TermShapes};
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::RelationName;
@@ -28,6 +28,17 @@ CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES ord
 
 const CALLER: &str = "current_setting('app.user_id', true)";
 
+/// The set of subjects the caller holds, declared as one.
+const SUBJECTS: &str = "ANY(string_to_array(current_setting('app.subjects', true), ','))";
+
+/// The request's schema for the set spellings: a membership table keyed on both its
+/// columns, and a filtered table naming an owner and a project.
+const PROJECTS: &str = "
+CREATE TABLE projects(id INTEGER PRIMARY KEY, name TEXT);
+CREATE TABLE project_members(project_id INTEGER REFERENCES projects(id), user_id TEXT, PRIMARY KEY(project_id, user_id));
+CREATE TABLE docs(id INTEGER PRIMARY KEY, project_id INTEGER, title TEXT, owner TEXT);
+";
+
 fn parse_term(sql: &str) -> Expr {
     Parser::new(&PostgreSqlDialect {})
         .try_with_sql(sql)
@@ -38,7 +49,10 @@ fn parse_term(sql: &str) -> Expr {
 
 fn registry() -> FunctionRegistry {
     let mut registry = FunctionRegistry::new();
-    registry.trust_current_user_setting_keys(["app.user_id"]);
+    registry.declare_session_attributes([
+        SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+        SessionAttribute::setting("app.subjects", SessionAttributeKind::SetAttribute),
+    ]);
     registry
 }
 
@@ -49,8 +63,18 @@ fn compile_on(schema: &str, table: &str, term: &str, min: ConfidenceLevel) -> Te
 }
 
 fn refuse_on(schema: &str, table: &str, term: &str, min: ConfidenceLevel) -> String {
+    refuse_with(schema, table, term, min, &registry())
+}
+
+fn refuse_with(
+    schema: &str,
+    table: &str,
+    term: &str,
+    min: ConfidenceLevel,
+    registry: &FunctionRegistry,
+) -> String {
     let db: ParserDB = parse_schema(schema).expect("the schema should parse");
-    match describe_membership_term(&parse_term(term), &db, &registry(), table, min) {
+    match describe_membership_term(&parse_term(term), &db, registry, table, min) {
         Ok(shapes) => panic!("the term should be refused, compiled to {:?}", shapes.chain),
         Err(refusal) => refusal.reason,
     }
@@ -643,4 +667,194 @@ CREATE TABLE line_items(id INTEGER PRIMARY KEY, sku TEXT, status TEXT);
         ("line_items".to_string(), "sku".to_string()),
         "the link reads the column the filter compares, not the one it is named after"
     );
+}
+
+/// A declared caller set names the caller on this surface: the consumer holds the
+/// subjects and matches a record's subject against them, so the records answering the
+/// set spelling are the records answering the identity spelling. Only the caller side
+/// the shapes report differs, so the consumer knows which comparison the SQL runs.
+#[test]
+fn a_declared_set_names_the_caller_on_an_ownership_term() {
+    let identity = compile_on(
+        PROJECTS,
+        "docs",
+        &format!("owner = {CALLER}"),
+        ConfidenceLevel::B,
+    );
+    let set = compile_on(
+        PROJECTS,
+        "docs",
+        &format!("owner = {SUBJECTS}"),
+        ConfidenceLevel::B,
+    );
+
+    assert_eq!(
+        set.chain,
+        TermChain::Direct {
+            relation: RelationName::canonicalized("owner")
+        }
+    );
+    assert_eq!(set.chain, identity.chain);
+    assert_eq!(set.relations, identity.relations);
+    assert_eq!(identity.caller, TermCaller::Identity);
+    let TermCaller::Subjects { source, separator } = &set.caller else {
+        panic!(
+            "the set spelling names the caller by its subjects, got {:?}",
+            set.caller
+        );
+    };
+    assert_eq!(source.setting_key(), "app.subjects");
+    assert_eq!(separator.as_deref(), Some(","));
+
+    // The row valued spelling of the same set is the same set.
+    let unnested = compile_on(
+        PROJECTS,
+        "docs",
+        "owner IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')))",
+        ConfidenceLevel::B,
+    );
+    assert_eq!(unnested, set);
+}
+
+/// The same through a membership table: a membership row whose member the caller's set
+/// holds names one of the caller's subjects, in both spellings of the subquery.
+#[test]
+fn a_declared_set_names_the_caller_on_a_membership_term() {
+    let identity = compile_on(
+        PROJECTS,
+        "docs",
+        &format!("project_id IN (SELECT project_id FROM project_members WHERE user_id = {CALLER})"),
+        ConfidenceLevel::B,
+    );
+    let TermChain::Through {
+        link,
+        through_type,
+        member,
+    } = &identity.chain
+    else {
+        panic!("the identity membership reaches the caller through its project: {identity:?}");
+    };
+    assert_eq!(through_type, "projects");
+
+    for spelling in [
+        format!(
+            "project_id IN (SELECT project_id FROM project_members WHERE user_id = {SUBJECTS})"
+        ),
+        format!(
+            "EXISTS (SELECT 1 FROM project_members pm \
+             WHERE pm.project_id = docs.project_id AND pm.user_id = {SUBJECTS})"
+        ),
+    ] {
+        let set = compile_on(PROJECTS, "docs", &spelling, ConfidenceLevel::B);
+        assert_eq!(set.chain, identity.chain, "{spelling}");
+        assert_eq!(set.relations, identity.relations, "{spelling}");
+        assert_eq!(
+            row_shape(entry(&set, "docs", link)),
+            ("docs".to_string(), "project_id".to_string())
+        );
+        assert_eq!(
+            row_shape(entry(&set, "projects", member)),
+            ("project_members".to_string(), "user_id".to_string())
+        );
+        assert!(
+            matches!(&set.caller, TermCaller::Subjects { source, .. }
+                if source.setting_key() == "app.subjects"),
+            "{spelling} names the caller by its subjects, got {:?}",
+            set.caller
+        );
+    }
+}
+
+/// A set membership joined on every column of a composite key is the same membership
+/// the identity spelling states, so both links compile as they do for one column.
+#[test]
+fn a_declared_set_membership_on_a_composite_key_names_both_links() {
+    const TENANTED: &str = "
+CREATE TABLE tenants(id INT PRIMARY KEY);
+CREATE TABLE papers(tenant_id INT NOT NULL REFERENCES tenants(id), id INT NOT NULL, PRIMARY KEY(tenant_id, id));
+CREATE TABLE shares(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+    PRIMARY KEY(tenant_id, paper_id, viewer),
+    FOREIGN KEY (tenant_id, paper_id) REFERENCES papers(tenant_id, id));
+";
+    let membership = |caller: &str| {
+        format!(
+            "EXISTS (SELECT 1 FROM shares s WHERE s.tenant_id = papers.tenant_id \
+             AND s.paper_id = papers.id AND s.viewer = {caller})"
+        )
+    };
+    let identity = compile_on(TENANTED, "papers", &membership(CALLER), ConfidenceLevel::B);
+    let set = compile_on(
+        TENANTED,
+        "papers",
+        &membership(SUBJECTS),
+        ConfidenceLevel::B,
+    );
+    assert_eq!(set.chain, identity.chain);
+    assert_eq!(set.relations, identity.relations);
+    assert!(matches!(set.caller, TermCaller::Subjects { .. }));
+}
+
+/// A filter comparing the caller's identity in one arm and its subjects in the other
+/// names the caller two ways, and a consumer matches one chain of records one way. Both
+/// arms mint the same relation, so the rule shape alone would not tell them apart.
+#[test]
+fn a_filter_comparing_the_caller_two_ways_is_refused() {
+    let reason = refuse_on(
+        PROJECTS,
+        "docs",
+        &format!("owner = {CALLER} OR owner = {SUBJECTS}"),
+        ConfidenceLevel::B,
+    );
+    assert!(
+        reason.contains("its identity") && reason.contains("current_setting('app.subjects')"),
+        "the refusal names both comparisons, got: {reason}"
+    );
+}
+
+/// Only a declared set names the caller. A declared single value is still the request's
+/// half of a gate, so a tenant filter compiles to no chain of records here either.
+#[test]
+fn a_declared_single_value_still_compiles_to_no_chain() {
+    let mut registry = registry();
+    registry.declare_session_attributes([SessionAttribute::setting(
+        "app.tenant_id",
+        SessionAttributeKind::ScalarAttribute,
+    )]);
+    let reason = refuse_with(
+        "CREATE TABLE docs(id INTEGER PRIMARY KEY, tenant_id TEXT);",
+        "docs",
+        "tenant_id = current_setting('app.tenant_id', true)",
+        ConfidenceLevel::B,
+        &registry,
+    );
+    assert!(
+        reason.contains("nothing about a row of 'docs' decides this filter"),
+        "one value is not the caller, got: {reason}"
+    );
+}
+
+/// A set read that nothing declares is refused naming the declaration it lacks, since
+/// the missing piece is the declaration and not a function body.
+#[test]
+fn an_undeclared_set_is_refused_naming_the_declaration() {
+    let mut undeclared = FunctionRegistry::new();
+    undeclared.trust_current_user_setting_keys(["app.user_id"]);
+    for spelling in [
+        format!("owner = {SUBJECTS}"),
+        format!(
+            "project_id IN (SELECT project_id FROM project_members WHERE user_id = {SUBJECTS})"
+        ),
+    ] {
+        let reason = refuse_with(PROJECTS, "docs", &spelling, ConfidenceLevel::B, &undeclared);
+        assert!(
+            reason.contains("current_setting('app.subjects')")
+                && reason.contains("read as a set")
+                && reason.contains("SetAttribute"),
+            "{spelling}: the refusal names the missing declaration, got: {reason}"
+        );
+        assert!(
+            !reason.contains("string_to_array"),
+            "{spelling}: the splitter is not what is missing, got: {reason}"
+        );
+    }
 }

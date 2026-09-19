@@ -10,6 +10,7 @@
 //! never copied into tuples. The row supplies its own value as tuple context, the request
 //! supplies what only it knows, and a condition relates them.
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -324,6 +325,66 @@ fn resolve_declared_set(
     Some((attribute, source.separator))
 }
 
+/// Why every set `expr` compares against stays unclassified, where the deployment did
+/// not declare that set as one.
+///
+/// Answers for diagnosis, after recognition failed: the splitter and the setting reader
+/// are then not what is missing, the declaration is.
+pub(crate) fn undeclared_set_reads(expr: &Expr, registry: &FunctionRegistry) -> Vec<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_expressions(expr, |node| {
+        let source = match node {
+            Expr::AnyOp {
+                compare_op: BinaryOperator::Eq,
+                right,
+                ..
+            } => array_valued_set(right, registry),
+            Expr::InSubquery {
+                subquery,
+                negated: false,
+                ..
+            } => {
+                sole_projection(subquery).and_then(|projected| row_valued_set(projected, registry))
+            }
+            _ => None,
+        };
+        if let Some(reason) = source.and_then(|source| undeclared_set_reason(&source, registry)) {
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    reasons
+}
+
+/// Why `source`, read as a set, resolves to no set declaration, or `None` when it does.
+fn undeclared_set_reason(source: &SetSource, registry: &FunctionRegistry) -> Option<String> {
+    let read = if source.path.is_empty() {
+        format!("current_setting('{}')", source.key)
+    } else {
+        format!(
+            "field '{}' of current_setting('{}')",
+            source.path.join("."),
+            source.key
+        )
+    };
+    let declared = match registry
+        .session_attribute(&source.key, &source.path)
+        .map(SessionAttribute::kind)
+    {
+        None => "no SetAttribute declares it",
+        Some(SessionAttributeKind::ScalarAttribute) => {
+            "it is declared as one value (ScalarAttribute), not as a SetAttribute"
+        }
+        Some(SessionAttributeKind::CallerId) => {
+            "it is declared as the caller (CallerId), not as a SetAttribute"
+        }
+        Some(SessionAttributeKind::SetAttribute) => return None,
+    };
+    Some(format!("{read} is read as a set and {declared}"))
+}
+
 /// The declaration behind whatever `expr` reads, however the deployment spelled it.
 fn declared_source<'r>(
     expr: &Expr,
@@ -388,6 +449,28 @@ mod tests {
         assert!(
             recognize_session_attribute(&expr, &registry).is_none(),
             "one value is not a set"
+        );
+        assert_eq!(
+            undeclared_set_reads(&expr, &registry),
+            vec![
+                "current_setting('app.tenant_id') is read as a set and it is declared as one \
+                 value (ScalarAttribute), not as a SetAttribute"
+                    .to_string()
+            ],
+            "the refusal names the kind the deployment declared"
+        );
+
+        let registry = registry_with(vec![SessionAttribute::setting(
+            "app.tenant_id",
+            SessionAttributeKind::CallerId,
+        )]);
+        assert_eq!(
+            undeclared_set_reads(&expr, &registry),
+            vec![
+                "current_setting('app.tenant_id') is read as a set and it is declared as the \
+                 caller (CallerId), not as a SetAttribute"
+                    .to_string()
+            ]
         );
     }
 
