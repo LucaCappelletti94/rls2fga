@@ -236,14 +236,8 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         })
     })?;
 
-    // The chain answers the filter only when it is the whole rule. An intersection asks
-    // for more than the chain reaches, and a union is satisfied without it, so serving
-    // the chain alone is a wrong allow in one direction or a wrong deny in the other.
-    if let Some(reason) = rule_beyond_the_chain(&plan, &object_type, &chain) {
-        return Err(refuse(reason));
-    }
-    // The records are the same either way, so the shapes cannot say which comparison
-    // the SQL runs. Read off the classification instead.
+    // Asked before the rule shape, since two caller sides collapse onto one relation and
+    // the union then looks like the chain.
     let mut callers = term_callers(&classified);
     let caller = match callers.len() {
         1 => callers.swap_remove(0),
@@ -265,6 +259,12 @@ pub fn describe_membership_term<DB: DatabaseLike>(
             )))
         }
     };
+    // The chain answers the filter only when it is the whole rule. An intersection asks
+    // for more than the chain reaches, and a union is satisfied without it, so serving
+    // the chain alone is a wrong allow in one direction or a wrong deny in the other.
+    if let Some(reason) = rule_beyond_the_chain(&plan, &object_type, &chain) {
+        return Err(refuse(reason));
+    }
     let named = chain_relations(&relations, &object_type, &chain);
     Ok(TermShapes {
         object_type,

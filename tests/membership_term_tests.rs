@@ -795,7 +795,8 @@ CREATE TABLE shares(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT N
 }
 
 /// A filter comparing the caller's identity in one arm and its subjects in the other
-/// names the caller two ways, and a consumer matches one chain of records one way.
+/// names the caller two ways, and a consumer matches one chain of records one way. Both
+/// arms mint the same relation, so the rule shape alone would not tell them apart.
 #[test]
 fn a_filter_comparing_the_caller_two_ways_is_refused() {
     let reason = refuse_on(
@@ -805,8 +806,30 @@ fn a_filter_comparing_the_caller_two_ways_is_refused() {
         ConfidenceLevel::B,
     );
     assert!(
-        reason.contains("more than one way"),
-        "the refusal says the filter is answered two ways, got: {reason}"
+        reason.contains("its identity") && reason.contains("current_setting('app.subjects')"),
+        "the refusal names both comparisons, got: {reason}"
+    );
+}
+
+/// Only a declared set names the caller. A declared single value is still the request's
+/// half of a gate, so a tenant filter compiles to no chain of records here either.
+#[test]
+fn a_declared_single_value_still_compiles_to_no_chain() {
+    let mut registry = registry();
+    registry.declare_session_attributes([SessionAttribute::setting(
+        "app.tenant_id",
+        SessionAttributeKind::ScalarAttribute,
+    )]);
+    let reason = refuse_with(
+        "CREATE TABLE docs(id INTEGER PRIMARY KEY, tenant_id TEXT);",
+        "docs",
+        "tenant_id = current_setting('app.tenant_id', true)",
+        ConfidenceLevel::B,
+        &registry,
+    );
+    assert!(
+        reason.contains("nothing about a row of 'docs' decides this filter"),
+        "one value is not the caller, got: {reason}"
     );
 }
 
