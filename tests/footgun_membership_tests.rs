@@ -1225,3 +1225,44 @@ CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
         outputs.model()
     );
 }
+
+/// The request-scoped gate names the guarded row by one column of the share table, so a
+/// share joined on every column of a composite key classifies as the membership it is
+/// and falls closed where the gate is minted, naming the width it cannot carry.
+#[test]
+fn a_request_gate_bridged_on_a_composite_key_is_refused() {
+    let db = db_of(
+        "CREATE TABLE papers(tenant_id INT NOT NULL, id INT NOT NULL, PRIMARY KEY(tenant_id, id));
+CREATE TABLE shares(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
+    PRIMARY KEY(tenant_id, paper_id, viewer));
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
+  SELECT 1 FROM shares s WHERE s.tenant_id = papers.tenant_id AND s.paper_id = papers.id
+    AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+    );
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes(vec![SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+
+    assert!(
+        outputs.notes().iter().any(|note| {
+            matches!(note, TranslationNote::ExpressionRefused { reason, .. }
+                if reason.contains("correlates 2 columns of shares"))
+        }),
+        "the refusal has to name the width the gate cannot carry: {:?}",
+        outputs.notes()
+    );
+    assert!(
+        relation_denies(&outputs.model(), "papers", "can_select"),
+        "a gate with no single bridge column has to fall closed:\n{}",
+        outputs.model()
+    );
+}

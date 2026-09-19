@@ -983,25 +983,19 @@ fn classify_membership_select<DB: DatabaseLike>(
                     member_match: MemberMatch::InCallerSet { source, separator },
                     extra_predicates,
                 },
-        } => {
-            // The set gate hangs off one bridge column, so a caller-set membership
-            // joined on several columns falls closed.
-            let [pair] = pairs.as_slice() else {
-                return None;
-            };
-            Some(ClassifiedExpr {
-                pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+        } => Some(ClassifiedExpr {
+            pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+                membership: ExistsMembership {
                     join_table: resolve_table_id(db, &join_table)?,
-                    fk_column: pair.join_column.clone(),
-                    outer_column: pair.outer_column.clone(),
-                    member_column: user_column,
-                    separator,
-                    source,
+                    pairs,
+                    user_column,
                     extra_predicates,
-                }),
-                confidence: ConfidenceLevel::A,
-            })
-        }
+                },
+                separator,
+                source,
+            }),
+            confidence: ConfidenceLevel::A,
+        }),
         MembershipSelectAnalysis::Uncorrelated {
             member_table,
             user_column,

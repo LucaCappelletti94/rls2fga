@@ -376,7 +376,8 @@ pub(crate) fn emit_request_gate<DB: DatabaseLike>(
     })
 }
 
-/// A membership row whose member value the caller's declared set has to contain.
+/// A membership row whose member value the caller's declared set has to contain,
+/// completed by the request.
 pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     membership_in_caller_set: &MembershipInCallerSet,
     ctx: &PatternCtx<'_, DB>,
@@ -386,17 +387,36 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let MembershipInCallerSet {
-        join_table,
-        fk_column,
-        outer_column,
-        member_column,
+        membership:
+            ExistsMembership {
+                join_table,
+                pairs,
+                user_column: member_column,
+                extra_predicates,
+            },
         separator,
         source,
-        extra_predicates,
     } = membership_in_caller_set;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
     let source_table = ctx.source_table;
+    // The gate names the guarded row by one column of the join table, so a grant bridged
+    // on several columns has no single column to hang it on.
+    let [MembershipJoinPair {
+        join_column: fk_column,
+        outer_column,
+    }] = pairs.as_slice()
+    else {
+        notes.push(TranslationNote::ExpressionRefused {
+            policy: policy_name.to_string(),
+            reason: format!(
+                "the policy correlates {} columns of {join_table}, and a request-scoped gate \
+                 names the row the grant is on by one",
+                pairs.len()
+            ),
+        });
+        return deny_expr(table_plan);
+    };
     // The bridge names the guarded row by the join table's own column, so that column has
     // to hold the row's identifier. Correlated against anything else, the object named is
     // another row's, or no row at all.

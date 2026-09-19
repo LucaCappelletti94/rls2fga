@@ -889,14 +889,17 @@ CREATE POLICY p ON papers FOR SELECT USING (
         matches!(
             &classified[0].1,
             PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
-                join_table,
-                fk_column,
-                member_column,
+                membership: ExistsMembership {
+                    join_table,
+                    pairs,
+                    user_column,
+                    ..
+                },
                 source,
                 ..
             }) if join_table.name() == "paper_shares"
-                && fk_column == "paper_id"
-                && member_column == "viewer"
+                && matches!(pairs.as_slice(), [pair] if pair.join_column == "paper_id")
+                && user_column == "viewer"
                 && source.request_parameter() == "app_subjects"
         ),
         "a share row naming a key the caller holds is the grant, got {:?}",

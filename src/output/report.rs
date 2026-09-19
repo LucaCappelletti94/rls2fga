@@ -217,12 +217,16 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
             format!("P10 (constant {value})")
         }
         PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
-            join_table,
-            member_column,
+            membership:
+                ExistsMembership {
+                    join_table,
+                    user_column,
+                    ..
+                },
             source,
             ..
         }) => format!(
-            "P18 ({join_table}.{member_column} in caller set {})",
+            "P18 ({join_table}.{user_column} in caller set {})",
             source.request_parameter()
         ),
         PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, source, .. }) => {

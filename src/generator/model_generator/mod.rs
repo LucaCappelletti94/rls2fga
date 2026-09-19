@@ -74,8 +74,8 @@ use emit_membership::{
     emit_uncorrelated_membership,
 };
 use emit_ownership::{
-    emit_attribute_condition, emit_boolean_flag, emit_constant_bool, emit_row_ownership,
-    emit_row_presence_gate, emit_unclassified,
+    emit_attribute_condition, emit_boolean_flag, emit_constant_bool, emit_direct_ownership,
+    emit_row_ownership, emit_row_presence_gate, emit_unclassified,
 };
 use emit_requests::{
     conditional_gate_expr, declare_temporal_condition, emit_membership_in_caller_set,
@@ -537,6 +537,8 @@ pub struct GeneratorSettings {
     pub request_time_parameter: ConditionParameterName,
     /// Type names the generator treats as its own vocabulary.
     pub well_known: WellKnownTypes,
+    /// Who completes a comparison against a declared caller set.
+    pub caller_set: CallerSetCompletion,
 }
 
 impl Default for GeneratorSettings {
@@ -544,8 +546,25 @@ impl Default for GeneratorSettings {
         Self {
             request_time_parameter: ConditionParameterName::derived(REQUEST_TIME_PARAMETER),
             well_known: WellKnownTypes::default(),
+            caller_set: CallerSetCompletion::Request,
         }
     }
+}
+
+/// Who completes a comparison against a set the deployment declared the caller holds
+/// (`owner = ANY(string_to_array(current_setting('app.subjects', true), ','))`).
+///
+/// A check names one subject, so the set cannot be the subject of a tuple. What it can be
+/// depends on who evaluates the model: a service completing the comparison from the
+/// request, or a consumer that holds the subjects and matches a record against them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerSetCompletion {
+    /// The request supplies the set as a condition parameter and the tuple carries the
+    /// row's value, so the comparison runs inside the check.
+    Request,
+    /// The set is the subjects the caller holds, so the row's value names one of them
+    /// and the record is keyed on it exactly as an identity comparison is.
+    Subjects,
 }
 
 #[derive(Debug, Clone)]
@@ -2386,19 +2405,9 @@ fn translate_pattern<DB: DatabaseLike>(
         PatternClass::P2RoleNameInList(role_name_in_list) => {
             emit_role_name_in_list(role_name_in_list, ctx, table_plan, all_types, notes)
         }
-        PatternClass::P3DirectOwnership(DirectOwnership { column }) => emit_row_ownership(
-            column.as_str(),
-            column.as_str(),
-            "ownership tuples",
-            ctx,
-            table_plan,
-            |identity_cols, relation| TupleSource::DirectOwnership {
-                table: source_table.clone(),
-                identity_cols,
-                owner_col: column.clone(),
-                relation,
-            },
-        ),
+        PatternClass::P3DirectOwnership(DirectOwnership { column }) => {
+            emit_direct_ownership(column, ctx, table_plan)
+        }
         PatternClass::P11ArrayMembership(ArrayMembership { column }) => emit_row_ownership(
             column.as_str(),
             column.as_str(),
@@ -2437,6 +2446,11 @@ fn translate_pattern<DB: DatabaseLike>(
                 notes,
                 readability,
             )
+        }
+        PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { membership, .. })
+            if ctx.settings.caller_set == CallerSetCompletion::Subjects =>
+        {
+            emit_exists_membership(membership, ctx, table_plan, all_types, notes, readability)
         }
         PatternClass::P18MembershipInCallerSet(membership_in_caller_set) => {
             emit_membership_in_caller_set(
@@ -2512,6 +2526,11 @@ fn translate_pattern<DB: DatabaseLike>(
         }
         PatternClass::P10ConstantBool(constant_bool) => {
             emit_constant_bool(constant_bool, ctx, table_plan)
+        }
+        PatternClass::P14RowValueInCallerSet(RowValueInCallerSet { column, .. })
+            if ctx.settings.caller_set == CallerSetCompletion::Subjects =>
+        {
+            emit_direct_ownership(column, ctx, table_plan)
         }
         PatternClass::P14RowValueInCallerSet(RowValueInCallerSet {
             column,
