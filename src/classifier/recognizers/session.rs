@@ -450,6 +450,28 @@ mod tests {
             recognize_session_attribute(&expr, &registry).is_none(),
             "one value is not a set"
         );
+        assert_eq!(
+            undeclared_set_reads(&expr, &registry),
+            vec![
+                "current_setting('app.tenant_id') is read as a set and it is declared as one \
+                 value (ScalarAttribute), not as a SetAttribute"
+                    .to_string()
+            ],
+            "the refusal names the kind the deployment declared"
+        );
+
+        let registry = registry_with(vec![SessionAttribute::setting(
+            "app.tenant_id",
+            SessionAttributeKind::CallerId,
+        )]);
+        assert_eq!(
+            undeclared_set_reads(&expr, &registry),
+            vec![
+                "current_setting('app.tenant_id') is read as a set and it is declared as the \
+                 caller (CallerId), not as a SetAttribute"
+                    .to_string()
+            ]
+        );
     }
 
     /// A cast to an array splits on `PostgreSQL`'s array literal syntax rather than on a
