@@ -2049,16 +2049,26 @@ fn analyze_membership_eq_predicate(
     join_cols: &[String],
     registry: &FunctionRegistry,
 ) -> MembershipEqAnalysis {
-    // `s.viewer = ANY(string_to_array(<declared set>, ','))`: the membership row holds a
-    // grant the caller may carry rather than the caller itself.
-    if let Expr::AnyOp {
-        left,
-        compare_op: BinaryOperator::Eq,
-        right,
-        ..
-    } = predicate
-    {
-        if let Some((qualifier, column)) = extract_qualified_column(left) {
+    // The membership row holds a grant the caller may carry rather than the caller, in
+    // either spelling of the set: `= ANY(string_to_array(...))` or `IN (SELECT unnest(...))`.
+    let in_caller_set = match predicate {
+        Expr::AnyOp {
+            left,
+            compare_op: BinaryOperator::Eq,
+            right,
+            ..
+        } => Some((left, caller_set(right, registry))),
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated: false,
+        } => Some((expr, caller_set_in_subquery(subquery, registry))),
+        _ => None,
+    };
+    if let Some((tested, declared)) = in_caller_set {
+        if let (Some((qualifier, column)), Some((source, separator))) =
+            (extract_qualified_column(tested), declared)
+        {
             if is_join_column_ref(
                 qualifier.as_deref(),
                 column.as_str(),
@@ -2066,15 +2076,13 @@ fn analyze_membership_eq_predicate(
                 join_alias,
                 join_cols,
             ) {
-                if let Some((source, separator)) = caller_set(right, registry) {
-                    return MembershipEqAnalysis::UserColumn(
-                        column,
-                        MemberMatch::InCallerSet {
-                            source: source.clone(),
-                            separator,
-                        },
-                    );
-                }
+                return MembershipEqAnalysis::UserColumn(
+                    column,
+                    MemberMatch::InCallerSet {
+                        source: source.clone(),
+                        separator,
+                    },
+                );
             }
         }
         return MembershipEqAnalysis::NotRelevant;

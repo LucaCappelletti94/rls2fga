@@ -76,7 +76,7 @@ fn set_membership_in_subquery(expr: &Expr, registry: &FunctionRegistry) -> Optio
     else {
         return None;
     };
-    let (source, separator) = caller_row_set(sole_projection(subquery)?, registry)?;
+    let (source, separator) = caller_set_in_subquery(subquery, registry)?;
     tested_against_set(left, source, separator)
 }
 
@@ -303,12 +303,12 @@ pub(crate) fn caller_set<'r>(
     resolve_declared_set(array_valued_set(expr, registry)?, registry)
 }
 
-/// The declared set a row valued expression yields.
-fn caller_row_set<'r>(
-    expr: &Expr,
+/// The declared set a subquery projects, which is what `IN (SELECT ...)` takes.
+pub(crate) fn caller_set_in_subquery<'r>(
+    query: &Query,
     registry: &'r FunctionRegistry,
 ) -> Option<(&'r SessionAttribute, Option<String>)> {
-    resolve_declared_set(row_valued_set(expr, registry)?, registry)
+    resolve_declared_set(row_valued_set(sole_projection(query)?, registry)?, registry)
 }
 
 /// The declaration a named source resolves to, when the deployment declared it a set.

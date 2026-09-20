@@ -1272,6 +1272,39 @@ CREATE POLICY items_p ON items FOR SELECT USING (
     assert!(bridges("items", "teams"), "each item links to its team");
 }
 
+/// `IN (SELECT unnest(...))` reads the same database as `= ANY(string_to_array(...))`, and
+/// the direct comparison already lands both on one pattern, so a membership row compared
+/// either way is one membership with one model.
+#[test]
+fn a_row_valued_set_spelling_is_the_same_membership_as_the_array_valued_one() {
+    const SCHEMA: &str = "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, team_id INT REFERENCES teams(id),
+                           PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, team_id INT NOT NULL REFERENCES teams(id));
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_p ON items FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members
+          WHERE team_members.team_id = items.team_id
+            AND team_members.member ";
+    let array_valued = session_attr_plan(&format!(
+        "{SCHEMA}= ANY(string_to_array(current_setting('app.subjects', true), ','))));"
+    ));
+    let row_valued = session_attr_plan(&format!(
+        "{SCHEMA}IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')))));"
+    ));
+    assert_eq!(
+        row_valued.model(),
+        array_valued.model(),
+        "one database, one model"
+    );
+    assert_eq!(
+        format_tuples(row_valued.tuple_queries()),
+        format_tuples(array_valued.tuple_queries()),
+        "one database, one set of facts"
+    );
+}
+
 /// A correlation on a column that is no key of either table groups the guarded rows by
 /// the value they share, which is the parent the identity spelling already reaches them
 /// through. The caller-set spelling takes the same route.
