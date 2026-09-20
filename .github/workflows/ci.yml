@@ -86,7 +86,7 @@ jobs:
             fuzz
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
         with:
           tool: cargo-fuzz
 
@@ -171,7 +171,7 @@ jobs:
         run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: lcov.info
           fail_ci_if_error: true
