@@ -108,6 +108,38 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
     );
 }
 
+/// A uniquely keyed membership on another table keeps the direct form there too, so the
+/// clock rides the parent's `member` as a conditioned subject rather than a witness.
+#[test]
+fn a_uniquely_keyed_membership_conditions_the_parents_member() {
+    let sql = "
+CREATE TABLE projects(id TEXT PRIMARY KEY);
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id));
+CREATE TABLE project_members(project_id TEXT NOT NULL REFERENCES projects(id),
+  user_id TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (project_id, user_id));
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p ON tasks FOR SELECT USING (EXISTS (
+  SELECT 1 FROM project_members m WHERE m.project_id = tasks.project_id
+    AND m.user_id = current_user AND m.expires_at > now()));
+";
+    let (dsl, _) = model_and_tuples(sql);
+    assert!(
+        !dsl.contains("project_members_share"),
+        "a uniquely keyed row needs no witness object:\n{dsl}"
+    );
+    let member = relation_definition(&dsl, "projects", "member")
+        .expect("the parent defines the member relation");
+    assert!(
+        member.starts_with("[user with when_") && member.ends_with(']'),
+        "the parent admits its member only through the clock:\n{dsl}"
+    );
+    assert_eq!(
+        relation_definition(&dsl, "tasks", "can_select").as_deref(),
+        Some("member from projects"),
+        "tasks reach the conditioned member through the project:\n{dsl}"
+    );
+}
+
 /// The membership's parent is another table, so the witness chain must ride the
 /// existing parent indirection: tasks reach projects, projects reach the witnesses.
 #[test]
