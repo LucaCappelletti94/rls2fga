@@ -4,7 +4,9 @@
 //! a condition rather than in the tuple's subject. Also the conditions an attribute guard needs
 //! when the value is one only the request knows.
 
-use super::emit_membership::announce_residual;
+use super::emit_membership::{
+    announce_residual, link_share_rows, share_reach, MembershipParent, ShareRows,
+};
 use super::*;
 
 /// Mint the relation, the condition and the tuple source a declared request-scoped
@@ -400,36 +402,6 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let policy_name = ctx.policy_name;
     let db = ctx.db;
     let source_table = ctx.source_table;
-    // The gate names the guarded row by one column of the join table, so a grant bridged
-    // on several columns has no single column to hang it on.
-    let [MembershipJoinPair {
-        join_column: fk_column,
-        outer_column,
-    }] = pairs.as_slice()
-    else {
-        notes.push(TranslationNote::ExpressionRefused {
-            policy: policy_name.to_string(),
-            reason: format!(
-                "the policy correlates {} columns of {join_table}, and a request-scoped gate \
-                 names the row the grant is on by one",
-                pairs.len()
-            ),
-        });
-        return deny_expr(table_plan);
-    };
-    // The bridge names the guarded row by the join table's own column, so that column has
-    // to hold the row's identifier. Correlated against anything else, the object named is
-    // another row's, or no row at all.
-    if single_identity_column(source_table, db).as_ref() != Some(outer_column) {
-        notes.push(TranslationNote::ExpressionRefused {
-            policy: policy_name.to_string(),
-            reason: format!(
-                "the policy correlates '{outer_column}', which does not identify a \
-                     row of {source_table}, so no tuple can name the row the grant is on"
-            ),
-        });
-        return deny_expr(table_plan);
-    }
     // The subquery reads `join_table` as the caller, so its own RLS decides which
     // membership rows count, exactly as it does for a membership naming a person.
     let Some(read_scope_roles) = noted_membership_read_scope(join_table, ctx, readability, notes)
@@ -437,9 +409,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         return deny_expr(table_plan);
     };
     if !read_scope_roles.is_empty() {
-        // Only those roles see the membership rows, so only they inherit the
-        // grant. This shape has no rule for intersecting a role scope with a
-        // request-completed gate, so it falls closed rather than widening.
+        // No rule intersects a role scope with a request-completed gate, so fall closed.
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
             reason: format!(
@@ -450,9 +420,10 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         });
         return deny_expr(table_plan);
     }
-    // Each share row becomes its own object, keyed on the join table's own primary key, so
-    // two viewers of one guarded row never collide on one `(user:*, gate, object)` triple.
-    // With no key to name the share rows apart, that collision is unavoidable, so refuse.
+    let Some(parent) = MembershipParent::resolve(pairs, join_table, ctx, table_plan, notes) else {
+        return deny_expr(table_plan);
+    };
+    // One object per share row, or two viewers of one row collide on one gate tuple.
     let Some(identity_cols) = resolve_row_identity(join_table, db) else {
         notes.push(TranslationNote::ExpressionRefused {
             policy: policy_name.to_string(),
@@ -519,8 +490,8 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         },
     };
 
-    // The gate rides the share type, keyed on the share row. The guarded type links to it
-    // and reaches the gate by tuple-to-userset, so two viewers union rather than collide.
+    // The gate rides the share type, keyed on the share row, so two viewers of one
+    // guarded row union through the link rather than collide on one tuple.
     let share_type = share_type_name(join_table, ctx.table_types);
     let (gate_relation, condition) = {
         let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
@@ -562,23 +533,25 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     if let Some(share_plan) = all_types.get_mut(&share_type) {
         share_plan.add_source(gate_source.clone());
     }
-
-    let guarded_type = table_plan.type_name.clone();
-    let link_relation = table_plan.ensure_direct(
-        clamp_relation_name(share_type.to_string()),
-        vec![DirectSubject::Type(share_type.clone())],
-    );
     table_plan.add_source(gate_source);
-    table_plan.add_source(TupleSource::ShareBridge {
-        join_table: join_table.clone(),
-        identity_cols,
-        object_cols: vec![fk_column.clone()],
-        guarded_type,
-        share_type,
-        relation: link_relation.clone(),
-    });
+
+    let share = ShareRows {
+        join_table,
+        identity_cols: &identity_cols,
+        fk_cols: &parent.fk_cols(),
+        share_type: &share_type,
+    };
+    if parent.is_self(table_plan) {
+        let link = link_share_rows(table_plan, &share);
+        return share_reach(link, gate_relation);
+    }
+    // The parent reaches the gate under the gate's own name, one per policy.
+    let parent_plan = parent.plan(all_types, &ctx.settings.well_known);
+    let link = link_share_rows(parent_plan, &share);
+    let reached =
+        parent_plan.ensure_computed(gate_relation.to_string(), share_reach(link, gate_relation));
     UsersetExpr::TupleToUserset {
-        tupleset: link_relation,
-        computed: gate_relation,
+        tupleset: parent.bridge_from(table_plan, source_table),
+        computed: reached,
     }
 }

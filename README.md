@@ -125,7 +125,7 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 | P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, equality against the caller's value |
 | P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, no column takes part |
 | P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, caller's value against a constant |
-| P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(...))` | The gate on the membership row, refused unless the correlated column is the guarded table's single primary key |
+| P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(...))` | The gate on each share row, reached through the same parent P4 bridges to |
 | - | `Unknown` | Anything else | Denied, with a TODO, unless an oracle classifies it |
 
 ## What the crate refuses

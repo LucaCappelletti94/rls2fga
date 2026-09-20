@@ -90,6 +90,7 @@ async fn every_parity_case_agrees() {
             a_role_scoped_membership_read_gates_the_parent,
             a_noinherit_member_of_a_scoped_role_reads_nothing,
             a_shared_paper_reads_through_either_arm,
+            a_team_share_reaches_items_through_the_team,
             a_token_claim_list_grants_by_membership,
             one_shared_grant_ladder_answers_two_thresholds,
             three_refused_spellings_fall_closed,
@@ -2032,6 +2033,48 @@ async fn a_shared_paper_reads_through_either_arm(cluster: Arc<Cluster>) {
         ],
     )
     .await;
+}
+
+/// The share arm correlated on the team an item belongs to rather than on the item, so the
+/// gate rides the membership row and the item reaches it through its team.
+async fn a_team_share_reaches_items_through_the_team(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-team-share",
+        "connetto_team_share",
+        &[
+            // Team 1 is granted to a key alice carries, team 2 to one dave carries.
+            "INSERT INTO teams (id) VALUES (1), (2);
+             INSERT INTO team_members (team_id, member) VALUES (1, 'team-a'), (2, 'team-z');
+             INSERT INTO items (id, owner, team_id) VALUES
+                 (1, 'alice', 1), (2, 'bob', 1), (3, 'bob', 2)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON items, teams, team_members TO app_reader",
+        ],
+        vec![
+            user_holder("alice", "app_reader", &["team-a"]),
+            user_holder("dave", "app_reader", &["team-z"]),
+            user_holder("carol", "app_reader", &[]),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "items:1", true),
+        ("alice", "items:2", true),
+        ("alice", "items:3", false),
+        ("dave", "items:3", true),
+        ("dave", "items:2", false),
+        ("carol", "items:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
 }
 
 /// Ported from `token_claim_set_parity_postgres18_and_openfga`.

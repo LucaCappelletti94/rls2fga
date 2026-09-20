@@ -610,6 +610,17 @@ fn generate_connetto_capability_model_and_tuples() {
     );
 }
 
+/// The caller-set share reached through a parent, the one shape of the family where the
+/// gate rides the share row and the guarded row reaches it through the team it belongs to.
+#[test]
+fn generate_connetto_team_share_model_and_tuples() {
+    fixture_model_and_tuples(
+        "connetto_team_share",
+        &support::try_load_fixture_registry("connetto_team_share"),
+        ConfidenceLevel::B,
+    );
+}
+
 /// The holder family, which no fixture emitted and no snapshot pinned.
 ///
 /// An uncorrelated membership admits every row at once, so the generator stands one holder
