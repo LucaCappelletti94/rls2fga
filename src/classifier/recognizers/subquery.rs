@@ -1951,7 +1951,7 @@ pub(super) fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
 /// The two are not interchangeable: a column holding the caller is a subject a tuple can
 /// name, while a column holding a grant the caller carries is not a person at all, so
 /// reading one as the other would declare grant keys to be users.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) enum MemberMatch {
     /// The column holds the caller's own identity.
     Caller,
@@ -2232,7 +2232,9 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         let pred = analyzed.predicate;
         match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(col, how) => {
-                user_col = Some((col.clone(), how.clone()));
+                if !name_member(&mut user_col, col, how) {
+                    return None;
+                }
                 continue;
             }
             MembershipEqAnalysis::FkCandidate {
@@ -2297,8 +2299,8 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         }
         match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(col, how) => {
-                if user_col.is_none() {
-                    user_col = Some((col.clone(), how.clone()));
+                if !name_member(&mut user_col, col, how) {
+                    return None;
                 }
             }
             MembershipEqAnalysis::FkCandidate {
@@ -2331,6 +2333,20 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         member_match,
         extra_predicates,
     })
+}
+
+/// Record the column naming the member, or report that a different one already does.
+///
+/// A membership carries one member column. The same comparison written twice is one
+/// condition, while a second column or a second way of matching the same column is a
+/// condition the row would lose, leaving the grant resting on half the policy.
+fn name_member(
+    member: &mut Option<(ColumnName, MemberMatch)>,
+    column: &ColumnName,
+    how: &MemberMatch,
+) -> bool {
+    let (named, matched) = member.get_or_insert_with(|| (column.clone(), how.clone()));
+    named == column && matched == how
 }
 fn is_join_column_ref(
     qualifier: Option<&str>,

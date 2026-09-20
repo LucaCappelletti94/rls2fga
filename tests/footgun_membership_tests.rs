@@ -17,7 +17,7 @@ mod support;
 
 use support::footgun::{
     db_of, membership_translation, pg_role_relation, relation_definition, relation_definitions,
-    scope_admits_role, translation, translator, tuples_reading_from, type_names,
+    relation_denies, scope_admits_role, translation, translator, tuples_reading_from, type_names,
     CORRELATION_SCHEMA,
 };
 
@@ -1303,6 +1303,61 @@ CREATE POLICY items_p ON items FOR SELECT USING (
         format_tuples(array_valued.tuple_queries()),
         "one database, one set of facts"
     );
+}
+
+/// Two comparisons naming the caller in one membership row are two conditions the
+/// database requires together. A membership carries one member column, so the shape
+/// falls closed rather than keeping the last comparison and granting on it alone.
+#[test]
+fn a_membership_row_compared_to_the_caller_twice_falls_closed() {
+    const SCHEMA: &str = "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, role TEXT NOT NULL,
+                           team_id INT REFERENCES teams(id), PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, team_id INT NOT NULL REFERENCES teams(id));
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+";
+    for (label, using) in [
+        (
+            "a person and a key",
+            "EXISTS (SELECT 1 FROM team_members
+               WHERE team_members.team_id = items.team_id
+                 AND team_members.member = current_setting('app.user_id', true)
+                 AND team_members.role = ANY(string_to_array(current_setting('app.subjects', true), ',')))",
+        ),
+        (
+            "a person twice",
+            "EXISTS (SELECT 1 FROM team_members
+               WHERE team_members.team_id = items.team_id
+                 AND team_members.member = current_setting('app.user_id', true)
+                 AND team_members.role = current_setting('app.user_id', true))",
+        ),
+        (
+            "a person in the join and a key in the filter",
+            "items.team_id IN (SELECT tm.team_id FROM team_members tm
+               JOIN teams t ON t.id = tm.team_id AND tm.member = current_setting('app.user_id', true)
+               WHERE tm.role = ANY(string_to_array(current_setting('app.subjects', true), ',')))",
+        ),
+    ] {
+        let db = db_of(&format!(
+            "{SCHEMA}CREATE POLICY items_p ON items FOR SELECT USING ({using});"
+        ));
+        let outputs = TranslatorBuilder::new()
+            .with_min_confidence(ConfidenceLevel::B)
+            .with_session_attributes([
+                SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+                SessionAttribute::setting("app.subjects", SessionAttributeKind::SetAttribute),
+            ])
+            .build()
+            .translate(&db)
+            .expect("translation should plan")
+            .outputs_accepting_gaps();
+        assert!(
+            relation_denies(&outputs.model(), "items", "can_select"),
+            "{label}: neither comparison alone is the policy, so the shape falls closed:\n{}",
+            outputs.model()
+        );
+    }
 }
 
 /// A correlation on a column that is no key of either table groups the guarded rows by

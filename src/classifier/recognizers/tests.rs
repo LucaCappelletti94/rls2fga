@@ -3984,11 +3984,9 @@ fn selection_references_current_user_returns_false_without_selection() {
     );
 }
 
-// Additional: extract_membership_columns ON-clause user detection where
-// user_col is already set (second user predicate in ON) → skipped but no error
+/// The same caller comparison written in both `ON` and `WHERE` is one condition.
 #[test]
-fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
-    // Both WHERE and ON have user predicates. The first one wins.
+fn extract_membership_columns_keeps_a_repeated_identical_member_comparison() {
     let select = parse_select(
         "SELECT dm.doc_id FROM doc_labels l
              JOIN doc_members dm ON dm.user_id = auth_current_user_id()
@@ -4002,10 +4000,30 @@ fn extract_membership_columns_on_clause_duplicate_user_col_is_ignored() {
         "role".to_string(),
     ];
     let result = membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry);
-    assert!(result.is_some());
-    let (pairs, user, _) = result.unwrap();
+    let (pairs, user, _) = result.expect("one condition written twice is still the shape");
     assert!(matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id"));
     assert_eq!(user, "user_id");
+}
+
+/// Two columns compared to the caller are two conditions, and a membership names one
+/// member column, so keeping either alone would grant on half the policy.
+#[test]
+fn extract_membership_columns_refuses_two_member_columns() {
+    let select = parse_select(
+        "SELECT dm.doc_id FROM doc_members dm
+             WHERE dm.doc_id = docs.id
+               AND dm.user_id = auth_current_user_id()
+               AND dm.role = auth_current_user_id()",
+    );
+    let registry = registry_with_role_level();
+    let cols = vec![
+        "doc_id".to_string(),
+        "user_id".to_string(),
+        "role".to_string(),
+    ];
+    assert!(
+        membership_columns(&select, "doc_members", Some("dm"), &cols, "docs", &registry).is_none()
+    );
 }
 
 // Additional: diagnose_p4 for EXISTS with a non-Select body
