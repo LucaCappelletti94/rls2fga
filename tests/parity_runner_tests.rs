@@ -93,6 +93,8 @@ async fn every_parity_case_agrees() {
             a_team_share_reaches_items_through_the_team,
             a_batch_share_grants_every_paper_of_the_batch,
             a_composite_key_share_in_the_callers_set_stays_within_its_tenant,
+            a_row_valued_set_share_reaches_items_through_the_team,
+            a_membership_row_compared_to_the_caller_twice_denies_either_half,
             a_token_claim_list_grants_by_membership,
             one_shared_grant_ladder_answers_two_thresholds,
             three_refused_spellings_fall_closed,
@@ -2179,6 +2181,104 @@ CREATE POLICY papers_visible ON tenant_papers FOR SELECT USING (EXISTS (
         );
     }
     assert_agrees(&case, &run);
+}
+
+/// The membership row compared with `IN (SELECT unnest(...))` reads the same set as the
+/// `= ANY(string_to_array(...))` spelling, so it grants the same readers the same items.
+async fn a_row_valued_set_share_reaches_items_through_the_team(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-row-valued-team-share",
+        "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, team_id INT REFERENCES teams(id),
+                           PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, team_id INT NOT NULL REFERENCES teams(id));
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_p ON items FOR SELECT USING (EXISTS (
+    SELECT 1 FROM team_members
+    WHERE team_members.team_id = items.team_id
+      AND team_members.member IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')))));
+",
+        &[
+            "INSERT INTO teams (id) VALUES (1), (2);
+             INSERT INTO team_members (team_id, member) VALUES (1, 'team-a'), (2, 'team-z');
+             INSERT INTO items (id, team_id) VALUES (1, 1), (2, 1), (3, 2)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON items, teams, team_members TO app_reader",
+        ],
+        vec![
+            subject_holder("alice", &["team-a"]),
+            subject_holder("dave", &["team-z"]),
+            subject_holder("carol", &[]),
+        ],
+    )
+    .with_attributes(SUBJECTS_ONLY);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "items:1", true),
+        ("alice", "items:2", true),
+        ("alice", "items:3", false),
+        ("dave", "items:3", true),
+        ("dave", "items:1", false),
+        ("carol", "items:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// A membership row compared to the caller on two columns requires both in the database.
+/// Keeping the last comparison alone granted whoever matched it, so the shape now falls
+/// closed, and a caller matching either column alone is denied on both sides.
+async fn a_membership_row_compared_to_the_caller_twice_denies_either_half(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-two-member-columns",
+        "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, role TEXT NOT NULL,
+                           team_id INT REFERENCES teams(id), PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, team_id INT NOT NULL REFERENCES teams(id));
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_p ON items FOR SELECT USING (EXISTS (
+    SELECT 1 FROM team_members
+    WHERE team_members.team_id = items.team_id
+      AND team_members.member = current_setting('app.user_id', true)
+      AND team_members.role = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+        &[
+            // alice is the member but holds no key, dave holds the key but is not the member.
+            "INSERT INTO teams (id) VALUES (1);
+             INSERT INTO team_members (team_id, member, role) VALUES (1, 'alice', 'team-a');
+             INSERT INTO items (id, team_id) VALUES (1, 1)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON items, teams, team_members TO app_reader",
+        ],
+        vec![
+            user_holder("alice", "app_reader", &[]),
+            user_holder("dave", "app_reader", &["team-a"]),
+        ],
+    )
+    .with_attributes(CALLER_AND_SUBJECTS);
+    let run = support::parity::run_disclosing(&cluster, &case).await;
+    for subject in ["alice", "dave"] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            "items:1",
+            ActionStatement::Select,
+            false,
+        );
+    }
+    support::parity::assert_discloses(&case, &run, &["items"]);
+    support::parity::assert_disclosed_where_noted(&case, &run);
 }
 
 /// Ported from `token_claim_set_parity_postgres18_and_openfga`.
