@@ -1,0 +1,4 @@
+[
+  { "key": "app.user_id", "kind": "caller_id" },
+  { "key": "app.subjects", "kind": "set_attribute" }
+]

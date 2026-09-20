@@ -263,6 +263,149 @@ fn apply_membership_read_scope<DB: DatabaseLike>(
     scoped_policy_expr(membership, &scope_relation)
 }
 
+/// The parent a membership bridges the guarded row to, decided once for every spelling
+/// of the member comparison.
+pub(super) struct MembershipParent {
+    /// The pairs in the order that names one parent object.
+    pub(super) pairs: Vec<MembershipJoinPair>,
+    pub(super) parent_type: TypeName,
+    /// The table whose rows the parent names, absent for the guarded row itself and for a
+    /// type named after a column.
+    row_source: Option<TableId>,
+}
+
+impl MembershipParent {
+    /// Resolve the pairing and the bridge to the parent it names, falling closed with the
+    /// reason recorded where neither can be.
+    pub(super) fn resolve<DB: DatabaseLike>(
+        pairs: &[MembershipJoinPair],
+        join_table: &TableId,
+        ctx: &PatternCtx<'_, DB>,
+        table_plan: &mut TypePlan,
+        notes: &mut Vec<TranslationNote>,
+    ) -> Option<Self> {
+        let db = ctx.db;
+        let (pairs, pairing) =
+            match resolve_membership_pairing(pairs.to_vec(), join_table, ctx.source_table, db) {
+                Ok(resolved) => resolved,
+                Err(reason) => {
+                    notes.push(TranslationNote::ExpressionRefused {
+                        policy: ctx.policy_name.to_string(),
+                        reason,
+                    });
+                    return None;
+                }
+            };
+        let (parent_type, row_source) = match (&pairing, pairs.as_slice()) {
+            // A declared reference names the table, and only then are its rows the parent's.
+            (MembershipPairing::Single, [pair]) => {
+                match referenced_table_for_fk_col(db, join_table, &pair.join_column) {
+                    Some(referenced) => (ctx.table_types.resolve(&referenced), Some(referenced)),
+                    None => (parent_type_from_fk_column(pair.join_column.as_str()), None),
+                }
+            }
+            (MembershipPairing::Single, _) => return None,
+            (MembershipPairing::ForeignKey { parent_table }, _) => (
+                ctx.table_types.resolve(parent_table),
+                Some(parent_table.clone()),
+            ),
+            (MembershipPairing::SelfKeyed, _) => (table_plan.type_name.clone(), None),
+        };
+        let parent = Self {
+            pairs,
+            parent_type,
+            row_source,
+        };
+        bridge_is_buildable(
+            table_plan,
+            ctx.source_table,
+            &parent.outer_cols(),
+            &parent.parent_type,
+            db,
+        )
+        .then_some(parent)
+    }
+
+    pub(super) fn is_self(&self, table_plan: &TypePlan) -> bool {
+        self.parent_type == table_plan.type_name
+    }
+
+    /// The join table's columns naming the parent, in the parent key's order.
+    pub(super) fn fk_cols(&self) -> Vec<ColumnName> {
+        self.pairs
+            .iter()
+            .map(|pair| pair.join_column.clone())
+            .collect()
+    }
+
+    /// The guarded table's columns the bridge to the parent reads.
+    pub(super) fn outer_cols(&self) -> Vec<ColumnName> {
+        self.pairs
+            .iter()
+            .map(|pair| pair.outer_column.clone())
+            .collect()
+    }
+
+    /// The parent's plan, minted and bound to the rows it names when absent.
+    pub(super) fn plan<'p>(
+        &self,
+        all_types: &'p mut BTreeMap<TypeName, TypePlan>,
+        well_known: &WellKnownTypes,
+    ) -> &'p mut TypePlan {
+        let plan = all_types
+            .entry(self.parent_type.clone())
+            .or_insert_with(|| TypePlan::new_with_well_known(self.parent_type.clone(), well_known));
+        if let Some(table) = &self.row_source {
+            plan.names_rows_of(table);
+        }
+        plan
+    }
+
+    /// The relation on the guarded plan reaching the parent, and the bridge filling it.
+    pub(super) fn bridge_from(
+        &self,
+        table_plan: &mut TypePlan,
+        source_table: &TableId,
+    ) -> RelationName {
+        let relation = table_plan.ensure_direct(
+            self.parent_type.clone(),
+            vec![DirectSubject::Type(self.parent_type.clone())],
+        );
+        table_plan.add_source(TupleSource::ParentBridge {
+            table: source_table.clone(),
+            fk_cols: self.outer_cols(),
+            parent_type: self.parent_type.clone(),
+            relation: relation.clone(),
+        });
+        relation
+    }
+}
+
+/// One object per membership row, and the columns keying the guarded object each names.
+pub(super) struct ShareRows<'a> {
+    pub(super) join_table: &'a TableId,
+    pub(super) identity_cols: &'a [ColumnName],
+    pub(super) fk_cols: &'a [ColumnName],
+    pub(super) share_type: &'a TypeName,
+}
+
+/// Link each object of `plan` to the share rows naming it, returning the link relation.
+pub(super) fn link_share_rows(plan: &mut TypePlan, share: &ShareRows<'_>) -> RelationName {
+    let link = plan.ensure_direct(
+        clamp_relation_name(share.share_type.to_string()),
+        vec![DirectSubject::Type(share.share_type.clone())],
+    );
+    plan.add_source(TupleSource::ShareBridge {
+        join_table: share.join_table.clone(),
+        identity_cols: share.identity_cols.to_vec(),
+        object_cols: share.fk_cols.to_vec(),
+        guarded_type: plan.type_name.clone(),
+        share_type: share.share_type.clone(),
+        relation: link.clone(),
+    });
+    link
+}
+
 /// Membership through a join table, bridged on the column the policy correlates.
 pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     exists_membership: &ExistsMembership,
@@ -288,48 +431,12 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     else {
         return deny_expr(table_plan);
     };
-
-    // The classifier's own resolver, so an oracle-supplied pairing obeys the same
-    // rules and an unkeyed one falls closed with its reason rather than keying a
-    // grant on a subset of its columns.
-    let (pairs, pairing) =
-        match resolve_membership_pairing(pairs.clone(), join_table, source_table, db) {
-            Ok(resolved) => resolved,
-            Err(reason) => {
-                notes.push(TranslationNote::ExpressionRefused {
-                    policy: policy_name.to_string(),
-                    reason,
-                });
-                return deny_expr(table_plan);
-            }
-        };
-    let parent_type = match (&pairing, pairs.as_slice()) {
-        // Prefer the table the column actually references (e.g. "teams" for
-        // team_members.team_id → teams.id). Fall back to the FK-column name
-        // heuristic when no FK constraint metadata is available (e.g. "doc_id" →
-        // "doc" for an undeclared reference). Single-column only: no name says
-        // what two columns point at.
-        (MembershipPairing::Single, [pair]) => {
-            referenced_table_for_fk_col(db, join_table, &pair.join_column).map_or_else(
-                || parent_type_from_fk_column(pair.join_column.as_str()),
-                |referenced| table_types.resolve(&referenced),
-            )
-        }
-        // The resolver never yields `Single` with any other width, so this arm
-        // exists only to fall closed rather than panic.
-        (MembershipPairing::Single, _) => return deny_expr(table_plan),
-        (MembershipPairing::ForeignKey { parent_table }, _) => table_types.resolve(parent_table),
-        // The outer columns are the guarded key, so the parent is the row itself.
-        (MembershipPairing::SelfKeyed, _) => table_plan.type_name.clone(),
-    };
-    let outer_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.outer_column.clone()).collect();
-
-    // Before anything is minted: the grant hangs off a bridge from this row to
-    // its parent object, so with no bridge there is nothing to hang it on and a
-    // parent type minted here would outlive the expression justifying it.
-    if !bridge_is_buildable(table_plan, source_table, &outer_cols, &parent_type, db) {
+    let Some(parent) = MembershipParent::resolve(pairs, join_table, ctx, table_plan, notes) else {
         return deny_expr(table_plan);
-    }
+    };
+    let MembershipParent {
+        pairs, parent_type, ..
+    } = &parent;
 
     // A temporal comparison such as `expires_at > now()` is completed by the request, so
     // it rides the member tuple as a condition rather than filtering the query. Declared on
@@ -382,18 +489,10 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         _ => None,
     };
 
-    // The relation is named after the parent type, but relation names have a
-    // tighter length limit, so use the name the plan actually registered.
-    let parent_relation = table_plan.ensure_direct(
-        parent_type.clone(),
-        vec![DirectSubject::Type(parent_type.clone())],
-    );
-    // This plan is outside `all_types` until the table build finishes, so a
-    // self-referential membership registers `member` here before the post-pass trims it.
-    // The witness route registers no direct member: its access relation is computed
-    // over the share link, and a direct grant surface would sit unused.
-    if parent_type == table_plan.type_name.as_str() {
-        if witness.is_none() {
+    // The witness route reaches the share rows by a computed relation, so a direct
+    // `member` on the parent would sit unused.
+    if witness.is_none() {
+        if parent.is_self(table_plan) {
             table_plan.ensure_direct(
                 member_relation(),
                 vec![DirectSubject::Type(table_plan.well_known.user.clone())],
@@ -401,44 +500,22 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             if let Some(subject) = &conditional_member {
                 table_plan.add_direct_subject(&member_relation(), subject.clone());
             }
-        }
-    } else {
-        if witness.is_none() {
-            ensure_member_type(all_types, &parent_type, &table_plan.well_known);
-            if let (Some(subject), Some(parent_plan)) =
-                (&conditional_member, all_types.get_mut(&parent_type))
-            {
+        } else {
+            let parent_plan = parent.plan(all_types, &table_plan.well_known);
+            parent_plan.ensure_direct(
+                member_relation(),
+                vec![DirectSubject::Type(parent_plan.well_known.user.clone())],
+            );
+            if let Some(subject) = &conditional_member {
                 parent_plan.add_direct_subject(&member_relation(), subject.clone());
             }
-        } else {
-            all_types.entry(parent_type.clone()).or_insert_with(|| {
-                TypePlan::new_with_well_known(parent_type.clone(), &table_plan.well_known)
-            });
-        }
-        // Only a declared reference names a table: the single-column fallback
-        // derives the type from the column's name, and no row of any table is
-        // named by it. The self route binds nothing, since the guarded type's
-        // own rows already name its objects.
-        match &pairing {
-            MembershipPairing::Single => {
-                if let Some(referenced) = pairs
-                    .first()
-                    .and_then(|pair| referenced_table_for_fk_col(db, join_table, &pair.join_column))
-                {
-                    bind_row_source(all_types, &parent_type, &referenced, db);
-                }
-            }
-            MembershipPairing::ForeignKey { parent_table } => {
-                bind_row_source(all_types, &parent_type, parent_table, db);
-            }
-            MembershipPairing::SelfKeyed => {}
         }
     }
 
     // The clock moved into the condition, so only what remains needs announcing.
     announce_residual(extra_predicates, gate.is_some(), policy_name, notes);
 
-    if let Some((condition, context, identity_cols)) = witness {
+    let membership = if let Some((condition, context, identity_cols)) = witness {
         let share_type = share_type_name(join_table, table_types);
         let member_rel = {
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
@@ -466,106 +543,47 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         if let Some(share_plan) = all_types.get_mut(&share_type) {
             share_plan.add_source(share_source);
         }
-        let fk_cols: Vec<ColumnName> = pairs.iter().map(|pair| pair.join_column.clone()).collect();
-        let (shares_link, witness_member) = if parent_type == table_plan.type_name.as_str() {
-            let link = table_plan.ensure_direct(
-                clamp_relation_name(share_type.to_string()),
-                vec![DirectSubject::Type(share_type.clone())],
-            );
-            let witness_member = table_plan.ensure_computed(
-                format!("{share_type}_member"),
-                UsersetExpr::TupleToUserset {
-                    tupleset: link.clone(),
-                    computed: member_rel.clone(),
-                },
-            );
-            (link, witness_member)
+        let share = ShareRows {
+            join_table,
+            identity_cols: &identity_cols,
+            fk_cols: &parent.fk_cols(),
+            share_type: &share_type,
+        };
+        let reached = format!("{share_type}_member");
+        let witness_member = if parent.is_self(table_plan) {
+            let link = link_share_rows(table_plan, &share);
+            table_plan.ensure_computed(reached, share_reach(link, member_rel))
         } else {
-            let Some(parent_plan) = all_types.get_mut(&parent_type) else {
-                return deny_expr(table_plan);
-            };
-            let link = parent_plan.ensure_direct(
-                clamp_relation_name(share_type.to_string()),
-                vec![DirectSubject::Type(share_type.clone())],
-            );
-            let witness_member = parent_plan.ensure_computed(
-                format!("{share_type}_member"),
-                UsersetExpr::TupleToUserset {
-                    tupleset: link.clone(),
-                    computed: member_rel.clone(),
-                },
-            );
-            (link, witness_member)
+            let parent_plan = parent.plan(all_types, &table_plan.well_known);
+            let link = link_share_rows(parent_plan, &share);
+            parent_plan.ensure_computed(reached, share_reach(link, member_rel))
         };
-        let bridge = TupleSource::ShareBridge {
-            join_table: join_table.clone(),
-            identity_cols,
-            object_cols: fk_cols,
-            guarded_type: parent_type.clone(),
-            share_type,
-            relation: shares_link,
-        };
-        // Attach the source to the plan that defines its guarded relation.
-        if parent_type == table_plan.type_name.as_str() {
-            table_plan.add_source(bridge);
-        } else if let Some(parent_plan) = all_types.get_mut(&parent_type) {
-            parent_plan.add_source(bridge);
-        }
-        table_plan.add_source(TupleSource::ParentBridge {
-            table: source_table.clone(),
-            fk_cols: outer_cols,
-            parent_type: parent_type.clone(),
-            relation: parent_relation.clone(),
-        });
-        let membership = UsersetExpr::TupleToUserset {
-            tupleset: parent_relation,
+        UsersetExpr::TupleToUserset {
+            tupleset: parent.bridge_from(table_plan, source_table),
             computed: witness_member,
+        }
+    } else {
+        // On the guarded plan first, which is the order the renderer emits.
+        let membership_source = TupleSource::ExistsMembership {
+            join_table: join_table.clone(),
+            fk_cols: parent.fk_cols(),
+            user_col: user_column.clone(),
+            parent_type: parent_type.clone(),
+            extra_predicates: extra_predicates.clone(),
+            gate: gate.map(|(condition, context)| MembershipGate {
+                condition,
+                context,
+                aggregate: !rows_unique,
+            }),
         };
-        return apply_membership_read_scope(
-            membership,
-            &MembershipReadScopeInput {
-                read_scope_roles: &read_scope_roles,
-                join_table,
-            },
-            ctx,
-            table_plan,
-            all_types,
-            notes,
-        );
-    }
-
-    // Membership rows: add to table_plan first (for correct ordering in IR renderer),
-    // then also to the parent type's plan for semantic correctness (deduplicated).
-    let membership_source = TupleSource::ExistsMembership {
-        join_table: join_table.clone(),
-        fk_cols: pairs.iter().map(|pair| pair.join_column.clone()).collect(),
-        user_col: user_column.clone(),
-        parent_type: parent_type.clone(),
-        extra_predicates: extra_predicates.clone(),
-        gate: gate.map(|(condition, context)| MembershipGate {
-            condition,
-            context,
-            aggregate: !rows_unique,
-        }),
-    };
-    table_plan.add_source(membership_source.clone());
-    if let Some(parent_plan) = all_types.get_mut(&parent_type) {
-        parent_plan.add_source(membership_source);
-    }
-
-    // Bridge rows link each source-table row to its parent, through the columns
-    // the policy compares. The pk columns are resolved again at render time by
-    // `resolve_bridge_columns`.
-    table_plan.add_source(TupleSource::ParentBridge {
-        table: source_table.clone(),
-        fk_cols: outer_cols,
-        parent_type: parent_type.clone(),
-        relation: parent_relation.clone(),
-    });
-
-    let membership = UsersetExpr::TupleToUserset {
-        tupleset: parent_relation,
-        computed: member_relation(),
+        table_plan.add_source(membership_source.clone());
+        if let Some(parent_plan) = all_types.get_mut(parent_type) {
+            parent_plan.add_source(membership_source);
+        }
+        UsersetExpr::TupleToUserset {
+            tupleset: parent.bridge_from(table_plan, source_table),
+            computed: member_relation(),
+        }
     };
     apply_membership_read_scope(
         membership,
@@ -578,6 +596,14 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         all_types,
         notes,
     )
+}
+
+/// Reach `relation` on the share rows through `link`.
+pub(super) fn share_reach(link: RelationName, relation: RelationName) -> UsersetExpr {
+    UsersetExpr::TupleToUserset {
+        tupleset: link,
+        computed: relation,
+    }
 }
 
 /// A parent's rule reached through a foreign key, gated by the parent's own read.

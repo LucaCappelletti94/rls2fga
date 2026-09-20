@@ -1286,7 +1286,8 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
 
 /// How an accepted membership pairing names its parent.
 pub(crate) enum MembershipPairing {
-    /// One pair, the plain shape: the parent is decided from the single column.
+    /// One pair on a column that is not the guarded key, so the parent is decided from
+    /// the join column alone.
     Single,
     /// The pairs are the host columns of one declared foreign key onto this
     /// table's full primary key.
@@ -1302,11 +1303,11 @@ pub(crate) enum MembershipPairing {
 /// The pairs ordered by the key that names the parent object, with the route that
 /// accepted them, or the refusal reason.
 ///
-/// One pair is the plain shape and passes untouched. Several pairs name one parent
-/// object per membership row exactly when they are the host columns of one declared
-/// foreign key onto a table's full primary key, or a bijection onto the guarded
-/// table's own primary key. The one resolver for classification and emission, so an
-/// oracle-supplied pattern is validated by the same rules the recognizer applies.
+/// Pairs name one parent object per membership row when their outer columns are the
+/// guarded table's own primary key, when they are the host columns of one declared foreign
+/// key onto a table's full primary key, or when one pair names a column of the join table.
+/// The one resolver for classification and emission, so an oracle-supplied pattern is
+/// validated by the same rules the recognizer applies.
 pub(crate) fn resolve_membership_pairing<DB: DatabaseLike>(
     pairs: Vec<MembershipJoinPair>,
     join_table: &TableId,
@@ -1317,7 +1318,10 @@ pub(crate) fn resolve_membership_pairing<DB: DatabaseLike>(
         return Err("the membership subquery correlates no column pair".to_string());
     }
     if pairs.len() == 1 {
-        return Ok((pairs, MembershipPairing::Single));
+        return Ok(match self_key_pair_order(&pairs, outer_table, db) {
+            Some(ordered) => (ordered, MembershipPairing::SelfKeyed),
+            None => (pairs, MembershipPairing::Single),
+        });
     }
     if let Some(column) = first_duplicate_pair_column(&pairs) {
         return Err(format!(

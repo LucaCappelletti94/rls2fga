@@ -16,7 +16,7 @@ use rls2fga::types::{RecordDerivation, ValueSource};
 mod support;
 
 use support::footgun::{
-    db_of, membership_translation, pg_role_relation, relation_definition, relation_denies,
+    db_of, membership_translation, pg_role_relation, relation_definition, relation_definitions,
     scope_admits_role, translation, translator, tuples_reading_from, type_names,
     CORRELATION_SCHEMA,
 };
@@ -1186,52 +1186,129 @@ fn a_membership_bridge_reads_the_column_the_policy_correlates() {
     );
 }
 
-/// The request-scoped gate names the guarded row by the join table's own column, so
-/// that column has to hold the row's identifier. Correlated against anything else it
-/// names another row, or none.
+/// The share type a caller-set membership mints, the body of the gate riding it, and the
+/// body of the guarded table's read.
+fn share_gate_reach(model: &str, guarded: &str) -> (String, String, String) {
+    let share_type = type_names(model)
+        .into_iter()
+        .find(|name| name.ends_with("_share"))
+        .expect("a caller-set membership mints one share type");
+    let gate = relation_definitions(model, &share_type)
+        .into_iter()
+        .find_map(|(name, body)| name.starts_with("gate_").then_some(body))
+        .expect("the share type carries the request-completed gate");
+    let reach = relation_definition(model, guarded, "can_select")
+        .expect("the guarded table reads through the share");
+    (share_type, gate, reach)
+}
+
+/// A membership row correlated on a column the guarded row shares with its parent is the
+/// same membership whichever way the member column names the caller. The identity
+/// spelling reaches the row through the parent the foreign key names, so the caller-set
+/// spelling has to as well, with the gate riding the share row and the parent linking to
+/// it. Refusing it as "not identifying a row" sent the reader to a correct correlation.
 #[test]
-fn a_request_gate_correlated_on_a_non_key_column_is_refused() {
-    let db = db_of(
+fn a_caller_set_membership_on_a_parent_key_reaches_the_row_through_its_parent() {
+    const SCHEMA: &str = "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, team_id INT REFERENCES teams(id),
+                           PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, owner TEXT NOT NULL,
+                    team_id INT NOT NULL REFERENCES teams(id), label TEXT);
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_p ON items FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members
+          WHERE team_members.team_id = items.team_id
+            AND team_members.member = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+";
+    let outputs = session_attr_plan(SCHEMA);
+    let model = outputs.model();
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| matches!(note, TranslationNote::ExpressionRefused { .. })),
+        "the correlation is the one the identity spelling accepts: {:?}",
+        outputs.notes()
+    );
+
+    let (share_type, gate, reach) = share_gate_reach(&model, "items");
+    assert_eq!(share_type, "team_members_share");
+    assert!(
+        gate.contains("[user:* with "),
+        "the gate is completed by the request on the share row:\n{model}"
+    );
+    assert!(
+        reach.ends_with(" from teams"),
+        "items reaches the share rows through the team the foreign key names:\n{model}"
+    );
+    assert_eq!(
+        relation_definition(&model, "teams", &share_type).as_deref(),
+        Some(format!("[{share_type}]").as_str()),
+        "the team links to its share rows:\n{model}"
+    );
+
+    let queries = outputs.tuple_queries();
+    let gate_query = queries
+        .iter()
+        .find(|query| query.condition.is_some())
+        .expect("the gate is a conditional record");
+    assert!(
+        gate_query.sql.contains("'team_members_share:'") && !gate_query.sql.contains("'items:'"),
+        "the gate is keyed on the share row alone:\n{}",
+        gate_query.sql
+    );
+    let bridges = |object: &str, subject: &str| {
+        queries.iter().any(|query| {
+            query.condition.is_none()
+                && query.sql.contains(&format!("'{object}:'"))
+                && query.sql.contains(&format!("'{subject}:'"))
+        })
+    };
+    assert!(
+        bridges("teams", "team_members_share"),
+        "each team links to its share rows"
+    );
+    assert!(bridges("items", "teams"), "each item links to its team");
+}
+
+/// A correlation on a column that is no key of either table groups the guarded rows by
+/// the value they share, which is the parent the identity spelling already reaches them
+/// through. The caller-set spelling takes the same route.
+#[test]
+fn a_request_gate_correlated_on_a_non_key_column_groups_rows_by_the_shared_value() {
+    let outputs = session_attr_plan(
         "CREATE TABLE papers(id INT PRIMARY KEY, batch TEXT);
-CREATE TABLE shares(paper_batch TEXT, viewer TEXT);
+CREATE TABLE shares(id INT PRIMARY KEY, paper_batch TEXT, viewer TEXT);
 ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
   SELECT 1 FROM shares s WHERE s.paper_batch = papers.batch
     AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
 ",
     );
-    let outputs = TranslatorBuilder::new()
-        .with_min_confidence(ConfidenceLevel::B)
-        .with_session_attributes(vec![SessionAttribute::setting(
-            "app.subjects",
-            SessionAttributeKind::SetAttribute,
-        )])
-        .build()
-        .translate(&db)
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-
+    let model = outputs.model();
+    let (share_type, _, reach) = share_gate_reach(&model, "papers");
+    assert_eq!(share_type, "shares_share");
     assert!(
-        outputs.notes().iter().any(|note| {
-            matches!(note, TranslationNote::ExpressionRefused { reason, .. }
-                if reason.contains("does not identify a row"))
-        }),
-        "the refusal has to name the column that decides it: {:?}",
-        outputs.notes()
+        reach.ends_with(" from paper_batch"),
+        "papers reach their shares through the batch they share:\n{model}"
     );
     assert!(
-        relation_denies(&outputs.model(), "papers", "can_select"),
-        "a gate keyed on a value that names no row has to fall closed:\n{}",
-        outputs.model()
+        outputs.tuple_queries().iter().any(|query| {
+            query.condition.is_none()
+                && query.sql.contains("'papers:'")
+                && query.sql.contains("'paper_batch:'")
+                && query.sql.contains("\"batch\"")
+        }),
+        "the bridge reads the column the policy correlates"
     );
 }
 
-/// The request-scoped gate names the guarded row by one column of the share table, so a
-/// share joined on every column of a composite key classifies as the membership it is
-/// and falls closed where the gate is minted, naming the width it cannot carry.
+/// A share joined on every column of a composite key names the guarded row whole, so the
+/// bridge from the row to its share rows reads both columns.
 #[test]
-fn a_request_gate_bridged_on_a_composite_key_is_refused() {
-    let db = db_of(
+fn a_request_gate_bridged_on_a_composite_key_reads_the_whole_key() {
+    let outputs = session_attr_plan(
         "CREATE TABLE papers(tenant_id INT NOT NULL, id INT NOT NULL, PRIMARY KEY(tenant_id, id));
 CREATE TABLE shares(tenant_id INT NOT NULL, paper_id INT NOT NULL, viewer TEXT NOT NULL,
     PRIMARY KEY(tenant_id, paper_id, viewer));
@@ -1241,28 +1318,24 @@ CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
     AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
 ",
     );
-    let outputs = TranslatorBuilder::new()
-        .with_min_confidence(ConfidenceLevel::B)
-        .with_session_attributes(vec![SessionAttribute::setting(
-            "app.subjects",
-            SessionAttributeKind::SetAttribute,
-        )])
-        .build()
-        .translate(&db)
-        .expect("translation should plan")
-        .outputs_accepting_gaps();
-
+    let model = outputs.model();
+    let (share_type, _, reach) = share_gate_reach(&model, "papers");
     assert!(
-        outputs.notes().iter().any(|note| {
-            matches!(note, TranslationNote::ExpressionRefused { reason, .. }
-                if reason.contains("correlates 2 columns of shares"))
-        }),
-        "the refusal has to name the width the gate cannot carry: {:?}",
-        outputs.notes()
+        reach.ends_with(&format!(" from {share_type}")),
+        "the guarded row reaches its share rows directly:\n{model}"
     );
+    let bridge = outputs
+        .tuple_queries()
+        .iter()
+        .find(|query| {
+            query.condition.is_none()
+                && query.sql.contains("'papers:'")
+                && query.sql.contains("'shares_share:'")
+        })
+        .expect("a bridge links each paper to its share rows");
     assert!(
-        relation_denies(&outputs.model(), "papers", "can_select"),
-        "a gate with no single bridge column has to fall closed:\n{}",
-        outputs.model()
+        bridge.sql.contains("\"tenant_id\"") && bridge.sql.contains("\"paper_id\""),
+        "the bridge names the paper by both columns of its key:\n{}",
+        bridge.sql
     );
 }

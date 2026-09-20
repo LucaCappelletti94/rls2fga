@@ -1,17 +1,19 @@
 //! The seam a consumer uses to classify what this crate refuses.
 
+use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::oracle::{
     consult_oracle, OracleAnswer, PolicyClause, PolicyOracle, RefusedExpr,
 };
 use rls2fga::classifier::patterns::{
-    ClassifiedExpr, ClassifiedPolicy, ConstantBool, ParentInheritance, PatternClass,
+    ClassifiedExpr, ClassifiedPolicy, ConstantBool, ExistsMembership, MembershipInCallerSet,
+    MembershipJoinPair, ParentInheritance, PatternClass, ResidualPredicates,
 };
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
 use rls2fga::translator::{Translator, TranslatorBuilder};
+use rls2fga::types::{ColumnName, ConfidenceLevel, TableId, TranslationNote};
 
 mod support;
-use rls2fga::types::ConfidenceLevel;
 
 /// Answers the bit test this crate has no translation for, claiming every marked row is
 /// readable by anyone.
@@ -331,5 +333,70 @@ fn an_answered_pattern_emits_what_the_crate_emits_for_it() {
         tuples_of(&refused_db, &answered),
         tuples_of(&native_db, &recognized),
         "an answered pattern must produce the same tuples"
+    );
+}
+
+/// Answers the bit test with a caller-set membership whose two pairs match no key of
+/// either table, which the recognizer would never have produced.
+struct UnkeyedShare;
+
+impl PolicyOracle for UnkeyedShare {
+    fn classify(&self, refused: &RefusedExpr<'_>) -> OracleAnswer {
+        if !refused.sql_text().contains('&') {
+            return OracleAnswer::Bailed;
+        }
+        let pair = |join: &str, outer: &str| MembershipJoinPair {
+            join_column: ColumnName::from_stored(join),
+            outer_column: ColumnName::from_stored(outer),
+        };
+        OracleAnswer::Classified(Box::new(ClassifiedExpr {
+            pattern: PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
+                membership: ExistsMembership {
+                    join_table: TableId::from_stored(None, "shares".to_string()),
+                    pairs: vec![pair("paper_batch", "batch"), pair("paper_lane", "lane")],
+                    user_column: ColumnName::from_stored("viewer"),
+                    extra_predicates: ResidualPredicates::default(),
+                },
+                separator: Some(",".to_string()),
+                source: SessionAttribute::setting(
+                    "app.subjects",
+                    SessionAttributeKind::SetAttribute,
+                ),
+            }),
+            confidence: ConfidenceLevel::A,
+        }))
+    }
+}
+
+/// The pairing rules are applied where the model is built, not only where a policy is
+/// read, so an oracle handing over a membership the recognizer would have refused is
+/// refused with the same reason and falls closed.
+#[test]
+fn an_oracle_supplied_membership_obeys_the_pairing_rules() {
+    let schema = "CREATE TABLE papers(id INT PRIMARY KEY, batch TEXT, lane TEXT, bits INT);\n\
+                  CREATE TABLE shares(id INT PRIMARY KEY, paper_batch TEXT, paper_lane TEXT, viewer TEXT);\n\
+                  ALTER TABLE papers ENABLE ROW LEVEL SECURITY;\n\
+                  CREATE POLICY papers_p ON papers FOR SELECT USING ((bits & 2) = 2);\n";
+    let db = parse_schema(schema).expect("schema parses");
+
+    let mut classified = translator().classify(&db);
+    let answered = consult_oracle(&mut classified, &UnkeyedShare);
+    assert_eq!(answered.len(), 1, "the oracle took responsibility for it");
+
+    let outputs = support::plan_at(classified, &db, translator().registry(), ConfidenceLevel::B);
+    let dsl = outputs.model();
+    assert_eq!(
+        relation(&dsl, "can_select").as_deref(),
+        Some("no_access"),
+        "an unkeyed pairing falls closed:\n{dsl}"
+    );
+    assert!(
+        outputs.notes().iter().any(|note| matches!(
+            note,
+            TranslationNote::ExpressionRefused { policy, reason }
+                if policy == "papers_p" && reason.contains("match neither a declared foreign key")
+        )),
+        "the refusal names the pairing rule: {:?}",
+        outputs.notes()
     );
 }

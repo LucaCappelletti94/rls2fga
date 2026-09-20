@@ -90,6 +90,9 @@ async fn every_parity_case_agrees() {
             a_role_scoped_membership_read_gates_the_parent,
             a_noinherit_member_of_a_scoped_role_reads_nothing,
             a_shared_paper_reads_through_either_arm,
+            a_team_share_reaches_items_through_the_team,
+            a_batch_share_grants_every_paper_of_the_batch,
+            a_composite_key_share_in_the_callers_set_stays_within_its_tenant,
             a_token_claim_list_grants_by_membership,
             one_shared_grant_ladder_answers_two_thresholds,
             three_refused_spellings_fall_closed,
@@ -2032,6 +2035,150 @@ async fn a_shared_paper_reads_through_either_arm(cluster: Arc<Cluster>) {
         ],
     )
     .await;
+}
+
+/// The share arm correlated on the team an item belongs to rather than on the item, so the
+/// gate rides the membership row and the item reaches it through its team.
+async fn a_team_share_reaches_items_through_the_team(cluster: Arc<Cluster>) {
+    let case = ParityCase::from_fixture(
+        "runner-team-share",
+        "connetto_team_share",
+        &[
+            // Team 1 is granted to a key alice carries, team 2 to one dave carries.
+            "INSERT INTO teams (id) VALUES (1), (2);
+             INSERT INTO team_members (team_id, member) VALUES (1, 'team-a'), (2, 'team-z');
+             INSERT INTO items (id, owner, team_id) VALUES
+                 (1, 'alice', 1), (2, 'bob', 1), (3, 'bob', 2)",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON items, teams, team_members TO app_reader",
+        ],
+        vec![
+            user_holder("alice", "app_reader", &["team-a"]),
+            user_holder("dave", "app_reader", &["team-z"]),
+            user_holder("carol", "app_reader", &[]),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "items:1", true),
+        ("alice", "items:2", true),
+        ("alice", "items:3", false),
+        ("dave", "items:3", true),
+        ("dave", "items:2", false),
+        ("carol", "items:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// A share correlated on a column that is no key of either table groups the guarded rows
+/// by the value they share, which is what the database grants too. A key holding one
+/// batch's share sees every paper of that batch and none of another.
+async fn a_batch_share_grants_every_paper_of_the_batch(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-batch-share",
+        "
+CREATE TABLE papers (id INT PRIMARY KEY, batch TEXT NOT NULL);
+CREATE TABLE shares (id INT PRIMARY KEY, paper_batch TEXT NOT NULL, viewer TEXT NOT NULL);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
+    SELECT 1 FROM shares s WHERE s.paper_batch = papers.batch
+      AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+        &[
+            "INSERT INTO papers (id, batch) VALUES (1, 'b1'), (2, 'b1'), (3, 'b2');
+             INSERT INTO shares (id, paper_batch, viewer) VALUES (10, 'b1', 'team-a'), (11, 'b2', 'team-z')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON papers, shares TO app_reader",
+        ],
+        vec![
+            subject_holder("alice", &["team-a"]),
+            subject_holder("dave", &["team-z"]),
+            subject_holder("carol", &[]),
+        ],
+    )
+    .with_attributes(SUBJECTS_ONLY);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "papers:1", true),
+        ("alice", "papers:2", true),
+        ("alice", "papers:3", false),
+        ("dave", "papers:3", true),
+        ("dave", "papers:1", false),
+        ("carol", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// A share keyed on the tenant as well as the paper, compared against the caller's set,
+/// so a bridge on the paper alone would hand one tenant's key the other tenant's paper
+/// of the same id.
+async fn a_composite_key_share_in_the_callers_set_stays_within_its_tenant(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-composite-key-set-share",
+        "
+CREATE TABLE tenant_papers (tenant_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (tenant_id, id));
+CREATE TABLE tenant_shares (
+    tenant_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    viewer TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, paper_id, viewer)
+);
+ALTER TABLE tenant_papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY papers_visible ON tenant_papers FOR SELECT USING (EXISTS (
+    SELECT 1 FROM tenant_shares s
+    WHERE s.tenant_id = tenant_papers.tenant_id AND s.paper_id = tenant_papers.id
+      AND s.viewer = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+        &[
+            "INSERT INTO tenant_papers (tenant_id, id) VALUES
+                 ('t1', 'p-shared'), ('t2', 'p-shared'), ('t1', 'p-solo');
+             INSERT INTO tenant_shares (tenant_id, paper_id, viewer) VALUES
+                 ('t1', 'p-shared', 'team-a'), ('t2', 'p-shared', 'team-z')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT ON tenant_papers, tenant_shares TO app_reader",
+        ],
+        vec![
+            subject_holder("alice", &["team-a"]),
+            subject_holder("dave", &["team-z"]),
+        ],
+    )
+    .with_attributes(SUBJECTS_ONLY);
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("alice", "tenant_papers:t1|p-shared", true),
+        ("alice", "tenant_papers:t2|p-shared", false),
+        ("dave", "tenant_papers:t2|p-shared", true),
+        ("dave", "tenant_papers:t1|p-shared", false),
+        ("alice", "tenant_papers:t1|p-solo", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
 }
 
 /// Ported from `token_claim_set_parity_postgres18_and_openfga`.

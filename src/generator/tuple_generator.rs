@@ -2321,10 +2321,7 @@ CREATE POLICY docs_select ON docs FOR SELECT USING (
 
         let membership_query = queries
             .iter()
-            .find(|q| {
-                q.comment
-                    .contains("-- doc membership from public.doc_members")
-            })
+            .find(|q| q.comment.contains("membership from public.doc_members"))
             .expect("expected doc membership tuple query");
 
         assert!(
