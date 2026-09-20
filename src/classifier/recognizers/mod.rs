@@ -36,7 +36,9 @@ pub use attribute::{
 pub(crate) use attribute::{conjunct_reads_only_the_row, residual_predicate_reading};
 pub(crate) use invariant::{residual_relations, MembershipScope};
 pub use session::recognize_session_attribute;
-pub(crate) use session::{caller_set, row_valued_set, undeclared_set_reads};
+pub(crate) use session::{
+    caller_set, caller_set_in_subquery, row_valued_set, undeclared_set_reads,
+};
 pub(crate) use subquery::projected_select;
 pub(crate) use subquery::{
     diagnose_p4_membership_ambiguity, diagnose_p5_parent_inheritance_ambiguity,

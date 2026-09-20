@@ -1951,7 +1951,7 @@ pub(super) fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
 /// The two are not interchangeable: a column holding the caller is a subject a tuple can
 /// name, while a column holding a grant the caller carries is not a person at all, so
 /// reading one as the other would declare grant keys to be users.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) enum MemberMatch {
     /// The column holds the caller's own identity.
     Caller,
@@ -2049,16 +2049,26 @@ fn analyze_membership_eq_predicate(
     join_cols: &[String],
     registry: &FunctionRegistry,
 ) -> MembershipEqAnalysis {
-    // `s.viewer = ANY(string_to_array(<declared set>, ','))`: the membership row holds a
-    // grant the caller may carry rather than the caller itself.
-    if let Expr::AnyOp {
-        left,
-        compare_op: BinaryOperator::Eq,
-        right,
-        ..
-    } = predicate
-    {
-        if let Some((qualifier, column)) = extract_qualified_column(left) {
+    // The membership row holds a grant the caller may carry rather than the caller, in
+    // either spelling of the set: `= ANY(string_to_array(...))` or `IN (SELECT unnest(...))`.
+    let in_caller_set = match predicate {
+        Expr::AnyOp {
+            left,
+            compare_op: BinaryOperator::Eq,
+            right,
+            ..
+        } => Some((left, caller_set(right, registry))),
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated: false,
+        } => Some((expr, caller_set_in_subquery(subquery, registry))),
+        _ => None,
+    };
+    if let Some((tested, declared)) = in_caller_set {
+        if let (Some((qualifier, column)), Some((source, separator))) =
+            (extract_qualified_column(tested), declared)
+        {
             if is_join_column_ref(
                 qualifier.as_deref(),
                 column.as_str(),
@@ -2066,15 +2076,13 @@ fn analyze_membership_eq_predicate(
                 join_alias,
                 join_cols,
             ) {
-                if let Some((source, separator)) = caller_set(right, registry) {
-                    return MembershipEqAnalysis::UserColumn(
-                        column,
-                        MemberMatch::InCallerSet {
-                            source: source.clone(),
-                            separator,
-                        },
-                    );
-                }
+                return MembershipEqAnalysis::UserColumn(
+                    column,
+                    MemberMatch::InCallerSet {
+                        source: source.clone(),
+                        separator,
+                    },
+                );
             }
         }
         return MembershipEqAnalysis::NotRelevant;
@@ -2224,7 +2232,9 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         let pred = analyzed.predicate;
         match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(col, how) => {
-                user_col = Some((col.clone(), how.clone()));
+                if !name_member(&mut user_col, col, how) {
+                    return None;
+                }
                 continue;
             }
             MembershipEqAnalysis::FkCandidate {
@@ -2289,8 +2299,8 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         }
         match &analyzed.analysis {
             MembershipEqAnalysis::UserColumn(col, how) => {
-                if user_col.is_none() {
-                    user_col = Some((col.clone(), how.clone()));
+                if !name_member(&mut user_col, col, how) {
+                    return None;
                 }
             }
             MembershipEqAnalysis::FkCandidate {
@@ -2323,6 +2333,20 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         member_match,
         extra_predicates,
     })
+}
+
+/// Record the column naming the member, or report that a different one already does.
+///
+/// A membership carries one member column. The same comparison written twice is one
+/// condition, while a second column or a second way of matching the same column is a
+/// condition the row would lose, leaving the grant resting on half the policy.
+fn name_member(
+    member: &mut Option<(ColumnName, MemberMatch)>,
+    column: &ColumnName,
+    how: &MemberMatch,
+) -> bool {
+    let (named, matched) = member.get_or_insert_with(|| (column.clone(), how.clone()));
+    named == column && matched == how
 }
 fn is_join_column_ref(
     qualifier: Option<&str>,
