@@ -1305,6 +1305,48 @@ CREATE POLICY items_p ON items FOR SELECT USING (
     );
 }
 
+/// The row-valued spelling is read only where the subquery is nothing but the set: a
+/// negation reverses the grant, and a `FROM` or a filter could drop members the model
+/// would still count, so each stays off the membership and falls closed.
+#[test]
+fn a_row_valued_set_spelling_is_refused_when_it_is_not_the_bare_set() {
+    const SCHEMA: &str = "
+CREATE TABLE teams (id INT PRIMARY KEY);
+CREATE TABLE team_members (member TEXT NOT NULL, team_id INT REFERENCES teams(id),
+                           PRIMARY KEY (team_id, member));
+CREATE TABLE items (id INT PRIMARY KEY, team_id INT NOT NULL REFERENCES teams(id));
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_p ON items FOR SELECT USING (
+  EXISTS (SELECT 1 FROM team_members
+          WHERE team_members.team_id = items.team_id
+            AND team_members.member ";
+    for (label, comparison) in [
+        (
+            "negated",
+            "NOT IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')))",
+        ),
+        (
+            "read from a FROM",
+            "IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')) FROM generate_series(1, 1))",
+        ),
+        (
+            "filtered",
+            "IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')) WHERE false)",
+        ),
+    ] {
+        let outputs = session_attr_plan(&format!("{SCHEMA}{comparison}));"));
+        let model = outputs.model();
+        assert!(
+            !model.contains("_share"),
+            "{label}: no share type may be minted for a subquery that is not the bare set:\n{model}"
+        );
+        assert!(
+            relation_denies(&model, "items", "can_select"),
+            "{label}: the shape falls closed:\n{model}"
+        );
+    }
+}
+
 /// Two comparisons naming the caller in one membership row are two conditions the
 /// database requires together. A membership carries one member column, so the shape
 /// falls closed rather than keeping the last comparison and granting on it alone.
