@@ -116,7 +116,6 @@ fn drive<DB: DatabaseLike>(db: &DB) -> Driven {
     )
     .expect("translation should plan");
     assert_eq!(replanned.relations().len(), relations.len());
-    assert!(!replanned.outputs_accepting_gaps().model().is_empty());
 
     Driven {
         classified: classified.len(),

@@ -156,7 +156,7 @@ fn guard_rejects(c: &mut Criterion) {
         b.iter(|| {
             let records = records_from_row(black_box(&description), black_box(&row))
                 .expect("a pure description answers");
-            debug_assert!(records.is_empty());
+            debug_assert_eq!(records, Vec::new());
             records
         });
     });

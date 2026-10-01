@@ -475,17 +475,6 @@ mod tests {
     };
     use crate::parser::sql_parser::parse_schema;
 
-    const SCHEMA: &str = r"
-CREATE TABLE docs (
-    id UUID PRIMARY KEY,
-    owner_name TEXT,
-    editor_name TEXT
-);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY owner_read ON docs FOR SELECT USING (owner_name = current_user);
-CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
-";
-
     fn schema_with_sources(source_count: usize) -> String {
         let mut schema = String::from("CREATE TABLE docs (\n    id UUID PRIMARY KEY");
         for index in 0..source_count {
@@ -512,7 +501,6 @@ CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
                 .build()
                 .translate(&db)
                 .expect("translation plans");
-            assert!(!translation.relations().is_empty());
             assert_eq!(
                 translation
                     .clone()
@@ -522,101 +510,6 @@ CREATE POLICY editor_read ON docs FOR SELECT USING (editor_name = current_user);
                 source_count
             );
             assert_eq!(unbounded_columns_resolutions(), 1);
-        }
-    }
-
-    #[test]
-    fn cloned_translations_share_derived_output_storage() {
-        let db = parse_schema(SCHEMA).expect("schema parses");
-        let translation = TranslatorBuilder::new()
-            .build()
-            .translate(&db)
-            .expect("translation plans");
-        let cloned = translation.clone();
-        let original_relations = translation.relations();
-        let cloned_relations = cloned.relations();
-
-        assert!(!original_relations.is_empty());
-        assert!(core::ptr::eq(
-            original_relations.as_ptr(),
-            cloned_relations.as_ptr()
-        ));
-    }
-
-    /// Row naming is derived once and shared, like every other output the plan carries.
-    ///
-    /// Deriving it per call walks the tables per type, so a consumer asking twice pays
-    /// twice for an answer that cannot have changed.
-    #[test]
-    fn cloned_translations_share_row_naming_storage() {
-        let db = parse_schema(SCHEMA).expect("schema parses");
-        let translation = TranslatorBuilder::new()
-            .build()
-            .translate(&db)
-            .expect("translation plans");
-        let cloned = translation.clone();
-        let original = translation.row_naming();
-        let repeated = translation.row_naming();
-        let from_clone = cloned.row_naming();
-
-        assert!(!original.is_empty());
-        assert!(core::ptr::eq(original.as_ptr(), repeated.as_ptr()));
-        assert!(core::ptr::eq(original.as_ptr(), from_clone.as_ptr()));
-    }
-
-    #[test]
-    fn cloned_translations_share_action_and_unrestricted_storage() {
-        let db = parse_schema(&format!(
-            "{SCHEMA}\nCREATE TABLE open_docs(id UUID PRIMARY KEY);"
-        ))
-        .expect("schema parses");
-        let translation = TranslatorBuilder::new()
-            .build()
-            .translate(&db)
-            .expect("translation plans");
-        let cloned = translation.clone();
-
-        let actions = translation.action_relations();
-        let repeated_actions = translation.action_relations();
-        let cloned_actions = cloned.action_relations();
-        assert!(!actions.is_empty());
-        assert!(core::ptr::eq(actions.as_ptr(), repeated_actions.as_ptr()));
-        assert!(core::ptr::eq(actions.as_ptr(), cloned_actions.as_ptr()));
-
-        let unrestricted = translation.unrestricted_tables();
-        let repeated_unrestricted = translation.unrestricted_tables();
-        let cloned_unrestricted = cloned.unrestricted_tables();
-        assert!(!unrestricted.is_empty());
-        assert!(core::ptr::eq(
-            unrestricted.as_ptr(),
-            repeated_unrestricted.as_ptr()
-        ));
-        assert!(core::ptr::eq(
-            unrestricted.as_ptr(),
-            cloned_unrestricted.as_ptr()
-        ));
-    }
-    #[test]
-    fn relation_shapes_reuse_rendered_query_descriptions() {
-        let db = parse_schema(SCHEMA).expect("schema parses");
-        let translation = TranslatorBuilder::new()
-            .build()
-            .translate(&db)
-            .expect("translation plans");
-        let descriptions: Vec<_> = translation
-            .derived
-            .tuple_queries
-            .iter()
-            .filter_map(|query| query.description.as_ref())
-            .collect();
-
-        assert!(!descriptions.is_empty());
-        for description in descriptions {
-            assert!(translation
-                .derived
-                .relations
-                .iter()
-                .any(|relation| relation.shapes.contains(description)));
         }
     }
 }

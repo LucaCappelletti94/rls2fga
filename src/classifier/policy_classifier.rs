@@ -57,8 +57,8 @@ fn classify_policies_with_registry<DB: DatabaseLike>(
 
             // An absent clause is not `TRUE`: PostgreSQL stores no qual for it, and
             // with no permissive qual the command falls closed.
-            let using = classified.using.as_ref().map(&classify);
-            let with_check = classified.with_check.as_ref().map(&classify);
+            let using = classified.using.as_ref().map(classify);
+            let with_check = classified.with_check.as_ref().map(classify);
 
             classified.using_classification = using;
             classified.with_check_classification = with_check;
@@ -107,25 +107,20 @@ fn normalize_boolean_case(
         }
     }
 
-    if true_conditions.is_empty() {
-        return None;
-    }
-
-    Some(fold_binary(true_conditions, &BinaryOperator::Or))
+    let mut true_conditions = true_conditions.into_iter();
+    let first = true_conditions.next()?;
+    Some(fold_binary(first, true_conditions, &BinaryOperator::Or))
 }
 
 /// Fold a non-empty list into a left-associative tree under one operator.
-fn fold_binary(mut exprs: Vec<Expr>, op: &BinaryOperator) -> Expr {
-    assert!(!exprs.is_empty());
-    let mut result = exprs.remove(0);
-    for next in exprs {
-        result = Expr::BinaryOp {
+fn fold_binary(first: Expr, exprs: impl IntoIterator<Item = Expr>, op: &BinaryOperator) -> Expr {
+    exprs
+        .into_iter()
+        .fold(first, |result, next| Expr::BinaryOp {
             left: Box::new(result),
             op: op.clone(),
             right: Box::new(next),
-        };
-    }
-    result
+        })
 }
 
 fn unknown_d(expr: &Expr, reason: impl Into<String>) -> ClassifiedExpr {
@@ -266,25 +261,23 @@ fn classify_expr_inner<DB: DatabaseLike>(
     {
         if let (Expr::Tuple(lhs), Expr::Tuple(rhs)) = (left.as_ref(), right.as_ref()) {
             if lhs.len() == rhs.len() && !lhs.is_empty() {
-                let equalities: Vec<Expr> = lhs
-                    .iter()
-                    .zip(rhs.iter())
-                    .map(|(l, r)| Expr::BinaryOp {
-                        left: Box::new(l.clone()),
-                        op: BinaryOperator::Eq,
-                        right: Box::new(r.clone()),
-                    })
-                    .collect();
-                let conjunction = fold_binary(equalities, &BinaryOperator::And);
-                return classify_expr_depth(
-                    &conjunction,
-                    db,
-                    registry,
-                    table,
-                    command,
-                    depth + 1,
-                    state,
-                );
+                let mut equalities = lhs.iter().zip(rhs.iter()).map(|(l, r)| Expr::BinaryOp {
+                    left: Box::new(l.clone()),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(r.clone()),
+                });
+                if let Some(first) = equalities.next() {
+                    let conjunction = fold_binary(first, equalities, &BinaryOperator::And);
+                    return classify_expr_depth(
+                        &conjunction,
+                        db,
+                        registry,
+                        table,
+                        command,
+                        depth + 1,
+                        state,
+                    );
+                }
             }
         }
     }

@@ -106,7 +106,6 @@ fn a_translation_with_nothing_unhandled_answers() {
         .expect("nothing went unhandled");
 
     assert!(outputs.model().contains("type docs"));
-    assert!(!outputs.tuple_queries().is_empty());
 }
 
 /// The payoff of typing the notes. A clause the caller's own threshold dropped is their

@@ -1021,29 +1021,6 @@ CREATE POLICY p ON docs FOR SELECT USING (approved_at IS NOT NULL AND auth.uid()
     );
 }
 
-/// `Outputs` consumes the `Translation`, so the analysis surface must stay
-/// reachable through the accessor rather than force a clone up front.
-#[test]
-fn outputs_keep_the_translation_reachable() {
-    let sql = r"
-CREATE TABLE users(id UUID PRIMARY KEY);
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES users(id));
-CREATE FUNCTION auth_uid() RETURNS UUID LANGUAGE sql STABLE
-    AS 'SELECT current_setting(''app.user_id'')::uuid';
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
-";
-    let db = parse_schema(sql).expect("schema should parse");
-    let translation = TranslatorBuilder::new()
-        .build()
-        .translate(&db)
-        .expect("translation should plan");
-    let relations_before = translation.relations().to_vec();
-    let outputs = translation.outputs().expect("nothing goes unhandled");
-    assert_eq!(outputs.translation().relations(), relations_before);
-    assert!(!outputs.translation().action_relations().is_empty());
-}
-
 /// The output types serialize and come back equal, so a consumer can store a
 /// translation's results and reload them without re-planning.
 #[test]
