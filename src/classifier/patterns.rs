@@ -1150,7 +1150,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p_public ON docs FOR SELECT TO PUBLIC, app_user USING (TRUE);
 ",
         );
-        assert!(public.scoped_roles().is_empty());
+        assert_eq!(public.scoped_roles(), Vec::<String>::new());
     }
 
     /// `PostgreSQL` compares the privilege case insensitively and ignores surrounding space,

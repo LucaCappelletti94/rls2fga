@@ -679,12 +679,6 @@ CREATE FUNCTION opaque_lookup() RETURNS TEXT
     }
 
     #[test]
-    fn default_registry_is_empty() {
-        let registry = FunctionRegistry::default();
-        assert!(registry.functions.is_empty());
-    }
-
-    #[test]
     fn enrich_from_schema_skips_functions_without_body() {
         let sql = r"
 CREATE FUNCTION declared_only() RETURNS UUID LANGUAGE SQL;

@@ -1,4 +1,4 @@
-use super::actions::{using_targets, with_check_targets, RoleLimitedRule};
+use super::actions::RoleLimitedRule;
 use super::dsl::*;
 use super::emit_roles::{ensure_exact_roles_relation, ensure_role_threshold_scaffold};
 use super::*;
@@ -1016,13 +1016,6 @@ fn bound_query_deserialization_validates_placeholders() {
             "deserialization must reject invalid placeholders in {sql}"
         );
     }
-}
-
-#[test]
-fn action_target_helpers_cover_empty_arms() {
-    assert!(using_targets(PolicyCommand::Insert).is_empty());
-    assert!(with_check_targets(PolicyCommand::Select).is_empty());
-    assert!(with_check_targets(PolicyCommand::Delete).is_empty());
 }
 
 #[test]

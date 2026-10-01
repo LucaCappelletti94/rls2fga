@@ -89,7 +89,7 @@ fn a_definer_wrapped_membership_expands_to_the_body_membership() {
         reads_bypass_rls,
         "the one schema principal owns both the function and the read table"
     );
-    assert!(presence_columns.is_empty());
+    assert_eq!(presence_columns, Vec::<rls2fga::types::ColumnName>::new());
     assert!(
         matches!(
             &inner.pattern,
