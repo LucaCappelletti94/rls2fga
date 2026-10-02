@@ -1,0 +1,27 @@
+-- Split INSERT and SELECT policies: the author may insert a row, the owner may
+-- read it. PostgreSQL applies both to `INSERT ... RETURNING` and to any
+-- `INSERT ... ON CONFLICT`, and only the WITH CHECK to a plain `INSERT`.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_policy ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CREATE POLICY notes_insert_policy ON notes
+    FOR INSERT TO PUBLIC
+    WITH CHECK (author_id = auth_current_user_id());

@@ -1,0 +1,14 @@
+{
+  "name": "rls2fga: RLS to OpenFGA",
+  "short_name": "rls2fga",
+  "description": "Translate PostgreSQL Row Level Security policies into an OpenFGA authorization model, entirely in the browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/apple-touch-icon.png", "type": "image/png", "sizes": "180x180" }
+  ]
+}

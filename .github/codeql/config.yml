@@ -1,0 +1,10 @@
+name: rls2fga
+
+# Test, bench, fuzz and probe code is not a product attack surface, and scanning it
+# reports temp-directory writes with literal prefixes as path injection.
+paths-ignore:
+  - tests
+  - benches
+  - fuzz
+  - probes
+  - web

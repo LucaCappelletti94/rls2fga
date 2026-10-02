@@ -1,0 +1,45 @@
+name: Runtime Parity
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly runtime parity sweep every Tuesday at 04:17 UTC.
+    - cron: "17 4 * * 2"
+
+concurrency:
+  group: runtime-parity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  runtime-parity:
+    name: runtime-parity
+    runs-on: ubuntu-latest
+    # 58 container tests one at a time, on top of a cold debug build of 42 targets. The
+    # test run alone measures 15 minutes locally on warm images, and the compile-only
+    # `quality` job here already budgets 35.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Verify Docker availability
+        run: docker version
+
+      # The five server-backed targets carry `required-features = ["client"]`, and cargo
+      # omits such a target silently, so without the feature this step lists no test and
+      # passes. One thread because a fresh runner pulls both images cold.
+      - name: Run the container-backed suites
+        run: cargo test --features client --tests -- --ignored --test-threads=1

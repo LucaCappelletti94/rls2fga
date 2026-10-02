@@ -1,0 +1,10 @@
+{
+  "auth.jwt": {
+    "kind": "setting_reader",
+    "key": "request.jwt.claims"
+  },
+  "auth.uid": {
+    "kind": "current_user_accessor",
+    "returns": "uuid"
+  }
+}

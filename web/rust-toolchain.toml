@@ -1,0 +1,8 @@
+# Pin to stable. arborium (pulled in by the dioxus-code editor) compiles
+# tree-sitter's C runtime to wasm32-unknown-unknown and backfills missing libc
+# symbols through its sysroot shim, which links cleanly on stable but fails on
+# nightly with `undefined symbol: stderr`. Pinning here makes local `dx serve` /
+# `dx build` match CI on a machine whose default toolchain is nightly.
+[toolchain]
+channel = "stable"
+targets = ["wasm32-unknown-unknown"]
