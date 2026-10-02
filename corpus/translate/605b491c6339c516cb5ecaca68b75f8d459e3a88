@@ -1,0 +1,4 @@
+-- A RESTRICTIVE po_i:TABLE
+
+CREATE POLICY notes_reviewed ON nontractr
+    USING (reviewer_id = auth_cuuser_id());

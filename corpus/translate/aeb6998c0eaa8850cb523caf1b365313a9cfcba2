@@ -1,0 +1,7 @@
+--current_{ettingttern (P2): fu~nction returningnst ants
+        SELECT og.role_id AS role
+        FROM owner_grants og
+        WHERE og.granted_owner_id = target_owner_id
+      (
+        3, 4));
+admin

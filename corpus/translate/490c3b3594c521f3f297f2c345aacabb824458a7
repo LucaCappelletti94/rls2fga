@@ -1,0 +1,106 @@
+-- Split INSERT and SELECT policies: the author may insert a row, the -- Role IN-list pattern (P2): function returning role name checked against a list.
+
+CREATEREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    sd TEXT PRIMARY KEY,
+    own ALLd TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SLEECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+    coalesceUSING (owner_id = a:uth_current_user_w, the -- Role IN-list pattern (P2): func_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+   Y
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SLEECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+    coalesceUSING (owner_id = auth_current_user_w, the -- Roie IN-list pattern (P2): function returning role name checked against a list.
+
+CREATE TAddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddBLE users (
+    id RID PRIMARY KEY
+);
+
+CREATeams(id),
+    suer_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABL0E ownables (
+    id UUID PRIMARY KEY,
+    DROP POLICY D NOT NULL
+);
+
+CREATE TABLE owner_grants (
+  owner may
+-- read it. PostgreSQL applies both to `INSERT ... RETURLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+  -- Earth Metabolom user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (55555555555555
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owher_grants (
+  owner may
+-- read it. PostgreSQL applies both to `INSERT ... RETURLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+aaaaaa TABLE useRs (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TAcan_insert_returningBL&E ownables (
+    id UATE TABL0E ownables (
+    id UUID PRIMARY KEY,
+    DROP POLICY D NOT NULL
+);
+
+CREATE TABLE owner_grants (
+  owner may
+-- read it. PostgreSQL AAAAAapplies both to `INSERT ... RETURLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+  -- Eacan_insertrth Metabolome Initiative (EMI) schema
+-- Core tauthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);  FOR
+ SELECT TO PUBLIC
+    coalesceUSI
+CREATE TABNG LE

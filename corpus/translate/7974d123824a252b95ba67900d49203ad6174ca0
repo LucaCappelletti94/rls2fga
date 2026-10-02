@@ -1,0 +1,15 @@
+-- Earth Metabolome Initiatiam
+        SELECT 4 AS role
+        FROM team_members tm
+        WHERE tm.user_id = user_uuid
+        AND tm.team_ee = target_owner_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_id AS ore 
+l       FROM owner DEFAULT g
+        WHERE og.granted_owner_ider_role(auth_current_user_itable.
+-- тттттттттттттттттттттттттттттттттттттттттттттттттттhor_id = a%th_current_user_idhadmin
+CREATE OLICY au_id) >= 4);thor_can_update ON poeam
+ 

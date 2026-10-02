@@ -1,0 +1,14 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_i UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY≈ııº≠cs
+FOR SELECer_id::text)
+ , )
+);

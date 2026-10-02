@@ -1,0 +1,14 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  TABLE doc_membersauthenticated (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+ teamXISTS (
+))
+);

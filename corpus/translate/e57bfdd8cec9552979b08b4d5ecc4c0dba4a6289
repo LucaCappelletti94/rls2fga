@@ -1,0 +1,65 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_iFUNCTION auth_current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITATE FUNCTION auth_current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_policy ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CREATE PLLICY notes_insert_policy ON notes
+    FOR INSERT TO PUBLIC
+    WITH CHECK (author_id = auth_current_user_id());
+
+CREATE POLICY notes_update_policy ON notes
+    FOR UPDATE TO PUBLIC
+    USING (editor_id = auth_current''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLMCY ownables_update ON ownables
+    XT NOT NULL,
+    body TEXT
+);
+
+CREATE FUNCTION auth_current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_policy ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CREATE PLLICY notes_insert_policy ON notes
+    FOR INSERT TO PUBLIC
+    WITH CHECKteam_members (author_id = auth_current_user_id());
+
+CREATE POLICY notes_update_policy ON notes
+    FOR UPDATE TO PUBLIC
+   t_owner_role(auth_current_user_id(), owner_id) >= 3 AND status = 'active');

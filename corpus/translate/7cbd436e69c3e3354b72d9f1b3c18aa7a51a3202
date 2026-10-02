@@ -1,0 +1,13 @@
+-- Role IN-lurning role namt.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE [team_members (
+    t_u«ABLE ownables (
+    id UUIDnt_u«serr_id) IN (2, 3, 4));

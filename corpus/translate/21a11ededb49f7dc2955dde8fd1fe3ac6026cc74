@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the owner`hip/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+ INSERT TO PUBLIC
+    WIT§§§§§§§§ser_uuid
+        AND tmicit grants
+    session_user    SELECT og.rECIIIIIIIIIIIII  PDATE TO PU TEXT[]BLIuth C
+pa

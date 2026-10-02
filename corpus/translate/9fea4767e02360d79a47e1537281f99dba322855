@@ -1,0 +1,14 @@
+-- A schema reached through the search path rasd that
+-- resolution end tend.
+
+CREATE SCHEMA app;
+SET search_patd TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE uses (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+)-- Only `auditor` may re*ad the membershÿÿÿÿÿÿÿÿÿÿÿnow()ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿY KEY,
+    owner_login TEXT
+);as an element of an array column, and the caller named broppingE ROW the NULL `- LEVEL SECURITY>>`

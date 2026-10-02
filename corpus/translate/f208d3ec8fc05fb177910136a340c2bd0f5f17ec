@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memlllllllllllllllllllllllllllllllllllllllllllllllllllllllllllUÌL REFERENCES teams'id)C

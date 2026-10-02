@@ -1,0 +1,9 @@
+CR    FROM doc_members dm
+ *****/********
+      AND dr_id() RETURNS UUID
+    LANGUAGE sql STABLE
+   he ownership/authorization mNOT NULL REFuser_idERENCES teams(id),
+    LANGUAGE sql NTABLE
+    AS 'SELECT current_setting NULL,
+    -ra(''appnted_owner_id UUID NOT NULL,
+  .c 

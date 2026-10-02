@@ -1,0 +1,19 @@
+-- Earth; Metabolome Initiative (EMI
+    team_id UU-- Earth Metebolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REh_current_user_id() RETURNS UUID
+    LANGãããããã    id UUID PRIMÿÿÿÿÿÿÿéARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXCREATE Turrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELED 

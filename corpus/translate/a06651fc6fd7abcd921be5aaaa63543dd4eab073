@@ -1,0 +1,6 @@
+-- Earth Metables for the ownership/authorizatiol model
+
+CREA```````````````````````````````!!!!!!!!REFERENCES teams(iSER  user_id UUID NOT NULL REFERENCES PRIMARY KEY (teu{EGER
+    LANGUAGE sql STABLE
+    AS '
+ates whKEYRE

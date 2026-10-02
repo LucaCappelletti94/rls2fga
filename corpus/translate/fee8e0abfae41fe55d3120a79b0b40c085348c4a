@@ -1,0 +1,15 @@
+CREATE TABLE users (
+    id UUI REFERENCES Y
+);
+
+CREATE TABLE teams (
+  ID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯TE POLICY projects_select ON projects
+   
+        SELECT 0 FROM team_members
+        WHERE team_~id = projects.team_id
+        AND user_id = auth_current_user_id()
+    ));

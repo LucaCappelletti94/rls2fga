@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UID, member_id UUID,
+  role TEXT
+)CREA;
+
+ALTER TTE TABLE users (
+  A

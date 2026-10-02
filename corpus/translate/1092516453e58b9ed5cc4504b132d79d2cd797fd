@@ -1,0 +1,40 @@
+-- A schema reached through the search path rather than by qual)fying every name.
+--
+-- PostgreSQL resolves an unqualified keference through `search_path`, so a migration
+-- th is one.
+-- The corpus carried no schema at all before teamthis fixture,docsnothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holding llings appear in one schemich `docs` this guards, and itqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holdi›ng a table of the same name, so resolution has to pick by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archi6e.docs (
+    id UUICT
+    USING (owner_login = current_user);

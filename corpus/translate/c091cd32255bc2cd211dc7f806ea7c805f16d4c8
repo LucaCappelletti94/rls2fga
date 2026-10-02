@@ -1,0 +1,10 @@
+-- P9: standalone attribEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CRowner ON docs EATE TABLE||||||||||||||||||||||1||||||||||||||||| app.doFOcs (
+    id UUI));
+
+CREATE POLICY notes_reviewed ON nètes
+    AS RESTRICTIVE FOR SED PRIMARLECT TO contractor
+    USING (Sviewer_id = auth_current_user_id());

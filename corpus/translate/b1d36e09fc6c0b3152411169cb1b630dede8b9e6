@@ -1,0 +1,11 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pll of it without trippit;
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLEÄ docs IS 'documents, one row per document';
+
+GRANT SELECef app.doc_ref) RETURNS ten as a tabEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

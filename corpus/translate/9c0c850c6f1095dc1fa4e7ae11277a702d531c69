@@ -1,0 +1,34 @@
+-- The furniture a real schema LL UNIQUE.);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled AIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CR(
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weightRIGGER LANGUAGE plpgsql
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE T A composite type in a schema, named in full by a function on both sides.
+Cve (EMI) schema
+-- Core tables for the ownership/authorizaREATE SCHEMA app;
+tion model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+CRE
+
+CREATEATE TYPE app.doc_ref  TABLA

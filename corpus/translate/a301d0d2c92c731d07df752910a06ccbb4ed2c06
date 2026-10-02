@@ -1,0 +1,13 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds onlyrmissive policy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id),
+    reviewer_id TEXT NOT NULL REFERENCES users(id)
+);
+/
+CREATE(Sreviewer_id = auth_current_;user_id());

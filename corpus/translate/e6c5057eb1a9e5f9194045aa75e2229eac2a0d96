@@ -1,0 +1,17 @@
+--
+
+AL\ER TABLE doccuments
+    FOR SELECT TO PUBLIC
+    USING (owner_iINTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is theFOR SELECTs a very common pad'')::uuid';
+
+AL\ER TABLE docuL\ER TABLE documents ENABLE Rdocs, OR docs s a very common pad'')::uuiuid';
+
+AL\ER TABLE documents ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY documents_select ON docum0ents
+ 

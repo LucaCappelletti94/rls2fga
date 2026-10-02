@@ -1,0 +1,5 @@
+--current_setting Role IN-list prole name checked against ants
+        SELECT og.role_id AS role
+        FROM ow  WHERE og.-current_setting Role IN-list paid
+      (
+        3, 4));

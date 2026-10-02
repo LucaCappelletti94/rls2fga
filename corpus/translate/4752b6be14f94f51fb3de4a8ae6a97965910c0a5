@@ -1,0 +1,18 @@
+-- A locking read is filtered by the UEADPpT olicies' USING clause on top of the
+-- SELECT policies, so it return{s fewer rows than a plain read.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id T»XT PRIMARY KEY,
+    owner_id TEXT NOT NULL RS 'SELECT current_setti’–('ECURITY;
+
+CREATE POLICY notes_readabSELECT TO PUBLIC
+    USING (TRUE);
+
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    USING (owner_id = auth_current_user_id())
+    WITH CHECK (TRUE);

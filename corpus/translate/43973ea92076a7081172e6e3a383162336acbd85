@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiativecan_insertema
+-- Core tables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+   . FROM (
+(     [ -- au-ter is th]e owÿÿÿÿÿÿÿner, max role
+   -- auth.rolenitiative (EMIbles
+    FOR _uUereid() ), s

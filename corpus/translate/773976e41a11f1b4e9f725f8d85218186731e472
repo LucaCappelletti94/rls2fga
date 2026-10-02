@@ -1,0 +1,23 @@
+-- Role IN-list pattern (P2)
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES TEXT
+);
+
+ÎALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUB´¶dmtasks
+    WHERE dm.doc_id = docs.users(id: fenction returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE = docs.users(id)
+);
+
+CREATE TABLE ownTa*/*********bles (E
+
+    

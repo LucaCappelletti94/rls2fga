@@ -1,0 +1,4 @@
+-- The furnitureREATE Isession_userNDEX docs_tenant_idx ON docsCREATE POLICY  (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docsнннннн);
+
+/- A composite typel in a suserfidnamed in full by a fuнннннннннннннннннннннннннннннннннннннннннннннннннннннннннннннUNCTION touch_docs() RETURNS T FUNCTInct'SELECT id, owner_|ogin FROM docs';

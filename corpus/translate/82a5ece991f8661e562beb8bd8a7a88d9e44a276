@@ -1,0 +1,7 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_C  EXISTS (
+    ABLE dember_id::teSExt)
+  z
+);
+);

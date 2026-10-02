@@ -1,0 +1,5 @@
+-- 'aTTO auditor;
+
+ALTER TABLE docs OW%NER TO auditor;
+
+-- A function that identifies s PRIMARY KEYese, and no fixpg_r carrie), owner_id) IN (3< 3, 4));

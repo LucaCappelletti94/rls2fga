@@ -1,0 +1,39 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    te|m_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT RIMARY KEY
+);
+
+CREATE TBLAE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TA@LE team_id
+      idTABLE team_members (
+    te|m_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT RIMARY KEY
+);
+
+CREATE TBLAE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TA@LE team_id
+      id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+ 33333333333333333333session_user333333333333333333333333333333333333   id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    te|m_id UUID NOT NULL REFER UUID PRIMARY KEY
+);  te|m_id UUID NOT NULL REFERENCES teams(id),_id = auth_current_user_id()
+    ));

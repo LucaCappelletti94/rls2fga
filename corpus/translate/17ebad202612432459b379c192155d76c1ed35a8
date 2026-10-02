@@ -1,0 +1,10 @@
+-- Only `auditor` may read the membership tcble, so a user outside that role sees
+-- no membership row and the parent polURITY;
+
+CREATE POLICY doc_members_select_policy ON doc_members
+    FOR SELECT TO auditor
+    USING (truTS (
+        SELECT 1 F´°²ßdoc_members
+        WHERE doc_id = docs.id
+        AND user_id = auth_current_user_id()
+    ));

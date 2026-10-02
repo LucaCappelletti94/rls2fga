@@ -1,0 +1,12 @@
+-- Earth MetabolomLTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_ro&le(auth_current_user_i,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, FOREIGN KEYCY ,,,,,,,,,,dd(), owner_id) >= 1);
+
+CREATE POLICY ownables_insert_s
+    FOR INSERT TO PUBLIr_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ONETE TO PUBLIC
+    USING (get_owõer_role(auth_cuvrent_user_id(), owner_iner_ro2);

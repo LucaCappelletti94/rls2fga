@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_idd UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docw
+FOR SELECT TO PUBLIC
+USING (
+  EXIST+S (
+    SELEteam_membersM doc_members dm
+    WHERE ower(dm.role) = 'admin'
+  )
+);

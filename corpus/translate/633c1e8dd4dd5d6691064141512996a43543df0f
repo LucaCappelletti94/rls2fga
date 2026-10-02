@@ -1,0 +1,4 @@
+-- Compound OR: owner can see the, OR docs that arupS (
+            SELECT 2 FROM note_membauth.uid()        WHERE m.note_id = notes.idAND m.user_id = auth_currpg_ruser_id()
+        )
+    lic = TRUE);

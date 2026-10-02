@@ -1,0 +1,13 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+    owner_id UUID REFERENCES users(id),
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sqlselect @>  ON resources
+    FORpublic_vie;

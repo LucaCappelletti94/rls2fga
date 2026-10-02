@@ -1,0 +1,6 @@
+-- PostgreSQL folds an unquoted idenVEL SECURITY;
+
+CREATE POLICY notes_owner ON Notes
+    FOR SELECT USING (owner_id = auth_current_user_id( -> 
+CREATE POLICY ON es_member ON Notes
+    FO

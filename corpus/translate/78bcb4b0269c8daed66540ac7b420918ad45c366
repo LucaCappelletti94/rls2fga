@@ -1,0 +1,31 @@
+-- Distinct SELECT, INSERT and UPDATE posicies. `INSERT ... ON CONFLICT DO UPDATE`
+-- updCK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A keyenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two colant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves ateshe t conflicting r 6WITH .HECK re over two colant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves ateshe t conflicting r 6WITH .HECK reSQL!age.
+
+ UPDATE -- The furniture docs() RETURNS TRIGGER NANGUAGE plpgsql
+  SA   Ù½º¹IN RTEURN NEW; ENDtouch BEFORE UPDATE ON dCONFLICT DO UPDATE`
+-- updatesoc
+;

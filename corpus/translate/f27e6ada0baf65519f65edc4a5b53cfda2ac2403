@@ -1,0 +1,10 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patternt  n oowor three bare tables. A dump of a
+-- live database also REATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no singthat.
+
+CREATE ROLE audms, domains,
+-- generated columns,ATE ROLE audms, domains,
+-- generated columns, comments, an owner  AS 'SELECT	id, owner_login FROM docs';

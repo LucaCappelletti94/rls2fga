@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) sch model
+
+CREATE TABgranted_owner_id UUID NOT NUL~~~~~~~~~~~~~~~~~~L,
+    role_id INTEGER NOT NULL
+);
+
+-- Function wtubs
+CREauth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELEid() RETUÿÿÿZUUI;
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RED
+TURNS ½±«ºßßßßLANGER
+    LANGUAG

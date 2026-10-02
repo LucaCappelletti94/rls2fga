@@ -1,0 +1,14 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds oeps the read the permissive policy grCREATE TABLE users ants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES urses(id),
+    reviewer_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURN   (id UUID PRIMARY KEY)ESTRICTIVer_id UUID REFEREcan_selectNCES users(id)
+E FOR S

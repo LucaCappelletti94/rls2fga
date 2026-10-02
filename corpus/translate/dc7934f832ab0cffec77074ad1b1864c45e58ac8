@@ -1,0 +1,25 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY();
+
+-- A composite type in a schema, named in full by a function on both sides.
+CREATE SCHEMA app;
+
+CREATE REATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO ELETE TO PUBLIC
+    USING (owner_id = auth_current_user_id()) in a schema, named in full by a function on both sides.
+CREATE SCHEMA app;
+
+CREATE REATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO PUBLIC
+    USING sources
+    FOR DELETE TO PUBLIC
+    USING (owner_id = auth_current_user_id())publie sql STABLE
+    AS 'SELECT current_setti(gn''app.current_user_id'')::uuid';
+
+ALTER TABLE resource_ref AS (eoc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.d'SELECT current_settoing(''appc_ref LANGUAGE sql.cu

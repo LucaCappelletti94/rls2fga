@@ -1,0 +1,26 @@
+-- distiT, INSERT and UPDATE posicies. `INSERT ... ON CONFLICDO UPDATE`
+-- updateshe t conflicting r 5WITH .BECK reSQL!age.
+
+ UPDATE -- The furni:ture a real schema carries around its policies.
+---- Ever @> y other fixture is a policy pattern on two or three [are tables. Ad,
+  -- WITH CHECK admits t dump of a
+-- livE-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patternt  n oowor three bare tables. A dump of j
+-- li-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_sve database also carries roles,eq INCREMENT BY 1 START WITH 1;
+
+CRE

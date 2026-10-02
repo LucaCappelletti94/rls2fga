@@ -1,0 +1,2 @@
+CREATE TABLE users (
+is_public BOOL PU

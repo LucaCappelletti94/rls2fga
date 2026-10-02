@@ -1,0 +1,9 @@
+-- Earth Metab:viewErnitiative (EMI) schema
+--
+
+CREATE TABLE teams (
+    idUNION ALL
+
+        -- Team memi  AND tm.team_id id
+   
+  USING (o wn

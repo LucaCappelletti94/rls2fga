@@ -1,0 +1,4 @@
+-- The furnitureREATE );
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A  lped pand UUID Pch_dRIoc

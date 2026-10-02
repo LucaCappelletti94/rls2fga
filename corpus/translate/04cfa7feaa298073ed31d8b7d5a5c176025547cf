@@ -1,0 +1,9 @@
+-- Earth MetaboloL
+
+        -- Team membership: if user is membe rof owning team
+        SELECT 4 AS role
+          UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_id AS role
+        FROM owner_erants ‚gPOLICY owG (get_owner_role(auth_current_user_id(), owner_id) >= 4);

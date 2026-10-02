@@ -1,0 +1,5 @@
+-- Compound OR: own verent_user_id() OR is_pub      EXISTS (
+            SELECT 1 FROM note_members m
+            WHERE m.note_id = notes.id AND m.user_id = auth_current_user_id()
+        )
+    lic = TRUE);

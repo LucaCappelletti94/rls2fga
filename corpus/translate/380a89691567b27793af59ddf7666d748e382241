@@ -1,0 +1,95 @@
+xact: UNNEST enumerates wh-- Multiple permissive policies on the same table.
+-- In PostgreSQL, permissive policies are OR'd together.
+-- Published posts are ve ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'published');
+
+Cat `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes by a jsonb field.
+-owner_id- Both are exact: UNNEST enumerates wh-- Multiple permissive policies on the same table.
+-- In PostgreSQL, permissive policies are OR'd together.
+-- Published posts are ve ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'published');
+
+Cat `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+)LTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_user_id() = ANY (editors));
+
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USINGREATE POLICY author[sees_own ON posts
+    FOR SELECT TO PUBLIC
+    USING (author_id = a%th_current_user   title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    (LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY published_visible ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'published');
+
+CREATE POLICY author[sees_own ON posts
+    FOR SELECT TO PUBLIC
+    USING (author_id = a%th_current_user_id());
+ (meta ->> 'owner_id' = auth_curren
+CREATE POLICY author_can_update ON posts
+    FOR UPDATE TO PUCREATE FUNCTIOt_user_id());N BLIC
+    US
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICislubpY hed_visible ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'published');
+
+Cat `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+)LTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PCURITY;
+
+CREATE POLICY published_visible ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'published');
+
+CREATE POLICY author[sees_own ON posts
+    FOR SELECT TO PUBLIC
+    USING (author_id = a%th_current_user_id());
+ (meta ->> 'owner_id' = auth_curren
+CREATE POLICY author_can_update ON posts
+    FOR UPDATE TO PUCREATE FUNCTIOt_user_id());N BLIC
+    USIN
+G (author_id = auth_current_user_id());

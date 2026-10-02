@@ -1,0 +1,15 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Saabpuse applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE proile"   AS 'cT NULL REFERENCES users(id)
+REATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''er_id UUID NOT NULL RESELECT current_setting(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENAs can update their own profile" ON profiles
++   FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

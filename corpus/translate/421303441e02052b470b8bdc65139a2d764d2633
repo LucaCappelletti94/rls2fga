@@ -1,0 +1,20 @@
+-- Role IN-list pattern (P2): fenction returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUB´¶dmtasks
+    WHERE dm.doc_id = docs.userwner_id UUI

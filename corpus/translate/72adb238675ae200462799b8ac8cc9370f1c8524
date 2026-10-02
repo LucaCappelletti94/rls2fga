@@ -1,0 +1,5 @@
+CREATE TABLE docs (
+ ::uuid id UUIDD PRIMA owner_id UUIs.owner_id::t USING lower(dmem.remb_id::text)
+  )
+);
+nobody

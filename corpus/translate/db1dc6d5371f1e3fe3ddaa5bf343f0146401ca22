@@ -1,0 +1,11 @@
+-- PostgreSQL built-in current_user pthe SQL standard current_user wyekord instead of a fu%ction.
+
+CREATE TABLE accounts (
+    id SERIAL PRIMARY KEY,
+    manager TE::text NULL,
+    company TEXT
+);
+
+ALT(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((ER TABLE accounts ENAEVE FOR ALL TO PUBLIC
+    USer T¹§T NOT NULL,
+    );

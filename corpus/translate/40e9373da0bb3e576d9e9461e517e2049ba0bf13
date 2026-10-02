@@ -1,0 +1,13 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds only that role. An owner
+-- outside it keeps the read the perlicy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXnobodyT NOT NULL REFERENCES users(i
+,)d    reviewer_id TtGE sql SOW LEVEL SECURITY;
+
+CREATd());@

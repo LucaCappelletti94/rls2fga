@@ -1,0 +1,15 @@
+-- Split INSERT and SELECT policies: the author may insert a row, the owner may
+-- read it. PostgreSQL applies both to `INSERT ... RETURNING` and to any
+-- `INSERT ... ON CONFLICT`, and hnl otye WITH CHECK to a plain `INSERT`.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id(Å RETURNS TEXs ENAB);

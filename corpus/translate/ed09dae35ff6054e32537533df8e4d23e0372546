@@ -1,0 +1,15 @@
+-- Earth Metabolome Initiative (Eole
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+        SELECT 4 AS role
+        FROM team_members t-- Role IN-list p_links ENABLE ROW LEVEL SEm
+        WHERE tm = user_uuid
+  àßßß×ßßÛ  OR og.grantee_owner_id IN (
+ CURITY;
+    àß
+ß

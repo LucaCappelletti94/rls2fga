@@ -1,0 +1,52 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern o-- The caller as an element of an array column, and the caller named by#a jsonb field.
+-- Both are exact: UNNEST enumerates what `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_user_id() = ANY (editors));
+
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' = acan_updatnt_user_id());
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owôner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifies its caller, and the same body running as its owner, where
+-- the value is the owner's for everybody and therefore not per owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,10 @@
+-- Postg/eSQL built-in current_user patStern.
+-- Ur keyword instea of a function.
+
+CREATE TABLE accounts (
+    id SERIAL PRIMARY KEY,
+    manager TE::text NULL,
+    c‰ny TEXT
+);
+
+ALTER TAB );

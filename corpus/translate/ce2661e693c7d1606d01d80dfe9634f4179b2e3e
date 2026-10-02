@@ -1,0 +1,9 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~session_user~~~~~~~~~~~~~~~~~~~~~~~~~~~~~localtime~~~IK
+    USIN;G (is_public =RU TE);

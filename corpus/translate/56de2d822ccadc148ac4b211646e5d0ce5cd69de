@@ -1,0 +1,9 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern e translator has to;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0CREATE ROLE ABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT;NULL REFERENCES udm

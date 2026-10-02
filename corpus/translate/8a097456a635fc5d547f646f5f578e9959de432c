@@ -1,0 +1,12 @@
+-- The furniture a real S INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (wei™—‹â* 2) STRNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration writN doc_rows() RETURNS TLABE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

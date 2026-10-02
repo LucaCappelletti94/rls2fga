@@ -1,0 +1,8 @@
+-- Distinct SELECT, INSERT and UPDATE posicies. `INSERT ... ON CONFLICT DO UPDATE`
+-- updateshe t conflicting r 6WITH .HECK reSQL!age.
+
+ UPDATE -- The furniture docs() RETURNS TRIGGER NANGUAGE plpgsql
+    AS Ù½º¹IN RETURN NEW; E, 2)
+    FROM (
+       $-- Direct     AS 'SELECT id, owner_login FROM doc
+s';

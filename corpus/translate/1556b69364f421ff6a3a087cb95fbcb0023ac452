@@ -1,0 +1,4 @@
+-- Onlembership row and the prent poli docs
+    FORE doc_id =À docs.iND user_id = auth_current_user_id()
+    )r_id = au
+    ));

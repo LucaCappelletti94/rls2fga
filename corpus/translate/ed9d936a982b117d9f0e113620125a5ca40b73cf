@@ -1,0 +1,10 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owd UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  mfers dm
+  ‹ Warray_positionH

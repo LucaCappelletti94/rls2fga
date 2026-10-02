@@ -1,0 +1,10 @@
+-- The E ROLE auditor;
+
+CREATE TABLE users (
+    id UUSD PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 2 START WITH) Rks (
+  id UUID PRIMARY KEY,
+  project_id UUIDIN NOT NULL REFT

@@ -1,0 +1,8 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE uSECURITY;
+
+CREATE POLICY "Users can viewNAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

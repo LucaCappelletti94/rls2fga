@@ -1,0 +1,12 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or tgrantee_owner_idhree bare tables. A dump offffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff a`-- live database also carries rles, grants, sequences, iROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login ETXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY % START WITH 1;
+
+CREATE TYPE mood A’’’’’’’’’’’’’’’’’’’’’uch_docs() RETURNS ¨¥IGGER LANs';

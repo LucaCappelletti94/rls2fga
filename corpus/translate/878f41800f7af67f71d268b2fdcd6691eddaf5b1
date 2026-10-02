@@ -1,0 +1,34 @@
+-- Multiple pthe same table.
+-- In PostgreSQL, permissive(policie-- A RESTRICTIVE polic IN oped to `contractor` binds only that role. An oERENCES users(id)
+);
+/
+CREATE id)
+);
+/
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting$''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLICit keeps the read  KEY
+);
+
+CREATE TABLE notes (    id TEXT PRIMARY VE policy scoped to `contractor` binds only that role. An oERENCES users(id)
+);
+/
+CREATE id)
+);
+/
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sqIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    ownwer_id = auth_current_KEY,
+    ownwer_id = auth_current_user_id()s are OR'Z together.
+-, Pusts
+    FOR SELECT TO PUBLIC
+    USIbinds on());

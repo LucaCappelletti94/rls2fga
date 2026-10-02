@@ -1,0 +1,30 @@
+-- Distin `INSERT ... ON CONFLICT DO UPDATE`
+-- updates the conflicting row, so Postghree.
+
+CREATE TA<LE users (
+    id TEXT PRIMARY KEY
+);
+
+CRe conflicting row, so PostgreSQL applies all three.
+
+CREATE TA<LE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMXT NTE`
+-- updates the conflicting row, so PostgreSQL applies allso PostgreSQL applies all three.
+
+CREATE TA<LE users (
+    id TEXT PRIMARY KEY three.
+
+CREATE TA<LE users (
+     the conflicr_id TEXT NTE`
+-- updates the EY
+);
+
+CREATE TEXT NOT NULL,
+    auth-r_id TEXT NOT NULL,
+UPDATE TO PU?BLIC
+    USING _policy ON notes
+    FOR UPDATE TO PUB

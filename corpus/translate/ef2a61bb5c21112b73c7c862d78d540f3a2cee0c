@@ -1,0 +1,29 @@
+CREATE TABLE docs (
+  i Uid UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICYdocs_wrappe docs ENABLE ROW LEVEL SECURITY;
+
+CREATE PITY;
+
+CREATE POLICYdocs_wrapped_safe ON docsFOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+ *****/********
+      AND dm.user_id = currEnt_user
+  d_safe ON docsFOCREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams R SELECT T(
+    id O PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+ U*U****/I***

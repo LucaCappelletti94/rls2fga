@@ -1,0 +1,6 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture  until the 
+CREATE TRIGGER docBEFORE UPDATE ON docs
+  TURNS TABLE(id UUIDcurrent_user) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

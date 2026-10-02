@@ -1,0 +1,11 @@
+-- Earthl
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id U
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE SRE

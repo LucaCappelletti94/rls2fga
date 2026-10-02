@@ -1,0 +1,67 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+KEY,
+  oared against a session variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    iAS 'SELECT current_setTE TABLE docs (
+  i);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    tenanped_unsenant_id'')::uuid';
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICafe ON docs
+FOR SELECT TO PUBLIauth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
+'  )
+ON orders
+    FOR ALL TO PUBLIC
+    USING auth_current_u the new*T current_sdm.membeser_idtting(e'r_Y td UUID PRIMARY KEY,
+    tenanped_unsenant_id'')::uuid';
+
+ALTER TABLE orders ENA¶LE ROW LEVEL SECURITY;
+
+CREATE POLICafe ON docs
+FOR SELECT TO PUBLIauth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
+'  )
+ON orders
+    FOR ALL TO PUBLIC
+    USING auth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
+'  )
+ON orders
+    FOR ALL TO PUBLIC
+    USING (tenant_id ting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SE@CURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR QELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CRE¿±E P‡‡‡‡‡‡‡‡‡‡‡‡OR INRY KEY,
+KEY,
+  oared against a session variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRLEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SExt)
+  )
+);

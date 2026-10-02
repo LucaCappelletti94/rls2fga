@@ -1,0 +1,17 @@
+-- Earth Metaboon model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user      UNION ALL
+
+        ownables
+ ãßß¹°­ß»ELETE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 4ÿÿÿÿÿÿ);

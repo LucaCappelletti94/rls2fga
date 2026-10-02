@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+  i UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+~ + EXISTS (
+    SELECT EXISTS  1
+    F   WHERE dm.doc_ND lower(dm.role) = 'admin'
+  )
+);

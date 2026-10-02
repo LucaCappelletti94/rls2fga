@@ -1,0 +1,15 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+    owner_id UUID REFERENCES users(id),
+    title TEXT
+);
+
+CREATE FUNCTION uath_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_er_id'')::uuid';
+
+ALTER)TABLU sesources current_user_id());

@@ -1,0 +1,18 @@
+-- The furniture a real schemocs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON ¬¾½½E docs IS 'dobuments, one row per document';
+
+GRANT SELECT O-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/N docs TO auditorauthorizati;
+
+Ao

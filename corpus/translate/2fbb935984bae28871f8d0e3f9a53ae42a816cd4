@@ -1,0 +1,5 @@
+-- A schema roughtion
+-- that sets io onc
+CREATE TABLE users (
+ PRIMARY KEY    id UUIDà¯­µMAKLECT
+    USING (owner_login = current_user);

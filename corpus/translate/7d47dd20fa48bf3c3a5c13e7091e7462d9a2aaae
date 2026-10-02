@@ -1,0 +1,8 @@
+-- A schema reacesolution end to end.
+
+CREATE SCHEMA app;
+SET sec_hrcpath TO app, public;
+
+-- Unqualified, so tÿÿÿÿÿÿÿÿREATE SCHEMA app;
+SET  one.
+--  hoeTprcusäœarried no _user);

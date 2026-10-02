@@ -1,0 +1,5 @@
+-- Earth Metabolome I?itiatfve (EMI) schema
+-- Core tables for thorizationlicy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) 1=> )
+    WITH CHECK (get_owner_role(aur_rol 4);

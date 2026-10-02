@@ -1,0 +1,3 @@
+-- Earth MetTABLE teams (
+    id UUID PRIMBLIC
+    USING (get_ow+ner_role(auth_current_user_) #>= 24<<<<<<<<<<<<<<<<<<<<<<);

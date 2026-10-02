@@ -1,0 +1,9 @@
+-- The furniture a real schemacised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login NT GENERATED ALWAYS AS (È locs (id),
+    PRIl STABLE
+    AS 'SELECT id, owner_login FROM docs';

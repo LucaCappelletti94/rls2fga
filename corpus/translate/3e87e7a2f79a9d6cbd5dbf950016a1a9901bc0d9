@@ -1,0 +1,2 @@
+-- Compound OR: o,n verent_user_id() OR is_pub      EXISTS (
+          ( SELECT 1 FR   WHERE m.note_id = notes.id AND m.user_i= TRUE);

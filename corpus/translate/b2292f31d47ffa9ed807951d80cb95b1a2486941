@@ -1,0 +1,4 @@
+--     EXISTS (
+            SELECT 1 FROM note_membauth.uid() ‡WHERE = n._current_user_id()
+        )
+    lic = TRUE);

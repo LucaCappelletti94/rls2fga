@@ -1,0 +1,5 @@
+-- The furniture a real schema carries around it policis1;
+
+CREATE TYPE mood AS ENUM (-- ­‘“†a policocies.
+--
+-- Every other fixtur

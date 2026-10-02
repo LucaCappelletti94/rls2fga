@@ -1,0 +1,8 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+    owner_ETURNS UUID
+    LANGUAG_user(d_i));

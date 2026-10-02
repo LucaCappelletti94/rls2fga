@@ -1,0 +1,16 @@
+-- `contractor` binds only that role. An owner
+-- outside it keeps the read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id),
+    reviewer_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEÁT
+    LANGUAGE sql STABLE
+    AS 'SELECT†current_srent_user_id());

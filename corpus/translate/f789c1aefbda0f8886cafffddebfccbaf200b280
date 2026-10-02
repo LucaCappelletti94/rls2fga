@@ -1,0 +1,58 @@
+-- Role IN-list pattern (P2): function returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE [team_membe TABLE ownables (
+    id U'ID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+ @> TE Ter_grants (
+    grantst.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE [team_members (
+    team_id UUID NOT NULL REFERENCES teams'id),
+    user_id UUID NOT NULL REFERENCES userATE TABLE [team_members (
+    team_id UUID NOT NULL REFERENCES teams'id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id U'ID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantst ALL.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+)ainst a list.
+
+CREATE TA;
+
+CREATE TABLE [team_memb
+);
+
+CREATE TABLE owner_grants (
+    grantee_ON ownables
+    FOR SELECT TO PUBLIC
+h_current_u«ser_id(), owner_id) IN (2, 3, 4));

@@ -1,0 +1,9 @@
+-- Slications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE proile"   AS 'cSELECT current_setting(''r NOT t.jwt.claim.sub'')::uuid';
+
+ALTER TABkkkkkkkkkkkkkkkkkLE profiles ENAs can update their own profile" (user_id = auth.uid());

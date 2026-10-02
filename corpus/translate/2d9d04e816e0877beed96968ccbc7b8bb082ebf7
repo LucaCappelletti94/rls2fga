@@ -1,0 +1,32 @@
+-- Only `auditor` may read the membership table, so a user outside that role sees
+-- no membership row and the parent policy grants nothing.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE docs (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE doc_members (
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES docs(id),
+    user_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SECECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE doc_members ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY doc_members_select_policy ON doc_members
+    FOR SELECT TO auditor
+ÿÿÿ	    USING (true);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_sel_id = docs.id
+   _current_user_id()
+    ));

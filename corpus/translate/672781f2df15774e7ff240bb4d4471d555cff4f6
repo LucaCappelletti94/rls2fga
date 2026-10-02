@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id s (
+  do,
+  user_id UUID,
+  m‹‹;

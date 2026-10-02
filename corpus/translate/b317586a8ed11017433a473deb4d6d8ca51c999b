@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUIDeam_members (
+    team_id UUJID NOT NULL REFERENCES teams(id),
+    user_id
+t_user_id()
+    ));

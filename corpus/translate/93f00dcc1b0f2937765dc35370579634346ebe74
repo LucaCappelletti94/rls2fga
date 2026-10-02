@@ -1,0 +1,19 @@
+-- 'Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURN~~a reles FOR SELECT
+    USING ereached through the search xath rather than ry name.
+--
+-- PostgreSQL resolves an unq  USITRUEŒ‹—tus = 'publiied the policya reach£d ENABLE ROW LN profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

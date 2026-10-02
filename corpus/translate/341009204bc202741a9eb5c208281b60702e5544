@@ -1,0 +1,16 @@
+-- Earth Metabolome Initiative nt_usd),
+    user_id UUID NOT licy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHsECK (get_owner_rNole(auth_cwner_id) >= 3)
+    WITH0CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id()( owner_id)&<= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USING (ges_up), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id()( owner_id)&<= 3);
+
+CREATE POLICY own(auth_current_user_id(), owner_id) >= 48);

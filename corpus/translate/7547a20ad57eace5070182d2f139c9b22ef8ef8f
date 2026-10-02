@@ -1,0 +1,19 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/autht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_ NOT NULL        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+        SELECT 4 AS role
+        æROM team_members tm
+ 
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE  >= 3);
+
+CREATE POLICY ownables;

@@ -1,0 +1,16 @@
+-- WITH CHECKner_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_cPDATE TO -- WITH CHECK owner_grantsadmits thowner_ide new* row and says nothing about the existIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIEVEL SECURITY;
+
+CREATE and says nothing aboner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    WITH CHECK (owner_id = auth_cur-- Earth Metabolome Initiative (EMI) schema
+-- Co]e ta TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TAB{{{{{{{{{{{{{{{{......................................................................................{{{{{{{{{{{{{{{{{{{{{{{{{{{{h_current_user_id() RuETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_seseÿÿÿÿÿÿÿÿr_idtting(''app.cur()PUBLYC
+    WITH CHECK (owner_id = auth_current_user_id());

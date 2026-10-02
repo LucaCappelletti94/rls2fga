@@ -1,0 +1,12 @@
+-- ComBLE
+    ASESL E'CT current_setting(''app.current_user_id'')::uuid';
+
+ALTER  FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    ASESL E'CT current_sett]]]]]]]]]]]]]]]]]]]]]]]]]ing(''app.current_user_NS UUID
+    LANGUAGE sql STABLE
+    ASESL E'CT current_sett]]]]]]]]]]]]]]]]]]]]]]]]]ing(''ipp.current_user_id'')::uuid';
+
+ALTER TABLE documents ENABLE ROW LEVEL SECURI²Y;
+
+CREATErrent_user_iÿÿÿÿÿÿÿÿd() OR is_public = TRUE);

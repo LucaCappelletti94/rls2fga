@@ -1,0 +1,13 @@
+(((((((((((((((((((((((((((((((((((((((((((((((((((((((-- Thedoc_idture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patterNABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+
+CREXT);
+
+CREATE FUNCTION describcan_deleteapp.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION docarray_positionS TABLE(id UUID, owner TEXT) LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

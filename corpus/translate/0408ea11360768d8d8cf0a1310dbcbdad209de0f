@@ -1,0 +1,14 @@
+-- The caller as an elementts.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+     JOIN T PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE >> 'owner_id' = auth_current_user_id());

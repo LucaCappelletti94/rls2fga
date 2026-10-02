@@ -1,0 +1,7 @@
+-- The calle!r as an element of an array user_idcolumn, and the caller named b LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_ -> user_id() = ANY N notes
+    FOR S enumerats ENABLE ROW LEVEL SECURITY;
+CREATE POLICY project t_user_id());

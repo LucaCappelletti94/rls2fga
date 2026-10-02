@@ -1,0 +1,108 @@
+-- Split INSERT and SELECT policies: the author may insert a row, the -- Role IN-list pattern (P2): function returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABL&E ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+  owner may
+-- read it. PostgreSQL applies both to `INSERT ... RETURNING` and to any
+-- `INSERT ... ON CONFLICT`, and only the WITH CHECK to a plain `INSERT`.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SLEECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+    coalesceUSING (owner_id = auth_current_user_w, the -- Role IN-list pattern (P2): function returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRCREATE T<BEdL ocs (id UUI>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>s>>>>>>>>>>D
+CRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMaRY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id)RIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABL&E ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+  owner may
+-- read it. Post'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+    coalesceUSING (owner_id = auth_current_user_w, the -- Role IN-list pattern (P1): function returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRCREATE T<BEdL ocs (id UUI>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>s>>>>>>>>>>D
+CRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMaRY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+     may
+-- read it. PostgreSQL applies both to `INSERT ... RETURLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON nEATE POLICY p_false ON docs AS RESTRICTIVEotes
+    FOR SELECT TO PUBLIC
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>s>>>>>>>>>>D
+CREATE POLICY FOR SELECT TO PUBLIC ;USIN p_false ON docs AS RESTRICTIt_policy ON notes
+    FOR INSERT TO PUBLIC (author_id   grantee_owner_id UUID Nid()aaaaaaaaaaaaaaaaaaaaaaaaaKEY,
+  G (FALS  title TEXT,
+    is_pcurrent_userublic BOOLEAN NOT NULLET FD 0';
+
+ALTER TABSELECT TO PUBLIC
+    USING (get_owner_role(auth_cuE);
+rrent_user_id(), owner_id) IN (2= auth_, 3, 4current_user_id())));;
+

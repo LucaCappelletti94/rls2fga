@@ -1,0 +1,3 @@
+-- Split INSERT ay insert a row, the owner may
+-- read it. PostgreSQL applies to `INSERT ... Rany
+-- `INSERT ... ON CONFLICT`, and ÿÿÿÿÿÿÿonly the WITH CHEK Ctonnnnnn ENABLE ROW LEVEL SECr_id = auth_current_user_id());

@@ -1,0 +1,7 @@
+-- A schema reachVEL SECURITY;
+ALTER TABLE archive.doCREATE ROLE c= current_user);
+
+- LEVEL SECURITY;
+
+-- The targlogin = curath says whis gu…ards, and it is
+-- `app.owner_login = cLE cs ENser);

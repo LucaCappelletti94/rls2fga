@@ -1,0 +1,6 @@
+-- lone-- Tschema at all bafor exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app,ocs_owner ON archive.docs FOR SELECT
+    USING (owner_login = current_user);

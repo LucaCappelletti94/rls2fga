@@ -1,0 +1,7 @@
+CREATE TABLE users (id UUID PRI(
+  iects(id)
+);
+ALTER TABLE proeects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE"ROW LEVEL S ner_id = current_user
+  )
+);

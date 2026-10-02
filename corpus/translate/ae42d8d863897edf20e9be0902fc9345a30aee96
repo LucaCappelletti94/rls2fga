@@ -1,0 +1,6 @@
+-- Postin currenY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBKEY,
+    ma…………………………………………………………………nager TEXT NOT NULL,
+    co;

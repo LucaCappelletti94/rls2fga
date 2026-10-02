@@ -1,0 +1,4 @@
+-- A RESToutside ad the per_user_id());
+
+CREATE POLICY notes_reviewed ON VE FOR SELECT TO contractor
+    USING (reid());

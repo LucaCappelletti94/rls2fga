@@ -1,0 +1,3 @@
+((((((((((((((((((((((((((((((((((
+ describTABLE(id UUID, owner TEX?T) LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

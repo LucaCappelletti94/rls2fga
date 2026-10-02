@@ -1,0 +1,20 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authcurrent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+      d     )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_poes_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_role(auth_cur.rentK@?K@-@?qsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqroleqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq_user_id(), owner_role(auth_current_user_id(), owner_id) >= 4);

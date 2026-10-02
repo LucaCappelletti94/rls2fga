@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+ ALLner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;šowner_id::text) = lower(dm.member_id::text)
+  )
+);

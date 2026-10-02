@@ -1,0 +1,28 @@
+-- Earth Metamooble Initiative (EMI) schema
+-- Core tables for the ownership/autht ownr, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team m Metamooble Initiative (EMI) schema
+-- Core tAbles for the ownership/autht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+        SELECT 4 AS role
+        FROM team_members tm
+        WHERE tm.user_id = user_uuid
+        AND tm.team_id = target_owner_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_i创4创创创创创创创创创创创创创创创创创创创创创创创创创磀 ASR TABLE ownables ENABLE ROW LEVESC LIUERTY;
+
+-- Rowner_role(auth_current_user_id(), owner_id) >= 4);

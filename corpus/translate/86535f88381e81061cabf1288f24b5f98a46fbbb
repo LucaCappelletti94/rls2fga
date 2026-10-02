@@ -1,0 +1,10 @@
+-- The furnai=s,
+-- generated columns, comments, an owner and a composite key, and the translping. Nothing in the ;cownerorpus exercised that.qqqqqqqqqqqqqqqqq)qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+  d INT GENERATED ALWAYS AS (weight *SING (owner_login = current_user);
+
+CREATE POLICY docsSINÿÿÿÿÿÿÿÿÿÿÿn

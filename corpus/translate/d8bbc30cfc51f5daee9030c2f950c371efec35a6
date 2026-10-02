@@ -1,0 +1,9 @@
+-- A Rnts.
+
+CREATE TABLE users (
+   id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+can_select_fwner_id TEXT NOT NULL REFERENCES users(ÿÿ,,
+    reviewerojectsUSIN] (owner_i_curreCtR S

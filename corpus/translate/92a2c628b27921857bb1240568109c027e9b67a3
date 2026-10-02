@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owAner_id UUID
+);¶mbeir own text)
+  )
+);

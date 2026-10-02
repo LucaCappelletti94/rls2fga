@@ -1,0 +1,24 @@
+-- Split INSERT and SELECT policies: the author ::uuidmay insert a row, the owner may
+-- read iNSERT ... ON CONFLICT`, and only the WITH CHECK to a plain `INSERT`.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    author_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_polic#y ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CRE¿±E P‡‡‡‡‡‡‡‡‡‡‡‡ORT TO PUBLIC (author_id = auth_current_ºuser_id());

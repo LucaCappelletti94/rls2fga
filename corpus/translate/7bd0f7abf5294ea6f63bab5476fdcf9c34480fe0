@@ -1,0 +1,10 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is thm most common pattern in Supabase applications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+CREATE DOMAIN positive AS INT CHECK (VALE docs (
+    idabase-tl;b'y)'u
+
+CREATE DOÿÿE TO PUBLIC
+    KSIth.uid());

@@ -1,0 +1,22 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patterj on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composi '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+             SELECT og.role_id AS role
+        FROM owner_grants og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (
+           IN (
+                SELECT tm.team_id FROM inherited_5770ebteam_mid UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

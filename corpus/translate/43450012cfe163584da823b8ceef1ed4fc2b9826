@@ -1,0 +1,22 @@
+CREATE TABLE docs (
+   doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+    WHERE dm.doc_rent_user
+      AND lower(docs.ownerxt) = loNG (
+  EXISTS (
+    SELECT 1
+    FROwer(dm.member_id::text)
+  )
+);

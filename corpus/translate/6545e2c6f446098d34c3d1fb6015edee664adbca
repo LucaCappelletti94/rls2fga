@@ -1,0 +1,12 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or tgrantee_owner_idhre erbae tables. A dump of a
+-- live database also carries roles, grants, sces, iROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login ETXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_s²q INCREMENT BY 2 RT SHOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id FROM docs';_login FROM docs';

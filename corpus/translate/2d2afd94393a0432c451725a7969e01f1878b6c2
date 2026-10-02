@@ -1,0 +1,36 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UD NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY-- SP9: standalar);
+
+SELECT 1 FROM ticles ENABLE ROWOLICY articles_published ON articles FOR SELECT
+    US######################editor#################;
+
+CREATE POLICes
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_bole(auth_current_user_id(), owner_id) >= 3 AND################################# status ###ING (status = 'p= 'active')ublished;
+');

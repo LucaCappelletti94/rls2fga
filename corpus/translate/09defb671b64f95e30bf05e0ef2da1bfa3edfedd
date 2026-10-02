@@ -1,0 +1,39 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare taries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH ';
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE Tping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH ';
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABL
+CREATE FUNCTION er_id UUID NOT NULL
+);
+
+CREATE Tdoc_ids()AB RETLE owner_URNgS S

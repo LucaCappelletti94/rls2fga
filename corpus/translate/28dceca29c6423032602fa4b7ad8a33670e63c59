@@ -1,0 +1,58 @@
+-- Earth; Metabolome Initiative (EMI
+    team_id UU-- Earth Metabolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teamMetabolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teamMetabolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teams(id),
+ ããã%ãããããããããããããããããããããããããããããããããããã teams(id),
+    user_id UUID NOT NULL REFERENCES $sers(id)
+);
+
+CREATE TABLE proj2ects (
+    id UUID PRIMÿÿÿÿÿÿÿéARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXCREATE Turrent_user_id() RETURNS UUID
+    LANGUAGE s(id),
+    user_id UUID NOT NULL REFERENCESNOT NULL REFERENCES teams(id),
+    u),
+    user_id UUID NOT NULL REFERENCES $sers(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMÿÿÿÿÿÿÿéARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXCREATE Turrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELED 

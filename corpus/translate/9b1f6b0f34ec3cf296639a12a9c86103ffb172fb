@@ -1,0 +1,65 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.cu     AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+     CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATUBLIC
+USING (
+
+    FROM doc_members dm
+    WHERE dm.doc_id = docs.id
+      AND dm.user_id =   SELECT 1 AS role
+        FROM team_members t   WHERE og.granted_owner_id = target_owner_id
+        AND (
+            og.grantee_owner_id = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.tecm_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies current_user
+      AND lower(docs.
+CREATE POLICY ownables_select_policy ON ownables
+ect_policy ON ownables
+    FOR SELECT TO PUBLIC
+ßowner_id::text) = lower(   Udm.mSe

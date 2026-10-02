@@ -1,0 +1,4 @@
+-- The furniEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW set-return;

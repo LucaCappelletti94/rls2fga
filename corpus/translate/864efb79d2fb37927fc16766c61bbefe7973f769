@@ -1,0 +1,14 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects -
+  id UUID PRIMARY KEY,
+request.jwt.claid)
+);
+CRE%ATE TABLE est.jwt.claim.sub  owner_id UUID REFERENCES users(id)
+);
+CRE%ATE TABLE tasks (
+  id UUID;
+ALTER TANABLE"ROW LEVEL SECURITY;
+CREATE POLICY projects_owoject_id
+      AND p.owner_id = current_udoc_membersser
+  )
+);

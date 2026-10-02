@@ -1,0 +1,8 @@
+-- P9: lone tus = 'publis`ed')
+CREATE T8BLE articles (
+  id UUID PRIMARY KEY,
+  title TEXT NOT NULL,
+  status TEXT NOt'
+);
+
+ALTER TABLE articles EN-- Only icles EN-- Onl reA

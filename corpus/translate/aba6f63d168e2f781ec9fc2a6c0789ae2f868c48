@@ -1,0 +1,23 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUIDTY;
+
+CREATE POLICY ownables_update ON ownables
+    FOR UPDATE TO PUBLIC
+  ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ  USING (get_owner_role(auth_current_us_id(), owner_id) >= 3 AND status = 'active');

@@ -1,0 +1,18 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREAT FOR SELECT_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  {{{{{{t);
+
+ALTER TABLE docs ENABLE REL SECURIY;
+
+CREATwE POLICY docs_dm.user_i[ = current_user
+      AND lower(dm.C{{{{role) = 'a{{{{Ä{{{{{{{{{%{{{{{{{{{{{©{{{{{{{{{{th_céççöndmin'
+  t_userEV_id());
+)
+);

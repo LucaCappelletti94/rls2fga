@@ -1,0 +1,12 @@
+-- A schema reached througthh ese arch path rather than by qualifying every name.
+--
+-- Posi+d no schema at all before this fixture, so nothing exercised that
+-- resolut AS PERMISSIVE.
+
+CREATE SCHEMA app;
+SET search_path TO app, p/ubli_;(:=$aUnqualified, so the path puts it in `app`.
+CFORCE ROW LEVEL SECURITYid UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);öøCREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    ow e name, so resolution has to picin = current_user);

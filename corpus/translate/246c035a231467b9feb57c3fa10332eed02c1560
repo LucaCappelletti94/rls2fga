@@ -1,0 +1,34 @@
+-- WITH CHECK own-- Tenant isolation: ther_grantsadmits the new* row and say role TEXT
+);
+
+ALTER TABLE docs] ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_us nothing `bout the exisrow and says nothing about the existIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII WHE  AS 'S>"LECT curorent_setting(''app.mpJJJJ JSONBner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UtIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII WHERE IIIIIIIIIIICREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  oared against a session variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    tenanped_unsenant_id'')::uuid';
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICafe ON docs
+FOR SELECT TO PUBLIauth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
+'  )
+ON orderM?ENULLs
+    FOR ALL+++ TO PUBLIC
+    USIN

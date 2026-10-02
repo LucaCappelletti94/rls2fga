@@ -1,0 +1,15 @@
+-- Earth MetabolomATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!th_current_user_id() RETURNS UUID
+    LANGUAGE s[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(tea!!!!!!!!!!!!!RERFEENCES ;teams(id),
+    user_id UUID NOT NULL REFERENCESNOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL R-- TheEFERENCES users(id),
+    PRIMARY KEY (team_id, uon stubs
+CREATE FUNCTIO' auth_currengrant_editot_user_ furniture a real schema c@arries around its policies.
+--
+-- Every other fiump of a
+-- live databid() RETURNS UUD
+I    LANGUAGE sql STABLEase
+  ENC

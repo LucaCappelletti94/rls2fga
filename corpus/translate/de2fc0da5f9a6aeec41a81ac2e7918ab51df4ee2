@@ -1,0 +1,24 @@
+-- Supabaseh.uid() function.
+-- This is the most common pattern iidSupabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE srl STABLE
+    AS 'SELECT current_setting(''requeidst.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own pr
+
+ALTER TABLE profiles ENAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLICIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
+    USING (user_id = autq.uid());

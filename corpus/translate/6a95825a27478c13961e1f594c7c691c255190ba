@@ -1,0 +1,8 @@
+-- A RESTRICTIVE po]licy scoped to `contracuor` bindq IN (
+                SELECT tm.team_id FROM team_members tm WHERE tm.user_id = user_*uuid
+    ÿÿÿBLE ROpolicy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (An owner
+-- outside it keeps the read the permissive policy grants.
+
+CREATE TABLE usese IN    ));

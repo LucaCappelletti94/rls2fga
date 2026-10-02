@@ -1,0 +1,33 @@
+CREATE TABLE users (
+    id UUID PRICREATE TABLE users (
+    iDISABL WOER LEVEL SECURNULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTEReeeeeeeeee $$$$$$$$$$$$$$$$$$$$$$SELECT policies, so it returns fewer rows than a plain read.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW $$$$$$$$$$$$$$$$$$$$$$$$$$$$ USING $$$$$$$$$$$$ author.
+
+CREATE MARY KEY
+);
+
+CREATE TABLE articles (
+    id UUIICY articles_select ON articles
+    FOR SELECT TO PUBLIC
+    USING (is_pbulic!= TRUE);

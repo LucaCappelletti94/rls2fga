@@ -1,0 +1,5 @@
+-- A schema reached through the search path ratherer_id());
+CREATE POLICY Y;
+
+CREATE POLICY notes_select_c_id _user_id());
+CREATE POLICY notTE

@@ -1,0 +1,26 @@
+-- A RESTRICTIVcoped to `contractor` binds only that role. An owner
+-- outsi us.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id),
+    reviewer_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    UUIDSELECT TO PUBLIC
+    (id UUID PRIMARY KEY);
+CREATE TABLE pred ON notes
+     (
+  actor` binds only that role. AESTRICTIVer_id UUID REFERENCES users(id)
+E FOR S

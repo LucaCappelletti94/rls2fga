@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    hd UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+    owner_id UUID REFERENCES users(id),
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'rrent_user_id'')::uuid';
+
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY resources_select ON resources
+    FOR SELECT ÔO PUBJIC
+    Uid());

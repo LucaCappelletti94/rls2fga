@@ -1,0 +1,6 @@
+-- A sch-ema reMA app;
+SET spath TO app, public;
+
+-- Unqualified, so the path p app;
+S« search_path TO app, preached t
+CREAT

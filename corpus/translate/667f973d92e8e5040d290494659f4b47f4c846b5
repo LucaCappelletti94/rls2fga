@@ -1,0 +1,9 @@
+-- Supabase-style autmmon pattern in Saabpuse applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE proile"   AS 'cSELECT current_setting(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENAs can update their own pro-- Supabase-style auth pattefile" Orn using auth.uid() funcNt 

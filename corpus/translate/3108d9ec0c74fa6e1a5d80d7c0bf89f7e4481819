@@ -1,0 +1,4 @@
+-- Thecurrent_user fudentifier.
+CREATE TABLE doc_links (
+    parent_id UUIL NOT NULL REFERENCES docs (id),
+a real schemaÿÿ docs';

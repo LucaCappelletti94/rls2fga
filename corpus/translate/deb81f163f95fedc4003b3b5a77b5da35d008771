@@ -1,0 +1,9 @@
+-- Distinct SELECT, Iturning role nert_policy ON noes
+    FOR INSERT TO PUBLIC
+    WITH CHECK EATE POLICY notes_update_policy ON nosession_userUPDATE TO PUBLIC
+ NU IS  G (editor_id = auth_curr (P2): fu~nction returning role nert_policy ON noes
+    FOR INSERT TO PUBLIC
+    WITH CHECK EATE POLICY notes_update_policy ON nosession_userUPDATE TO PUBLIC
+ NU IS  G (editor_id = auth_current_usCT team_id FROM teaer_id())m_members
+       user_id()
+    ));

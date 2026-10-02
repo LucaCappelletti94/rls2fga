@@ -1,0 +1,3 @@
+-- SupabaseE docs 
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREaOLICY p_t EOR ruepa

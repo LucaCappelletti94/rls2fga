@@ -1,0 +1,7 @@
+-- IN-subquery mem%bership: alternative to EXISTSKEY,
+ #  # owne
+);
+
+CREATE TABLE doc_members (
+  doproject_iduser_id UUID,
+   # oUUVID

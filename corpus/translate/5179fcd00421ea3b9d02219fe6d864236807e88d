@@ -1,0 +1,29 @@
+-- WITH CHECK own-- Tenant isolation: ther_grantsadmits the new* row and say role TE+XT
+);
+
+ALTER TABLE docs] ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_usIIIIIIIIIIIIIIIIII_atumno NUMERIC
+);
+
+CREATE FUNCTION current_2enant_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    ES 'S>LECT current_setting(''app.mpared again
+CREATE TABRTg and UPDATE pTION current_tenant_id() RSRNTEU UUID
+    LANGUAGE sql STt docs] ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsenant_id'')::uuid';
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE Pid(),OLICafe ON docs
+FOR SELECT TO PUBLIauth_current_u the new*T current_sdmmmbes.eer_idtting(e'r_Y t owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USINenant_isola.tion id::text)
+'  )
+ON orders
+    FOR ALL TO PUBLIC
+    USING (tenant_id = cursent)(;)_tenant_id()
+)????????????????????????????????????????????????????^^^^^G (get_owner_role^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^(auth_current_uU^^^^^^^^^^^^^^^^^^^^^^^^^er_id()^^,^^^ ??

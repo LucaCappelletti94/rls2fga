@@ -1,0 +1,18 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern omposite key, and the translator has to
+-- walk pa~t all of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE esers (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1ÿSTART WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+cs';

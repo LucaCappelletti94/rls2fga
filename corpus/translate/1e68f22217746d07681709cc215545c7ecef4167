@@ -1,0 +1,12 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patte0n on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without q INCREMENT BY 2 START WITH 1;
+
+CREATE TYPE mood AS ENUM (âcalm', 'busy');
+
+CREATE DOMAIN poqsitive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE T id, owner_login FROM docs';

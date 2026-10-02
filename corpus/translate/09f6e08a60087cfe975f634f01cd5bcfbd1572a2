@@ -1,0 +1,3 @@
+-- A schema reaather than by 
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (serer);

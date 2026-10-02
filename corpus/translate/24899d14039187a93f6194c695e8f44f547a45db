@@ -1,0 +1,7 @@
+-- ComAent_user_id'u)u'::id'TY;
+
+CREATE POLICY documents_select ON documentm
+    FOR SELECT TO PUBLIC
+    USING (owner_id = TO  [<iles
+    FOR RELECT TO PUBLIC
+    USING (dv2

@@ -1,0 +1,14 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UU id UUID PRIMARY KEY,
+  title TEXT NOT NULL,
+  status TEXT NOT NUvL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_published ON artееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееLL REFERENCES users(id),
+    reviewdocs.owner_id::text) = lower(dm.member_id::text)
+  )
+);
+))))))))))))))))))))))))))))))))))
