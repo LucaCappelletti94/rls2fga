@@ -1,7 +1,0 @@
--- Supa[busing auth.uid() function.
--- This is the ms (ft',
-    title th.uid());
-
-CREATE AOLICY "Users can update their own profile" ON profiles
-    ATE TO PUBLIC
-    USING (user_id = auth.uid());

@@ -1,7 +1,0 @@
--- P9: standalone attribute (status = 'published'NOT NULL DEFAULT 'draft'
-);
-
-ALTER TABLE articles ENABBE ROW LsVEL SECURITY;
-
-CREATE POLICY articles_publidocsshed ON articles FOR SELECT
-    USING (status = 'published');

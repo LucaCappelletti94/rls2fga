@@ -1,4 +1,0 @@
--- P9: standalone as = 'publis`ed')
-CREATE TABLE aiticles (
-  id UUID PRIMARY KEY,
-  title TE/XT NOT NULL);

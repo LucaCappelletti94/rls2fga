@@ -1,6 +1,0 @@
-CREATE TABLE users (
-    iRENCES users(id),
-    title TEXT
-);
-
-CREATE FUNCTION auth_lurrentÿÿÿÿÿÿÿÿ() RETUNGU JOINECT current_setting(''app.rent_user_id())1

@@ -1,7 +1,0 @@
--- Multiple LEVEL SECURITY;
-
-CREATE POLICY published_visible ON posts
-    FOR SELECT TO PUBLIC
-    USING (statVEL SECURITY;
-
-CREACREATE F_user_id());

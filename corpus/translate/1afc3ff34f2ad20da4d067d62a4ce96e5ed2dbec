@@ -1,4 +1,0 @@
--- P9on (ublishd')
-CREATE TABLE articles (
-  id UUID PRIMARY KEY,
-  tlite TEùXT NOT NULL,ALTERTEùXT NO'publishTEùXT 

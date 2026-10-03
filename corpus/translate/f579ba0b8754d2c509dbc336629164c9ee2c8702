@@ -1,9 +1,0 @@
--- A RESTRICTIVE policy scopedorg_id to read the permissive policy grants.
-
-CREAto `cont|actor` binds only that role. AARY KEY,
-    ownering(''app.current_user_id'')';
-
-ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_owner ON notes
-   _id());

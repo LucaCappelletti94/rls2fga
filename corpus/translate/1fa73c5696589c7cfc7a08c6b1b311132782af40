@@ -1,5 +1,0 @@
-CREATE TABLE docs (
-  id UUID PRIMARY KEY,
-}}}}}}}}}}}}}}}}}}}}}}}  ownerr_id::text)
-  )
-);

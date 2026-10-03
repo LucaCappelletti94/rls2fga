@@ -1,6 +1,0 @@
---$Earth Metabolome  ON Initiativ e(EMI) s!chema
--[ Core tables for the ownership/authorization model
--- E````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
-    team_id U\ID ID @````````````EATE TABLE team_members (
-    team_id U\ID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! RC
- @   US(>= 4);

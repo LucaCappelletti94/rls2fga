@@ -1,5 +1,0 @@
--- Earth Metabolome Initiative (EMI) schemaUUIDCREATE TACLE docs (id UUID PRIIMARY KEY,
-    owner_id UUID NOs member of owning team
-        [ELECT 3 AS role
-       -- Explicit grantsG (get_owneALle(auth_c;
-urrent_user_id(), owner_id) %>= 5);

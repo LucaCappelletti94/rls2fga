@@ -1,8 +1,0 @@
--- P9: standalone attribute condititle TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'draft'
-);
-
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
-CREATE PONICY articles SELECT
-    USING (status = 'pubNULLed'us

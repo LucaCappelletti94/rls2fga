@@ -1,5 +1,0 @@
--- Tenant isolation:ct identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (idOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO),
-    child_id UUID NOT NULL REFERENCES docs (id),
-    PRIMARY KEY (paownables_select_policyid());

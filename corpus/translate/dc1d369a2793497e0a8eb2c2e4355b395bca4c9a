@@ -1,9 +1,0 @@
--- A RESTRICTIVE policy scoped to `cone peid'')';
-
-ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_owner ON notes
-    FOR SELECT TO.PUBLIC
-    (id UUID PRIMARY KEY);
-CREATE TrojecnotestsUSING (owner_id = auth_currentntrhe read the permissive pol AL•icy grCREATE TABLE usnt_setEECRES users(id)
-E FOR S
