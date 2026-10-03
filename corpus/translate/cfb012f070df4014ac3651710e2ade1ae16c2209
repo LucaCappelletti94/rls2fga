@@ -1,0 +1,5 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (->> SSSSSSSdocuments ownershs the 

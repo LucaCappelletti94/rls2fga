@@ -1,0 +1,7 @@
+-- eiLu   ENABLCURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 FROM team_members
+      ->>   

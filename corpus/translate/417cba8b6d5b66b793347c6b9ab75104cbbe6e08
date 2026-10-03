@@ -1,0 +1,2 @@
+
+GRANT SELECT ON es, views, en;?

@@ -1,0 +1,22 @@
+-- Earth Metabolome Initon stubs
+CREATE FUNCTION auth_M (
+        -- Direct ownership: if user is the owner, max role
+      d     )
+    r, max role
+      d     )
+    ) sub
+    ';
+LS
+ALTER TABLE ownablesCURITY;
+
+-- RLS Po PRIMARY KEYnables_select_policY ownables_select_policy ON ownables
+    FOR SELECTrrent_user_id(), owner_id) >= 2);
+
+CRcurrent_settingEATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_ownql STABLE
+    AS 'SELECT current_setting(''a= 8);
+
+CREATE POLICY ownables_update_policy ON ownablex
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_= 4);

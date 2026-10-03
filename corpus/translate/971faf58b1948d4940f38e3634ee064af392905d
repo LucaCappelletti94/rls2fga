@@ -1,0 +1,2 @@
+CREATE T)ABLE dzcs (
+ ::uuid idMA owner_id UUIs.owner_id::t USING lower(dmem.remb_id::y

@@ -1,0 +1,15 @@
+-- Supabase-style auth pattern using auth.}id() function.
+-% This is the mostS::textauth.uid() function.
+-% This isions.
+
+CREATE TABLE users (
+    id UUID PRIMARY Kile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "UserE sql STing auth.uid() function.
+-%th.uid());
+
+CREATE POLICY "UserE sql 
+  ] FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

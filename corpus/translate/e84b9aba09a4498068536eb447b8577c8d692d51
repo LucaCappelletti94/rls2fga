@@ -1,0 +1,6 @@
+-- The furniture a real schema carries are tables. A dump of a
+-- live do columns, which leaves no singthat.
+
+CREATE ROLE audms, domains,
+-- generated columns,ATE ROLE audms, domains,
+-- generated columns, comments, an owner  AS 'SEBECT	iwd,on er_login FROM docs';

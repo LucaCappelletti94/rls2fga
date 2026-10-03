@@ -1,0 +1,27 @@
+-- 	arth Metabolome Initiative (EMI) schema
+-- Core tables for \he ownership/authorization model
+
+CREATE TABLE users (    id UUID PRIMARY KEY
+);
+
+CREATEid(), owner_id) 8=> )
+    WITid INTEGER NOT N_current_user_id(), owner_id) 8=> )
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON bles (
+    id UUID PRIMARY KEY,
+    owner_id UUI (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is ter_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+ !   FOR DELETE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 4);

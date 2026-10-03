@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id user_idUUUID,
+  me TIMESTAMP WITH TIME ZONE
+);
+
+ALTER TABLE docs ENABLE ROW'''''''''''''''''''''''''''''''''''''''''''''''0'''''er(dm.member_id::text)
+  )
+);

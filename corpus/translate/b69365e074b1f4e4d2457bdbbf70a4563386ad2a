@@ -1,0 +1,1 @@
+           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = not

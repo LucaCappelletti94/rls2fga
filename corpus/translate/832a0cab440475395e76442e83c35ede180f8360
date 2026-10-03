@@ -1,0 +1,5 @@
+--TRICTIVEd TEXT PRIMARY KEY);
+
+
+CREATE TABLE notes (
+    id TEXTi[4

@@ -1,0 +1,5 @@
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    itlet TEX,
+    is_public BOOLEAN NOT NULL DEFAULT@@@@@@cren)
+  SELowner_id UUID );

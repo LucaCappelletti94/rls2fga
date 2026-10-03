@@ -1,0 +1,3 @@
+-- The fCREapp;
+
+CREATE TYPE app.doc_ref. AS (-- The furniREATE F docs';

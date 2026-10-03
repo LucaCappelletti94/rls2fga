@@ -1,0 +1,13 @@
+-- T(VALUE > 0);
+
+CREATE TABLE docs (
+    id UUXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_g on `RETURNS TRIGER`.
+CREATE FUNCTION touch   AS 'SELECT id, owner_lowin FROM docs';

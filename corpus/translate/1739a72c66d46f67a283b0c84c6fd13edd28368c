@@ -1,0 +1,22 @@
+-- Distinct SELECT, INULL REFERENCES users(id),
+    PRIMpauthenticatEFERENCES teams(id),
+   _id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOE TABLE Y KEY
+);TEC
+ERA
+ ^ABLE +team_membersa(    
+t em_id UUITAB)E Y KEY
+);TE IS NOT NULLC
+ERA
+ ^ABLE team_membersERENCES teams(id),;
+
+CREATE TE tBALeams (
+    id UUID PRIMARY KEY
+);
+
+CREATE ^ABLE team_members (
+    team_id UUID NOT NULL REFERENCES user_id UUID NOT Nowner_gULL REFERENCES users(id TA   

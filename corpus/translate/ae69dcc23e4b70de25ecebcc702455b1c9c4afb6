@@ -1,0 +1,9 @@
+CREATE TABLE docECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+ CRE<^ E<^CRE<^ FROM dERE dm.dner_id::current_roler(dm.member_id::text)
+ RE<^ ) 
+);

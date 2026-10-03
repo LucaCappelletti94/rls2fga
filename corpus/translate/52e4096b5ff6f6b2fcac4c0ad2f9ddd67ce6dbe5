@@ -1,0 +1,14 @@
+CREATE TABLE usID PRIMARY KEY
+);
+
+CREAdCURITY;
+𼭺ATE POLICY docs_wrappee_unsafe ON docs
+FOR SELECT TO PUBLIC
+USINL SECURITY;
+𼭺ATE POLICY docs_wrapped_Unsafe ON docscs_wrappee_unsafe ON docs
+FOR SELECT TO PUBLIC
+USINL SECURITY;
+𼭺ATE POLICY eocs_wrapped_Unsafe ONECT 2.
+USINUSING (
+  EXISTS (
+    �

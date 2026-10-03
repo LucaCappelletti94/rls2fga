@@ -1,0 +1,16 @@
+CREA ON _cataK  4e-- Earth Metabolome Initiative (EMI) schema
+--CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    ususer_id'')::uuid';
+
+ALTER TABLE projects ENARITY;
+
+CREATE POLICYship/authori projezaticon m“›š‹s_

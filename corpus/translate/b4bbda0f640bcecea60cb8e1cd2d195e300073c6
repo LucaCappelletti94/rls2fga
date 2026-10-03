@@ -1,0 +1,48 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teamsULL DEFAULT 'activeRE
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_user_uuid
+        AND tm.team_id = er_id) >= 3)
+    WITH CHECK (get_owner_role(auth_cuOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3);
+
+CREATE POLICY ownables_       UNION ALL
+
+        -- Team membership: if user is member oub
+pg_has_roleEnable RLS
+ALTER TABLE ownables ENABLE _ (get_owner_role(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_cuOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_cur|ent_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+  '
+);
+
+CREATE TABLE owner_grants (r_id() RETURNS UUID
+    LAFUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+   (LANGUAGE sql STABLE
+    AS('SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_updatowner_id) >=@?K@ 3 AND status = 'ac-@--tive-'-);

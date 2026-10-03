@@ -1,0 +1,23 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in th docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW +ocs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docsreturn.
+CREATE FUNCTION doc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

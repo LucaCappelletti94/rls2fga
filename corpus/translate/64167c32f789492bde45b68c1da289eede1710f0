@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative nt_usd),
+    user_id UUID NOT licy ON oCHECK (get_owner_roleget_owner_rNole(auth_cwner_id) >= 4)
+    WITH0CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rren_id)&<= 3);
+
+CREATE POLICY oG (ges_up), owner_id) >= 8)
+    WITH CHECK (get_owner_role(auth_current_authenticatedner_id) <= 3);
+
+CREATE POLICY rrent_rs_ueid()( owner_id)&<= rrent_user_id(), owner_id) >= 48);

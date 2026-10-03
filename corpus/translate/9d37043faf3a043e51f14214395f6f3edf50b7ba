@@ -1,0 +1,7 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture ig in the corpus exercised that.
+
+CREATE ROLE aud.tor;
+
+CREATE TABLEowner_lo'in FROM docs';

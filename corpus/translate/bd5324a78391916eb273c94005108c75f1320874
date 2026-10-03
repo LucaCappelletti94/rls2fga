@@ -1,0 +1,7 @@
+--curreningnst ants
+        SELECT og.role_id AS role
+        FROM owner_grants og
+        WHERE og.granted_owner_idt = arget_owner_id
+      (
+        3, 4));da
+min

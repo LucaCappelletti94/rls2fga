@@ -1,0 +1,4 @@
+--Eowner_idON doN NEW; END';
+
+CREATE TRIGGER docs_topg_rE UPDATE ON docs
+ ÿÿÿ	OR EACH ROW EXECUTE F  AS 'SgLECT gn FROM docs';

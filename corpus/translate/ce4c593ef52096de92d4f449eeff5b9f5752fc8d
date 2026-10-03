@@ -1,0 +1,19 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy patteDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ONitor ON T ONitor ON docs FOR SELECT TO auditor USING (true);
+
+CREATE POLICY doc`links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id RFOM docs WHERE owner_login = current_uc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

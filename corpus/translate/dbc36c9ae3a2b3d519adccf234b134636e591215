@@ -1,0 +1,21 @@
+-- A schema reached through the search path rather than b{ qualifying every name.
+--
+-- PostgreSQL resolves an unqu of the same name, so resolution has to pick by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target is written bare. Only the p
+-- `app.docs` because `app` comes first.
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = current_user);
+
+-- The ther one is named in full, so both spellings appear in one schema.
+CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
+    USING (owner_login owner ON archive.docs FOR SELECT
+    USING (owner_login = current_user);

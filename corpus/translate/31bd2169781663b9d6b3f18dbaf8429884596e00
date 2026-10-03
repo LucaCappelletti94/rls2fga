@@ -1,0 +1,13 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task RENAME TO W LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR SELECT TO PUBLIC
+  E POLICY tasks_inherit_project ON tasks FOR SELECT TO PUBLIC USING (li   

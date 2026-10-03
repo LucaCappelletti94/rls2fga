@@ -1,0 +1,7 @@
+-- A RESTRontractor` binds o- outside iE notes
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user?id());
+
+wne);

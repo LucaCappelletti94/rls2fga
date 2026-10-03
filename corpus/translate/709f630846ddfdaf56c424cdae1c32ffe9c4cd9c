@@ -1,0 +1,10 @@
+-- A currentthe policy target below is oneto end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so thlution has to pick by path
+-- order rather
+CREATE SCHEMA archive;
+CREATE
+    d UUID PRIMARÿÿÿÿÿÿÿÿÿÿÿÿÿR%-A sÿÿogin = E POLICY archive

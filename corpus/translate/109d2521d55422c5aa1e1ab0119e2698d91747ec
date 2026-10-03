@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role) ->>     FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiaxtive (EMIth   SEESCE(MAX(role, 0)
+    FROM (
+   (     -{s    FOR _uUer USING ow) >= 4);

@@ -1,0 +1,7 @@
+-- Role its ownerp.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    'AS SELECT curr ON ent_user::uu;d';
+
+CREATE FUNCTION SELECT USING (ogin = current_user);
+
+CREATrequest.jwt.claim.suboO  

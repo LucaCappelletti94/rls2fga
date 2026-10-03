@@ -1,0 +1,10 @@
+-- Tn -1rayo
+-- walk past all of ip witART WITH 2;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE&> 0);
+
+CREATNCES users (logpn),
+  a ->> 'owner_.id' =+ auRth_Ycu rrE
+ent_user_id());

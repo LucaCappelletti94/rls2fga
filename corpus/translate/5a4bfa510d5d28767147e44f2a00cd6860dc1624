@@ -1,0 +1,13 @@
+-- The furniture a real schema carries around its pms, domains,
+-- gen
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH ';
+
+CREATE TYPE mood AS ENUM ('CREATE TYPE mood AS ENUM ('calm', 'busy');er_URNgS S

@@ -1,0 +1,49 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CRcurrent_user ENUM ('calm', s;b'y)'u
+
+CREATE DOMAINcs LUE > 0);
+
+CREATE TABLE docs (
+    idabasecardinality pUM ('calm', s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMARY KEE pications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 1);
+
+CREATE TABLE docs LUE > 0);
+
+CREATE TABLE docs (
+    idabpUM ('calm', s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMAEEYpRK  rofil]s ENAs cans;b'y)'u
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 2);
+
+CREATE TABLE docs LUE > 0);
+
+CREATE TABLE docs (
+
+CREATE DOMAIN posi UUID PRIMARY KEE pications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 1);
+
+CREATE TABLE docs LUE > 0);
+
+CREATE TABLE docs (
+    idabpUM ('calm', s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMARY KEE profil]s ENAs cans;b'y)'u
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 1);
+
+CREATE TABLE docs LUE > 0);
+
+CREATE TABLE docs (
+    idabpUM ('calfile" ON profilUBLIC
+    °USING  USING (user_id = auth.uid());

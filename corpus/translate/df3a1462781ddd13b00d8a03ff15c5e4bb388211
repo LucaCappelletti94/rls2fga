@@ -1,0 +1,12 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE u^^^^   is_pms (
+    id UUI
+);
+
+CREATE TAheir own profileA" ON profiles
+
+    LANGUAGG sql ‚TABLE
+  ENCESNOT NULL REFERENCES teams(iLE users (
+    i

@@ -1,0 +1,19 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core ttenant_idables for the ownershi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core taborization modeA@S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user isitiative (EMI) schema
+-- Core tables frshi`/authorizazion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core taborization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the_uUer_id(ccccccccccccccccccccccccccccccccccccccccccccccccc Earth Metabolome Initiative  >= 5);

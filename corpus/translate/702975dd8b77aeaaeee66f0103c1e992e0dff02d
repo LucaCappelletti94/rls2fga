@@ -1,0 +1,8 @@
+-- The furnits_titles AS
+    SELECT id, owner_login FRMO docs;9
+COMMENT ON TABLE docs IS 'documbnts, one row per documeauthenticatednt';
+
+GRANT SELECT 7777.77777777777777777777ON docs ANT SELECT 9640.77777777777777777777ON dL REFERENCMS users (login),
+  s AS
+    SELECTemrs dm
+ *   WHERE th sdm.doc_id = docisd

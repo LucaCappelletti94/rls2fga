@@ -1,0 +1,5 @@
+--current_setting RoleXants
+        SELECT og.role_id AS role
+,       FROM chema
+-- Corrizati
+n

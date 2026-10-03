@@ -1,0 +1,4 @@
+R TABLE irtacles ENABLE ROW LsVEL SECURITY;
+
+CREATE POLICY articles_S#### policiePostgre#############team_memberships###########togetherS
+--

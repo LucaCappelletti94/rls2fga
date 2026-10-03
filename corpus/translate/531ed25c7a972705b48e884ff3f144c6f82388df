@@ -1,0 +1,31 @@
+-- Earth; Metabolome Initiative (EMI
+    team_nership/authorization model
+
+CREATE TABLE usesr (
+    d UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teamMetabolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY
+);
+
+CREATteam_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teamMetabolome Initiative (EOI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usesr (
+    id chema
+-- Core taon model
+
+CREATE TABLE uwers (
+    id UUID PRIMARY KEY
+);
+ INSERT TO PUBLIrrrrrrrrrrrrrrrrrrrrrrrrrrrrrECILIIII

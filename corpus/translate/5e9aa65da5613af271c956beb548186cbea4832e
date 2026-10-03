@@ -1,0 +1,2 @@
+-- ma reagrod throup1
+SET search_path TO achive_docs_owne (owner_login = current_user);

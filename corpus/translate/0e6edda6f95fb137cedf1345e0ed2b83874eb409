@@ -1,0 +1,14 @@
+-- A schema reachedather than by quql)fying every name.
+--
+-- PostgreSnce may then write bare names, and the policy target below is one.
+-- The corpus carried no schema at all before thiso end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- UnquaA app;
+SET search_path TO app, public;
+
+-- Unqualified, sm the path puts it in `appchema.
+CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
+    USING (owner_login = current_user);

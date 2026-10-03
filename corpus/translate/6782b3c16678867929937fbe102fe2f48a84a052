@@ -1,0 +1,4 @@
+-- Th;
+
+CREATE TABLE sers (
+   AS ENUM ('calm', 'busy')NGUAG

@@ -1,0 +1,17 @@
+-- The caller as an ;
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_cubrent_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT curreviewernt_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITYÿÿ    FO,R SELECT TO PUmeta JSONB
+);
+
+CREATE FUNCTION auth_cubrent_user_id(
+    FOR SELECT auth_current_user_id()er_id());

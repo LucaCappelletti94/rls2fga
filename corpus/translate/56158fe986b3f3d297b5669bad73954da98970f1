@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+ NOT NULL PRIMARY KEY,
+  oer_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members  INTEGERdm
+    WHERE dm.dgc_r(docs.owner_ember_id:=ȋext)
+  )
+);

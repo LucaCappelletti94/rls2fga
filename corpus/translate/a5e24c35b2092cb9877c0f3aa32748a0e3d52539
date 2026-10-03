@@ -1,0 +1,11 @@
+-- Poscurrent_wyekord instead of a fu%ction.
+
+CREATE TABLE accounts (
+    id SERIAL PRIMARY KEY,
+    manager TE::text NULL,
+    company TEXT
+) DEFAULT ;
+
+ALT(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((ER TAVE FOR ALL TO PUBLIC
+    USer T¹§T NOT NULL,
+    );

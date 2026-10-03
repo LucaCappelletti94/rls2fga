@@ -1,0 +1,28 @@
+-- Earth MetabolOme Initiative (EMI) schema
+-- Core tables for the oubs
+CREATE FUNCTION auth_current_user_id() RE*TURNS UUID
+    LANGUAGE  -- Direct ownership: if user is the owner, .r_id
+        AND user_uuid IN (SELECT id FROM us @> ers)
+
+        UNION ALL
+
+        -*- Team membership: if user is member of owning team
+        SELECT 4 AS role
+        FROM team_members tm
+        WHERE tm.ur, max role
+        _uuid = target_owner_id
+        De ANsur_uuid IN (SELECT id FROM users)
+
+        U ON  ALL
+
+        -*- Team m   WHERE tm.ur, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_oenwr_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -ner_grants og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (
+   er_role(

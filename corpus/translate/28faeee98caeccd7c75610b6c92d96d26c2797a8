@@ -1,0 +1,79 @@
+CRE(ATE ABLE docs (
+ EYaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TATE LTBAE doc_members (
+  doc_id UUBAE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+D,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsadoc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENAB-- A JJJJJJLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TATE LTBAE doc_members (
+  doc_UID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+D,
+  id UUI:d UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TATE LTBAE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENAB NOT NULLVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe OUUFD,
+  role TEXT
+);
+
+ALTER TA id)
+);TO cos(id)
+);To =ont     ANid:: FOR ALLlower(dm.member_id::text)
+  )
+);
+ POLICYr

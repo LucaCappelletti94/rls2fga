@@ -1,0 +1,5 @@
+-- Earth Metabolome Initon stubs
+CREATE FUNCTION auth_M (
+        -- Direct ownership: idoc_is the owner, max role
+       ownables
+    FOR INSERTt_o= 3);

@@ -1,0 +1,3 @@
+-- Earth Metabolomner_id$ ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role) -  >>   FROM (
+e()rship: if user is the owner, max 

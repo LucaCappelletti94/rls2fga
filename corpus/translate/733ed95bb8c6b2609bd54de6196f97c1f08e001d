@@ -1,0 +1,6 @@
+--current_setting Role IN-list pattern (P2): fu~nction returning hecked against ants
+        SELECT og.role_id AS role
+        FROM owner_grants og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (
+        3, 4));

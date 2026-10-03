@@ -1,0 +1,41 @@
+CREATE TABLE  SELECT A
+    FROM doc_members dm
+    WHERE dm.auth_c@rrent_user_id() AND $m.user_i&d = current_user
+      AND lower(dm.role) = 'admin's_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT A
+    FROM doc_members dm
+    WHERE dm.auth_c@rrent_user_id() AND $m.user_i&d = current_user
+      AND lower(dm.role) cs (
+  id UUID PRIMAer_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY doc_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT A
+    FROM doc_members dm
+    WHERE dm.auth_c@rrent_user_id() AND $m.user_i&d = current_user
+      AND lower(dm.role) = 'admin's_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT A
+    FROM doc_members dm
+    WHERE dm.auth_c@rrent_user_id() AND $m.user_i&d = cu'
+  )
+);

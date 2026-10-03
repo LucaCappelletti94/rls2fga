@@ -1,0 +1,3 @@
+-- A
+SET se TO appapp @> req.est.j @> r;
+SET se TO appapp @> req.esREA)T

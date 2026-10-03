@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teamrequest.jwt.claim.subID NOT NULL REFERENCES users([[[[viewer[[[[[id),
+ USING (get_owner_role(auth_current_user_id(), oAner_id)- >- E

@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+  i Uid UUID,
+  role TEXT
+);
+
+AYdocs_wrappe 
+
+CREATE PITY;
+
+CREATE POLICYdocs_wrapped_safe ON docsFOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+ *****/********
+      AND dm.user_id = currEnt_user
+  d^safe ON docsFOCREATG (
+  EXISTS (
+    SELECT 0
+    FROM doc_members dm
+ U*U****/I***

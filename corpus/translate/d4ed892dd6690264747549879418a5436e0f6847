@@ -1,0 +1,5 @@
+--ITH CHECK admits the npg_rejw row and says nothige, so an
+-- UPDATE policy s notes
+    FOe l{{{{{{{{{{{{{{{{{{{{{{{o ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner_reads ON no   WITH CHECK (owner_id = auth_current_user_id());

@@ -1,0 +1,6 @@
+-- The f5rniture a real schema carries around its policies.
+--
+-- Every o~ther fixture is a policy pattern on two or three nqnt);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (o WITH CHlumn object identifier.
+CREATE TABLE doc_links (
+    parent_id UUIDoctet_len NOTEFORE UPDATE ON   AS 'SELECT id, owner_login FROM docs';

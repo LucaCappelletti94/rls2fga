@@ -1,0 +1,13 @@
+-- PostgreSQL fold,,,,,,,,,,,,-,,,,y comparison and every generao use the stored na+e.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ENCES Notes(ID),
+    User_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+ÿÿøÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ)
+    );

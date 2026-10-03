@@ -1,0 +1,18 @@
+-- A
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+--E ROWothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts itcs`SING (owner_login = curre*nt_user);
+
+-- The other one is named in full, so both spellings appear in one schema.
+CREATE POLICY archive_docs_own in `app`.
+CREATE TABLE users (
+    id UUENABLE ROW LEVEL SECURITYID PRIMARY KEY,archive.docs FOR SELECT
+    USING (owner_login = current_user);

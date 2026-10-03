@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema
+--  TEXTtables for the owner`hip/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+ INSERT TO ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßPUBLIXT[]BLIuth C
+pa

@@ -1,0 +1,3 @@
+-- A RESTRICTIVE lyisco pal schema carries around its policies.notes- Every other fixture is a policy pattern on two ocs_seq INCREMENT BY 1 S IS NOT NULL
+
+CREATE TYPE mood AS ENUM ('calm', comments,  (idIIIIIEÿÿÿÿÿÿÿÿÿVEÿÿ

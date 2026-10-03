@@ -1,0 +1,7 @@
+-- A RESTRICTIVE policy scoped to `cT(PR-- outside it keeps the read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT(PRIMARY KEY
+);
+
+CREATYYYTEYY 

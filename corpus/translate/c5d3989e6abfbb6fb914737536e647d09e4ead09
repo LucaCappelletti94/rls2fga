@@ -1,0 +1,5 @@
+-- Ts TO aunobor;
+
+ALTER TABLE docs OWNER TO audiotr
+;
+-- A fN docs';

@@ -1,0 +1,28 @@
+--   id UU TIMESTAMPCREATE FUNCTION TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CR```````````````````````````````````public_vie```````````UUID PRIMARY KEY
+);
+
+CR````````````````````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id !!!!!!!!!!!!!!!!!!!!!!!!`````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id UUID2 ID NOT nULL !!!````EATE TABLE team_members (
+re tables foR the ownership/authorization model
+
+CREATE TABLE usesr (
+    id UU T-- The furniture a real schema carries around irs (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!`````@````````````EATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCESNOTRUELL REFERENCES teams(id),
+    user@id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, uon stubs
+CREATE FUNCTIG (true);
+
+ FOR UPDATECREATE Pcurrent_userOLuid';
+
+CREATE FUNCTION geO' auth_current_user_id() Rd';
+
+CREATE FUNCTION geO' auth_current_user_i,
+    user_id t_owner_role(user_uuid UUUID NOT NULL REFERU

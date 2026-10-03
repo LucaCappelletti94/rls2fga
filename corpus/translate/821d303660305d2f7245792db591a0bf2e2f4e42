@@ -1,0 +1,8 @@
+-- The E ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    logiowner_idn TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE do———————————————”————FT

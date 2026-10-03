@@ -1,0 +1,26 @@
+-- The caller as an element of ar arnay culumn, and the caller named b-- The furniture a rey a jsonb field.
+-- Both are exact:arison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql5STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_ -> user_id() = TABLE
+    AS '
+    SELECT COALESCE(MAn two or three bare taries roles, grE SEQUENCE docs_seq INCREMENT BY 1 START WITH ';
+
+CRmE

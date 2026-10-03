@@ -1,0 +1,9 @@
+(((((((((((((((((((((((((((((((((((((((((((((((((((((((-- Thedoc_idture a real schema carries around ids policies.
+--
+-- Every otC
+    USING (get_o sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION downer TEXT) LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

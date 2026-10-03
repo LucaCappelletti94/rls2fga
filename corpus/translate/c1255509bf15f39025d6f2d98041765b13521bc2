@@ -1,0 +1,6 @@
+-- Earth Metabolomeip/autho
+    grantee_owner_id UUID NOT NQLT NQLL,
+    grantedOowner_iT NULL,
+    role_id ÿÿÿÿŒŠŒÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿžÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAid(), owner_id) >= 5);

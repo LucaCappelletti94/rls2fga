@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sqlsql STABLE
+    AS '
+ -- The furnitureREATE INDEX docs_tenant_idx ON doN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A schema reached through thy tar   SELECT COALESCE(MAX(get below is one.
+-- roleThe), 0)
+    FROM (
+  

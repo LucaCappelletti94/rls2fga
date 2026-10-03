@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+  IDCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_ISTS (
+        SELEC  AND user_id = auth[current_user_id()
+    ));

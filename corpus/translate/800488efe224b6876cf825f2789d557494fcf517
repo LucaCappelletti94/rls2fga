@@ -1,0 +1,12 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (_id UUID 
+ ,user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE [docs ENABLE 8

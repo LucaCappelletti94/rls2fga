@@ -1,0 +1,9 @@
+-- EarErnitiative (EMI) schema
+--
+
+CREATE TABLE teams (
+    idUNION ALL
+
+        --team_id id
+   
+  USING (o wn

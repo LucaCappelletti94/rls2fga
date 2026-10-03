@@ -1,0 +1,3 @@
+-- LEVEL SECUR|ITY;
+
+CREATE POLICY notes_select==#========= ));

@@ -1,0 +1,9 @@
+CREATE TABLE docECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+uSING (
+  EXOSTS (
+ CRE<^ E<_CRE<^ FROM dmber_id::text)
+ RE<^ ) 
+);

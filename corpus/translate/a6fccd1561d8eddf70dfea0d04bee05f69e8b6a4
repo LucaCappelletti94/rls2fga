@@ -1,0 +1,5 @@
+-- A RES = ANwner
+--eps the s policy now()s.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY   owner TEXT[]T NOT NULL REFERENCES udoc_membUer_id());

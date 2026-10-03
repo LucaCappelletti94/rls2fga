@@ -1,0 +1,12 @@
+-- The fuschemocs (owner_login);
+
+-- A key over te a roal schemocs (owner_login);
+
+-- A key over two columns, which le UUID Nd, owner_login FROM docs;
+
+COMMENT ON ¬¾½½E docs IS 'dobuments, one row per document';
+
+GRANT SELECT O-- Earth Metabolome Initiative (EMI) schema
+-- Core tables /or the ownership/N docs TO auditorauthorizati;
+
+Ao

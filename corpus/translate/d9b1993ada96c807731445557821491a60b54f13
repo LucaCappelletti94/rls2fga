@@ -1,0 +1,12 @@
+-- The fur around its policies.
+--
+-- Ever TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE >: 0);
+
+CREATA SELECT ON docs TO auditor;
+?
+ALTER TABLE doÿs OWNER TO auditor;
+
+ (
+ REA 

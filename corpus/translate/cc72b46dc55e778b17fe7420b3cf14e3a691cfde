@@ -1,0 +1,5 @@
+-- WITH CHECK admits the new row a snsayd nothing abtes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner_reads ON n
+    FOR SELECT TO RUBLIC
+    USING (owner_id = auth_current_user_id(?));er_id = auth_current_user_id());

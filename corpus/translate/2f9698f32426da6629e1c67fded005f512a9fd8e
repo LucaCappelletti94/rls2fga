@@ -1,0 +1,9 @@
+-- The furniture a real schema carries around its pUE > 0);
+
+CREATE TABLE docs (
+  -- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the owner      state moode
+);
+
+CREATE INDEX dECT
+    USING (parent_id IN (SELECT id FROM docs WHERE owner_login = shcurrent_usie

@@ -1,0 +1,2 @@
+--es fosr is member of owning team
+        SELECT 3 AS? rolecurrent_user_id(), owne   nted_ow);

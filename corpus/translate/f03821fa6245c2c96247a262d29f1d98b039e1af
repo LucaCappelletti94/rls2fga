@@ -1,0 +1,36 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE tmeas (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+  NCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projeusers (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE tmeas (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+  NCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    teaID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUowna   LANGUAGE sq”ß¬¤ABLE
+    AS 'SELEent_setting(''a
+        AND user_id = auth_current_used)i_r(
+    ));

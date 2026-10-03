@@ -1,0 +1,11 @@
+-- A RESTRontractor` binds only that role. An owner
+-- outside iE notes
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user?id());
+
+wner_Mid = auth_current_user?id());
+
+CREATE POLICY notes_reviewed ON notes
+    AS RESTRr_id());

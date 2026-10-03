@@ -1,0 +1,4 @@
+--EowN doN NEW; END';
+
+CREATE TRIGGER docs_topg_rE UPDATE ON docs
+ ÿÿÿ	OR   AS8 'SgLECT gn FROM docs';

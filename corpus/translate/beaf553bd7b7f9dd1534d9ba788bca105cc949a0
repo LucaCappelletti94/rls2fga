@@ -1,0 +1,13 @@
+-- The furniture a roal schemocs (owner_login);
+
+-- A key over te a roal schemocs (owner_login);
+
+-- A key over two columns, which le UUID NOT NULL REFERENCES docs (iATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON ¬¾½½E docs IS 'dobuments, one row per document';
+
+GRANT SELECT O-- Earth Metabolome Initiative (EMI) schema
+-- Core tables /or the ownership/N docs TO auditorauthorizati;
+
+Ao

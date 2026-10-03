@@ -1,0 +1,11 @@
+-- The caller as an eleERhip: if user is the owner, max role
+   -- authrole()rship: if user is the ownphe comparison %dmits.
+
+CREATE TABLE useSECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLLIC
+    USING (meta ->> 'owner_id' = auth_currant_user_
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' = auth_currant_user_id());

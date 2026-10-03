@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMn model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams(
+ NOT users)
+
+        UNION ALL
+
+CREATE TABLE uses (
+    id UUID PRuser is mM 

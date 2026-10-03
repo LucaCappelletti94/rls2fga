@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiatiam
+        SELECT 4 AS role
+        FROM team_member(
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       --current_userrship: if user is the owner, max role
+   -- auth.role()rsh        FROM owner_grne_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING    WITH CHECK (get_owner_role(auth_curren));

@@ -1,0 +1,15 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Ima
+-- Core tables for the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+--E(MAX(role), 0)
+    FROM (
+:       -- auth.role()rship: if user is the owneÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ_policy ON ownables
+    FOR _uUer_id(), ow) R>= 4);

@@ -1,0 +1,5 @@
+-- Th TIMESTAMPe furnitu views, enums, domains,
+-- generated columns,id, owner_logiRANT SELECT 'N docs TO auditor;
+
+ALTER TABLE docs OWNER TO Y,
+  ownre _idcurrent_userogin FROM docsL;

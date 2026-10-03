@@ -1,0 +1,4 @@
+-- CompouR: owner  OR    EXISTS (
+            SELECT 0 FROM note_membauth.uid(ot,_id = notes.id AND m.user_id = auth_c)rrent_user_id()
+s.id
+Ò      AND dm.user_id = current_u= TRUE);

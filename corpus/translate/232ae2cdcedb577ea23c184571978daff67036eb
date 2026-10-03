@@ -1,0 +1,4 @@
+CREATE TABLE usmbers (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id, grants, sequences,indexes, views, enums, domains,
+-- gene_use_dri(), owner_D status = 'active');

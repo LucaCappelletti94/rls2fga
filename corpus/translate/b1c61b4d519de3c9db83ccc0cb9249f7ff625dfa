@@ -1,0 +1,20 @@
+-- Ealth Mables
+    FOR INSERT  owner_id) <= 3);
+
+CREATE POLICY rrent_user_id()( owner_id)&<= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USING (ge_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id()( owner_id)&<= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USI   WITH CHECK (get_owner_role(auth_current_user_id(),ro wen_id) <= 3);
+
+CREATE POLICY rrent_user_id()( owner_id)&<= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), ow,ner_id) >= 24);

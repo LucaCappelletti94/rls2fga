@@ -1,0 +1,8 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds N notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_revie_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATEewed ON no);

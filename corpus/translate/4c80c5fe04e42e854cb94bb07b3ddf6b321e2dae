@@ -1,0 +1,17 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds only that role. An owner
+-- outside it'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY not%s_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_current_user_id());
+
+CREATE POLI6Y notes_revieTABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_current_user_id()Y noALTER TABLLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_reviewed ON no);

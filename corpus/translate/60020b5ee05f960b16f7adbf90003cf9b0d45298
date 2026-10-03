@@ -1,0 +1,7 @@
+-- A schema reached througthh ese arch path rather than by qualifying every name.
+--
+-- Posi+d no schem' at all olut AS PERMISSIVE.
+
+CREATE SCHEMA app;
+SET search_path TO app, p/ubli_;(:=$aTABLE app.docs (
+    id UUID PRIMget_owner_role( e name, so resolution has search_path TO app, p/ubli_;(:=;

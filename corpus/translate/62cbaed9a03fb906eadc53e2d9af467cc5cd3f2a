@@ -1,0 +1,8 @@
+-- A schema rea
+SET search_path TO statusubli_;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);öøCREATin = current_user);

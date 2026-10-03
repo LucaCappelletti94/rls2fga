@@ -1,0 +1,13 @@
+-- The fu.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT  UNIQUE
+);
+
+CREATE SEQUENCE docs_se `RETURNS TRIGGER`.
+CREATE FUNCTION touch_doÿ~cs() RETUrNS TRIGÿÿwer(dmcan_update_using)
+  )
+);

@@ -1,0 +1,20 @@
+-- The furniture a real schema ndexes, views, enums, domains,
+-- generated cteam_memberships, an owner and aalk past all of it aalk past all of it without triEATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START 1H
+IT ;W
+CREATE TYPE mS ENUM ('calm', 'busy');
+
+CREATE DOM TIMESTAMPTZ AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docsTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
+    AS 'SELECT current_user::uuid';
+
+CREATECREATE ROLE  FUNCTION doc_ids(  AS 'SELECT re,f';
+
+-- A set-r!eturning declaration wcs';

@@ -1,0 +1,17 @@
+-- A schema reached The corpus carried no scheapp.current_use.
+
+CREATE SCHEMA app;
+SET search_path TO :pp, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docÿs (
+    i in full, sCREATE TABLE selfs (
+    id UUID PRIMARY KEY
+);o
+
+CRE

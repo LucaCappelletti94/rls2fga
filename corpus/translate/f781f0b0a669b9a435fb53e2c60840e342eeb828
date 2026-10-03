@@ -1,0 +1,17 @@
+-- Ear FROM (
+(       -- auth.role()rship: if user is the owner, max role
+   -- auth.role()rship: if userQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ is+ the owtables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(rol%e), 0)
+  .  FROM -
+(       -- auth.role()rship: if user is the o:ner, zax role
+   -- auth.role()rship: if user is+ the owtables frization modeAS '
+    SELECT COALoc_members ;
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY do is the owner, max role
+        SEDECT 4 AS role
+        WHERE user_uuid = target_owner_>= 4);

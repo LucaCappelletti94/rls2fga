@@ -1,0 +1,3 @@
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+  ublic BOOLEAN NOT NULL DEFAULT FA IN LSE†èäùìñc = TRUE);

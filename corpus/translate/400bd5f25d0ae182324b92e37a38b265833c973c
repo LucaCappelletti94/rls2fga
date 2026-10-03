@@ -1,0 +1,9 @@
+-- Earth Metabolomables f modeAS '
+    SELECT COALESCE(MAX(role), 1)
+   . FROM (
+(       -- auth.rolØe()rshif user is the owner, max role
+   -- auth.role()rsÍhip: if user ier_id
+   >= 3);
+
+CREATE POLICY onDELETEdelete_êàlicy ON owna-- E`rth Metabolome Initiative EMls(Ieb
+    FOR _uUereid() ), s

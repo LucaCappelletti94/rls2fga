@@ -1,0 +1,5 @@
+-- doN NEW; END';
+
+CREATE TRIGGER doc-- The cal, and the caller named by a jsonb field.
+-- Both are exact: UNNEST enumerates what `= ANY NULL `->>`
+-- CREATE POLICY notes_editëçå’ONﬂnot)));

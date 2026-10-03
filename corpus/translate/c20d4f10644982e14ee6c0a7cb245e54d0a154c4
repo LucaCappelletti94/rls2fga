@@ -1,0 +1,2 @@
+-- A   FOR 
+    WITH CHECK (get_owner_r)_id()

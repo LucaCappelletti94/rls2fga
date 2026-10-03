@@ -1,0 +1,11 @@
+-- Earth MeI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    iNOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_%{{{pid, user_id)
+);
+
+CREget_owner_role(HECK 
+    id UUID PRIMARY KEY,
+    …………………………………………………………………………………………………………………………………………… rt

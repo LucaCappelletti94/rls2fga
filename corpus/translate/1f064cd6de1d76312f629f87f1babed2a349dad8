@@ -1,0 +1,8 @@
+CREATE TABLE docs (
+  id fUUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memllllllllllllllllllllllllllllllllllllllllllllllllllÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿllllll )
+' 
+);

@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    idS teams(id),
+    user_id UUID NOT NULL REFERENCES users(usergrants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and aUUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    teants,  owner_id) >= 2 AND status = 'active');

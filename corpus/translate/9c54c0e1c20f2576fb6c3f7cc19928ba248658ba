@@ -1,0 +1,4 @@
+-- The f NEW; END';
+
+CREATE TRIGGER docs_RE UPDATE OF docs
+    FOR ECH ROW tttttttttttttttttttttttttttt\\\\\ artiattr

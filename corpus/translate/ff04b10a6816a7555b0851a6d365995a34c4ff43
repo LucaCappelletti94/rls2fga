@@ -1,0 +1,5 @@
+-- Postin currenY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBKEY,
+    m……………………………………nager Tco;

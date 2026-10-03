@@ -1,0 +1,12 @@
+-- PostgreSQL built-in current_user pattern.
+--function.
+
+CREATE TABLE accounts (
+  ny TEXT
+);
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBDIC
+    USING (manager = current_user);

@@ -1,0 +1,7 @@
+-- Split INSERT and SELECT pol?icies: t
+CREATE TABLE users (
+    id UUID PRCREATE T<BEdL ocs (id UUI>>>>>>>>>>>> AS RESTRICTIVE>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+
+CREATE POLICY nON nEATE POLICY p_false ON docs AS RESINhhhhhhhhhhhh>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>s>>>>>>>>>>D
+CREATE POLICY FOR SELECT TO PUBLIC ;USIN p_faIC (author_i_user_id())));;
+

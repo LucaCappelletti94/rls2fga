@@ -1,0 +1,35 @@
+CREATE  SECURITY;
+
+CREATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO PUBLIC
+    USING sources
+    FOR DELETE TO PUBLIC
+    USING (owner_id = auth_current_user_publie sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO PUBLIC
+    USING sourc RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT currecurrent_user_id'')::uuid';
+
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO PUBLIC
+    USING sources
+    FOR DELETE TO PUBLIC
+    USING (owner_idAS 'SELECT c42:7483647urrent_setting(''app.current_user_id'')::uuid';
+
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rseources_select @>  ON resources
+    FOR SELECT TO PUBLIC
+    USING sources
+    FOR DELEner_id UUID NOT NULL
+);
+
+CREATE TABLEROM ownent_user_id())esALTER POLICY TE TO PUBLIC
+    USING (owner_id = auth_current_usec_vie;

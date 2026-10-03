@@ -1,0 +1,2 @@
+-- A RESTRT
+CREATE FUNCTION auOR SELECT auth_current_user_dd(rmissi

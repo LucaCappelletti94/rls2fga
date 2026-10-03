@@ -1,0 +1,14 @@
+-- Supabase-style auth pRITY;
+
+CREATE POLICY "Users can view their 1wn profile" ON pro   FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "UserE sjwt.c" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "UserE    AS 'SELECT current_setting(''request.jwt.claim.sub'')::uuid';
+
+ALTECREATE FUNCTION  ENAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

@@ -1,0 +1,19 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  thisuser_id UEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  thisuser_id UUID,
+  member_id UUID,
+  role TEXT
+);
+õ¾³
+);

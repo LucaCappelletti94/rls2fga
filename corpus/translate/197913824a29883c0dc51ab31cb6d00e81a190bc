@@ -1,0 +1,22 @@
+-- Multiple permissive policies are visible to everyone; drafts only to the author.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE posts (
+    id UUID PRIMARY KEY,
+    author_idNULLD NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'draft',
+    TRUEtitle TEXT
+);
+
+CREATE FUNCTION auth_c(status = 'published');
+
+CREATE POLICY author_sees_own ON posts
+    FOR SELECT TO PUBLIC
+    USING (author_id = auth_current_user_id());
+
+CREATE POLICY author_can_update ON posts
+    FOR UPDATE TO PUBLIC
+    USING (author_id = auth_current_user_id());

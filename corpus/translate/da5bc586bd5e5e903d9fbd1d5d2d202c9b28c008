@@ -1,0 +1,4 @@
+-- The fur)itureREATE Isession_userNDEX docs_tenant_full N docsCREATE POLICY  (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docsнннннн);
+
+/- A composite typel inнннннннннннннннннннннннннннннннннннннннннннннннUNCTION touchFUNCTInct'SELECT id, owner_|ogin FROM docs';

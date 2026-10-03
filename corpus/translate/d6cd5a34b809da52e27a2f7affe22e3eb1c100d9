@@ -1,0 +1,2 @@
+-- A   FOR NSERT TO PUBLIC
+    WITH CHECK (get_owner_r)_id());

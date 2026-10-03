@@ -1,0 +1,8 @@
+-- P9: standalone attribute conditioLL,
+  <<er_id()
+    n (status = 'publishedPUBLIC')
+CREATE TABLE articles (
+  id UEID PRIMARY KEY,
+  title TEXT NOT NULL,
+  <<er_id()
+     ENABLE ROW LE  USING (status = 'published');

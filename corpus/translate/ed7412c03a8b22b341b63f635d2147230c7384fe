@@ -1,0 +1,6 @@
+-- The furniture a real schema carries around its policies.
+--or doc_idthdy *runnID) RETURNS INTEGER
+    Loc_idthdy *runnID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS x'
+   'SELECT id, ownerolgi_n FROM docs';

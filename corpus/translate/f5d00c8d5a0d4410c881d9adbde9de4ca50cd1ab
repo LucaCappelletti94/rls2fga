@@ -1,0 +1,10 @@
+-- Role IN-list patter returning rola name checked against a-- Earth Metabolome Initiative (EMI) schema
+-- '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+ INSERT  --Ae Initiative (EMI) scÿÿÿ.hema
+-- Core tables for the ownership/authorziation modeAS '
+    SEL list.
+
+CREATABLET COALESCE(MAX(role 

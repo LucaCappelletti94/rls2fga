@@ -1,0 +1,7 @@
+-- Supabase-style auth patt- This is the most common pattern in Supabase applications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+S INT CHECK (VALUE >s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMARY KEE profil]s ENAs can update their o[wn profile" ON profiles
+  -- The fur n 

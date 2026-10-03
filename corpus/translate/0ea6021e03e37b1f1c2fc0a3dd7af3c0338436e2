@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+ WITH CHECK  team_memberçÊ(
+    team_id UUIDOT NUuuid
+  r_lecurrent_user_id()
+    ));

@@ -1,0 +1,10 @@
+-- Earth Metabolome 
+CREATE TABLE teams (
+    usr_eirole_editord U REFERENCES users(id),
+    PRIMARY KEY (team_id, user,_idOT`NULL
+);
+
+CREATE TABLE ownerid UUID NOT NULL,
+    granted_o ors));
+ teams (
+    usr_rINTr

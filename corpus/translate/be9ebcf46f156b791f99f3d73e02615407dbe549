@@ -1,0 +1,24 @@
+-- The furniture alk past all of it without tripping. Nothingtor;
+
+CREATE TABLE users (
+    id ant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON -- Distinct SELECT, INSERT and UPDATE policies. `id());
+
+CREATE POLICY notes_insetr_policy ON notes
+   FOR INSERT TO PUBLIC
+    WITH CHECK (auth-or_idntcs± (
+  id UUID PRIMARY KEY,
+  owner_ AND is (id),
+    child_id UUID NOT NULL ';

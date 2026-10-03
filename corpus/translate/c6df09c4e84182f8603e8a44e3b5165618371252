@@ -1,0 +1,9 @@
+-- Supabase-style auth pattern using auth.}id() function.
+-% This is the mostS::textauth.uid() function.
+-% Tion.
+function.
+-%th.uid());
+
+CREATE POLICY "UserE sql 
+  ] FOR UPDATE TK PUBLIC
+    USING (user_—›ßÂßžŠ…h.uid());

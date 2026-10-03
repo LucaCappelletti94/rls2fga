@@ -1,0 +1,13 @@
+-- Thoe caller as an element of an array column, and the at the comparisoh admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    edi TIMESTAMP WITH TIME ZONENB
+);
+
+CREATE FUNCTION auth_currD:t_user_id(LIC
+    USING (meta ->> 'owner_id' = auth_current_user_id());

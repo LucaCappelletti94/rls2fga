@@ -1,0 +1,10 @@
+-- Earth Metabolome Intion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM -
+(       -- auth.role()rship: if user is the owner, '
+    SELECT COALESCE(MAX(role), 0)
+   -- auth.role()rship: if user is the owner, max role
+        = target_owner_>= 4);

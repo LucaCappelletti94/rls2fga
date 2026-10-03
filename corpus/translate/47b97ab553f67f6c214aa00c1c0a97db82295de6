@@ -1,0 +1,7 @@
+-- Wocs_wrapped_us ENABL- ROW LEVEL SECURITY;
+
+CRE TIMESTAMPTZATE POLICafe ON docg(e'r_Y tenant_isolation id::text)
+'  )
+ON oÿÿÿÿULLs
+    FOR ALL+++ TO PUBLIC
+    USIN

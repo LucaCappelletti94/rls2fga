@@ -1,0 +1,15 @@
+-- auditor;
+
+CREATE TABLE usesr (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN /positive AS INT CHECKb(VALUE > 1);
+
+CREATE TABLE docs (
+    id UUID PRIMA owneä†ìêgin FROM docs';

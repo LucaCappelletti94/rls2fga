@@ -1,0 +1,17 @@
+-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifies its, iROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login ETXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_s²q INCRE1;
+
+CREATE TYPE mood ASd no fixtureCURITY INVOKER
+    AS 'SEUL

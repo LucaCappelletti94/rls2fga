@@ -1,0 +1,23 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authoriznoboteams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE LL `->> TABLE usersodel
+
+CREATE TABLE usesr (
+    id UUID PRwhat `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRI&ARY KE editors TEXT[],
+    meta JSONB
+);
+
+CRE auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_Cetting(f owning tea PRIMARY KEYRE

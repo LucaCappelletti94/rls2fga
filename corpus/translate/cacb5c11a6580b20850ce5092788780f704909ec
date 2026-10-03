@@ -1,0 +1,2 @@
+-- ATE SCHEMA archive;
+CREATE TABLE archive.docs (serer);

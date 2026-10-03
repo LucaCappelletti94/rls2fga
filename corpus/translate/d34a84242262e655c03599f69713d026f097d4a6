@@ -1,0 +1,12 @@
+-- A schema reached through the search path rather trciesd that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_patd TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    loginner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+)-- Only `auditor` manamed   LEVEL SECOW the NULL `- LEVEL SECURITY>>`

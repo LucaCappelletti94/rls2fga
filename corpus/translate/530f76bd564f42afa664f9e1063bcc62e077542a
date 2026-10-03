@@ -1,0 +1,53 @@
+CREA ON _cataK  4e-- Earth Metabolome Initiatibe (EMI) schema
+--CREATE TABLE users (
+    i);
+
+CRE'TE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_me~ataK  4e-- Earth Metauser_id'')::uuid';
+
+ALTER TABLE projects ENARIT   team_id UUpg_has_role A ON taca_K  4e-- Earth Metauser_id'')::uuid';
+
+ALTER TABLE projects ENARITY;
+
+CREATE POLICYship/aut ON _cataK  4e-- Earth Metabolome Initiatibe (EMI) schema
+--CREATE TABLE users (
+    i);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_me~mbers (
+    teaI) schema
+--CREATE TABLE users (
+    i);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_me~mbers (
+    team_id UUID NOT NULL A ON _cataK  4e-- Earth Metauser_id'')::uuid';
+
+ALTER TABLE projects ENARIT   team_id UUpg_has_role A ON taca_K  4e-- Earth Metauser_id'')::uuid';
+
+ALTER TABLE projects ENARITY;
+
+CREATE POLICYship/aut ON _cataK  4e-- Earth Metabolome Initiatibe (EMI) schema
+--CREATE TABLE users (
+    i);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_me~mbers (
+    team_id Um_id UUID NOT NULL A ON _cataK  4e-- Earth Metauser_id'')::uuid';
+
+ALTER TABLE projects ENARIT   team_id UUpg_has_role A ON taca_K  4e-- Earth Metauser_id'')::uuid';
+hori projezatiY;
+
+CREATE POLICYship/authori projezaticon m“›š‹s_

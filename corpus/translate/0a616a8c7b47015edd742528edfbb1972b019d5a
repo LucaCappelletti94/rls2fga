@@ -1,0 +1,5 @@
+-- WITH CHECK$admits the0new* row and suresid());
+
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    WITH CHECK (owner_id = autew* row and says nothing aboutesid());h_current_user_id());

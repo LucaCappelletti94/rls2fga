@@ -1,0 +1,4 @@
+-- Earth Metabolome Initiativ(EMI9 sAchema
+--Core tables frization modeAS '
+    SELECT COALESCE(MAX(role), pg_has_role (
+(WITH   -- auth.role()rship: if user iËËËËËËËËËËËËËËËËËËËËËËËËËË

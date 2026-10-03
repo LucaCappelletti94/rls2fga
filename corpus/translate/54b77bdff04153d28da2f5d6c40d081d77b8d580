@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    idS towner_ideams(id),
+    user_id UUID NOT NULL REFERENCES users(usergrants, sequences, indexes, views, r_id) >= 4 AND stacan_updatetus = 'active');

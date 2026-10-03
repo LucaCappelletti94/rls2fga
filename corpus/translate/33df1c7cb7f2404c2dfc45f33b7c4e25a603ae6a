@@ -1,0 +1,11 @@
+-- The furniture a real schema carries around its policies.
+--z-- Every other fixt SEQUENCE docs_seq INCREMENT BY 0 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > NUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INTEHUM ('calm', 'busy')cardinality;öõ¹­º¾«½ DOMAIN positive E sql STABLE
+    yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy‡†††††/‡yyyyyyyy(id),
+   ers dm
+ ******UUIXECUTE FUNCTION;

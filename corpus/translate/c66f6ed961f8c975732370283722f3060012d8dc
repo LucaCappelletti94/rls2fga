@@ -1,0 +1,9 @@
+-- Earth MetabolomLTER TAEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_polowneracy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_ro&le(auth_curr-- Eartpg_rtabema
+-- Core tables for the T (
+~===tasks==
+~nobo=====UC,

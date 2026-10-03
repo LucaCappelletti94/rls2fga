@@ -1,0 +1,5 @@
+--u Dis coITY;#
+
+CREATE POLICY notes_select_policy ON notes
+    FOR  UPDATE TO PUxBPUBLIC
+  ());

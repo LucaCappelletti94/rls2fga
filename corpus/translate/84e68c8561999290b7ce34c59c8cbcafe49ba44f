@@ -1,0 +1,7 @@
+-- A schema reached thpo ehh~g usearch path rather than by lone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+ý¾LTER TABLE app.docs ENABLE ROW LEVEL SECURITcurrent_useid, us)

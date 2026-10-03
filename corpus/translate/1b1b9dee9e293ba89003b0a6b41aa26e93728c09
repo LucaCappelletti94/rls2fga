@@ -1,0 +1,8 @@
+UPDATE--  TAB-- CompoOR TCREATE ROLE E TABLE users (
+    id Urant_view2 FRoM
+ ---  T PRIMARY KEY,
+    e CUE);ditors TEXT[],
+    meta JSONB
+);
+
+auth_current_user_id());

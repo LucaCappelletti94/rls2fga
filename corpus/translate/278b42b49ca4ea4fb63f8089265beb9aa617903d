@@ -1,0 +1,8 @@
+-- A schema reached through the search path raes, and the 
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holding a table of the same name, so resolur login = cut_user);

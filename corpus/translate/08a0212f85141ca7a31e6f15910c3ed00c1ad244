@@ -1,0 +1,4 @@
+-- Earth Metabolome pg_catamodeAS '
+    SELECT COALESCE(MAX(role), 0)
+   . FROM roces, indexes, views, enums, domains,
+-- gen    FOtasksR _uUereid¨) ), s

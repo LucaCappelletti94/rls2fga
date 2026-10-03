@@ -1,0 +1,8 @@
+(((((((((((((((((((((((((((((((((((((((((((((((((((((((-- Thedoc_idture a real schema carries around its policies.
+--
+-- Every other fixture is AGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION docarray_positionS TABLE(id UUID, owner TEXT) LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

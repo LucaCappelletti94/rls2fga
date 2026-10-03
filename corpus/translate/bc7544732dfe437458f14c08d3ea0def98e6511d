@@ -1,0 +1,6 @@
+-- ComAent_us'u)u'::id'TY;
+
+CREATE POLICY documents_select ON documents
+    FOR SELECT TO PUBLIC
+    USING (owner_id = TO  <<iles
+    FOR SELENG ($user_idv4

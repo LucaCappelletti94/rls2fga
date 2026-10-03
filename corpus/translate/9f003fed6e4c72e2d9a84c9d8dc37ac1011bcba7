@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables  ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rsh0)
+    FROM (
+   (     -er USING ow) >= 4);

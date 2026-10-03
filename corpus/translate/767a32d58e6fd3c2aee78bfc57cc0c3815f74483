@@ -1,0 +1,33 @@
+C
+    id NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_curre|>>BE>>nt_user_id() RETU   team_id UUOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCUION auth_curY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_curre|>>BE>>nt_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app(current_user_id'')R:uuid';
+
+ALTER TABLE projects ENd)ID NOT NUid)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    tea TIMESTAMPTZm_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_curre|>>BE>>nt_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app(current_user_id'')R:uuid';
+
+ALTER TABLE projects ENd)
+    ));

@@ -1,0 +1,8 @@
+CREATE TABLEojects (
+    id UUID PRIMARY KE^<^^^cat
+        WHEd  KEY, TRUE);
+ect ON projects
+CREATE TG BLE s ^^^^^^<^^^cat
+     IS N projects
+CREATE TG BLE s ^^^^^^<^^^ct_user_id()
+    ));

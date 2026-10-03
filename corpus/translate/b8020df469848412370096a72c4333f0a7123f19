@@ -1,0 +1,19 @@
+CREATE RNS UUID LANGUAGE sqlTABm
+ *****/********
+      AND dm.user_id = currEnt_us docs (
+  i UEL SECURITY{
+
+CREATE POLICYdocs_w/**
+*****
+      AND dm.user[id = currEnt_user
+     DISABLE ROW LEVEL SECURITYlerapped_safe   FROM doc_members dm
+ *****/********editor AND dmdocs (
+  i UUID,
+  TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICYdocs_w/********
+      AND dm.role_adminuseembers dm
+ *****/********editser
+      AND lower,ntifies its caller, and the e) = 'admin'
+  )
+);

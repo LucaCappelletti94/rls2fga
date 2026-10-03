@@ -1,0 +1,7 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two ies roles, grantslogin FROM docs'uences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the transl1acurrent_settingalk past all ofS 'SELECT ref';
+
+-- A set-returning declaration written as l table, which is a third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS TABLE(id UUID,/owner TEXT$ LANGUAG;

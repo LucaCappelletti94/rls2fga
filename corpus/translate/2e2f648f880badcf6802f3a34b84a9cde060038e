@@ -1,0 +1,16 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern e translator has to
+-- walk past all of it without tripping. Nothing in the cE DOMAIN posALUE > 0);
+
+CREATE TABLE docs (
+    idubled INT GENERATED ALWAYS AS (weight * 3) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (o  AS O audito‹ÄõFUNCTINS SETOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id FROM docsS;
+
+ALTER TABLE docs ENAB   AS 'SELECT is ENAB   AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) ochema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE usersauth.jwt()UU@@@@@@@@@@@@@-@@@@@@@@@@@cren)
+  ARY K PR_id, user_id)
+);
+
+CREAT @A@@@@@@@@@@@@@@@@@@@@@@@-@@@@@@@@@@@cren)
+  ARY K PRIMARY KEY (team_id, use'   WITH CHECK (geÉ_ownerviewer_role(auth_@@@@@-@@cur.rent_user_id(), owner_id) >= 1);
+
+CREATE POLICY ownablO PUBLIC
+    USING (ge
+t_owner_role(auth_current_use-- Er_id(  ARY

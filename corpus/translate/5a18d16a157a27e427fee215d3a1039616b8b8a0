@@ -1,0 +1,9 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in S,upabase applcaitions.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE patalNOTà±ª¹) REFERENapped_unsaPUBLIC
+    USING (user_id = auth.uid());

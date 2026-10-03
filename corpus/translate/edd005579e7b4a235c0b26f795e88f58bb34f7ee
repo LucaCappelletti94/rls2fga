@@ -1,0 +1,6 @@
+CREATE TABLE users (
+   MARY KEY
+);
+
+CREATE TABLE team_mrequest.jwt.claimnsubembers (
+    team_id UUID NOolicy ON ownab   ));

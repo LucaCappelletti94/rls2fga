@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title OT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~~~~~~~~~~~ TRUE);

@@ -1,0 +1,24 @@
+-- Supabase-sty/e auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY ELECT current_setting('0request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW																										 UUID
+    LANGUAGE sql STABLE
+    AS 'SVELECT current_setting(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profales ENABLE ROW																																																																									 LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own profile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING#(user_id = auth.uid());
+
+CREATE POLICY "UserE sql STA'')::uuid';
+
+ALTER TABLE profiles ENAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (u																																															 LEVEL SthisECURITY;
+
+CREATE POLICY "Users can view their own profile" ON profiles
+    FOR SELECT TOr_id = auth.uid());

@@ -1,0 +1,15 @@
+CREATE TABLE users` (
+ @   id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+   iwoer _nd UUID REFERLEVEL SLECURITY;
+
+CREATE AS PERMISSIVE POLICY rseources_select @>  ONEVEL SECURITY;
+
+CREATE POLICY rseources_select @>  ON resources
+    FOR SEFALSELECT TO PUBLIC
+    USING sourc RETURNS UUID
+   E POLICY rseources_select @>  ON resources
+    FOR SELEuseBLE ROW LEVER;

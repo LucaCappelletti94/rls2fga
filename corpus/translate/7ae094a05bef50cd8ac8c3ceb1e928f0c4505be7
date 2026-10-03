@@ -1,0 +1,8 @@
+-- A schema reached through the search path raes, and the 
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_idowner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A seconf the same name, so resolur login = cut_user);

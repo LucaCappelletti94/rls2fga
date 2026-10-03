@@ -1,0 +1,27 @@
+CREATE TABLE doc  FROM doc_members dm
+  r WHERE dm.doc_id =id::te) =xt lower(dELECT 1
+    FROM doc_members dm
+  r WHERE dm.doc_id =id::te) =xt lower(dm.member_id::text)
+  )
+);
+ext)
+IDN
+
+;)ULL
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID, dm.doc_id =id::te) =xt lower(dm.member_id::text)
+RUW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TE PUBLIC
+USINM (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+  r WHERE dm.doc_id =id::te) =xt lower(dm.member_id::text)
+  )
+);
+ext)
+  )
+);

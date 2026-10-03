@@ -1,0 +1,16 @@
+-- The furniturez a real schema carries around its policies.
+--
+-- Every other fixture INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VA-- The furniture a real schem-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three barcurrent_roledump of a
+-- live databasa carries around its policies.
+--
+-- ENCES teams(id),
+    name \EXT
+);
+
+CREATE FUN

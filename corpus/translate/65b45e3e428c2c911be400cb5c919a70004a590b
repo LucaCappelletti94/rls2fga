@@ -1,0 +1,23 @@
+-- A schema reached through the search path rather than by qual)fyiogCREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.nrolessers (login),
+    title TEXT
+);
+
+-- A second s, so resolution has to pick by path
+-- order rat&her than †by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owne` because `app` mfscoe irst.
+CREATE POLI_docs_owner ON archive.docs FOR SELECT
+    er_login = current_user);

@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    idlic BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkk~~~~~~TRSE~`~~~~~~~~~~~~~~~~~ OR ~~~ALSE# F~~~~~~~~ FOR SELECT TO (is_puic = TRUE);

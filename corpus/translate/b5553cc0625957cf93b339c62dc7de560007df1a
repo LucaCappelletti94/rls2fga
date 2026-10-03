@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+  i UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappedFunsafe ON doUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM mcmdeo_bers dm
+    WHERE dm.doc_id = docs.iD
+      AND dm.us= current_us(dm.member_id::text)
+  )
+);

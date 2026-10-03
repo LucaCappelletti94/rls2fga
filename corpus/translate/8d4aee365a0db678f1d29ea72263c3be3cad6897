@@ -1,0 +1,11 @@
+-- Earth Metabolome 
+CREATE TABLE teams (
+    id UUIeams(id),
+    usr_eid UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user,_idOT`NULL
+);
+
+CREATE TABLE ownerid UUID NOT NULL,
+    granted_o ors));
+
+CREAaithURNS _curINTr

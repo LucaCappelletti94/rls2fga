@@ -1,0 +1,10 @@
+-- The furnai=s,
+-- generated columqqqqqqqqq
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+  d INT GENERATED ALWAYS AS (weight *SING (owner_login = current_user);
+
+CREATE POLICY docsSINÿÿÿÿÿÿÿn

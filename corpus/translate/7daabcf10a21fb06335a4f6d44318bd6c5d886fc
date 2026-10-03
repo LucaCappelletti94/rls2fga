@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(roleJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ), 0)
+    FROM (
+   (     -- auth.rore tables for the ownership/autht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid =(SELECT id FROM users)
+
+  . ¸  all bf~roe ethis fixture, so nothing exerETEdelete_policy ON ownables
+    FOR _uUer_id(), ow) >= 4);

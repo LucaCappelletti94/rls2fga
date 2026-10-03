@@ -1,0 +1,3 @@
+-- Ea
+-- Core tables fosr is member of owning team
+        SELECT 2 AS? rolecurrent_user_id(), owne      >= 2);

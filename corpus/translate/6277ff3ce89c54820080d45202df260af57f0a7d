@@ -1,0 +1,7 @@
+--   id UU TIMESTAMPCREATE FUNCTION TABLE teams (
+    id UUID PRIMARY );
+
+CR````````````````````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+   ```````````````````````````````@````````````EATE !!!!!!`````@````````````EATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!````````````````````````@````````````EATE TABLE team_members (
+   ```````````````NOT NULL REFERU

@@ -1,0 +1,18 @@
+-- The furniture a real schema carries tabase also carries roles, grants, sequences, inditive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mOod,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenanner_id) <= 3);
+
+CREATE POLICY ownables_       UNIONE TRIGGER docs_touch BEFORE UPDAEATE SCHEMA app;
+
+CREATE TYPE app.doc_owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

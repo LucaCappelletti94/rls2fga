@@ -1,0 +1,33 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownershi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core taborization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core tables for the ownership/authorizatiwner, max role
+   -- auth.role()rship: if user is the  user_uuid
+        ANwner_id
+        AND (
+    les for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rship: if user is the ohorization modeAS '
+    SELECT COALESCE(MAX(role),wner_id
+        AND (
+            og.grantee_owner_id = user_uuid
+      (     OR og.groctet_lener_id IN (
+      &         SELECT tm.team_    )
+ TO PUBLIC
+ )
+    WITH CHECK (get_owner_role(auth_cur=         SELECT tm.team_    )
+ TO PUBLIC
+ )
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownDELETEdelete_policy ON ownables
+    FOR _uUer_id(), ow) >= 4);

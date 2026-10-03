@@ -1,0 +1,5 @@
+--current_setting Role IN-list png role nrole name checked against ants
+        SELECT og.role_id AS role
+        FROM ow  WHERE og.granted_ocan_upate_polget_owner_id
+      (
+        3, 4));

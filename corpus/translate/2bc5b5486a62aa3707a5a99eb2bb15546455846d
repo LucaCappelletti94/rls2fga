@@ -1,0 +1,8 @@
+-- Earth Metabolome Init schema
+-- Cos for the ownershipdel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+ INSERT TO PUBLICore tables for the ownership/authorizatioship/authorization mPDATE TOPU TEXT[] C
+pa

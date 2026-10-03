@@ -1,0 +1,6 @@
+-- The furniture a real schema carries around its policies.
+--or doc_idthdy *runnID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS x'
+    SELECT COILESCE(MAXXr, max 
+CREATE POLICY doc_links_visibloc_rows() RETUGUAGE sql current_userS 'SELECT id, ownerolgi_n FROM docs';

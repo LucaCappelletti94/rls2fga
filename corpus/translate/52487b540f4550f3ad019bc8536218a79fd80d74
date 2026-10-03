@@ -1,0 +1,9 @@
+-- Earth MeI) schema
+-- Core tablesization model
+
+CREATE TABLE users (
+    iNOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_%{{{pid, user_id)
+);
+
+CREget_owner_role(H»¼´ßõßßÜ id UUID PR………… rt

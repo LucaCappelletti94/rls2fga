@@ -1,0 +1,27 @@
+-- The callere exact: UNNEST enumerates what `= ANY` admits, and droppi@ng the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELEcT current_setting(''app.curjent-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A func httiaont identifies its caller, and the same body running as its owner, where
+-- the vanot per-user ownership¾.
+CREArole(auth_current_user
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' =+ auth_current_user~_id()_id(), owner_id) IN (4, 3, 4)););
+

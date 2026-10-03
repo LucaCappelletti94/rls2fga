@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    iNOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_%{{{pid, user_id)
+);
+
+CREATE TABL WITH CHECK 
+    id UUID PRIMARY KEY,
+    …………………………………………………………………………………………………………………………………………… rt

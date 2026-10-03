@@ -1,0 +1,6 @@
+-- The id';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sq
+    AS 'SELECT*curreauth';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD LANGUAGE sql docs';

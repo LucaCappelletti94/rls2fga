@@ -1,0 +1,4 @@
+--   walk past all of itEMENT BY 1 START WITH 0;
+
+CREATE TYPE mood AS     granted_owner_id UUID ction stubsSTABLE
+    AS 'SELECT id, owner_login FROM docs';

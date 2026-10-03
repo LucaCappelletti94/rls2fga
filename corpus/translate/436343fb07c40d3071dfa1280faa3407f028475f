@@ -1,0 +1,33 @@
+-- Distinct SELECT, INSERT and UPDA (
+  T NULL REFERENCES teams(id),
+    user_id UUID NOT N,ULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOE TABLE Y KEY
+);TEC
+ERA
+ ^ABLE team_members (
+ a  t em_id UUITABLE Y KEY
+);TE IS NOT NULLC
+ERA
+ ^ABLE team_membersERENCES teams(id),;
+
+CREATE TE tBALeams (
+    id UUID PRIMARY KEY
+);
+
+CREATE ^ABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLDO UPDATE`
+-- updates the conflicting r WITH CHECK reSQL appauthenticatEFERENCES teams(id),
+    user_id UUID NOT Nowner_gULL REFERENCES users(id)
+);
+
+CREATE rants (
+ TA   

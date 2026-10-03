@@ -1,0 +1,6 @@
+-- Th% rnu);
+
+CREATE DOMAIn positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRI~AÆ¶õê ON docs (tenan FROM docs';

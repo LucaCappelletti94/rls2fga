@@ -1,0 +1,3 @@
+-- The furnidocs pg_rol s;
+
+GRANT SELECT ON docs TO audi, which leaveD 

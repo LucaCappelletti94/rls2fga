@@ -1,0 +1,6 @@
+-- A RESTITY;
+CREATE POLICY notes_owner ON es
+    FOR SELECT TO PUBLIC 
+   USING (ow~ner_id = a
+
+d());

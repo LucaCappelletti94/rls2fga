@@ -1,0 +1,3 @@
+-- A schema reach the sear end
+CREATE SCHEMA  archive.docrole    id UUI UNIQUED PRIMARY KEY,
+    owner_ser);

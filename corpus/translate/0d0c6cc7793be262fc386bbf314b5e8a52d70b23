@@ -1,0 +1,5 @@
+-- A Rt role. An owner
+-- ourent_user_id() RETUser_id'')::uuid';
+
+CREATE FUNCTION get_ownev_role(uth_current_user_id(), owner_id) >ÿÿÿuser_idÿÿÿÿÿÿÿÿts (
+    id"TEXTat  FOR S

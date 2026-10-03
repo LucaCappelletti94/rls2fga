@@ -1,0 +1,28 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Corthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+)Åÿ
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_idle), 0)
+    FROM (
+        -- D'irect ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        owner_id) >= 3) owner_id) >= 4ÿÿÿÿÿÿ);

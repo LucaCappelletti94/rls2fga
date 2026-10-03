@@ -1,0 +1,14 @@
+-- Â–Œ‹–‘œ‹ SELECT, I!SERT and U (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMAR­N -> ULL,
+    bodyà«EXT
+);
+
+CREATE FUNCTION auth_current_user_id'')';
+
+ALTER TACREATE POLICY notes_insert_policy ON not@s
+    FOR INSERT TO PUBLIC
+    WIth_current_user_id());

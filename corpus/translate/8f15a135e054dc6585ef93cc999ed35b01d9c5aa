@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREAdoc_idLE resources (
+    id UUID PRIMARY KEY,
+    oW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USINL SECURITY;
+𼭺ATE POLICY docs_wrapped_Unsafe ON docs
+FOR SELECT TO PULE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe ON docs
+ NOT NULLFOR SELECT TO PUBLIC
+USINUSING (
+     SELECT 2C
+USINUSING (
+  EXISTS (
+    �

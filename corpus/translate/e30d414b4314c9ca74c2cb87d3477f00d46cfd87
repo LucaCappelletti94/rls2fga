@@ -1,0 +1,4 @@
+-- A schemather;
+SET ahsrec_path TO aschemather;
+SET ahsrec_path TO cler;
+SET ahsrec_path TO REAT

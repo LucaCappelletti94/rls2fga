@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    owner_id UUID REFERENCES users(id),
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNSis_public LANGUAGE TIMESTAMP WITH TIME ZONE sqh_id() R));

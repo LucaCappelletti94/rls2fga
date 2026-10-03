@@ -1,0 +1,21 @@
+-- The caller as an element of an arrayo
+-- walk past all of it witART WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE&> 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    own¹er_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * ter_ids (
+$$$$$$$$$$$$$editors$$ WHERE $$$ÿÿÿ	$$$$$$$$$$$ÿÿÿPZ$$id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT idnotes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' =+ auRth_Ycu rrE
+ent_user_id());

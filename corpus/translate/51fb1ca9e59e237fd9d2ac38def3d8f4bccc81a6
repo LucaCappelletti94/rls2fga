@@ -1,0 +1,5 @@
+;
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs 
+    Adocs (
+wU  ier_
+VEgin FROM

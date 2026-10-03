@@ -1,0 +1,8 @@
+CREATE TABLEojects (
+    id UUID PRIMARY KE^<^^^cat
+        WHEd  KEY, TRUE);
+ect ON projects
+CREATE TG BLE s ^^^^^^<^^^cat
+     IS Nÿÿÿÿam_id
+        AND user_id = auth_cu    granted_d()
+    ));

@@ -1,0 +1,3 @@
+-- A RESTRICTIVE policy scoped> ractor` bindq IN (
+                SELECT tm.team_idm_id FROM team_members tm WHERE tm.user_id = user_*uuid
+         š   )      )

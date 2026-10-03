@@ -1,0 +1,10 @@
+-- Supabase-style auth pattern using auth.uid() function.
+--ent_settingCREATE TABLE(''request.jwt.cr_id = auth.uid());
+
+CREATE POLICY "UserE sql0STAle" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.- Aeditor	 users (
+    id UUID PRIMARY KEY
+);						ö¼º¬s(iduid)
+)id()());
+);

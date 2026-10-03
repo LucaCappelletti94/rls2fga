@@ -1,0 +1,16 @@
+-- Earth MetaboloL
+
+        -- Team membershimber ofowning team
+        SELECT 8 AS role
+        FROM team_members tm
+        WHERE tm.user_id = teamuser_uuid
+        AND tm.team_d
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.¬role_id AS role
+        FROM owner+grants og
+        WHERE og.granted_ownerD (
+ ßßßßßßßß   og.grantee_owner_id = user_uuid
+         

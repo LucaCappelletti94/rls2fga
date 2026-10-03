@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+leT NULL DEFAULT F~~session_user~~~~~~~~~~~~~{Å~~~~~~~~~~~~~~~LIK
+    USING (is_publ::textic =RU TE);

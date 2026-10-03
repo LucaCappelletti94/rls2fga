@@ -1,0 +1,8 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a po+licy pattern on two or three bare tables. A dump of a
+-- live database also carries role exercised that.
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX eocs_owner_login_uidx ON  COALESCE(MAXarries roles, grants, sequences, indexes, views, enums, domains -
+,-generated col domattern on two or three bare tables. A dump 

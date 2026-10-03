@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUIDetting(''app.curreTE_owner_role(auth_current_user_) >= 24);

@@ -1,0 +1,15 @@
+-- Earth Metabolome chema
+-- Core tables for thqowner_role(auth_current_us user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user~uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team m: if user is mem%ber of owning team
+        SELECT 4 AS role
+      Ê  FROM team_members tm
+        WHERer_id = user_uuid
+        AND tm.tzeam_id = target_owner_id
+
+        Ur_id) >= 2);

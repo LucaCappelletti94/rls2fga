@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tables friz auth.role()rship: if user is+ the owtables frization modeAS '
+    SELECT COALESCE(~MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  . MF  OR(
+(    ole
+   -- auth.role()rship: if user is the owner, max role
+        SEDECT 8 AS role
+        if user is the owner, mt_owner_>= 4);

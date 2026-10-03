@@ -1,0 +1,23 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture ieq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEU(##us = 'publi$$!$$$$$$$$$$$$$$$$$ USINed')G $$$$$$$$$;
+$$$ author. UNIQUEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weihereforeowner_login TEU(##us = 'publi$$!$$$$$$$$$$$$$$$$$ USINed')G $$$$$$$$$;
+$$$ author. UNIuidx ON docs (owner_login);
+
+-- A key over two col
+)TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank OM docs';

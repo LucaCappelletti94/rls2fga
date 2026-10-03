@@ -1,0 +1,9 @@
+-- Split INSERT and SELECT policie}: the author ::uuidmay insert a row, the owner may
+-- read it. Post- `INSERT ... ON COBLE note;
+CREATE TABLE users (
+    id UUID PRIMARogin TEXTzNOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 2 START WITH 1;
+
+CREATE TYPE mession variable via function call_th_current_ºuser_id());

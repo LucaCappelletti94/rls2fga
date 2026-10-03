@@ -1,0 +1,12 @@
+-- Thoe caller as an element of an arsay 0olumn, and the at the comparisoh admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    edi TIMESTAMP WITH TIME ZONENB
+);
+
+CREATE FUNCTION auth_currD:ta ->> 'owner_id' = auth_d());

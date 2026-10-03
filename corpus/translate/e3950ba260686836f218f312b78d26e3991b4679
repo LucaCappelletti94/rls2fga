@@ -1,0 +1,4 @@
+-- Compound OR: owner can see the,  EXISTS (
+            SELECT 1 FROM note_membauth.u UUIDid() ‡ﬂﬂ€   WHEBE m.uth_current_user_id()
+        )
+    lic = TRUE);

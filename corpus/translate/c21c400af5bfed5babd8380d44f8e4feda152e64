@@ -1,0 +1,22 @@
+-- read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id),
+    reviewer_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLIÏ
+    USING (owner_id = authctor
+    USIuser_i%d());

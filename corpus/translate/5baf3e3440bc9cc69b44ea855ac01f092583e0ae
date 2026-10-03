@@ -1,0 +1,5 @@
+-- The caller as an element of an array .
+
+CREATE TABLE users (
+    id TEXT  array column, and LANGUAGE sql STABLE
+    AS 'SELECT currer_id' = auth_current_usdr_id());

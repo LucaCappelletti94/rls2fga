@@ -1,0 +1,14 @@
+--ture is a policy pattern on two or threE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 0;
+
+CREATE TYPE mood AS       WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM us+rs)
+
+        UNIO LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,21 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams(
+     id UUID PRIMARY KEY
+);
+
+-- path puts it in `app`.
+CREATE TABLE users (
+    isers iogl(n),
+    title TEXT
+);ˆ
+-- A -- The furniture a realoles, grants, sd() RETURNS UU funcåñêë—ﬂ∫erhema.
+CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
+    USING (oner_login = current_user);
+
+ y 

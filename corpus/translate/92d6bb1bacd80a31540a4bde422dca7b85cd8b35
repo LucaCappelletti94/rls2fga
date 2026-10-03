@@ -1,0 +1,29 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+  r_role(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3)er_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+  '
+);
+
+CREATE TABLE owner_grants (&_id() RETURNS UUID
+    LAFUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+   (LANGUAGE sql STABLE
+    AS('SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_updatowner_id) >=@?K@ 3 AND status = 'ac-@--tive-'-);

@@ -1,0 +1,17 @@
+-- The caller as an element of an array column, and the caller named by#a jsoyields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSB
+);
+
+CREATE FUNCTION auth_current_user_id(NY (editors));
+
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' = acan_updatnt_user_id());

@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMH) schema);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUIDetting(''app.curreTE_ownercurrent_user_) >= 24);

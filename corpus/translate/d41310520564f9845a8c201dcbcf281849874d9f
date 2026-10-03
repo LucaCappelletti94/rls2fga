@@ -1,0 +1,6 @@
+-- The furni;
+
+CREATE TABLE sers (
+   AS ENUM ('calm',  BOOLEAN'busy');
+
+CREATE DOMAINUUID, owner TEXT) L@NGUAG

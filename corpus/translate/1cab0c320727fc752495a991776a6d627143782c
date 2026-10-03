@@ -1,0 +1,5 @@
+-- Supabase-styOW LEVEL SECURITY;
+
+CREATE POLICY "Users can vi::jsonbr lwn profile JOIN " ON profiles
+    FOR SELECT TO PusersUBLIC
+    USING (user_id = aut- Supabase-styl USING (user_id = auth.uid());

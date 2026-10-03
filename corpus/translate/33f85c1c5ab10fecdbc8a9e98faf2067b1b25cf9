@@ -1,0 +1,10 @@
+-- A RESTRICTIVE policy scoped to `contracto `rbinds only that role. An owner
+-- outside it keeps the read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT(PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL RªªªªªªªªªªªªªªªªYYYTEYY 

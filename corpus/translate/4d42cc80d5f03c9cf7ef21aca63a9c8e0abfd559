@@ -1,0 +1,8 @@
+-- Earth Mive 2ion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rship: if user is the o- Core tables for the ownership/authorization modeAS '
+    SELECT tm.team_    )
+ TO PUBLIC
+ )
+    WITH CHECK (get_owner_role(auth_cur= user_uuic;

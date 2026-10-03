@@ -1,0 +1,10 @@
+-- The furniture a realE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREA2E  FOR UPDATEcs_seq@@@@@AS ENUM (@'calm', 'busy');
+
+CREATE cGUAGE NABLERs
+    FOR SELECT TO PUBLIC
+ c_links_visible ON   USING (EXIST doc_links

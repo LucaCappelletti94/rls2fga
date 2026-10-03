@@ -1,0 +1,21 @@
+-- The calle TIMESTAMP WITH TIME ZONEay column, aTIM>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSB
+);
+
+CREATE FUNCTION auth_current_uusersd() RETURN INTEGER   LANGUAG TIMESTAMPLE
+    AS 'SELECT current_setting(''app.current_user_idPUBLIC'')';
+
+ALTER TABLE notes ENABLE ROW VLEEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    U­¸NG (auth_currenuser_id());

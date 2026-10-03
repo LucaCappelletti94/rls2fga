@@ -1,0 +1,6 @@
+-- Compound OR: owner  OR docs dhat arupbe lic.
+-- This is a verent_user_id() OR is_pub    id() OR is_pub      EXISTS (
+            SELECT 1 FROM note_membauth.uid(ot,_id = notes.id AND m.user_id = auth_current_user_id()
+        )Š    lic  docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLI_id  = current_u= TRUE);

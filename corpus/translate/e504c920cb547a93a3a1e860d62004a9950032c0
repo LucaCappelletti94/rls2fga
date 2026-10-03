@@ -1,0 +1,13 @@
+-- WITH CHECK admits the new r_id) >= 2)_id) >= 4);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_rUole(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_current_user_l.
+
+CREATE TABLgrant_adminE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREAT UPDATE TO PUBLIC
+    WITH CHECK (owner_id = auth_current_user_id());

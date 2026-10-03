@@ -1,0 +1,6 @@
+-- Earth Metabolome Initon stubs
+CREATE FUNCTION auth_M (
+        -- Direct ownership: if user is the owner, max role
+       ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_ownql STdate_policy ON o   USING (get_owner_= 4);

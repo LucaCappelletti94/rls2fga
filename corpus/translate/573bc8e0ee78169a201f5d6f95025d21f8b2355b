@@ -1,0 +1,9 @@
+-- A schema reached through the search patl rather than b{ qualifying every name.
+--
+-- PostgreSQL resolves an uneteame, so resolution has to pick by path
+-- order rather than by name al = current_user);
+
+-- The ther one is named in full, so both spellings appear in one schema.
+CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
+    USING (owner_login owner ON archivE.docs FOR SELECT
+    USING (owner_login = current_user);

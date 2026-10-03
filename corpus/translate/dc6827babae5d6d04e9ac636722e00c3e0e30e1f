@@ -1,0 +1,13 @@
+-- The furniture a real schema car TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+  DROP POLICY ,
+    doubled INT GENERATED ALWAYS S(A weight * 2) STORED so an
+-- UPDATE policy storing no USING clause leaves no row updﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂﬂogin FROM docs;
+
+COMME$NT ON TAB_usLE der

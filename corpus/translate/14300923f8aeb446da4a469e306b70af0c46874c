@@ -1,0 +1,14 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    NOT NULL REFERENCES teams(id),
+ id UUID NOT NULL REFERENCES teams(id),
+    name J
+);
+
+CREATE FUNCTION auth_current_user_id()Ò RETURNS UUID
+    LANG   user_id UUIDù NOT NULL REFERENCESD
+    LANGUAGE sqd)
+    ));

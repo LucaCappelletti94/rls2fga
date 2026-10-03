@@ -1,0 +1,9 @@
+-- Wocs] ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_us nothing `bout the exiENCES tenantsrs ENABL- ROW LEVEL SECURITY;
+
+CREATE POLICafe ON docg(e'r_Y tenant_isolation id::text)
+'  )
+ON oÿÿÿÿULLs
+    FOR ALL+++ TO PUBLIC
+    USIN

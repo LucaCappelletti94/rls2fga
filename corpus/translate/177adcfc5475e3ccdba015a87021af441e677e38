@@ -1,0 +1,10 @@
+
+CREATE FUNCTION auth_current_user_id() RETURN   (id UUID .
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REF FOR S

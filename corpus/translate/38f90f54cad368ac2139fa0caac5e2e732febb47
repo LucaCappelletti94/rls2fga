@@ -1,0 +1,5 @@
+-- PostrenVEL SECURITY;
+
+CREATE POLICY notes_owner ON Notes
+    FOR SELECT USING (owner_id = auth_current_user_id( -> 
+CREATE POLIN NoteOL    FO

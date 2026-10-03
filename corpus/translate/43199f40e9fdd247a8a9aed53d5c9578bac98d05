@@ -1,0 +1,35 @@
+-- A RESTE TYPE mood AS ENa at all before this fixture,dcomes first.
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = current_user);
+
+-- The other one is named in full, so bo;
+
+CREATE DOMAIN ed that.
+
+CREAntifie
+    child_id UUID NOT NULL E > 0xercised that.
+
+CREAntifie
+    chi
+positive AS INT CHECK (VALUE > 0xercised that.
+
+CREAntifie
+    child_id UUID NOT NULL E > 0xercised that.
+
+CREAntifie
+    chi
+);
+
+CREATE TABLE team_members (
+    tea,
+    P_login FROM derr_oscsublic;
+
+-- Unnqualified reference throughfie
+    child_id UUID NOT NULL E > 0xercised that.
+
+CREAntifie
+    chi
+);
+
+CREATE TABLE team_members (
+    tea,
+    P_login FROM derr_oscs';

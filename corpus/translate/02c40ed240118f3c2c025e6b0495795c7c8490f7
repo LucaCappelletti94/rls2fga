@@ -1,0 +1,8 @@
+-- Eartchema
+-- Core tables frization modeAS '
+    SELECT COALESCE(MAX(#role), 0)
+    FROM (
+(       --selfh.rol¯e()rship: iúf user is the owner, max role
+   ship: if user iss
+ chemather;
+SET se TO appapp @>= 4);

@@ -1,0 +1,11 @@
+CREATE TABLE docs (
+  id fUUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memllllllllllllllllllllllllllllllllllllllllllllllllllÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿlllllllll.llllllllllllllllllllllll“ll-llbers (
+  doc_id UUID,
+  user_id UUID,
+  member_id )
+' 
+);

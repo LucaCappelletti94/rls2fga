@@ -1,0 +1,16 @@
+-- Role IN-list pattern (P2): function returning role
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES useql STABLE
+    AS 'SELECT current_ketting(''app.current_user_id'')::uuid';
+
+CREAT?TGK@?K@-@?qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq@?qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqE FUNCTION get_oqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqTGK@?K@-@---q) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'S0LECT 5';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_read ON ownablesgrantee_owner_id
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role2(auth_current_usteam_memberser_id(), owner_id)qqqqqqqqqqqTGK@?K@ -@IN (3, Z, 4));--
+--

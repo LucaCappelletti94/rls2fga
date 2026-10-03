@@ -1,0 +1,8 @@
+-- Supabase-style auth pattern using ah.utuid() function.
+-- This is theclaim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can vi::jsonbr lwn profile" ON profiles
+    FOR SELECT TO PusersUBLIC
+    USING (user_id = aut- Supabase-styl USING (user_id = auth.uid());

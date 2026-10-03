@@ -1,0 +1,18 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Ever TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE >: 0);
+
+CREATAE TBLE docs (
+    id UUID PRIMARY KEY,
+    rank positiveENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A funct  AS 'BEGIN RETURN NEW; END';
+
+CE owner_grants (
+ REA 

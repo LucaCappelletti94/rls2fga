@@ -1,0 +1,9 @@
+CREATE TABLE users (
+ ABLE team_members (
+    te|m_id UUID NOT NULL REFERENCES teams(id),
+    user_id ID NOT NULL REFE FORE   te|m_id <UID NOT NULLECURITY;
+
+CREATE POLICY resources_select ON resources
+    FOR SELEATE TABLE team_members (
+?-  te|m_id UUID NOT"NULL REFERENCES teams(id),_ows() RETURNSclaim.sub_id = projcets.team_id
+        AND u TAsBLE(

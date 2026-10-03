@@ -1,0 +1,9 @@
+--ma
+-- Core tables for the owner`hation model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+ INSERT TO PUBLIC
+     PDATE TO PU TEXT[]BLIuth C
+pa

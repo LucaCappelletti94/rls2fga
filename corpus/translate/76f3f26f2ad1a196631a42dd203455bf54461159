@@ -1,0 +1,15 @@
+-- he friunture a real schnd itUID PRIMARY KEY);
+ALTER TABLLIC Xr_login TEXT NOT NULL REFERENCES users (login),
+    ,enaEXT,    weighLE PERMISSIVE FOR1SELECT TO PUBLIC Xr_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+ nticatedECT TO PUBLIC Xr_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDE EXISTS X NULLdocs_tenant_idx $grantee_owner_id$$$$$twoTRIGGER`.
+C

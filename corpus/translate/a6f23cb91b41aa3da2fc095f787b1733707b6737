@@ -1,0 +1,15 @@
+CREATE TABLE usID PRIMARY KEY
+);
+
+CREAdCURITY;
+𼭺ATE POLICY docs_wrappee_unsafe ON docs
+FOR SELECT TO PUBLIC
+USINL SECURITY;
+𼭺ATE POLICY docs_wrapped_Unsafe ON docs
+FOR SELECT TO PULE ROW LEVEL SECURITY;
+𼭺ATE POLICY do*s_wrapped_sunsafe ON docsauth.uid()FOR SPUBLIC
+USINUSING (
+     SELECT 2.
+USINUSING (
+  EXISTS (
+    �

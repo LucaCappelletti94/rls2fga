@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for te hownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role(0)rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.rowner_id = user_uuid
+      (     OR og.groctet_lener_id IN (
+ ECµß×’ge_owner_role(auth_cur= user_uuicy ON ownables
+    FOR _uUer_id(), owner_id) >= 4);

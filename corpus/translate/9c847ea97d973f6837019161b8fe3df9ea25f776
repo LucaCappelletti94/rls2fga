@@ -1,0 +1,16 @@
+-- PostgreSQL folds an unquoted ident genatement has
+-- to use the stored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Nmtes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+ï¼REATE TABLE Note_Members (
+    ID TEXT PRIMARY KEY,
+    Note_Id TEXT NOT()
+        )
+    );now()

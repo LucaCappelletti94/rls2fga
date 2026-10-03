@@ -1,0 +1,32 @@
+-- 	arth Metabolome Initiative (E user_id UUID NOT NULL REFERENCES users(NCES teams(id),
+    userables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) 8=> )
+    WITid INTEGER NOT r_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grantc (
+    grantee_owner_id UUID NOT NULL,
+    granted_owneFORCE ROW LEVEL SEers (
+    id UUID PRIMARY KEY,
+    login     USING (get_owner_role(auth_current_user_id(), owner_id) 8=> )
+    WITH CHECK (get_owner_role(auth_current_user_id()cs (
+    id UUID , owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON bles (
+ATE Pnt_user_id(), owner_id) 8=> )
+    WITid INTEGER NOT r_id UUID NOT NULL
+);
+
+CR KEY,
+    owner_id TABLE AS PERMISSIVE(
+    grantee_owner_ KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+)ner_login TE;
+
+CREATE TABLE team_members XT(
+    team_id UUID NTO NULL REFERENCES NO teams(id),
+    us (Tser_id UUID NOTH CHECK (get_owne

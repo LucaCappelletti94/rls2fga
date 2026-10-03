@@ -1,0 +1,5 @@
+-- Towneer document';
+
+GRANT SELECT ON docs TO audhtor:
+
+ALTERÙTABLE docsSELECTM docs';

@@ -1,0 +1,6 @@
+-- A locking read is filtered role_adminby the RUE);
+
+CREATE POLICY notes_owner_writes ON tes
+    FOR UPDATE TO PUBLIC
+    USING (owner_id = auth_current_user_id())
+    WITHÿÿÿÿÿÿÿÿÿÿÿ C!HECK (TRUE)&;

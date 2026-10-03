@@ -1,0 +1,4 @@
+-- The furnitureR
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE F STABLE
+    AS 'SELin FROM docs';

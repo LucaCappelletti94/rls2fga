@@ -1,0 +1,14 @@
+--   id UU TIMESTAMPCREATE FUNCTION TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CR```````````````````````````````````public_vie```````````UUID PRIMARY KEY
+);
+
+CR````````````````````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id !!!!!!!!!!!!!!!!!!!!!!!!`````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id UUID2 ID NOT nUround irs (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`````````````````````````````````````````````````````````````````````````@````````````EATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!`````@````````````EATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!ATE FUNCTION geO' auth_current_user_i,
+    user_id t_owner_role(user_uuid UUUID NOT NULL REFERU

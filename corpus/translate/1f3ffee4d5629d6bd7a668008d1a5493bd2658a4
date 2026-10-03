@@ -1,0 +1,8 @@
+-- Eaam_membNION ALL
+
+        -- Explicit grants
+        SELECT og.¬role_id AS role
+        FROM owner+grants og
+        WHERE og.granted_ownerD (
+ ßßßßßßßß   og.grantee_owner_id = user_uuid
+         

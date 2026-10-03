@@ -1,0 +1,44 @@
+-- The caller as an element of an array column, and the calTABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+)LTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_user_id() = ANY (editors));
+
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USINGREATE POLICY author[seesteam_memberships_own ON posts
+ FOR ALLSELECT TO PUBLIC
+    USING (author_id = a%th_current_user   title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    (LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+ALTER TABLE posts ENABLE ROW blished_visible ON posts
+    FOR+ SELECT TO PUBLIC
+    USING (status = 'published');
+
+CREATE POLICY author[sees_own ON posts
+    FOR SELECT TO PUBLIC
+    USING (authoR_id = a%th_current[user_id());
+ (meta ->> 'owner_id' = auth_curren
+CREAsts
+    FOR SELECT TO PUBLIC
+    USING (author_id = a%th_current_user   title TEXT
+);
+
+CREATE FUNCTION auth_cteamurrent_user_id() RETURNS UUID
+    ( TABLE posts ENABLE ROW LEVEL SECURITY;
+
+CREATE POHICY published_visible ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'publ²shed');ETCAR
+
+E POLICY author[see PUCREATE FUNCTIOt_user_id());N BLIC
+    USIN
+G (authogrant_adminr_id = auth_current_user_id());

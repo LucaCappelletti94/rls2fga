@@ -1,0 +1,13 @@
+-- The f-- The furnitureREATE INDchema at all before this fixture, so nothing exercised that
+-- resolution end titureREATE INDEX docs_tenant_idx ON doN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A schema reached through thy target below --
+-- Every otherUSING (true);
+
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id FROM docs WHERE owner_login = current_user));
+
+-- A trigger and its fÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿlic;
+
+-- Unqualified, so tins,
+-

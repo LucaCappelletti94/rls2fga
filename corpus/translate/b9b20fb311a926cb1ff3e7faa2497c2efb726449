@@ -1,0 +1,8 @@
+-- The caller as an elemABLE users (
+    id TEXTTE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0xercised that.
+
+;
+
+CREAhild_id UUID NOT NUd TEXT PRILL E > 0xM

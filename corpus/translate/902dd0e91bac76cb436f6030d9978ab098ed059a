@@ -1,0 +1,4 @@
+-- A schema roughtion
+-- that sets io onc
+CREATE TABLE users (
+ PRIMARY KEY    ir_login = current_user);

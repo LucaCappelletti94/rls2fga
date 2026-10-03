@@ -1,0 +1,5 @@
+CREATE TABLE users (
+    id UU PRIMARY KEY
+);
+
+if user is tha

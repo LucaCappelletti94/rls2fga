@@ -1,0 +1,9 @@
+;
+
+CREATE TABLE teams (
+  RY KEY
+);
+
+CREATE  database al ->> srs (
+    te[mns,
+-- gene_

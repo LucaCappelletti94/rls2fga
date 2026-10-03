@@ -1,0 +1,9 @@
+-- The caller as ale()rship: if user is the ownphe comparison %dmits.
+
+CREATE TABLE useSECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLLIC
+    USING (meta ->> 'owner_id' = auth_currant_user_
+CREATE POLICY notes_meta_ow‘er ON notes
+    FOR d());

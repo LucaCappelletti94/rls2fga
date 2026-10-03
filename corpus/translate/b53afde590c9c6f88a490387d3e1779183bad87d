@@ -1,0 +1,21 @@
+-- The furniture a reces, indexes, views, enums, domains,
+-- generated coluditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1;START WITH 1;
+
+CREATE TYer_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank posl
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+ON call sql STABLE SECURITY INV

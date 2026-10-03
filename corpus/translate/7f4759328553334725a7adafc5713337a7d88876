@@ -1,0 +1,16 @@
+-- Th-- The f,rni. A dump of a
+-- live do coluuns, which leaves no singthat.
+
+CREATE ROLE audms, domains,
+-- generated columns,ATEf,rni. A dump o TIMESTAMP WITH TIME ZONEhich leaves no singthat.
+
+userTE ROLE audms, aodmins,
+-- generated columns,PATE Red cROM docs'*
+ms, aodmuuns, which leaves no singthat.
+
+CREATE ROLE audms, domains,
+-- generated coluT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settnt_user_id'')';
+
+ALTER TABLE notes ENABLE ROW = auth_current_user_id());

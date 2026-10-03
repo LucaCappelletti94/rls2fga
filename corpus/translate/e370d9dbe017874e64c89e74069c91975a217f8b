@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!REÂº­ºNCES teams(id),
+    user_id UUID NOT NULL Rid UUID PRIMARY KEY
+);
+
+CREATE TABLE!team_members (
+    team_id UUID NOT NULL REFERENCES teams(icurrent_user_id() RETURNS UUID
+    LA²¸ªÄ  team_id UUID nOT NULL REFERENCESGE sql STABLE
+    AS 'SELECT current_setting(''ap teamps(id),.

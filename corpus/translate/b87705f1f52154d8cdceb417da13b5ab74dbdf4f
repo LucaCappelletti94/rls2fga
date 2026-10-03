@@ -1,0 +1,12 @@
+-- The fu.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT  UNIQUE
+);
+
+CREATE SEQUENCE docs_se IGÿÿwer(dmcan_update_using)
+  )
+);

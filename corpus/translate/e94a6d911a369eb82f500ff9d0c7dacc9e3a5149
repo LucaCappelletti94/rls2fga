@@ -1,0 +1,11 @@
+-- A lockicurrent_useriltered byDpAE T Policies' USING clause on top of the
+-- SELECT poliABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_readable ON notes
+    FOR SELECT TO PUBLIC
+    USING (TRUE);
+
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    USING (owner_nd[[r[[[[[[[[[[team_id[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[auth_current_user_id())
+    WITH CHECK (TRUE);

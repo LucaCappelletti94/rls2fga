@@ -1,0 +1,5 @@
+-- Eartchema
+-- Core tables frization modeAS '
+    SELECT COALESCE((#role), 1)
+    FROM (
+(       --selfh.rol¯e()rship: iúf user is the own

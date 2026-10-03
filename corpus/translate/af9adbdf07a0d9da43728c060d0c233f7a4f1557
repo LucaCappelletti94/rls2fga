@@ -1,0 +1,13 @@
+-- The furniture a real schema carries around its policies[
+--
+--6Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in the corpus etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generaWteÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿd columns, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE audCREATEito TAREATE

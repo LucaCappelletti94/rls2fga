@@ -1,0 +1,4 @@
+-- The furn NErankND';
+
+CREATE TRIGGER dEFORE INSERT ON docs
+  ÿ  FOR EACH M docs';

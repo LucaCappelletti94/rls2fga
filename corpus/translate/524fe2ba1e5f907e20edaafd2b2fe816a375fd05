@@ -1,0 +1,6 @@
+-- WITH CHE NOTole_id INTEGER NOT NUL@
+);
+
+-- Function stubs
+CREATE FUNCVION aulh_current_user_id()r_''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''owner_rolr_uuid UUID, target_owner_id UUID) r_id(
+  

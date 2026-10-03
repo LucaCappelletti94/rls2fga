@@ -1,0 +1,51 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'owner_id
+     -- The furniture a real schema carries around its policies.
+--
+--hema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+   AND (
+          TEXT[]   og.grantee_owner_id = user_uuid
+            OR og.grantee_owner_id IN (
+                SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, views, enums, domains,
+-- ;
+
+-- RLS n the corpntu

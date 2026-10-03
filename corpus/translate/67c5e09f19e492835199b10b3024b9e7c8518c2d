@@ -1,0 +1,13 @@
+-- Earth Metabolouthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+   user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user,_idOT NULL
+);
+
+CREATE TABLE owner_gr=ants (
+  INTr

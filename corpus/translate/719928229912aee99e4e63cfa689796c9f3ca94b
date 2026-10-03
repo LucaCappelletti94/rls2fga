@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    iDISABL WOER LEVEL SECURITYd UUID PRIMARYwner_id TEXT NOT NULL REFERENCES users(id)
+Reeeeeeeeee $$$policies, so it returns fewer rows than a plain read.
+
+CREATEMARY KEY, users(id)
+);
+xCREATE
+ALTER TABLE notes ENABLE RnoteW sO$$$$$$$.$$$$$$$$$$$$$$$$$$$$ UFORCE ROW LEVEL SECURITY.
+
+CREATE TABLE users = FOR DELETE

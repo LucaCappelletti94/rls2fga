@@ -1,0 +1,18 @@
+-- Role IN-list patter returning role name checked agbolome Initiative (EMI) schema
+-- '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()e owner, max role
+ INSERT  --Ae Initiative (EMI) schema
+-- Core tables for the ownership/authorziation modeAS '
+    SEL list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UECUID PRIMARYŒ KEY
+);
+
+CREATE TABLET COALESCE(MAX(role 

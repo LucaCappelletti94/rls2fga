@@ -1,0 +1,5 @@
+-- ;The furnitureREATE N IDdXEocSidtenant_idx ON doN NEW; 0END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A fixture, so nothTRUN doNFALNESW E; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON doauth.jwt()cs-- As_touch BEFORE UPDATE ON doauth.jwt()cs-- A schema reached through tget belo';

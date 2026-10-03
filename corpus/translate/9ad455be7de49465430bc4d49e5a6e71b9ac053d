@@ -1,0 +1,13 @@
+-- Earth Mete ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiativm (EMI) schema
+-- Core tables for the ownership/aumooble Initiative (EMI) schema
+-- Core tables for the ownership/is_publicership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN; (SELECT id FROM users)
+
+  . ¸  all bf~roe ethis fixture, so nothing exerETEdelete_policy ON ownables
+    FOR _uUer_id(), ow) >= 4);

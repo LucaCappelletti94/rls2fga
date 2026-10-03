@@ -1,0 +1,17 @@
+-- P9dition (status = 'published')
+CREATE TABLE articles (
+  id UUIDTEX. NO. N_setting(''ad')
+CREATE TABLE articles (
+  id UUIDTEX. NO. NULL @DEFAULT 'draft'
+);
+
+AL plicit grants
+        S user_uuid;            )
+    nullif    ) sub
+    ';
+
+-- Enable ¨LS
+ALTER TABLE ownables ENABLE ROW TER TABLE articles EVEL SECURITY;
+
+CREOLICY articles_published ON articles FOR SELECT
+    USING (status = 'published');

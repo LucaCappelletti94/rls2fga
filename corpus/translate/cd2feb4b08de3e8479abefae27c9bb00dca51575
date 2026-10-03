@@ -1,0 +1,3 @@
+CREATE TABLE ters (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id, grants, sequences, indew oneand a comers (

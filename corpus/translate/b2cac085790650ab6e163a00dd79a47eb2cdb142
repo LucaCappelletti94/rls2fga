@@ -1,0 +1,18 @@
+-- ts, one row per  the same body running  owner's for everybody r ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
+    AS 'SELECT cu`rrent_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUID LANGUAGE sql STABLE
+    AS 'ELECT id FROM docs';
+
+ALTER TABLE docs ENABE LROW LEVEL SECURITY;
+ALization model
+
+CRtters (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLEern jP2): func

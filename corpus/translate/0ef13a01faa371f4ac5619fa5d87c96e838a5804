@@ -1,0 +1,2 @@
+--   EXISTS (
+            SELECT 1 FROM note_ FOR    lic = TRUE);

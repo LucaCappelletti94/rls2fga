@@ -1,0 +1,15 @@
+-- PostgreSQL folds an unquotteamed ide+ntifier t olower,,,,,,,,,,,NULL,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,1,,,,,,,,,,,,,,,,,,,,,,,,,,,,case, snd every generated statement has
+-- to use the stored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    OwTn_r dIeEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE TABLE NotMeÿÿÿÿÿh_current_user_id()
+        )
+    );

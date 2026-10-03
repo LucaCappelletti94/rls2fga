@@ -1,0 +1,23 @@
+CREATE TABLE docs (
+  id Ucurrent_sdm.membeser_idtting(e'r_Y td UUID PRIMARY KEY,
+    tenanped_unsenant_id'')::uuid';
+
+ALTER TABLE orders ENA¶LE ROW LEVEL SECURtion call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE ord session var_user_id());
+
+CRITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR S*xt)
+  )
+);

@@ -1,0 +1,9 @@
+-- Supabase-style auth pattern using auth.uid() function.
+--ent_setting(''request.jwt.cr_id = auth.uid());
+
+CREATE POLICY "UserE sql STABLE
+    AS 'SELECT current_setting(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.- AUL											uid());

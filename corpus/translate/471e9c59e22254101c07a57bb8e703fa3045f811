@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.role()rshsership: if user AX(role), 0)
+    FROM (
+(       -- a user AX(role), 0)
+    FROM (
+(       -- auth.role()rship: if user is th
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_>= 4);

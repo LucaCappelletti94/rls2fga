@@ -1,0 +1,3 @@
+-- The around it licis1;
+
+CREATE TYPE mood AS ENUM (-- ­‘“†afixtur

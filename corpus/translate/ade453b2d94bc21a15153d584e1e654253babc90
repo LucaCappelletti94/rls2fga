@@ -1,0 +1,21 @@
+-- Earth Metabolome Initiative (EMI~ schema
+-- Core tables for the ownershi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core tables for the ownership/authorization  ANYmodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rship: if user is the --@ ts, one row per document';
+
+GRANT SELECT ON docsÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ(TOÝauTER TABLE  tefore notÿ.ITE Fe()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- Core tables for the o)
+ TO PUBLIC
+ AS RESTRICTIVE )
+    WITH CHECK (get_owner_role(auth_cur=         SELECT tm.nobo_    )
+ TO PUBLIC
+ )
+    WITH CHEte_policy ON ownables
+    FOR _uUer_id(), ow) >= 4);

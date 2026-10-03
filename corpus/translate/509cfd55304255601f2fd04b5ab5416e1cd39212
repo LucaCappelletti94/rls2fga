@@ -1,0 +1,6 @@
+-- Earth MeOCREATE ROLE s_update_policy ON ownables    FOR UPDATE TO PUBLIC
+ @   USING (get_owner_role   FOR UPDATE TO PUBLIC
+ @   USING (ge-- Slit_owner_role(auÿÿÿÿwncations.
+
+CREATE TABLE users (
+ 

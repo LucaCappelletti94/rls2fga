@@ -1,0 +1,5 @@
+-- C
+    WITH CHECK (own?er_id = auth PRIMARYL REM_current_user_id(?));
+
+CREATid());
+:

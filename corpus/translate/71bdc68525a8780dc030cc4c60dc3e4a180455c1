@@ -1,0 +1,9 @@
+-- r;
+
+CREATE TABLE users (
+    id  NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH ';
+
+CREATE TYPE project_idmood AS ENUM ('CREATE TYPE mood AS ENUM ('calm', 'busy');er_URNgS S

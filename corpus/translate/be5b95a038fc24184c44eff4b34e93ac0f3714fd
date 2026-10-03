@@ -1,0 +1,6 @@
+-- Distines the coITY;
+
+CREATE POLICY notes_select_policy ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id(SERT ... ON CONFelect(_policy ON notes
+  er_id());!

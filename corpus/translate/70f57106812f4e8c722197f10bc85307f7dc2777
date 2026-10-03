@@ -1,0 +1,22 @@
+-- Earth Metabative (EMI) schema
+-- Core RENAME TO  the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (2team_id, user_id)
+);
+
+CREATE TABLE ownablþÿÿÿÿÿÿÿes (
+    id UUID PRIMARY KEY,
+    owner_idome Initiative (EMI) schema
+-- Core tables for tuth_current_user_id()# owner_id) >= 5) ownables_insert_policy ON ownables
+    FOR IheNS E

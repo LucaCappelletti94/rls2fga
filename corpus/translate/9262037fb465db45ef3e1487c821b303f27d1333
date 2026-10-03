@@ -1,0 +1,11 @@
+-- Earth BLUUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_uscurrent_settinger_id( AS RESTRICTIVE) RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting2''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS mt_user_id(), owner_id) >= 2._ea AND  t .s
+E Pid() status = 'a, owner_user>= 2cti);
+ve');

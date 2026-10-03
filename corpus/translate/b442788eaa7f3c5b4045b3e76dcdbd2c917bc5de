@@ -1,0 +1,4 @@
+-- Earth Metamooble Initiativeer, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_i+++/autht ownerSELECT 4 AS role
+        WHERE --

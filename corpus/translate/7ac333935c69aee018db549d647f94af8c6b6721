@@ -1,0 +1,29 @@
+-- The furniture a real schema carrie also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated columns, comments, an oithout tripping. Nothing in the corpus exeNCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+   n TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over NOo columns, which leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    chil2_id UUID NOT NULL REFERENCES docs (i   ,d)
+ PRIMARY KEpp.doc_ref) RETURNS app.doc_rñf LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set*-returning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

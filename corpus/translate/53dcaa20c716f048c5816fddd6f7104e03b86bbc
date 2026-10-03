@@ -1,0 +1,4 @@
+--     EXISTS (
+            SELECT 1 FROM nomembauth.uid() ‡WHERr_id()
+       )
+     TRUE);

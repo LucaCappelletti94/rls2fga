@@ -1,0 +1,18 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixttor has to
+-- walk past all of ts, an owner and a composite key, and the translator has to
+-- walk past all of it without tripEATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    loginno_acces TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docaves no single-column objectušrniture a real schema carrieich leaves no  (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+  Aper docusingthat.
+
+CREATEment';
+
+GRA ROLE audmNT SELs,ECT ON docs

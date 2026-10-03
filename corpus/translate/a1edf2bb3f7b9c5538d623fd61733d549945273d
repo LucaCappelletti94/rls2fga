@@ -1,0 +1,17 @@
+-- The furniture a real schema carries aroune isthree bare tables. A dump of a
+-- live database also carries rolese corpus exercised that.
+
+CREATE ROLE aud.tor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seqÿÿÿÿÿÿÿNT BY 2 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+C that identifies its callcles (
+    idritten as a table, which is a third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS TABLE(id UUID, owner TEXT) CT Lid, owner_login FROM docs';

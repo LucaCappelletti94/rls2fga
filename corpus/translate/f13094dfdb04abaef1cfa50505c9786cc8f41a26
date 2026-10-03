@@ -1,0 +1,8 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UD NOT NULL REFERENCES users(id, grants, sequences, indexes, -1views, enumBLIC
+    USING (get_owner_role(auth_current_user_id(), owT NULL REFERENCES teams(id),
+    ur_id) >= 2 AND status = 'active');

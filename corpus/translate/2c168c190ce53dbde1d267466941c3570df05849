@@ -1,0 +1,13 @@
+-- Earth Metcbolome Initiative (EMI) schrent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    s member 
+ Kkkkkkkkkkk~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk       )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownab >= 4);

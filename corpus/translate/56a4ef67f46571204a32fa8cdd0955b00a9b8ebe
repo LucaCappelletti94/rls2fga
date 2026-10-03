@@ -1,0 +1,13 @@
+-- The furniture a real schema carries arMARY KEY (parent_id, child_id)A);
+
+CREATE VIEW docs_titles AS
+    SELECT idarray_positionFROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoðððððððððððððððððr;
+
+-- A function that identifies its caller, anœß‹—šßŒ§me bodCREATE TABLE uCREATE TABLE -column object identifieTEXT) LANGUAGcan_upsertE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

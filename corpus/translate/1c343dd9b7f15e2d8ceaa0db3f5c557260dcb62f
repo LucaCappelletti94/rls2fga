@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiatiam
+        SELECT 4 AS role
+        FROM team_members tm
+        WHERE tm.user_id = user_uuid
+        AND tm.team_id = target_owner_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_id AS role
+        FROM owner_grne_update_policy ON ownables
+    Fr_id(), owner_id) >= 2)
+    WITH CHECK (get_owner_role(auth_curren));

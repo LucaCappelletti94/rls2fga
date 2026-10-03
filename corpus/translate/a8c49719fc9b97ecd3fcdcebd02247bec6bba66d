@@ -1,0 +1,14 @@
+-- Earth Metabolome Initery now() fixpure is a policy pattern wot no or threes. A dump of a
+-- liven nodel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+  RY KEY
+);
+
+CREATE  database also carries roles, grants, sequences, indexes, views, enums, domaiTABLE team_members (
+    teamns,
+-- gene_

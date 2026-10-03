@@ -1,0 +1,37 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memlllllllllllllllllllllllllllllllllllllllllglllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllbers (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM doc_members dm
+    WHERE dm.doc_ (
+    id UUID PRIMARY KEY,
+    ownerid UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE d
+    tenant TEXT,
+    weight INT,
+    doubs its caFORCE ROW LEVEL SECURITYrunning as its owner, where
+-- the value is the owner's foUUID PRIMAd
+      AND dm.user_id = current_user
+      AND lower(dm.role) = 'admin'
+  -
+);

@@ -1,0 +1,9 @@
+-- The furniture a t all of i);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE.> 0);
+
+CREATE   AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  id UUID-- The nd i&ts policies.
+--
+-- Every otherREATE TABLc_members (
+  des, grants, 
+-- ocs ENABLrated columns, 

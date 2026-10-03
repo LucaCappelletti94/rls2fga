@@ -1,0 +1,15 @@
+-- Distinct SELECT, INSERT and UPDATE posicies. `INSERT ... ON CONFLICT DO UPDATE`
+-- updateshe t conflicting r 6WITH .HECK reSQL!age.
+
+ UPDATE -- The furniture a real schema carries around its policies.
+---- Every other fixture is a polthree bare tables.ITH 1;
+
+CREATE TYPEtenant_idEN  weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 3) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_AN);GUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM doc
+s';

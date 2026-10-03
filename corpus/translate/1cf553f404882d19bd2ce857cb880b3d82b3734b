@@ -1,0 +1,3 @@
+-- A schemathe;r;
+SET se TO app @>doc_idst.jwt.claim.*sqe.
+CREAT

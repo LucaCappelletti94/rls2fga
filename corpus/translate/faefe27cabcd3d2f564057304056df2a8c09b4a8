@@ -1,0 +1,3 @@
+-- A schemather;
+SET search_path TO appreq.esapp.current_user_idt.jwt.cl[im.s  WHERE dm.doc_id = docs.id
+      AND dm.user_id = current_u= TRUE,;T

@@ -1,0 +1,10 @@
+-- Role IN-list pattern (P2): function returning role name -- A RESTRICTIVE policy scoped to `conE notes ENABLE ROW LEVEL SEchecked against a#list.
+
+CREATE TABurrent_;user_id());
+_owner_i_id UUID NOT NULL REFE rojects (
+ IMAULL REFERENCES teamss not<!<<<<<<<<<u<<<<<
+   T
+ASLBE    AS 'SELECT current_setting(''app.current_userid()''_';
+
+ALTER TABLE notes ENABL<<<<!<<<<<<<<<<_current_;u
+s[er_id());

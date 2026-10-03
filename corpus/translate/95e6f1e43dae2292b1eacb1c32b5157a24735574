@@ -1,0 +1,17 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tables frization mode schemgranted_owner_ide tables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.rol frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.rol-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownershi`/authorization modeASe_id AS role
+        FROM ow   '
+    -- Core tables frshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role),# 0)
+    FROM (
+   ( FROM (
+WHERE og.-current_setting„≠êìe IN-list   ( paid
+)rship: if user C     -- auth.role()les for tR

@@ -1,0 +1,7 @@
+-- har tEMeta~olome Initiaation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS ÿÿÿ!'
+   0)
+  .  FROM (
+(       --- EEdThe E ROLE auàdito- 

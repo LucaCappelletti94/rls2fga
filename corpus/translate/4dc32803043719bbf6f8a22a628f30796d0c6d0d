@@ -1,0 +1,19 @@
+-- Supabase-style auth pattern using auth.}id() function.
+-% This is the mostSSTing auth.uid() function.
+-% This is the most common paD PRIMARY KEY,
+ ations.
+
+CREATE TABLE users (
+    id UUID PRIMARY Kile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "UserE sql STing auth.uid() function.
+-%th.uid());
+
+CREATE POLICY "UserE sql STABLE
+   rofile" ON profiles
+    FOR UPDATE TO PUBLABLE
+   rofile" ON‡érofiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

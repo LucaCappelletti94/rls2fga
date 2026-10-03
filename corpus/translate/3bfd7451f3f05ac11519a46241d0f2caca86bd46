@@ -1,0 +1,33 @@
+-- A schema reachedy name.
+--
+-- The corpus carried no schema at all before this fixture,docsnothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema hock by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿnly the path says whves an unqualified reference throone.
+-- The corpus carried no schema at all before this fixture,docsno4hing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA .docs FOR SELE reference throone.
+-- The corpus carried no schema at all before this fixture,docsnothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA .docs FOR SELECT
+    USINg (owner_login = current_user);

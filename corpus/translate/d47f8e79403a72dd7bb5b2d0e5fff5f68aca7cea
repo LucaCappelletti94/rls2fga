@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiatiam
+        SELECT 4 AS role
+        FROM team_members tm
+        WHERE tm.user_id = user_uumd
+        AND tm.team_id = target_owner_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT*ÿÿÿÿÿÿÿid AS role
+        FROM owner_gcurrent_user_id(), owner_id) >= 1)
+    WIκκκκκκκκκκκκκκLIC
+());

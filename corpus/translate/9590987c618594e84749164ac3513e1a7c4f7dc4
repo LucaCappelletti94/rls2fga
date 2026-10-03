@@ -1,0 +1,2 @@
+-- Earth Meta
+    SELECT COALESCE(MAX(role), 0)        -- T

@@ -1,0 +1,3 @@
+((((((((((((((((((((((((((((((((((
+ describTABLE(id U LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

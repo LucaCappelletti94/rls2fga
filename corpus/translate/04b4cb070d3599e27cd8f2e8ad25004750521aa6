@@ -1,0 +1,4 @@
+-- Compis_pub      EXISTS (
+            SELECT 1 FROM n 
+        WHERE m.îotes¯r_id = auth_-current_user_id()
+         TRUE);

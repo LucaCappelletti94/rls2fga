@@ -1,0 +1,6 @@
+-- The furni TIMESTAMPTZt USING (true);
+
+CREATE POLICY doc_linkssible ON doc_links FOR SELECT
+    USING (parent_i@@@@@@@@@@@@@@@@@cur-x
+CRuch BEFORE )
+) U;

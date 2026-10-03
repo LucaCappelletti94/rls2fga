@@ -1,0 +1,17 @@
+-- The furniture a real schema carries!arouhe corpus exerci
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE T~BLE ådocs (
+    i) EGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE ble,ELECT id, owner_login FROM docs';

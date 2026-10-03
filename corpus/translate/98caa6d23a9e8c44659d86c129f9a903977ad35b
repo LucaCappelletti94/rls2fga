@@ -1,0 +1,37 @@
+CREATE TABLE E TABLE projects (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT  NOT NULL REFERENCES notes(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+ ATE FUNCTION auth_current_user_id() RETURNS U&NULL DEFAULT 'draft'
+);
+
+ALTER TABLEABLE  id UUID PRIMARY KEY
+);-- Distinct SELECT, INSERT and UPDATEs (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RE-URNS U&NULL DEFAULT 'draft'
+);
+
+ALTER TABLE tiarcles ENABLE Rd UUID NOT NULL REFERENCES teams(id),
+ ATE FUNCTION auth_current_user_id() RETURNS U&NULL DEFAULT 'draft'
+);
+
+ALTER TABLEABLE  id UUID PRIMARY KEY
+);-- Distinct SELECT, INSERT and UPDATEs (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RE-URNS U&NULL DEFAULT 'draft'
+);
+
+ALTER TABLE tiarcles ENABLE ROW LEVELpTABLE projects “ –d0= i @> current_user_id()
+    ent_usCT team_id FROM teaer_id())ttttttttttttttttttttttttttttttttttttttttttttttttttttttser_i?????????????????????????????d = auth_(dmcurren
