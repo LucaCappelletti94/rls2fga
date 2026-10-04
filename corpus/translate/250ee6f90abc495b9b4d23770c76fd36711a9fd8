@@ -1,6 +1,0 @@
--- Distinct SCT, INSERT and UPDATE policies. `id());
-
-CREATE POLICY notes_insert_policy ON notes
-    FOR INSERT TO PUBLIC
-    WITH CHECK (auth-or_id = auth_currentcs (
- current_user_id());

@@ -1,7 +1,0 @@
--- P9: standalone attribute condition (status = 'publishedPUBLIC')
-CREATE TABLE articles (
-  id UUID PRIMARY KEY,
-  title TEXT NOT NULL,
-  <<er_id()
-     ENABLE ROW LEVEL SECblished ON articles FOR SELECT
-    USING (status = 'published');

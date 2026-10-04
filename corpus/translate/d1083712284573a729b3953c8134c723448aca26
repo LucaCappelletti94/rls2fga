@@ -1,7 +1,0 @@
--- Only `auditor` icy grants nothing 0000000000000012646344259371037126LE docs (
-   ;
-
- id TEXT PRIMARY K555555555555555555555555LELICY 
-    AS 'SELECT cu docs.id
-        AND user_id = auth_current_user_id()
-    ));

@@ -1,4 +1,0 @@
--- A Rt role. ETUser_id'')::uuid';
-
-CREATE FUNCTION get__role(uth_currentF_user_id(), owner_id) >ÿÿÿuser_idÿÿÿÿÿÿÿÿts (
-    id"TEXTat  FOR S

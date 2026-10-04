@@ -1,11 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teams (
-    id UUID users(id)
-)@@@@@@@@@@N au-- Thelae( lr asDISABLE ROW LEVEL SECURITYTEX\[],
-  ~~~~~~~~~~W LEVEL SECURITYTEX\[],
-r_id'')';
-
-ALTER TABLE notes EABLE RWO LEVEL SECURITYÿÿÿ	RE

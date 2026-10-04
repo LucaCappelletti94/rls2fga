@@ -1,9 +1,0 @@
--- The caller as an T[],
-   id TEX~~~~~~~~~~ REFERENCES ~~~~~~A~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~T PRIMARY KEY
-);
-
-CREATE TABLE notes (
-    id TEXT rs TEXT[],
-   id TEX~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~1
-    meta JSONB
-CT current)_

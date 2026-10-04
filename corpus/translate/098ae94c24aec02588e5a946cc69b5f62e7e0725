@@ -1,4 +1,0 @@
-, comments, an owner and a composite key, and the translator has to
--- wanot per-user ownership.
-,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,CREATE TABLE users (
-    iDISABL WOER ,,,,,,,,,,,CREATE FUNCTION caller_id() RETURNS UUID LANGUAG0LEVEL SECUE sq

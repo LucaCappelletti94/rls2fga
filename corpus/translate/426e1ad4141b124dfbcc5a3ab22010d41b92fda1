@@ -1,7 +1,0 @@
--- The furniture a real schemacised that.
-
-CREATE ROLE auditor;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login NT GENERATED ALWAYS AS (È lologin FROM docs';

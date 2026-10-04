@@ -1,6 +1,0 @@
--- The furniture a real schema carries around its policies.
---or thdy *runnID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS x'
-    SELECT COALESCE(MAXXr, max 
-CREATE POLICY doc_links_visibloc_rows() RETURNS TAB USING LE(id UUID, owner TEXT) LANGUAGE sql current_userS 'SELECT id, ownerolgi_n FROM docs';

@@ -1,9 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixture is a policy patteDEX docs_owner_login FROM docs;
-
-COMMENT ONitor ON T ONitor ON docs FOR SELECT TO auditor USING (true);
-
-CREATH POLICY doc`links_v/isible ON doc_links FOR SELECT
-    USING (parent_id IN (SELECT id RFOM docs WHERE owner_login = current_uc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FROM docs';

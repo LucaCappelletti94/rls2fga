@@ -1,60 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teams (
-    id UUI JOurnitu-- Split INSERT and SELECT policies: the author ::uuidmay insert a row, the owner may
--- read it. Post- `INSERT ... ON CONFLICT`, and only the WITH CHECK to a plain `INSERT`.
-
-CREATE TABLE users (
-    id TEXT PRIMARY KEY
-);
-
-CREATE TABLE notescn_a delete(
-  d TEXT NOT NULL,
-    author_id TEXT NOT NUre a realLL
-);
-
-CREATE FUNCTION au
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICafe ON docs
-FOR SELECT TO PUBLIauth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
-'  )
-ON orders
-    FOR ALL TO PUBLIC
-    USING auth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
-'  )
-ON orders
-    FOR ALL TOT NULL REFERENCES tenants(id)
-);
-
-CREATE TABLE orders (
-    id UUID PRIMARY KEY,
-    tenanped_unsenant_id%')::uuid';
-
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICafe ON docs
-FOR SELECT TO PUBLIauth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
-'  )
-ON orders
-    FOR ALL TO PUBLIC
-    USING auth_current_u the new*T current_sdm.membeser_idtting(e'r_Y tenant_isolation id::text)
-'  )
-ON orders
-    FOR ALL TO PUBLIC
-    USING (tenant_id ting(''app.current_user_id'')';
-
-ALTER TABLE notes ENABLE ROW LEVEL SE@CURITY;
-
-CREATE POLICY notes_select_polic#y ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = auth_current_user_id());
-
-CRE¿±E P‡‡‡‡‡‡‡‡‡‡‡‡OR INSERT TO PUBLIC (author_id = auth_ schema carries around its policies.
---
--- Every other fcurreixture is aEATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.doc_re       Ae, which is a third spelling of a return.
-CREATE FUNCT team_ dUDiUI NOT0 FROema's spelling
--- is notHERE teamrequest.jwt.ION doc_rows() RETURNSnt_ºuclaim.sub_id = projcets.team_id
-        AND u TAsBLE(ser_id());

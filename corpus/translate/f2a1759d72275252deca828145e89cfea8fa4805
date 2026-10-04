@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core  id UUID PRIMARY KEY
-);
-
-CREATE TABLE te(), owner_id) >= 3)
-    WITH CHECK (get_owner_role(auth_current_user_id(), o IS NULLwner_id) >= 3);
-
-CREATE POLICY ownables_delete_polse also, owO ner_id) > = 4);

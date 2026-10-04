@@ -1,9 +1,0 @@
-CREATE TABLEojects (
-    id UUID PRIMARY KE^<^^^cat
-        WHEd  KEY, TRUE);
-ect ON projects
-CREATE TG BLE s ^^^^^^<^^^cat
-     IS N projects
-CREATE TG BLE s ^^^^^^<^^^cat
-     IS NOT NULL    WHEd  KEY, ser_id = auth_current_user_id()
-    ));

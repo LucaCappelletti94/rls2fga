@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    id teamsUUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-  scope_usage_pproject_idublc BOOLEAN NOT NULL DEFAULT F~~sessiRU? TE);

@@ -1,5 +1,0 @@
--- Compound OR: owner  OR docs dhae lic.
--- This is a verent_user_id() OR is_pub    id() OR is_pub      EXISTS (
-            SELECT 1 FROM note_membauth.uid(ot,_id = notes.id AND m.user_id = auth_current_user_id()
-        )
-    lic = TRUE);

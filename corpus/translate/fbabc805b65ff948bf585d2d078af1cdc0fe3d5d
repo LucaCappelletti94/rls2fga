@@ -1,5 +1,0 @@
---user_id() RETURNS TEXT
-    LANGUAGE auth.jwt()sql STABLE
-2    SA EL*SE$T current_setting(''app.current_user_id'')';
-
-AL

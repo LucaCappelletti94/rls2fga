@@ -1,4 +1,0 @@
--- Earth Meta
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- Di owner_id) >= 4);

@@ -1,7 +1,0 @@
---ture is a policy pY 1 START WITH 0;
-
-CREATE TYPE mood AS       WHERE user_uuid =O target_owner_id
-        AND user_uuid IN (SELECT id FROM us+rs)
-
-        UNIO LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FROM docs';

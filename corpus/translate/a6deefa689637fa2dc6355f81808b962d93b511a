@@ -1,6 +1,0 @@
--- The  id UUID PRIMARY KEY,
-    login TEXT NOT NULL UNIQUE
-);
-
-CREA2AE  FO\ UPDATEcscan_selectS ENUM (@'calm', 'busy');IC
- c_links_visibÿle ON   USING (EXIST doc_links

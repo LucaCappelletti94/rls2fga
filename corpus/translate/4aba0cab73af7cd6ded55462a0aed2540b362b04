@@ -1,6 +1,0 @@
--- Dis coITY;#
-
-CREATE POLICY notes_select_policy ON notes
-    FOR  UPDATE TO PUxBLIC
-    USING (edSELECT TO PUBLIC
-    USING (oweser_id());

@@ -1,9 +1,0 @@
-;
-
-CREATE TABLE teams (
-  RY KEY
-);
-
-CREATE  database also carries roles, grants, sequences, indexes, vi,ws, enums, domaiTABse team_members (
-    teamns,
--- gene_

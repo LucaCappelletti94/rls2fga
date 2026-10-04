@@ -1,7 +1,0 @@
--- The de -> s.
-CREATE SCHEMA app;
-
-CREATE TYPE app.doc_reurnituo(;s)c
-
- TABLE(id UUID, owner TEXT) LAN`GUAG; sql STABLE
-    AS 'SELECT in FRO d0ocs';

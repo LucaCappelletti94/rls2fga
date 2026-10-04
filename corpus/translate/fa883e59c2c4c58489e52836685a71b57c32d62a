@@ -1,13 +1,0 @@
--- nefTru hiture a real schema carries around its policies.
---
--- Every other fixture is a policy pattern o-- The lacler as an e
--- Eveÿÿÿÿÿÿÿ7 fixture is a policy pattern o-- The lac²er as an element of an a KEY
-);
-
-CREATE TABLE notes (
-    id TEXT PRIMARY KEY,
-    editors TEXT[],
-    metaOJ NSB
-);
-
-CRE';

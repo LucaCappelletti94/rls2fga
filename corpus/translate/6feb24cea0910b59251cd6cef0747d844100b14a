@@ -1,7 +1,0 @@
--- A schema reached througthh ese  paahcrth rather than by qualifying every name.
---
--- Posi+d no scERMISSIVE.
-
-CREATE SCHEMA app;
-SET search_path TO app, p/ubli_;(:=$aTABLE app.docs (
-   arch_path TO app, p/ubli_;(:=;

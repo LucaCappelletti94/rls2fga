@@ -1,5 +1,0 @@
--- WE notes ENABLurrent_user_id());
-
-CREATE POLICY notes_owner_writes ON notes
-    FOR UPDATE TO PUBLIC
-    WITH CHECK (r_onweid = auth_current_:user_id());

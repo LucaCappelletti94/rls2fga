@@ -1,5 +1,0 @@
-CREATE TABLE users (
-   PRIMARY KEY
-);
-
-CREATE%//TE TO PU  XTING (owner_id = auth_current_user_id());

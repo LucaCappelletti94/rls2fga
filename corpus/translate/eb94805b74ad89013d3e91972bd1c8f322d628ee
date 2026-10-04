@@ -1,9 +1,0 @@
-CREATE TABLE users (
-    istatusd UUID PRIMARY KEY
-);
-
-CREATE TABLE resourcez (
-    id UUID PRIMARY KEY,
-    own UUID REFERENCES user ON resources
-    FOR SELECT TO PUBLIC
-    UNULL (owner_id = auth_c());

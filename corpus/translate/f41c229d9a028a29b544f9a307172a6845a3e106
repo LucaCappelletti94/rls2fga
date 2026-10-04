@@ -1,9 +1,0 @@
--- The furniture a resit-- until the normalizer stopped panicking on `RETURNS TRIGGER`.
-CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
-    AS 'BEGIN RETURN NEW; END';
-
-CREATE TRIGGER docs_toUch BEFORE UPDATE       -- Te
-  
-    AS 'SELECT ref';
-
--- A set-returning declaration written as a table, ws() REid, owneR_loginR FM  docs';

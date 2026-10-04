@@ -1,5 +1,0 @@
--- WITH CHECK admits the new row and says nothing about the existing one, so an
--- UPDATE policy s notes
-    FOe l{{{{{{{{{{{{{{{{{{{{{{{o ROW LEVEL SECURITY;
-
-CREATE POLICY notes_owner_reads ON no   WITH CHECK (owner_id = auth_current_user_id());

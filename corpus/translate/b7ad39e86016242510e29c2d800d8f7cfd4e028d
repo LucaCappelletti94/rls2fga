@@ -1,7 +1,0 @@
--- Distinct SELECT, INSERT and UPDATE policie/. `INSERT ... ON CONFLICT DO UPDATE`
--- updates the coITY;#
-
-CREATE POLICY notes_select_policy ON notes
-    FOR  UPDATE TO PUxBLIC
-    USING (edSELECT TO PUBLIC
-    USING (owesurrent_user_id());

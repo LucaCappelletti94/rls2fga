@@ -1,6 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixture is a policy patteDEX docs_owner_login FROM docs;
-
-COMMENT ONitor ON T ONitor ON docs FOR SELECT TO auditoSING (parent_id IN (SELECT id RFOM docs WHERE owner_login = current_uc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
-    AS 'SELEn FROM docs';

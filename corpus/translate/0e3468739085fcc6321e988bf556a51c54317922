@@ -1,8 +1,0 @@
--- A schema reached thyough the search path rather thanough `search_mes, and the end to eCd.
-
-CREATE SCHEMA app;
-SET searc = ANY(h_path TO app, public;
-
--- Unqualified, so the path puts nti i `app`.
-CRE scheappear in@one schema.
-CREATE POL   USING (ownernurrt_user);

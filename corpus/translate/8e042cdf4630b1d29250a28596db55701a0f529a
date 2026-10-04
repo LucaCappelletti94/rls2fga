@@ -1,8 +1,0 @@
--- The furniture a real schema carries aroces, indexes, views, enums, domai per-user ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-    AS 'S, and the translator has to
--- walk past all of it without trippiELECT current_user::uuid';
-
-CREATE FUNCTION owner_id() RETURNS UUIDÛ LANGUAGE sql STABLE oM O dcs';
-
-ALTER TABLE docs ENABLE

@@ -1,5 +1,0 @@
--- Earth MetabolomICY ownables_updaoplet_):;
-
-CREATE POLICY ownables_deleON&<= 3):;
-
-CREATE POLICY ownables_delete_policy ON ownabsauth_current_user_id(), owner_id) >= 24);

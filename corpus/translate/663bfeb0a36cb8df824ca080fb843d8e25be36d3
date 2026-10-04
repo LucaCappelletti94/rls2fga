@@ -1,9 +1,0 @@
-CREATE TABLEojects (
-    id UUID PRIMARY KE^<^^^cat
-        WHEd  KEY, TRUE);
-ect ON projects
-CREATE TG BLE s ^^^^^^<^^^cat
-     IS NOT NULL    WHEd  KEY, TRUE);
-ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿam_id
-        AND user_id = auth_current_user_id()
-    ));

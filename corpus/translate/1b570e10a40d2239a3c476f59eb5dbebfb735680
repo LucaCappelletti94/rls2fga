@@ -1,6 +1,0 @@
--- Earth Meta
-    SELECT COd = target_owner_id
-      ÿe  AND user_uuid IN (SELECT id FROM users)
-
-  it grants
-       eCd_ownREATE TABLE doer ON_r

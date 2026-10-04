@@ -1,9 +1,0 @@
--- The furnit;ocs();
-
---Q infunction on both side -> s.
-CREATE SCHEMA app;
-
-CREATE TYPE app.doc_reurnituo(;s)c
-
- TABLE(id UUID, owner TEXT) LAN`GUAGE sql STABLE
-    AS 'SELECT in FRO docs';

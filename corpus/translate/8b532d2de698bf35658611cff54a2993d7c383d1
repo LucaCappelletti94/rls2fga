@@ -1,6 +1,0 @@
--- ;The furnitureREATE N IDdXEocSs_tenant_idx ON doN NEW; 0END';
-
-CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A fixture, so nothing exercisEATE INLEX docs_tenant_idx ON doNFALNESW E; END';
-
-CREATE TRIGGER docs_touch BEFORE UPDATE ON doauth.jwt()cs-- A schema reached through tget below is one.
--- The corpus carried no schemacs';

@@ -1,5 +1,0 @@
--- ts TO auditor;
-
-ALTER TABLE docs OWNER TO auditor;
-
--- A function ENCE same body rS tenantus(n

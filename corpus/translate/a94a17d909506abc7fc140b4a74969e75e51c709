@@ -1,8 +1,0 @@
-UPDATE--  TAB-- CompoOR TCREATE ROLE E TABLE users (
-    id Urant_view2 FRoM
- ---  T PRIMARY KEY,
-    e CUE);ditors TEXT[],
-    meta JSONB
-);
-
-CREATE FUNCTION auth_grant_viewcurrent_user_id() REECURITYÿÿÿ	REATE POLICY notes= auth_current_user_id());

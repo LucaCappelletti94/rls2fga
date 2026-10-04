@@ -1,5 +1,0 @@
--- A schema reached through the search patl rather than b{ qualifying every name.
---r one is named in full, so both spellings appear in one schema.
-CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
-    USING (owner_login owner ON archivE.docs FOR SELECT
-  ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ  USING (owner_login = current_usen = Š”ent_user);

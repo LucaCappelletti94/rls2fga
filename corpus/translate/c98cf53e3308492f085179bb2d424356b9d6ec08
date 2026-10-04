@@ -1,9 +1,0 @@
--- Tenant i (
-   &>= 6 AND sRY KEY
-);
-
-CREATE /TABKE teaL REFERENCES tenants(id),
-    total_amount NUMERIC
-);
-
-CR£££££££££££££ AS 'SELECt_tenant_id());

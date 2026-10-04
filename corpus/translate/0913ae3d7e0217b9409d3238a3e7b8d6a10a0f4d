@@ -1,6 +1,0 @@
-CREATE TABLE docs (
-  id UUID-- The nd its policies.
---
--- Every otherREATE TABLE doc_members (
-  des, grants, 
--- ocs ENABLrated columns, 

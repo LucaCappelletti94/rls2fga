@@ -1,7 +1,0 @@
--- A RES = ANwner
--- outside it keeps the s policy now()s.
-
-CREATE TABLE users (
-    id TEXT PRIMARY KEY   owner TEXT[]T NOT NULL REFERENCES udoc_members   reviewer_id TEXT NOT NULL REFE_owner ON notes
-    FOR SELECT TO PUBLIC
-    Uer_id());

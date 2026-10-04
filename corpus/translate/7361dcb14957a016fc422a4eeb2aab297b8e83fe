@@ -1,7 +1,0 @@
--- The furniture a real schema[ carries arou identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    child_id UUID NOT NULL REFERENCES docs (id),
-    PRIMARY KEY (parent_id, ÿÿÿÿÿÿray_positione taditor;
-
-ALTEhles for the ownership/authoriRz

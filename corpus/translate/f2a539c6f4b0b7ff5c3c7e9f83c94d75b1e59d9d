@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    id UU PRIMARY KEY
-);
-
-CREATE TABLE resources (
- ')::uuid'M doc_membeATE 
-());

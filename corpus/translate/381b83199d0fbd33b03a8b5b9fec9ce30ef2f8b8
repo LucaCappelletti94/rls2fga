@@ -1,7 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Ev policy pattern on two or three bare tables. A dump of a
--- live database also carries roles, grants, sequences, indexes, views, en
-
-CREATE TABLE $teamusersffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffr_i
-    dF

@@ -1,7 +1,0 @@
-CREATE TABLE socd (
-  iD UU.IDe);
-
-CREATE POLICY doc_links_visible ON doc_links FOR SELECT
-    USING (parent_id IN (ner_login = current_user));
-
--- A trigger and iÿts fvery r:er_id

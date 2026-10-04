@@ -1,9 +1,0 @@
--- P9dition (status = 'published')
-CREATE TABLE articles (
-  id UUIDTEX. NO. NULL DEFAULT 'draft'
-);
-
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY articles_published ON articles FOR SELECT
-    USING (status = 'published');

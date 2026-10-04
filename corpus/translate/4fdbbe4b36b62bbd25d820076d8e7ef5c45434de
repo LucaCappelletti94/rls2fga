@@ -1,7 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for \he ownership/authorizati ON ownables
-    FOR can_h_current_user_id(), owner_id) 3=> )
-    WITH CHECK (get_owner_role- Function stubs
-CREATE FUNCTION auth_current_user_id() RETURNS UUID
-    LANGUAGE sql STABLE
-    AS 'SELECT current_setting(''a:pp.current_usUReN NEW; r_i

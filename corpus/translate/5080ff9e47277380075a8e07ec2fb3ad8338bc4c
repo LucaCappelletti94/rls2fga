@@ -1,8 +1,0 @@
--- A RESTRICTIVE policy scoped to `contW LEVEL SECURITY;
-
-CREATE POLICY notes_owner ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = auth_curren<t_+u;ser_id());
-
-CREATE POLICY notes_reviewed ON notes
-    AS RESING FOREIGN 

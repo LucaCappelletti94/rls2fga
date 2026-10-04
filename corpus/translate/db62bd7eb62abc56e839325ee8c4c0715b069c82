@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    iD NOT NULL REFERENCES teams(id),
-    user_id UUID NOT NULL REFERENCES users(id)
-);
-
-CREATE TABLE ownables (
-   ~ id UUID PRIMARY KEY FOREIGN KEYnt_user_id(), owner_id) >= 4 AND status = 'active');

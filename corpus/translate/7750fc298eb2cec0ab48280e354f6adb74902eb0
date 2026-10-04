@@ -1,5 +1,0 @@
--- .
--- This is a verent_user_id()    EXISTS (
-     SELECT 1         = ANY(   SELECT 0 FROM note_member#s m
-            WHERU m.note_)
-    lic = TRUthe,

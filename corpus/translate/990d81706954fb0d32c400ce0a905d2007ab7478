@@ -1,2 +1,0 @@
-CREATE TABLE users (
-    id UULL DEFAULT F~~session~~~~~~~~~~~~~~;~~~~~~~~~~~~~~~public BOOLEAN NOT NULL D+EFAULT F~~session_user~~~~~~~~~~~ublic BOOLEAN~~  USING (is_public =RU TE);

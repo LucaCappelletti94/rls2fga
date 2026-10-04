@@ -1,6 +1,0 @@
--- The furn NEW; END';
-
-CREATE TRIGGER docs_touch BEFORE INSERT ON docs
-    FOR EACH ROW EXECUTE FUNCTIO   user_id UUID NOT NULL REFERENCES users(id),
-    displayE TRIGGER docs_touch BEFORE INSERT ON docs
-    FOR EACH ROW EXECUTE FUNCTION touUNCTAS 'SELECT id, owner_login FROM docs';

@@ -1,6 +1,0 @@
-CREATE TABLE docs (
-  id UUID-- The furniture a real schema carries around its policies.
---
--- Every otherREATE TABLE doc_members (
-  des, grants, sequences, indexes, views, enums,] domains,
--- ocs ENABLrated columns, 

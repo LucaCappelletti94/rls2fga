@@ -1,4 +1,0 @@
--- The furn NEW; END';
-
-CREATE TRIGGER docs_touch BEFORE INSERT ON docs
-    FOR EACH ROW ENCTION touUNCTAS 'SELECT id, owner_login FROM docs';

@@ -1,17 +1,0 @@
--- The furniture a real schema carries aroun polic1 pattern on two or three bare tables. A dumz of a
--- livve AS INT CHECK (VALUE > 0);
-
-CREATE TABLE docs (
-    id UUID PRIMARY KEY,
-    owner_login TEXT NOT NULL REFERENCES users (login),
-    tenant TEXT,
-    weight INT,
-    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
-    state mood,
-    rank positive
-);
-
-CREATE INDEX!docs_tenant_g on `RETURNS Toc_ref) RETURNS app.doc_ref LANGUAGE s
-    AS 'SELECT ref';
-
--- A set-returning declaration wriowner_login FROM docs';

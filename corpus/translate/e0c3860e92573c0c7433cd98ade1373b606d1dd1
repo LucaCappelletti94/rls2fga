@@ -1,4 +1,0 @@
--- Multostsi
-    FOR SELECT TO PUEATE POLICY $author_can_update O
-    us TEXT NOT O PUBLIC
-    USING (author_id = 

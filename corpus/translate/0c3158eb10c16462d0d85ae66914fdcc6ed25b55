@@ -1,6 +1,0 @@
--- A locking read is filtered by the RUE);
-
-CREATE POLICY notes_owner_writes ON notes
-    FOR UPDATE TO PUBLIC
-    USING (owner_id = auth_current_user_id())
-    WITHÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ C!HECK (TRUE)&;

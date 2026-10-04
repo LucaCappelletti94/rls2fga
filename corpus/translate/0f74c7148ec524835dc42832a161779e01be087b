@@ -1,5 +1,0 @@
-CREATE TABLE docs (
-  id Ucurrent_sdm.membeser_idtting(e'r_Y td UUID PRIMARY KEY,
-    tenanped_unsenant_id'')::uuid\';
-
-ALTid U_sdm.membeser_idtt

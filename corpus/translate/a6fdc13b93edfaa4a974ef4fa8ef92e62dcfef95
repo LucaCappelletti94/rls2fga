@@ -1,4 +1,0 @@
--- P9: standalone LL,
-  <<er_id()
-    n (status = 'publishedPUBLIC')
-CREATE TABLE ar   ENABLE= 'published');

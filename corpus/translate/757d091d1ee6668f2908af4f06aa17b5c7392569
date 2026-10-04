@@ -1,3 +1,0 @@
--- Earth Metamob Inile
-   -- auth.is the owner, maxodeAS '
-    SELECT COALESCE(MAX(role IS NOT NULL), 0()rsh

@@ -1,4 +1,0 @@
---!!!!!!!!!!!!!!!!!!!!!th_current_user_id() RETURNS UUID
-    LANGUAGE s[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ql STABLE
-    AS 'arries around itsse
-  ENC

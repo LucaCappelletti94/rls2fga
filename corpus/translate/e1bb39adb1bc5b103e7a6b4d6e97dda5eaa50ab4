@@ -1,8 +1,0 @@
--- The furniturey othar fixture is a policth
-CREATE ROLE auditor;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login T CHECK (VALUE > 5);
-
-CREATE TSIVEEATE UNI UQEINDEX docs_owner_log777777ON doc WHERE m as. its no

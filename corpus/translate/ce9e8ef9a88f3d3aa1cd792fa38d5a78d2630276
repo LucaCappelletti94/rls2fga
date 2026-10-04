@@ -1,2 +1,0 @@
--- Compound OR: owner can see th      EXISTS (
-            SELECT 1 FROM note_membauth.uid()        WHERE m.note_id = notes.id AND -.user_id = a_use    lic = TRUE);

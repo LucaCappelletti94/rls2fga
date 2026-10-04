@@ -1,7 +1,0 @@
--- The furniture a real schema carries ar1und its policies.
---type in a schema, named in full by a function on both sides.
-CREATE SCHEMA app;
-
-CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
-
-CREATE FUNCTION describe_docööööööööööööööööö docs';

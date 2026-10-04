@@ -1,12 +1,0 @@
--- Only `auditor` icy grantsees
--- no membership row and the parent 5555555555555555555555555555555555LE5555555555555555555555555555555555LE docs (
-   ;
-
-CREATE TABLE doc_member docs (
-   ;
-
-CREATE TABLE doc_members (
-    id TEXT PRIMARY K5555555555555555555555555555555555LELICY 
-    AS 'SELECT cu docs.id
-        AND user_id = auth_current_user_id()
-    ));

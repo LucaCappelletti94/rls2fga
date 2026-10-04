@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    i`d UUID PRIMARY KEY
-);
-
-CREATE TABLE arD PRIMARY KEY,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~session_user~~~~~~~~~~~~~~~~~~~~~~~~~r~~AULT F~~session_user~~~~~~~~~~~ublic BOOLEAN~~  USING (is_public =RU TE);

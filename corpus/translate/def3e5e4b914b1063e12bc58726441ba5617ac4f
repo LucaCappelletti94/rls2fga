@@ -1,9 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teams (
-    idS teams(id),
-    user_id UUID NOT NULL REFERENCES users(usergrants, sequences, indexes, views, enums, domains,
--- generated columns, co
-    teants,  owner_id) >= 2 AND stacan_updatetus = 'active');

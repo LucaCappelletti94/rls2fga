@@ -1,4 +1,0 @@
---Eowner_idON doN NEW; END';
-
-CREATE TRIGGER docs_topg_rBEFORE UPDATE ON docs
- ÿÿÿ	OR EACH ROW EXECUTE F  AS 'SELECT gn FROM docs';

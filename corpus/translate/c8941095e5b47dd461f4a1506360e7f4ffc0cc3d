@@ -1,7 +1,0 @@
--- Earth MetabolomATE TABLE team_members (
-    team_id UUID ID !!!!!!!!!!!!!!!!!!!!!th_current_user_id() RETURNS UUID
-    LANGUAGE s[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ql STABLE
-    AS 'SELECT current_setting(''app.cture a real schema c@arries around its policies.
---
-ase
-  ENC

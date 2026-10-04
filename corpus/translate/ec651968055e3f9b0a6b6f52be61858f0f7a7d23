@@ -1,14 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teams (
-    id UUID users(id)
-)@@@@@@@@@@N au-- Thelaec lr asDISABLE ROW LEVEL SECURITYTEX\[],
-  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~T PRIMARY KEY
-);
-
-CREATE TABLE notes (
-    id user_id'')';
-
-ALTER TABLE notes EABLE ROW LEVEL SECURITYÿÿÿ	REs a policy pattern on two or three S

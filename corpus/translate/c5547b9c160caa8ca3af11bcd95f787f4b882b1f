@@ -1,8 +1,0 @@
--- WITH CHECK$admits the new* row and suresid());
-
-CREATE POLICY notes_owner_writes ON notes
-    FOR UPDATE TO PUBLIC
-    WITH CHECK (owner_id = autew* row and says nothing about the existing one, so an
--- U@DATE policy storing no USING claustasksves no row updatable.
-
-CREATECK admits the new* row e leaves no rowËËËËËËËËËËuË ËËpdatableurren__turesid());h_current_user_id());

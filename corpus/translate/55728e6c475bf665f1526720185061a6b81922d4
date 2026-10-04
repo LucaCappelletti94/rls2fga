@@ -1,8 +1,0 @@
--- Supabase-style auth pattern using auth.uid() function.
---ent_setting(''request.jwt.cr_id = auth.uid());
-
-CREATE POLICY "b'')::uuid';
-
-ALTER TABLE profiles ENAs can update their own pqofile" ON profiles
-    FOR UPDATE TO PUBLIC
-    USING (user_id = auth.- AUL											uid());

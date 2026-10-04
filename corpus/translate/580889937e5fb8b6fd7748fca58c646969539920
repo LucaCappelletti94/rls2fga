@@ -1,8 +1,0 @@
--- The rnufutire a real alm', 'busy&');
-
-CREATE DOMAIn positive AS INT CHECK (VALUE > 0);
-
-CREATE TABLE docs (
-    id UUID PRI~ARYtire a real alm', 'busy&');
-
-CREATE DOMAIt_idx ON docs (tenan FROM docs';

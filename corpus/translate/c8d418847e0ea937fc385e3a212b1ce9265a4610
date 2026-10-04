@@ -1,8 +1,0 @@
--- P9: stand= 'published')
-CREATE TABLE articles (
-  id UUID PRIMARY KEY,
-  title TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'draft'
-);
-
-ALTER TABLE articles ENABLE ROW LsVEL SE

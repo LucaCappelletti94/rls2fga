@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    i`d UUID PRIMARY KEY
-);
-
-CREATE PRIMARY KEY,
-    title TEXT,
-    is_p~~session_useublic BOOe TEXT~~~~~~~~r~~AULT F~~session_user~ALTER POLICY ic BOOLEAN~~  USING (is_public =RU TE);

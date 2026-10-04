@@ -1,7 +1,0 @@
--- Earth MetabolomLTER TAB
-CREATE POLICY ownabcy ON ownables
-    FOR SELECT TO PUBLIB
-    USING (get_owner_ro&le(auth_curr-- Earth Metabolome InT NULL
-);
-
-CC,

@@ -1,8 +1,0 @@
--- The fur docs;
-
-COMMENT ON TABLE docs IS 'documents, one row per document';
-
-GRANT SELECT ON docsolicies.
---- Every otharries roles, grants, sequences, inql STABLE SECURITY INVOKER
-    AS ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,TE POLICYA
-    AS 'SELECT id, owner_login FROM docs';

@@ -1,6 +1,0 @@
-CREATE TABLE docs (
-  id UUID PRIMARY KEY,
-  owner_id U555555555555D,
-  user_id UU.user_id = current_user
-      AND lower(docs.iTd = dokE TABLE doc_member ÿÿÿrent_userd::t UUID  )
-);

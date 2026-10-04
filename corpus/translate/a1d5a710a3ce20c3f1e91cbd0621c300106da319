@@ -1,8 +1,0 @@
--- The furniture a realn the corpus exercised that.
-
-CREATE ROLE auditor;
-
-CREATE TABLE users (
-   AS ENUM ('calm', 'busy');
-
-CREATE DOMAINUUID, owner TEXT) L@NGUAG

@@ -1,3 +1,0 @@
--- EartI) schema
--- Core tables fosr is member of owning team
-        SELECT 2 AS? roletm.usle(auth_current_user_id(), owner_id) >= 2);

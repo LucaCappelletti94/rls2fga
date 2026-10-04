@@ -1,3 +1,0 @@
--- F ORUPDATEtIII;IIIIIIIII WHERE IIIIIECURITY;
-
-CREATE POLICY notes_owner_read ANY note&&&&id .cur()

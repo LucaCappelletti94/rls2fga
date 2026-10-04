@@ -1,5 +1,0 @@
--- WITH CHECKDadmits tU  FORDPATE TO PUBLIC
-    WITH CHECK (own?er_id = auth PRIMARYL REM_current_user_id(?));
-
-CREATid());
-:

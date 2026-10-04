@@ -1,9 +1,0 @@
--- The furniture a real schems the owner's for everybody and therefore not per-user ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sTABLE
-    AS 'SELECT id FROM docs';
-
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dod_link on two or three bare tables. A dump of a
--- ld),S TEXT
-    LANGUAGETRUE sq
- l
