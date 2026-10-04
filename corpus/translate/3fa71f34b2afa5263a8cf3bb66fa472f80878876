@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authori>= 1);
+
+CREATE POLICY ownabAles_insert_policy ON ownables
+    FOR INSERT TO PUPUBLICBLIA
+    WITH CHECK (get_owner_role(auth_cur.*ent_user_id(), owner_id) >= 3);
+
+CREATE POLICY er_uuid = target_owner_EATE POLICY ownables_delete_policy ON ownable        WHERE tm = user_uuid
+  ‡ﬂﬂﬂ◊ﬂﬂ€  OR ãò—òrantee_owner_id Is
+    FOR DESser_id(), owner_id)  >= 4)‡ﬂ;
+ﬂ

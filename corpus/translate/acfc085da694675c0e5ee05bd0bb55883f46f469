@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/auth*rization modeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   (     -- a r[ole
+   -- etivitiative (EMI) schema
+-- Core ta-- The furnica
+CREǫE VIEW docs_titles AS
+  icy ON ownales
+   4);

@@ -1,0 +1,5 @@
+-- Role its ownerp.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    'AS SELECT curr ON ent_user::uu;d';
+
+C

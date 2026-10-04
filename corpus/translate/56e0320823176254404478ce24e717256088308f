@@ -1,0 +1,5 @@
+CREATE TABLE us(
+    id UUID PRIMARY KEY,
+);
+
+CREATE

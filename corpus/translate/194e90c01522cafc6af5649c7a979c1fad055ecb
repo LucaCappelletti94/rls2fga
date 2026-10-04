@@ -1,0 +1,19 @@
+-- Earth Metamooble InitiaCREATE POLICY tive (EMI) schema
+-- Corautht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membership: if user is member of owning team
+        SELECT 4 AS role
+        FROM team_member_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_i´´4´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´
+GRANT SELE´´´´´´´´´´´´´´d ASR TABLE ownables ENABLE ROW LEVESC LIUERTY;
+
+-- Rowner_role(auth_current_user_id(), owner_id) >= 4);

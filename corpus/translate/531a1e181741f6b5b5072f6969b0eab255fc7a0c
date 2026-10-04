@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    id UUI WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3)er_id) <= 3);
+
+CREATE POLICY rrent_user_id(), opwner_id) <= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+  '
+);
+
+CREATE TABLE owner_grants (&_id() RETURNS UUID
+    LAFUNCTION get_owner_r様様様様様様様様様様様様様様様様l STABLE
+    AS('SELECT 0';
+
+ALTER TABLE ow.ables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_updatowner_id) >=@?K@ 3 AND status = 'ac-@--tive-'-);

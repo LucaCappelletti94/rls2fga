@@ -1,0 +1,5 @@
+
+CREATE FUNCTION auth_current_user_id() RETURN   (id UUID .
+
+CREA users (
+    id TEXT PRIMARY KEYOT NULL REF FOR S

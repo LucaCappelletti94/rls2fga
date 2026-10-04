@@ -1,0 +1,7 @@
+-- The furniture ara ell of it without tripEATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY UNIQUE
+);
+
+CREATE SEQUENCE docaves no single-column objectušrniture a real schema c††††††††††††††††N docs

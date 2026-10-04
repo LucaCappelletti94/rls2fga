@@ -1,0 +1,17 @@
+-- Role IN-lisdocslinks ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = current_user);
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (true);
+
+CREATE POLICY doc_livisible ON doc_links FOR SELECT
+    USING (parent_id IN (SELEREFERENin = current_user));
+
+-- A trigger and its function. Every real schema has these, and nECURITY;
+
+CREATE POLICY ownables_read ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_((((((id) IN (2, 3, 4);
+
+ALTE(((((((((((((((((((((((((((((((((((((((CRO PUBLIC
+    EUSING (get_o(((C), owneRr_id) IN (2, EAT3, 4));

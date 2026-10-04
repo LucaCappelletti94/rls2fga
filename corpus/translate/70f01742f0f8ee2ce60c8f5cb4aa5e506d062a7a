@@ -1,0 +1,8 @@
+-- Earth Metabolome Intion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM -
+(      $-- rlu.thaoe()rseip: if user wner, max role
+        = target_owner_>= 4);

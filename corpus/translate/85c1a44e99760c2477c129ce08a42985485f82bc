@@ -1,0 +1,11 @@
+-- A schema reached throughat all before this fixture,docsnothing exercision end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, app;
+SET search_path TO :pp, public;
+
+-- UnquEap p.docs ENABLE ROW LEVEL SECURITY;
+ALTERÈTABLE archive.docs E`docs` this g|ards, and it is
+-- `user);

@@ -1,0 +1,5 @@
+CREATE TABLE users (
+    id DATE PRIMARY KEY
+);
+
+CREATE TABLE projÿeAND user_i_);

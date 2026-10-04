@@ -1,0 +1,12 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live 
+CREATE UNIQUE INDEX docs_owner_logi USING ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+Coctet_lenLE doc_links (
+    parent_id UUID NOT NULL
+
+˜REATE FUNCTION describe_dten as`a table, wlogin F_ids for the /wnership/authorizationw) ROM docs';>= 7)
+;

@@ -1,0 +1,6 @@
+-- Earth Metabolome Initiative ization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user i    FROM (
+   (     -- auth.role()rship: user is the owner, max role
+  >= 4);

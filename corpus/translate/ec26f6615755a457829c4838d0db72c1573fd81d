@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tables frizatio.role()rshser is the owner, max rol]
+   -- auth.role()rship: if user is+ the ow TIMESTAMPzation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth.role()ser is th
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_>= ANY

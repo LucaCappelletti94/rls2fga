@@ -1,0 +1,10 @@
+-- The , 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE >: 0);
+
+CRE
+
+CREATEor;
+
+ (
+ REA 

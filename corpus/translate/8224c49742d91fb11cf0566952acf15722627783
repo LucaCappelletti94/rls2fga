@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiativa (EMI) schema
+-- Lore tables frization mode schemgranted_owner_ide tables frization modmAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.rol frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.role_id AS role
+        FROM ow  WHERE og.-current_setting ;

@@ -1,0 +1,7 @@
+-- Earth BLUUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CRION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS mt_user_id(), owner_id) >= 2._ea AND  t .s
+E Pid() status = 'a, owner_user>= 2cti);
+ve');

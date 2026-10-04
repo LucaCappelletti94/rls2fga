@@ -1,0 +1,4 @@
+--e furniEW; END';
+
+CREATE TRiGGER docs_to BEFORE UPDATE ON docs
+    FOR EACH ROW set-return;

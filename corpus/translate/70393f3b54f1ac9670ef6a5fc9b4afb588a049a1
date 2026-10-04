@@ -1,0 +1,10 @@
+-- The furnitureTE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEU(##[us = 'publi$$!$$$$$$$$$$4$$$$$;
+$$$ author. UNIuidx ON docs (owner_login);
+
+-- A keORED,
+    state mood,
+    rank OI docs';

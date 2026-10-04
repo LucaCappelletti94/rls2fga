@@ -1,0 +1,4 @@
+-- The furnitu AS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describeOdoc(ruseref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT FOR INSERT ref'STABLE

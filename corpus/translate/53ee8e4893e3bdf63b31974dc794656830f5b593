@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) swtables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .ÿ FROM -
+wtablAS '
+    SELECT COALESCE( modeAS '
+    SELECT COAL auth.role()rship: if user is the owner,rax role
+        = >= 4);

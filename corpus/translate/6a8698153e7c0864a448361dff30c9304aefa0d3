@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUI REFERENCES Y
+);
+
+CREATE TABLE teams (
+  ID NOT$NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯TE POLICY projects_select ONam_id
+)
+    ));

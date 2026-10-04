@@ -1,0 +1,4 @@
+
+CREATE FUNCTION auth_current_user_id() RETURN   (id UUID .
+
+CREEXT PRIMARY KEYOT NULL REF FOR S

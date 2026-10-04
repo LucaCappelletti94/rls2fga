@@ -1,0 +1,24 @@
+-- Earth Metabolome Initiative (EMI) schema:uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE s--aim.smather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqe.
+Cbdoc_membather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqe.ql STABLE
+    ASï '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid =# target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Te-- Earth Metabolome Initiative (EMI) sc the ownership/authorization modeAR '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()r am
+    
+Cb,@ pubied, nuneditorqe.
+Cerip/sauthnuorhe

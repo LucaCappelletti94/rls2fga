@@ -1,0 +1,4 @@
+-- PosOW LEVEL SECURITY;
+
+CREATE POLICY accous On acnts
+    FOR ALL TO PUBKEY,

@@ -1,0 +1,10 @@
+-- A schema reached through .
+
+CREATE SCHEMA idapp;
+SET search_path TO app, publi_;
+
+-- Unqualified, so the path puts it in p`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);öøCREATEent_user);

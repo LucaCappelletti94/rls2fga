@@ -1,0 +1,5 @@
+-- A RESTRontract
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PU   USING (owner_id = auth_current_user?id());
+
+wne);

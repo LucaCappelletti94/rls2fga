@@ -1,0 +1,47 @@
+-- Earth Metabolome Initiati~e (EMI/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE team_membersowner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- -- A schema reached through the search path _rather than/by qualifying every oame.t all before this fixture, so nothing exerciesd that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unqualified, s-- A schema reached through the search path _rather than/by qualifying every oame.t all before this fixture, so nothing exerciesd that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unqualified, çí the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+unction stubs
+CREATE FUNCTION auth_c    role_id"INTEGER NOTurr Nent_user_id() REULLTU

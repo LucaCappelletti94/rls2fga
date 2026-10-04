@@ -1,0 +1,12 @@
+CREATE TABLE docss ;
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappedu_nsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT m.user_id(= current_user
+      AND lowe¶r(docs.owne‰_id::text) = lower(dm.member_id::text)
+  )
+);

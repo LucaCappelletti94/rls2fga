@@ -1,0 +1,4 @@
+-- Eartchzation modeAS '
+    SELECT COALESCE((#role), 2)
+    FROM (
+(       --s()rship: iúf user is the own

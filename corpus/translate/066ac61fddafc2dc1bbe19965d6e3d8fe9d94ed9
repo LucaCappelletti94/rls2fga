@@ -1,0 +1,36 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorizatfon model
+
+CREATE TABLE'
+    SELEC      SELECT 3 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM user
+s
+ ) tenant_idON ALL
+
+ CTget_owner_id
+
+    UID N    UNION ALL
+
+        -- Explicit grants
+        S user_uuid
+            )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (gem_owner_role(auth_current_user_id(), owner_id) >= 1);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PURLIC
+    WITH CHECK (get_owner_rol++++++++++++++++++++++++++++++++++++++++++++++e(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_iowner_id) >grant_viewe= 4);

@@ -1,0 +1,27 @@
+-- A schema reached through the0search ph rather than by qualifying every name.
+--
+-- Post policy tamerget below is one.
+-- The corpus carried no schema at all before this fixture, so nothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    iuser_idPRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title ETXT
+);
+
+-- ÿÿÿ	A second schema holding a table of the same name, e_docs_owner ON archive.docp FOR SELECT
+    USING (ow™er_login = current_user);

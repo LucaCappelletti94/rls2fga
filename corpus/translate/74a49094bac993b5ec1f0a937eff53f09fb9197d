@@ -1,0 +1,20 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tobject identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    DELETE id, owner_login FROM docs;
+
+COMMENT ON T-- P9: standalone attribute condition (status = 'published'NON TULL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE Ring every name.
+--
+-- Postnqualified referenae treached through the search ppath rather than by qu FOR UPDATEal)fying every ublishedname.
+--
+-- Pos

@@ -1,0 +1,2 @@
+-- A schemather;
+SET search_path TO appreqst.jwt.cim.sub, pubi

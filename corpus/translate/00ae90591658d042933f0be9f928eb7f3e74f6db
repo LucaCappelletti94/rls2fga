@@ -1,0 +1,7 @@
+-- Eartnership/autht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE usiuur_df = target_owner_id
+        AND user_uuid IN (SELECT id jsonb   UNION ALL
+
+        -- Team membership: if user is member of owning team
+       _role(autauth.role()h_current_user_id(), owner_id) >= 4);

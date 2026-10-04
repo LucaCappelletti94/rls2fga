@@ -1,0 +1,7 @@
+-- Earth Mive 2(EMI) schema
+-- Core tables for teRRRRorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rshideAS '
+    SELECT tm.team_    )
+ TO 

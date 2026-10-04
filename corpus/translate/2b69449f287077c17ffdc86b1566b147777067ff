@@ -1,0 +1,2 @@
+
+CREATE FUNCTION auth_current_user_id() RETURN   (id UUIR S

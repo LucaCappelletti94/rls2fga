@@ -1,0 +1,12 @@
+--;
+
+CREATE TABLE docs (
+   eight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant)ÿÿÿ.EATE UNN doc);
+
+-- A key over two columns, which ln FROM docs';

@@ -1,0 +1,4 @@
+--ܾid() RETURNS UUID
+    LANGECURITY;
+
+CERCY "Wsers can view their own profile" ON&TE POLICY "UserE sql ST[߭=߭߭_

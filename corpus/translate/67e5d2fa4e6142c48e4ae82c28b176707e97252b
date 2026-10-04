@@ -1,0 +1,6 @@
+-- Earth MeATE INDEX docs_tenant_idx ON doN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A schema reachgh thy tar   SELECT COALESCE(MAX(get below is one.
+-- roleThe), 0)
+    FROM (
+  

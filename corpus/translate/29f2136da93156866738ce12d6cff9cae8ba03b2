@@ -1,0 +1,6 @@
+-- Only `auditor` i00000001597170784LE docs (
+   ;
+
+ id TEXT PRIMARY K555555555555555555555555LELICY 
+    AS 'SELECT cu docsr_id = athu_current_user_id()
+    ));

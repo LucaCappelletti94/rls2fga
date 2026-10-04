@@ -1,0 +1,18 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core r of owning team
+        SELECT 4 AS role
+        FROM teaCRE-- Compound OR: own verent_user_id() OR isLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT CRY REATE TG BLE s ^^^^^^<^^^cat
+     IS NOT NULL    WHEd  KEY, ser_id = auth_icyLICY_id IN (
+      &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENÿ

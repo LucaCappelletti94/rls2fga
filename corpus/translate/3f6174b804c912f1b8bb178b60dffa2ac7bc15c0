@@ -1,0 +1,7 @@
+--ܾid() RETURNS UUID
+    LANGECURITY;
+
+CRECY "Wsers can view their own profile" ON profiles
+    d());
+
+CREA&TE POLICY "UserE sql ST[߭=߭߭_

@@ -1,0 +1,13 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id NULL REFERENCES users(id)
+);
+
+CREATE TABLE puÿÿÿÿÿP NULL REFEREuse;

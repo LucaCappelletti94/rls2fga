@@ -1,0 +1,3 @@
+--uceT neOitor;
+
+ALTER TABLE docs OWNER TO [,‘_rs

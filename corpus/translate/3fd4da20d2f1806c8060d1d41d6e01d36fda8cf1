@@ -1,0 +1,44 @@
+-- A RESTRICTIVE policy scoped to `contractor` binds only that role. An owner
+-- outside it'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_current_user_id());
+
+CREATE POLICY notes_reviewed  keeps the read the permiss `contractor` binds only that role. An owner
+-- outside it'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_curren= auth_current_user_id());
+
+CREATE POLICY notes_reviewed  keeps the read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEactor` binds only that role. An owner
+-- outside it'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(owner_id = auth_current_user_id());
+
+CREATE(POLICY notes_reviewed  keeps the read the permissive policy grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+O PUBLI?TGK@?TGK@--(owner_id = auth_current_user_id());
+
+CREATE POLICY notes_reviewed ON notes
+   VE FOR SELECT TO contractor
+    USING (revi));

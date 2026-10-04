@@ -1,0 +1,6 @@
+-- The fuone row per document';
+
+GRANT SELECT ON docsolicies.
+--- very otharries roles, grants, sequences, inql STABLE SEE SECURITY INVOKER
+    AS ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,¼OLICYA
+    AS 'SELET Cid, owner_login FROM docs';

@@ -1,0 +1,7 @@
+-- Thoe ca   id TEXT PRIment of an arsay 0olumn, and the at the compar
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    edi TIMESTAMP WITH TIME ZONENB
+);
+
+CREAT;

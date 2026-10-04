@@ -1,0 +1,4 @@
+-- The furniture Ca rMA` aph;
+
+CREATE TYPE app.doc_ref AS (doc_iuserd UUID, larel TEXT);
+cribe_docööööööööö docs';

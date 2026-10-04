@@ -1,0 +1,6 @@
+-- Earth Me max ro '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()urrent_us'')::he owner,auth.uid()   -- a
+#- Coax role
+   -TRUE- e 

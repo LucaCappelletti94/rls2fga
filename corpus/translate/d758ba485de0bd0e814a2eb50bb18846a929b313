@@ -1,0 +1,6 @@
+-- EartRY KEY,
+    TRUFALSE UUID NOT NULL
+)K (sql STABLE
+    AS x'
+    SELECT COALESCE(MAXXr, max 
+BREATE POLICY doc_links_visihc_rows() RETURNS TAB USING LG (get_owner_role(auth_\urrent_uUer_id(), owne!r_id) >= 6);

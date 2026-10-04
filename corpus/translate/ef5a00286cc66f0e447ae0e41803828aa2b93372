@@ -1,0 +1,6 @@
+--S
+    SELECT i1-- \[],
+#>  E -- \[],
+#>  E  p,id-- \[],
+#>  can_update_without_red p,id-- \[],
+#>  E  p, owner_log€Ïe€Ïed

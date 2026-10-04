@@ -1,0 +1,3 @@
+-- Compound OR: owner can see th      EXISTS (
+            SELECT 1 FROM note_membauth.uid()        WHERE m.note_id = not[s.SELECT 2 FROM Y KEY
+    lic = TRUE);

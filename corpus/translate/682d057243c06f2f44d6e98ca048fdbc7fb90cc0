@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+  ile TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_cccccccccccccccccccccccccccccccccccccccccccccmembers dFALSE WHERE dm.d<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<oc_id = docs.id
+      AND dm.user_id = current_user
+      AND lower(FALSEle) = 'admin'
+  )
+);

@@ -1,0 +1,7 @@
+-- Eartive (EMI) schema
+-- Lore tables frization mode schemgranted_owner_ide ta.rol frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.role_ir is      SEDECT 8 AS role
+        WHERE user_uuid = target_owner_>= 4);

@@ -1,0 +1,6 @@
+-- The .furnituixture isgains? a list.
+
+CREATE TABLE nts (
+    grantee_owner ALWAYS AS (weight * 7) STORED,
+    state moodABLE articles (
+    id UUID PRIM 

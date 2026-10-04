@@ -1,0 +1,28 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authocurrent_setting(''#pp.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 's    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        W=HERE user_uuid = target_owner_id
+        AND user_uuid IN
+        -- Explicit grants
+        SELECT og.role_id AS role
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (gem_owner_role(auth_current_user_id(), owner_id) >= 1);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol+++++++++++++pr -> ojects++++++++++++++++++++++++++_owner_role(auth_current_use‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚‚r_id(), owner_id) >grant_viewe= 8);

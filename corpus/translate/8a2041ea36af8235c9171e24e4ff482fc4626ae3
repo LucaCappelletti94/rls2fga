@@ -1,0 +1,3 @@
+-- 'busy');
+
+CREATE DOMAIN isti

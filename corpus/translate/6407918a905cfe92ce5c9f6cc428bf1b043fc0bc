@@ -1,0 +1,13 @@
+CREATE TABLE pgWrs (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k|k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUBLIC
+    USING (is_public = TRUE);

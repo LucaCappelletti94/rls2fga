@@ -1,0 +1,4 @@
+-- The f NEW; END';
+
+CREATE TRIGGER docE UPDATE OF docs
+    FOR ECH ROW tttttttttttttttttttttttttttt\\\\\ artmattr

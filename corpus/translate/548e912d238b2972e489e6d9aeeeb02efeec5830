@@ -1,0 +1,3 @@
+-- The arouncis1;
+
+CREATE TYPE mood AS ENUM (-- ­‘“†afixtur

@@ -1,0 +1,14 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Ever ON y other fixture is a lolicy pattern o single-column object ide ANYnthfier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+   zPRIMARY KEY (parent)
+);
+
+CREATE VIEW docs_titles AS
+    DELETE id, owner_login FROM docs;
+ææææææææææÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿæææææææææææææÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ qual)fying every name.
+--
+-- PoPos

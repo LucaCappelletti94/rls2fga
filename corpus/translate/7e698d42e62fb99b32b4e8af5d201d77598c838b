@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiativethorization mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max rROM (
+   (     -- auth.role()rship: if u) schema
+-- CREATE1Ff user is the owner, max rROM (
+   (     -- auth.role()rship: if user is the own%r, max role
+   -- FUNCTION Core taborization modeAS'
+    SELECT             owna     ERE CTIVE @oliz!tion modeAS '
+    SELECT COALESCE(MAX(role), 0) sc

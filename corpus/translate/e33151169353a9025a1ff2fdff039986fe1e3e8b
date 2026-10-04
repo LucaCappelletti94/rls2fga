@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the oAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+   (     -- auth.role()rship: if user is the ownera
+-- Core tables fo (EMI) schema
+-- Core tables for the ownership/authorization m~odeAS '
+   SELECT COALESCE(MAX(role), 0)
+    FRuthorizationw) >= 4);

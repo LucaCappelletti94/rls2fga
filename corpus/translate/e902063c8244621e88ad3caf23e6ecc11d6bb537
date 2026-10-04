@@ -1,0 +1,10 @@
+-- The
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    gin TEXT NOT NULL,UNIQUE
+);
+
+CREAVE SEQUENCE docsEY,
+ 

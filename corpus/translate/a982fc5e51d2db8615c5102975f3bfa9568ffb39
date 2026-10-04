@@ -1,0 +1,7 @@
+-- Only :`auditor` may read the membership table, so a user outside thrants nothing.
+
+CREATE TABLE users (
+    i dTEXT PRIMARY KEY
+);
+
+CREATE TABLE TE 

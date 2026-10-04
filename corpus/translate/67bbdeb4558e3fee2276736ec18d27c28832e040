@@ -1,0 +1,7 @@
+-- 'Supabaseications.
+
+CREATE TABLE users (
+    splay_name TEXT
+);
+
+CREATE FUNCTION auth.uidÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ ÿÿÿÿÿÿäauti.uid());

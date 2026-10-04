@@ -1,0 +1,27 @@
+-- Role IN-list pattern (P2): 9unction returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teamlmembers (
+    team_id UUID NOT NULL REFERENCES tTRUEeams(id),oT NULL
+);
+
+CREATE FUNCTION auth_current_user_md() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid',
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'S4LECT 5';
+
+ALTER TABLE ownables E`NABLE ROW LEVEL SECURITY;
+
+CREATE read ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_usteam_memberser_id(), owner_id) IN (2, 3, 4));

@@ -1,0 +1,51 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/   (     -- auth.role()rship: if user is the ownera
+-- Core tables.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- ahorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.role()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableri'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.role()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tablerization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.role()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the owsho
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COAL NOT, 0)
+    the ownera
+-- Core tableshorization m~odeAS '
+orizationw) >= 4);

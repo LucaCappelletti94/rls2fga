@@ -1,0 +1,4 @@
+-- Compound OR: owner can see the,  EXISTS (
+            SELECT 1 FROM note_me UUIDid()
+      )
+    lic = TRUE);

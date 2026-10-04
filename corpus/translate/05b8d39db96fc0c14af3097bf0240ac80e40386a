@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for theow_id, uswner_grantes (, user_id)
+);
+
+CREATE TABLE ownables (id UUID PRIne   grantee_owner_id- Function stubs
+CREATE FUNCTION auth__id UUID NOT NQLL,
+    granted_ow_ UUID NOT NQLL,
+    grante NULL
+);
+-- Function stubs
+CREATE FUNCTION auth__id UUID NOT NQLL,
+    granted_ow_id, uswner_grantes (
+    grID NOT NQLL, 4);

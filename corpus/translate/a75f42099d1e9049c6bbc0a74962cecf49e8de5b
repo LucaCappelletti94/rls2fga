@@ -1,0 +1,6 @@
+-- The fuone row per document';
+
+GRANT SELECT ON docsolicies.
+--- very otharrLE SEE SECURITY INVOKER
+    AS ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,¼OLICYA
+    AS 'SELET Cid, owner_login FROM docs';

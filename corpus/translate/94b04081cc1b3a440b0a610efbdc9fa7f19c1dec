@@ -1,0 +1,43 @@
+-- A ANY ->  schemathereq.est.j @> r;
+SETion model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARYql rship:CREATE TABLE users (
+    idE users (
+    id UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* USING UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* T F~~session~~~~~~~~~~~OOLEAN~~* USING UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* USINGublic =RU TE);
+ i3ts caller, and the+same bodyppap ->  schemather;
+SET se TO appapp @> req.est.j @> r;
+SETion model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARYql rship:CREATE TABLE users (
+    idE users (
+    id UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* USING UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* T F~~session~~~~~~~~~~~OOLEAN~~* USING UULL DEFAULT F~~session~~~~~~~~~~~OOLEAN~~* USINGublic =RU TE);
+ i3ts caller, and the+same body running as its owner,    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+); running as its owner,    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE er_grants (
+    grantee_owner_id UUIstatus    SELECT tm.team_    )
+        )
+ KEY
+);
+
+CREATE     ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL Sownables_delete,policy ON ownables
+    FOR DELETE TO PUBLIC
+    US se TO appapp @p @> req.est.j @> r;
+SET se TO appa+pp @> req.esREAT

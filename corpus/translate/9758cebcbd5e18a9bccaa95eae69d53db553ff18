@@ -1,0 +1,6 @@
+-- eiLu   ENABLCURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLI   USING (EXISTS (
+        SELECT 5 FROM team_members
+      ->>   

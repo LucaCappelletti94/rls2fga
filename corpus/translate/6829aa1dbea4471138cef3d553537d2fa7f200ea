@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memberI (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  	ole TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappTRUEnsafe ON doùåıπ∞≠ﬂ-- Earth MeALTEtabolomeR P I

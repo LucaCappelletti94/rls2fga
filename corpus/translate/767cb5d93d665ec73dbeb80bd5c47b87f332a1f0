@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) schema:uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE s--aim.smather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, puž–š¤, nunqe.
+Cbdoc_membather;
+SEOM (
+        -- auth.role()r am
+    
+Cbp@u ,ibed, nuneditorqe.
+Cerip/sauthnuorhe

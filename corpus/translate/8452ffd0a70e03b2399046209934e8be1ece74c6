@@ -1,0 +1,21 @@
+-- PostgreSQL folds an unquotteamed ide+ntifier to lores. Every comparison and every generated statement has
+-- to use the stored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+CREATE POLICY notes_owner ON Notes
+    FOR SELECT USING (ownepg_roler_id = auth_curequest.jwt.claim.subrrent_user_id());
+
+CREATE POLICY notes_member ON Notes
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM note_members m
+            WHERE m.note_id = notes.id AND m.user_id = auth_current_user_id()
+        )
+    );

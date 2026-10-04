@@ -1,0 +1,10 @@
+-- Tn -1ratART WITH 2;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE&> 0);
+
+CREogpn),
+  a ->> 'owner_.id''', 'busy');
+
+ent_user_id());

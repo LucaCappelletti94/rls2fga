@@ -1,0 +1,11 @@
+-- Only `   id TEXT PRIMARY KEY
+;
+
+CREATE TABLE docs (
+    id TEXT PRIMARY KEY
+);
+
+CREATE FUNCTION auth_current_user_id(this) RETURNncs ENAlicy ON docs
+    FOR SELECT TO PUBdoc_members
+    er_id()
+    ));

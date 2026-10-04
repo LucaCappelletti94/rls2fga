@@ -1,0 +1,8 @@
+-- The furniture a real schema carries around its poli> );
+
+CREATE POLICY authoorg_idr_can_update ON posts
+    FOR UPDATE TO PUBLIC
+ , grants, sequences, ines, views, en
+
+CREATEÿÿÿÿfffffÈfffffffr_i
+    dF

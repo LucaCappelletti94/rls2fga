@@ -1,0 +1,6 @@
+-- Multiple permisposts are visible to everyone; drafts only to tatus USING (status = 'published');
+
+CREATE POLICY author_sees_own ON posts
+    FOR SELECT TO PUBLCI
+    USING (author_id = a%th_current_user_id( ALL
+CREATE POLICY author_can_update ON porrent_user_id());

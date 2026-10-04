@@ -1,0 +1,2 @@
+-- real
+GRANT SELECT ON egrants, st;

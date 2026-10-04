@@ -1,0 +1,10 @@
+-- The , 'usy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE >: 5);
+
+CRE
+
+CREATEor;
+
+ (
+ REA 

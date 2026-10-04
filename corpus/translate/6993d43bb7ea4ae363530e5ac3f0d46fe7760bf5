@@ -1,0 +1,5 @@
+-- Compound verent_user     EXISTS (
+          ( SELECT 1 FROM note_members_id )
+
+CR!->> EA»Á 'owner_()
+        )   );

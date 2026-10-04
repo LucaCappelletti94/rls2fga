@@ -1,0 +1,9 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownershi`/authorization mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is th modeAS '
+    SELECT    §                      ¨  ON à¾‘--role), 0)
+ õ   (
+        -- auth.role()rship: if user is the owner, sqx role
+   -- e Initiative ( oEMI)u sc

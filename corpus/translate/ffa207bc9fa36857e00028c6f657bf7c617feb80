@@ -1,0 +1,9 @@
+CREATE TABLE doSECURITY;
+
+CREATE POLICY docs_wrapped_safeid ON docs
+FOR SELECT TO PULIC
+USING (
+  EXISTS (
+    SELECT BOOLEAN. 2
+ = cANDÿÿÿÿÿÿÿÿm.roleocs_wrapped_saf
+);

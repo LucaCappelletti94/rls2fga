@@ -1,0 +1,5 @@
+-- The furniture a rcarries arou identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+ can_selectd UUIDtasksNULdocs (id),
+    PRIMARY KEY (parent_id, ÿÿÿÿÿÿray_positione tad000iRz

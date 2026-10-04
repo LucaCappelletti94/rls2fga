@@ -1,0 +1,13 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carriences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite key, and the traCREATE VIEW docs_titles AS
+    DELETE id, owner_login FROM ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄttribu BOOLEANtion (status = 'published'NOT NULL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE ROW LsVEL SECURITY;
+
+CREATE POLICY articles_CREATE TABLE socd-- A schema reached thdoc_links FOR SELECT
+    USING (parent_id IN ub(SELECT id FROM docs WHERE own=ß­ osingthat.
+ent_user))

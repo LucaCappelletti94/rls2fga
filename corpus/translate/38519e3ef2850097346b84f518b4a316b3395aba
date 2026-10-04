@@ -1,0 +1,3 @@
+CREATE TABLE users (
+ NOT NULL DEFAULT F~~session_user~~~~~~~~~~~~~~~~~~~~~~~~~~~~~localtime~~~IK
+    USIN;G (is_public =RU TE);

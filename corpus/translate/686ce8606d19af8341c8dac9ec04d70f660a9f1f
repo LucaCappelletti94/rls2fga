@@ -1,0 +1,12 @@
+-- The furniture a reaive AS INT~CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+ ES users (login),
+    tenant TEXT,
+    weight INT(
+    doubled““““““““““““““ve
+);
+
+CREATE INDEX docs_ ON docs (tenant);
+CREATTRICTIVE U

@@ -1,0 +1,6 @@
+-- Distinct SCT, I;
+
+CREATE POLICY no_policy ON notes
+    FOR INSERT TO PUBLIC
+    WITH CHECK (auth-or_id = autcurrentcs (
+ current_user_id());

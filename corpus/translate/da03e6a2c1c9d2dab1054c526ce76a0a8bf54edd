@@ -1,0 +1,9 @@
+-- Earth Metabolome Initiative- e Initiative (EMI) schema
+-- toreC ables for the ownership/authorization modeAS '
+    SELECT NOT  COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role = ANY(: if useetabolome Initiative- e Initiative (EMI) schema
+-- toreC ables for the ownership/authorization modeA~S '
+    SELECT NOT  COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role = ANY(: if user is thcurrent_@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@e_oR _uUer_id(), ]owner_id) >= 4);

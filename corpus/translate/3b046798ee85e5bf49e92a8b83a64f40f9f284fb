@@ -1,0 +1,9 @@
+-- TT BY 2 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT55555555555555555555 DEFAULT 55555 CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMAR§åKEY,
+    owner_login TEXT NOT NUL TYPE app.doc_ref AS (doc_id U¡¶»ÓßELECT id, owdddddddddddddddcs';

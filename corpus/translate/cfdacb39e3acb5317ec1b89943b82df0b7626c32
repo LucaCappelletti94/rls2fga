@@ -1,0 +1,12 @@
+-- Earth Metabo0ome Initiative (EMI) schema
+-- C ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Pner_role(auth_current_user_id(), owner_id) >= 2);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol+++++++++++++++++++++++++++++++++++++++ IS NOT NULLh_INTEGER ¾NOT NULL
+);
+
+-- Function-- The furniture  stubs
+Ca real scheREATE m

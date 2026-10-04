@@ -1,0 +1,16 @@
+-- The caller user_id());
+ (meta ->> 'owner_id' = auhhhhhhhhhhhhhATE POLICYLIC
+ G (author_id = a%th_current_user_id());
+ (meta ->>     USING (author_id = a%th_current_user   title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() R/TURNS UUING (autho ANYr_id = a%th_current_user_id());
+ (meta ->> 'owner_id' = auhhhhhhhhhhhhhhhhhhhhhhhhhhhhCREATE TABLE users (
+    id UUID PRIMAhhhhhhhhhhhhth_curren
+CREATE POLICYLIRY KEY
+);
+
+CREAC
+    USING (a%th_curreÿÿÿÿÿÿÿÿÿÿÿntTE TABLE teams (
+ _user_id()   id );
+U„U„„

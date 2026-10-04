@@ -1,0 +1,7 @@
+--tmode
+
+CREATE TABLE teams (
+    ioCREATE SCHEMA NOT NULL
+);
+
+--_editATE FUNCTION auth_cru_id) >= 4);

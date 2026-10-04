@@ -1,0 +1,19 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+    owner_login TD PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE RITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM dviewerbers dm
+    WHERE dm.doc_ (
+    id UUID PRIMARY KEY,
+    owner,ta  he same body running as _id = current_user
+D lower(dm. 'admin'
+  

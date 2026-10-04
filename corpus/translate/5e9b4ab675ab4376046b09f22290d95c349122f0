@@ -1,0 +1,11 @@
+--ܾid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'f the samequest.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL!SECURITY;
+
+CREATE POLICY "Users can view their own profile" ON profiles
+   FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "UserE sql ST[߭=߭߭_

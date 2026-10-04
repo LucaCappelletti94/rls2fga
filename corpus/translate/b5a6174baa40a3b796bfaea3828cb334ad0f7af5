@@ -1,0 +1,7 @@
+--eT f h-at
+-- resolution end tiend titureEND';
+
+CREATE TRIGGER docs_touch BEFORE DELETE ON docs-- A sin = current_user));
+
+--TE ON docs-- As. A dso tips,
+-

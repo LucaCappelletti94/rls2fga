@@ -1,0 +1,10 @@
+CREATE TABLE docs (
+  i UUID,
+id UUID,
+  role TEXT
+);
+
+SELECT 1
+    FROM doc_membersr_id!= currEnr(dm.role) = 'admin'
+  )
+);

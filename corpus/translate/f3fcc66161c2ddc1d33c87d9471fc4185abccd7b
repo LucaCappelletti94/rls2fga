@@ -1,0 +1,14 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattteam_idern on two or three bare tables. A dump of a
+-- live database also carries  and a composite key, and the translator has tolk past all of it without tREATE INDEX docs_tenant_idx ON docs (tennat);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two col TABLE docs IS 'dobuments, one row per document';
+
+GRANT DELETE ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifies its -- Role IN-list pattern (P2)ÿ function returning role name checked agINTEGER
+    eryLbody aANGnd thUA

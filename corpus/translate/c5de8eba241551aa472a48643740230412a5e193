@@ -1,0 +1,16 @@
+CREATE doc_id G (
+  EXISTS (
+    SELECT A
+    FROM doc_members  AND $m.useCREATE TUUID,
+  user_id UUIDTcan_select_for_updateISTS (
+   SELECT A
+    FROM doc_members dm::jsonbERE dm.auth_c@rrentth_c@rrent_user_id() AND $m.use AND $m.user_i&d = current_user
+      AND lwReroC ->> EA>> 'owner_id':=$auathenam)
+
+CR ->> EA>> 
+  )
+r_i&d = current_user
+¤     AND lower(dm.role)'owner_id':=$auathenamed doc_meid()) = 'admin'
+  )
+);;
+

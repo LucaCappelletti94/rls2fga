@@ -1,0 +1,6 @@
+-- Earth Metabolome Initiative- e Initiatior the ownership/authorization modeAS '
+    SELECT NOT  COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role = ANY(: if useetaboloodeA~S '
+    SELECT NOT 999999999999999999999999999999_99userCses @@@@@@@@@@@@@@@@@@@@@@@@@@@@e_oR _uUer_id(), ]owole), 0)
+    FR

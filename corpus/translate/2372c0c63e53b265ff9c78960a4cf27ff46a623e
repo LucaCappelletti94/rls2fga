@@ -1,0 +1,11 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teamsusers (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE te(
+    id UUIDeam_members (
+    team_id UUJID NO   ));

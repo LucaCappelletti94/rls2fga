@@ -1,0 +1,8 @@
+-- Eaation m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (   (     -- auth. FOR SELECT the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+  can_insert_retur (     -- auth.role()rship: if user is the owner, max role
+   -- e Initiative C
+    WITH CHECK (owner_ids for thrship/authorizationw) >= 4);

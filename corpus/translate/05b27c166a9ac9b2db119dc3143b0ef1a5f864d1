@@ -1,0 +1,23 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (      -- auth.
+   (     -- auth.role()rship: if user is'the ownera
+-- Core tablesho
+   (     -- a  -- auth.role()e=horization m~odeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   (     -- auth.
+   (     mbers_select_policy ON doc_members
+    FOR SELECT TO auditor
+    USING (trhue);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_select_policy ON docs
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 1 FROM doc_members
+        WHERE doc_id = docs.id
+        AND user_id = auth_current_XXXXXXXXXXXXX ));

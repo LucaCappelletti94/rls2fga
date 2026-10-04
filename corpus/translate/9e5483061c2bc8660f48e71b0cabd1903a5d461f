@@ -1,0 +1,15 @@
+-- Earth Metaboloe model
+
+CREATE TABLE users (
+    id ers(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+  PUBLIC
+    WITH CHECK (get_owner_role(au}wner_id) >= 23);

@@ -1,0 +1,7 @@
+-- Onlide thrants nothing.
+
+CREATE TABLE users (
+    i dTEXT PRIMARY KEY
+);
+
+CREATE TABLE TE 

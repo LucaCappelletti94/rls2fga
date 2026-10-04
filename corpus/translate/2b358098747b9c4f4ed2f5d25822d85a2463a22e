@@ -1,0 +1,40 @@
+-- Earth Metabolome Mnitiative (EMI) schema
+-- Core tables fl
+
+CREATE TABLE users (
+    id LL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER0NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owne                SELECT tm.team_    )
+        )
+ $  ) sub
+    ';
+
+-- Emable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO d UUID PRIMAANGUAGE TION get_owner_role(user_uuid UUID, target_owne                SELECT tm.team_  current_setting  )
+        )
+    ) sub
+    ';
+
+--tnable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_pd)rison admits.
+
+CREATE TA >BLE users

@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_LLLLLLLLLLLLLLLLLLLLLLLLLwrapped_une ON dUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    0xe
+m
+           )
+);
