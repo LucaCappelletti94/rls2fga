@@ -1,0 +1,4 @@
+--
+
+GRANT SELECT ON docs TO audaudi, wh 
+  

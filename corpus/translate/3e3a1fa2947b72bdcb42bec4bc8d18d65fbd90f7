@@ -1,0 +1,4 @@
+-- The furniture C-- The furniph;
+
+CREATE TYPE app.doc_ref AS (doc_iuserd UUID, larel TEXT);
+cibe_;

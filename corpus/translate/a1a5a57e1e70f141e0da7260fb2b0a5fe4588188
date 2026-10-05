@@ -1,0 +1,5 @@
+CREATE TABLE users (
+    iwtle TEXT
+);
+
+CREATE FUNCTIONattttttauth_current_user_id());

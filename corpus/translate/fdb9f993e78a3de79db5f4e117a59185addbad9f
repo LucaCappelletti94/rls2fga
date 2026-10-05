@@ -1,0 +1,4 @@
+CREATE TABLE users (id UUID  NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task RENAME TV W LEOLIC§åtasks_inherit_project ON _role(ING (li   

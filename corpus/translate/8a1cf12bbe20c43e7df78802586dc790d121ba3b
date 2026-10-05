@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative nership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.r  FROM (
+   (     -- auth.role()rship: if uwer is the ownera
+-- Core teal bsdor the ownersm~odeAS '
+    SELECT COAL2 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN  RENAME TO (SELECT i[[- Team membershi   (     ---- Core tables for the ownersm~odeASr is the ownera
+-- Core t%ableshorization m~odeAS '
+orizationw) >= 8);

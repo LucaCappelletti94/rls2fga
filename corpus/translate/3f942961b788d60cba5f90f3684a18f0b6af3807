@@ -1,0 +1,6 @@
+-- The furnidaut);
+CREATE UNIQUE INDEX Gocs_owner_login_uidx ON docs (owner_login);
+
+- BEFORE UPDATE ();
+
+-- A compositpM docs';

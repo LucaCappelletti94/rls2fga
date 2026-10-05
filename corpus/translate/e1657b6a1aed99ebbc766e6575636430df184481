@@ -1,0 +1,12 @@
+-- Role s for the ownership/authorization m~odeAS '
+    SELECT COtion returning role name checked against a list.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREAT UUID PRIMARY KEY(role), 0)
+;
+
+C    FROM (
+   (     -- auth

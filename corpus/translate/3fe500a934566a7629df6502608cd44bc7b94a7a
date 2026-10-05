@@ -1,0 +1,6 @@
+-- Only `auditor` i00000001597170784LE docs (
+   ;
+
+ id TEXT PRI0349544049LELICY 
+    AS 'SELECT cu docsòd()
+    ));

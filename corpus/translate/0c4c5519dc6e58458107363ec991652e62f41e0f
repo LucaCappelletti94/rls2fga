@@ -1,0 +1,33 @@
+-- E!rth M-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if usrole
+   -- e Initiative (EMI) schema
+-- Core tablesitiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if usrole
+   -- e Initiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+ .  FROM (
+      @@@owna@@@@NULL@@@@@@@@@@@@@@@eam_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@ ON @@@@@FALSE@@@@@@@@@@@@@@@@@@@@ user_id)
+);
+
+CREATE TABLE ownablÿÿÿÿÿÿÿes (
+    id U frantee_owner_id UUID .OT NULL,
+    g-- The caller as an element s.
+
+CREATE TABLE users (
+    idARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meranted_owner_id UUtaOJ NSB
+);
+
+CREATE FUNCTION auth_current_user_id() R

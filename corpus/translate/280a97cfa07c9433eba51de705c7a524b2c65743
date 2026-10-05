@@ -1,0 +1,8 @@
+-- The furniture a real schema  wteam leaves no single-column object identifiern
+CREATE TABLE ocs_titles AS
+    SELECT id, owne_lrogÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿin FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿE sqnoboABLE
+    ?S 'SELECT id, owner_login FROM docs';

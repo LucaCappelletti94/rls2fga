@@ -1,0 +1,23 @@
+CREATE TABLE uanUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUts (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_iID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION authrc_urnt_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settingg(''app.euruid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUIDsub, pubied, nunqe.
+Cbdosub, pubied, nunqt.jwt.c,laimgrant_admin.sub, pubied, nunqe.
+Cbdosub, pubied, nunqe.
+Cer;
+SET search_path TO app @> req.est.jwt.c,laim.sub,c_membather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, ) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_update ON ownables
+    FOR UPDATE TO Pis_public USING (get_owner_role(auth_current_user_id(), owner_id) >= 4 AND status = 'active');

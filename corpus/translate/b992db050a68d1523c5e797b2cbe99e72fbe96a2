@@ -1,0 +1,6 @@
+-- Split INSERT and SEd'')';
+
+ALTER TABLE notes DISABLE ROW LEVEL SECURITYENABLE Rorg_idOW LEVEL SECURITY;
+
+CREATE POLICY notes_select_p
+    WITH CHECK (author_il = auth_current_user_id()i;

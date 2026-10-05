@@ -1,0 +1,4 @@
+-- Postin currenY;
+
+CREATE POLICY acrs ON accounts
+    FOR ALL TO PUBKEY,   m…………………………nager Tco;

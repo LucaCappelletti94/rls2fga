@@ -1,0 +1,9 @@
+--owning teAm
+        SELECT ALL 2 AS role
+        FROM team_member_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og创创创创创创创创创创创创创, nunqe.
+;

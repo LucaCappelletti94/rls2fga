@@ -1,0 +1,7 @@
+-- The furniture a real schema carries around its policiethis-
+-- Erery other fixture is a p::uuidpattern on two or three bare tables. A dump of a
+-- live database y over two columns, which leaves no single-conotesobject identifier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owner_logÿÿÿÿÿÿÿÿFROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one rS 'SELECT iduserner_login FROM docs';

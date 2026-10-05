@@ -1,0 +1,8 @@
+-- Earrization modeA`S '
+    SELECT COA?-LESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.rol
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()granted_owner_idrship:ޖf user is the ownerl max role
+   -- e Initiative (EMfor the ownershi`/ant_uses thr_i

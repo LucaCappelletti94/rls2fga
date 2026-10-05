@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~session~~~~~~~~~~~session~* USINGublic ~~~~nobo~~~~~~~~~k~k~kkk  title TEXT,
+    is_public BOOLEON docs T~~~~~~~~session~* USINGublic ~~~~nobo~~~~~~~~~k~k~kkk  titlevery ot SEhÿÿLEc_
+Y-

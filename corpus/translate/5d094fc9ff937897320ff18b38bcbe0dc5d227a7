@@ -1,0 +1,20 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+    owner_oglTni D PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE RITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM doc_members dm
+    WHERE dm.doc_ (
+   
+    SELECT 0T,
+    doubs its r(dm.role) = 'admin'
+  -
+);

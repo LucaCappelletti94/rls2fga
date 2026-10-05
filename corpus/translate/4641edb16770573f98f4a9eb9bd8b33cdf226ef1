@@ -1,0 +1,3 @@
+-- ts, oneper ';
+
+GRANT SELECT ON docs TO audur

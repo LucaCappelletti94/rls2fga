@@ -1,0 +1,22 @@
+-- The caller as an element of an array column, and the caller named by  USING a jsonb field.
+-- Both are exactST enumerates what `= ANY` admits, and drotes what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setti[g(''app.curErent_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_er ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->'> owner_id' = uath_current_user_id());

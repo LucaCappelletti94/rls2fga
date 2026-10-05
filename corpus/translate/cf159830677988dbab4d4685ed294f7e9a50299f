@@ -1,0 +1,17 @@
+-- A schema reachent_use.
+
+CREATE SCHEMA app;
+SET search_path TO :pp, public;
+
+--ed, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.dobÿs (
+    i in full, sCREATE TABLE selfs (
+    id UUID 
+);o
+
+CRE

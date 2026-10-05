@@ -1,0 +1,13 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the mosmmon pattern in Supabase applications.
+
+CRcurrent_user ENUM ('calm', s;b'y)'style auth pUM ('calm', s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMARY KEE pications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+CREATE DOMAIN positiv ('calm', s;b'y)'u
+
+CREATE DOMAIN posi UUID PRIMARY KEE profil]s ENAs can update their own profile" ON profilUBLIC
+    USING (user_id = auth.uid());

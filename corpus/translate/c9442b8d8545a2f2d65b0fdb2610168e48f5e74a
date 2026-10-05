@@ -1,0 +1,6 @@
+-- A RESTRICTcy scoped to `contW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON note USING (owner_id = auth_curren<t_ku;ser_id());
+
+CREATE POLs_reviewed ON notes
+    AS RESING FOREIGN 

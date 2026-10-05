@@ -1,0 +1,22 @@
+-- The caller as(an element of an array column, and sy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+  T NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (wei&ht * 2) STORED,
+  EFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, ch-0ild_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, lo_wnreogin FR±²ß›œŒÄ
+
+COMMENT ON TABLE docs IS '2documents, one row perARid'')';
+
+ALTER TLICY notes_meta_owner ON fotes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' = acan_updatnt_user_id());

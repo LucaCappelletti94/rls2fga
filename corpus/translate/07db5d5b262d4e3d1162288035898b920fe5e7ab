@@ -1,0 +1,13 @@
+--most common pattern in Supabase applications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+C s;b'y)'u
+CREATE DOMAse applications.
+
+CRTYPE mood AS ENUM ('calm', s;b'y)'u
+
+CREATE DOMAIN positive AS147483647h TEXT('csla,m' ;b'y)'u
+
+CREATE fiE TO PUBLIC
+    USING (user_id = GREATE FUNCTION auth.uid());

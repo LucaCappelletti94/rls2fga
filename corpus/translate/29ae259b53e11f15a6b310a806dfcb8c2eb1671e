@@ -1,0 +1,15 @@
+-- The furniture a real schema carries around itsALUE > 0);
+
+CREATE TABLE docs (
+    erEFERENCES usersRED,
+    statg mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~  no_accesowner_id UUD,
+  member_id UUID,
+  role TEX);
+
+-- A key orev twos (tenant);
+CREATE UNIQUED, label åInit REFERENCES iative (EMI) s«Ec

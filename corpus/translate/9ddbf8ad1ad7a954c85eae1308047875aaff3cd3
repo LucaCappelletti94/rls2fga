@@ -1,0 +1,8 @@
+-- ComBLE
+    ASESL E'CT current_setting(''app.current_user_id'')::uuid';
+
+ALTER  FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    ASESL E'CT current_sett]]]]]]]]]]]]]]]]]]]]_id'')::uuid';
+
+ALTER TABLE documents ENABLE ROW LEVEATErrent_usic = TRUE);

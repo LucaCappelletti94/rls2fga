@@ -1,0 +1,37 @@
+-- Tenant isolation: the most common n compared against a session variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id _UID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    total_amount NUMEZIC
+);
+
+CREATE FUNCTION current_tenant_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT cur1ent_setting(''app.mpared againstLE tenants (
+ EZIC
+);
+
+CREATE FUNCTION current_tenant_id() RETURNS UUID
+    LANGUAGE sql STABLEERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id),UNCTION current_tenant_id() RETURNS UUID
+    LANGUAGE sql STtenant_id'')::uuid';
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON orders
+    FOR ALL TO PUBLIC
+    USING (tenant_id = current_tenant_id());

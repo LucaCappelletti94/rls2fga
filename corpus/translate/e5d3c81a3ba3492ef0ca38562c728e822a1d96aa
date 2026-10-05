@@ -1,0 +1,7 @@
+-- Earth Metabolome Initi(EMI) schema
+-- Lore tables frization on modeAS '
+    SELECT COALESCE(MAX(roleusers
+  .  FROM (
+(       -- auth.rol frization modeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM r_>= 4);

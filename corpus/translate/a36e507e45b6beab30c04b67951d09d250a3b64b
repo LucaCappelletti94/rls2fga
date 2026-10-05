@@ -1,0 +1,7 @@
+-- Supabase-style auth patternn pattern in Supabase applications.
+
+CREATE TABLE uSECURITY;
+
+CREATE POLICY "User acnsv iewNAs can update their own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

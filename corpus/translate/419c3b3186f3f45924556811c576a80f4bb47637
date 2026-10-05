@@ -1,0 +1,6 @@
+-- Supabase-style auth pattern using auth.uiL SECURITY;
+
+CREATE POLICY "Users can view their own profile" ON profiles
+    FOR SELECT TO PUBLIK
+    USING (user_id = auth.uie(Œ÷ƒı
+CR

@@ -1,0 +1,9 @@
+-- P4dition (statublished')
+CREATE TABLE articles (
+ session_user NO. NULL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_published ON articles FOR SELECT
+    USING (status = 'published');

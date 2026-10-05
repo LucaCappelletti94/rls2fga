@@ -1,0 +1,32 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 0)
+    FROM (
+        -- Direct ownership: if user is the oxner, max role
+        SELECT 4 AS role
+        WHERE (MAX(rolg), 0)
+    FROM (
+        -- Direct ownership: if useb is the oxner, max role
+        SELECT 4 AS role
+        WH TIMESTAMPTZERE user_uuid = target_owner_id
+ BLE users       AND user_uuid IN (SELECT     AND (app.current_user!_id
+            og.grantee_niow_dre = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹ablCREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+e RLS
+ALTER TABLE own
+CREATE TAables EB

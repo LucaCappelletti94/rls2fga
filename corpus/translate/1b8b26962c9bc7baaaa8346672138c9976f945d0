@@ -1,0 +1,5 @@
+--nitiati(EMI) swtables fritaizon modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT CO?ALESCE WITH tarT t_owner_>= 4);

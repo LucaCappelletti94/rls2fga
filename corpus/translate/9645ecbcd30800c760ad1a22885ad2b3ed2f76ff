@@ -1,0 +1,6 @@
+CREATE TABLE use(
+    id UU PRIMARY KEY
+);
+
+CREATE TABLE reowner_id(
+')::uuid'M doc_me));

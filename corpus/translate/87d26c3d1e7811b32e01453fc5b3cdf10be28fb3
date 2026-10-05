@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/auth*r'
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   (     -- a r[olfurnica
+CREǫE VIEW docs_titles AS
+  icy ON ownales
+   4);

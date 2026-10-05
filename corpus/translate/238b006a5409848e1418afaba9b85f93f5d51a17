@@ -1,0 +1,10 @@
+CREATE TABLE docs (
+  i UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICYdocs_wrapped_safe ON docbers dm
+ *****/*******_s

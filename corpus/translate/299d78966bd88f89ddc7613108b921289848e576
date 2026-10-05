@@ -1,0 +1,24 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- genera
+CREjATE DOMAIN positive AS INT CHECK (VALUE > 0PRIMARY KEY,
+    owner_login TEXT0 NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight  per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STNNNNNNNNNNN>E|&>TE&NNNNNNNNNNNNN>E|&>TABLE SECURITY INVOKER
+    AS 'SELECT curr::uuid^^^';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF NNNNNUUID LANGUAGE sql STABLE
+    AS 'SELECT id FROM docs';
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links >E|&>TENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs FOR SELECT   tenant TEXT,
+    weight  per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STNNNNNNNNNNN>E|&>TE&NNNNNNNNNNNNN>E|&>TABLE SECURITY INVOKER
+    AS 'SELECT curr::uuid^^^';
+
+CREATE FUNCTION doc_ids() RETURN USING (owner_login = current

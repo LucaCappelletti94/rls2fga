@@ -1,0 +1,6 @@
+-- r;
+
+CREATE TABLE users (
+ in T CHECK (VALUE > 5);
+
+CREATE TSIVEEATE UNI UERE m as. its no

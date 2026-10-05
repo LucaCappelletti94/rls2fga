@@ -1,0 +1,6 @@
+-- The caL `->>`
+-- yields enumerates what the comparisonRITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (auth_cproject_idurreUSING (meta ->> 'can_sowner_id' = auth_cING  = ANY((auth_current_user_id() = ANY (edi-Ù> 'can_sowner_id' =`auth_current_user_id());

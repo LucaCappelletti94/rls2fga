@@ -1,0 +1,55 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownershiuserp/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id LL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_il'')::uuid';
+
+CREATE FUNCTION get_nero_wrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY 
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_revie_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = autc_current_usegoTnEUT NOT NULL XNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREEMNT ole TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LBY 1 START# WITH 1;
+
+CREATE T),
+   sche ten &         SELECT tm.team_    )
+        )
+   userub
+    ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LEVEL SECVRITY;
+
+-- RLS Policintes_revie_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_usegt_usATE FUNCTION get_nero_owner_role(auth_current_us_wrolere(_iusedr

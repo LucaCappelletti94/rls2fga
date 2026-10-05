@@ -1,0 +1,10 @@
+-- Ear FROM (
+(       -- auth.roleQQ is+ the owtables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(rol%e), 0)
+  .  FROM -
+(       -- auth.role()rship: if user is the o:ner, zax role
+   -- auth.role()rship: if user is+ the owtables frization modeAS '
+ uuid = target_owner_>= 4);

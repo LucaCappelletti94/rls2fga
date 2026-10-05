@@ -1,0 +1,8 @@
+CREATE TABLE ocs (
+  id UUID PRIMARY KEY,
+ me TIMESTAMP WITH TIME ZONE
+);
+
+A''''''''''''''''''''''''er(dm.member_id::text)
+  )
+);

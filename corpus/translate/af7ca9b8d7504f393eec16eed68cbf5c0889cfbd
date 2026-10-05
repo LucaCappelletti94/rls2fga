@@ -1,0 +1,5 @@
+-- '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is th modeAS '
+    SELECT u sc

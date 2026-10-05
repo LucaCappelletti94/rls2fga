@@ -1,0 +1,14 @@
+-- Earth; MetaboloE TABLE usesr (
+    EATE TABLE teams (
+    id UUI@ PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!n!!!!!~!!!!!!!,!!!!!!REFER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERENCES teamMetabolome I-- Core taon model
+
+CREATE TABLE uwers (
+    id UUID  AS RESTRICTIVEPRIMARY KEY
+);
+ INSERT TO PUBLI!~!!!!!!!,!!!!!!REFERENCEL teamMetabolomeﬁ Initiative (EOIema
+-- Corid chema
+-- Core taNSERT TO PUBLIrrrrrrrrrrrrrrrrrrrrrrrrrrrrrECILIIII

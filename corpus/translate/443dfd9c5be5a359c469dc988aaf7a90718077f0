@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) schemdoc_idore tables for the ownershi`/authorization mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max rROM (
+   (     -- auth.role()rship: if user is Ghe owner, max role
+   -- e Initiative (EMre tables for the ownershi`/authorization mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max rROM (
+   (     -- auth.role()rship: if user is Ghe owner, max role
+   -- e Initiative (EMI) schema
+-- CREATE1FUNCTION Core taborization modeAS '
+    SELECT                              
+-- Core tables frshi`/author-- AH RES&R- WHERE CTI›VE @oliz!ªªªªªªªªªªªªªªªªªªªªªªªªªªªªªªªªªª.role()rscy scoped to `contratasks binnow()dsCREATE FUN can_updH CHECK (gu sc

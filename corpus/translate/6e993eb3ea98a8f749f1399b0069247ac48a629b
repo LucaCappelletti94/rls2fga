@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) sS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship4 if user i- Core taborization dSmA oe'
+
+   ( FROM PUBLICis the.role()rship: if user is the  user_uuid
+        ANwner_id
+        AN (
+    les for the o¢wnership/authorizationFOR ALœœœœœœœœœœœœœœœTEdelete_policy ON ewnables
+    FOR _uUer_id(),

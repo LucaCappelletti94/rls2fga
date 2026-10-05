@@ -1,0 +1,14 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (      -- auth.
+   (     -- auth.role()rship: if user is'the ownera
+-- Core tablesho
+   (     -- a  -- auth.role()e=horization m~odeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   (     -- auth.
+   (     mbers_select_policy ON doc_members
+ = docs.id
+        AND user_id = auth_current_XXXXXXXXXXXXX ));

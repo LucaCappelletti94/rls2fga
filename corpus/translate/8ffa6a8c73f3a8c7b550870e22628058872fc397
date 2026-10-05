@@ -1,0 +1,9 @@
+CREATE TABLE doc(
+  id UUID PRIMARY KEY,
+  owner_i_id UUID,
+  user_id UUID,
+  mle TEXT
+);
+
+ALTER TABLE dorequest.jwt.claim.subEOLICG (
+  EXISTS (

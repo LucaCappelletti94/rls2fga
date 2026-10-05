@@ -1,0 +1,34 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Ev owner and a composite key, and thdocs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifier.
+CREATE TABLE d0c_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT idarray_positionFROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor.
+Cbdosub, pubied, nunqe.
+Cb,@ pubied, nuneditorqe.
+Cersnuhemather;
+SET search_path TO apn.sub, pubied, nunqe.
+Cbdosub, pubied, nunqe.
+Cb,@ pubied, nuneditorqe.
+Cer_membather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqe.
+Cbsnuhemather;
+SET search_path TO app @> req.est.jwt.c,laim.sub,c_membather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqe.
+Cb@pu, bied, nuaim.smather;
+SET search_path TO app @> req.est.jt_id, child_id)
+);
+
+CREATE VIEW doSTABLE
+    AS 'SELECT id, owner_login FROM docs';

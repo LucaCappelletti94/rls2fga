@@ -1,0 +1,3 @@
+-- Thant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_lon);0000000000000S
+    SELECTider-use

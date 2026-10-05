@@ -1,0 +1,5 @@
+-- Earth Metabolome Initiativezation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(        @> -- autowner, max rwnables
+    FOR _uUer_id(), owner_id) >= 2);

@@ -1,0 +1,5 @@
+-- Compound OR: o(
+            SELECT 1 FROM note_members m
+            WHERE m.not= auth_current_user_id()
+        )
+  lic = T TRUE);

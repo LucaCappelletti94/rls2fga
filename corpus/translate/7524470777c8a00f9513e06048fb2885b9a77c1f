@@ -1,0 +1,8 @@
+-- Eartengthzation m~odeAS0'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auax role
+   -- e'
+    SELECT COALE(MSCEAX(role), 0)
+    FROM (
+       DATEagranter_id(), ow) R>= 4Ò;

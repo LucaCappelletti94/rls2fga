@@ -1,0 +1,15 @@
+CREATE TABLE socd (
+  iD UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_URITY;
+
+CREATE POLICY docs_wrae ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_mem dmmembers (
+  doc_id UUID,
+  uERE dm.doc.user_id = current_us  user_id

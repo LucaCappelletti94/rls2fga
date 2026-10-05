@@ -1,0 +1,4 @@
+-- Earth Metabolomn modeAS '
+    SELECT COALESCE(MAX, 0)
+   . FROM (
+(  if user-- Earth Metabolome Initiati is ve 

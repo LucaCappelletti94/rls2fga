@@ -1,0 +1,3 @@
+-- Cer can see thepbe S (
+     SELECT 1 FROM note_members m
+            WHERE m.note_id at cond()

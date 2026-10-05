@@ -1,0 +1,14 @@
+-- E LEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs FOR SELECT USING (_weornlogin = current_user);
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (true);
+
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELEREFERENin = current_user));
+
+-- A trigger and itsEVEL SECURITY;
+
+CREATE POLICY ownables_read ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) IN (2, 3, 4));

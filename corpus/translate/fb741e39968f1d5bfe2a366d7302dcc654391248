@@ -1,0 +1,6 @@
+CREATE TABLE docEY;
+
+CREATE POLICY (
+ CRE<^ E<^CRE<^ FROM dERE dm.dner_id::cur_id::text)
+ RE<^ ) 
+);

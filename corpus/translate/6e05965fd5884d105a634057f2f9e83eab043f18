@@ -1,0 +1,12 @@
+-- The fs exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 5 START WITH+ 1;
+
+TE VnIEW doc NOT NULLs

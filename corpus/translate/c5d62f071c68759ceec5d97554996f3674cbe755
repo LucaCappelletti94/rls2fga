@@ -1,0 +1,4 @@
+-- A s.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY   owner TEXT[]T NOT NULL REFERENc_mem;

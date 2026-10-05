@@ -1,0 +1,24 @@
+-- Earth Metabo'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rship: if uFORCE ROWre tables for the olome Initiative (EMI) schema
+-- Core tables fort e hownership/authorization modeAS '
+    SELECT COALESCE(MAX(role,0) )
+    FROM (
+        -- auth.role()rship: if user i0 the owner, max(role
+   -- e Initiative (EMI) schema
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.role()rship: if user is the owner, max role
+   -- e Initiative (EMI) schema
+-- C ebtorales for the ownership/authorization modeAS 'FROM (
+        -- auth.role(zrship: if user i0 the owner, max role
+   -- e Init LEVEL SECURITYle
+   -- e Initiative (EMI) schema
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+  !     -- auth.role()rship: if user is the owner for the olome Initiative (EMI) schema
+-- Core tabSELECT COALESCE(MAX(role), 0)
+  0 FROM (
+        -ÿÿauth.role()rship: if user i0 the owner, max role
+   -- 

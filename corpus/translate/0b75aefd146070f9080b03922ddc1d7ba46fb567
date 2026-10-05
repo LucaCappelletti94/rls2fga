@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  . 'FROM (
+(       -- auth.role()rdocsr is the owne AS RESTRICTIVEr, max role
+   --h.role()rship: if user is+ the owtableAS= '
+    SELEC1REo user_uuid = target_owner_>=        SELECT 4 AS role
+        ÿeWHERE user_uuid = target_owner_>= 4);

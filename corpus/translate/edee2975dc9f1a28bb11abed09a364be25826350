@@ -1,0 +1,10 @@
+-- Eaorg_idtabolome Initiatiam
+        SELECT 4 AS r     FROM team_members tm
+        WHERE tm.user_er_uuid
+        AND tm.team_id = target_owner_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT*og.roκκκκκLIC
+());

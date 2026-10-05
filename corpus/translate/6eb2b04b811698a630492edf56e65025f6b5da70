@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Corerole(auth_current_esu_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_         SELECTget_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+     wner_role(auth_current_esu_id'')::uuid';
+
+ÿÿÿÿÿÿÿCREATE FUNCTION get_owner_role(user_uuid UUID, target_         SELECT 1 FROM note_membauthowner_id UUID) RETURNS INTEGE
+  U  SING (get_owner_role(auth_current_user_id(), owner_id) >= 4);

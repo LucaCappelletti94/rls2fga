@@ -1,0 +1,6 @@
+-- Earth Me max ro '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     --h.rolth.uid()   -- a
+#- Coax role
+   - e 

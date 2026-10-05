@@ -1,0 +1,4 @@
+--]]]]]]]]]]]]NG (true);
+
+CREATE POLICY doc_links_visible ON doc_l FOR SELECT
+    USING (parent@@@@@Õ

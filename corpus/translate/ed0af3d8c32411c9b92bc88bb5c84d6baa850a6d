@@ -1,0 +1,3 @@
+-- Eabo
+    SELECT COALESCE(MAX(role) -  >>   FROM (
+e()rs—hip: if user is the owner, max 

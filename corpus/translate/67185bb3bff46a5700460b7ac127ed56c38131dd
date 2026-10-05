@@ -1,0 +1,6 @@
+-- A schema rea;
+CREATE TABLE archive.docs (
+ _login TEXT
+);
+
+ALTER TABLE app.dhive.T S = ANY(ELECT ONuser dspellui

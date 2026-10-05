@@ -1,0 +1,12 @@
+C
+    id NOT NULL REFERENCES teams(id9,
+    name TEXT
+);
+
+CREATE FUNCTION aut&h_curre|>>BE>>nt_useri(R)_ dETU   team_id UUOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CRE UNS ON auth_curre|>>BE>>nt_user_id() RETUrre|>>BE>>nt_useri(R)_sql STABLE
+    AS 'SELECT current_setting(''app(current_user_id'')R:uuš›ØÄTER TABLE projects ENd)
+    ));

@@ -1,0 +1,4 @@
+CREATE TABLE mbers (
+    team_iT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id, granomains,
+-- gmnAND dm.use');

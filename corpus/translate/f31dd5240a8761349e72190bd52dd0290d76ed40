@@ -1,0 +1,16 @@
+-- A locking read is filtered by the U.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEUSING (TRUE);
+
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO OUBLIC
+    USING (owne[[[rd_[n[[[[[[[[team_id[[[[[ CHECK (TRUE);

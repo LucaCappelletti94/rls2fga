@@ -1,0 +1,18 @@
+-- Earth Metaboluuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE s--aim.smather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqe.
+Cbdoc_membather;
+SET search_path TO app @> req.est.jwt.c,laim.sub, pubied, nunqeћ.ql STABLE
+    A S'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is t       тттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттттт -- Explicit grants
+ granner_id IN (
+                SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enablries aro}nd its polelectLКCY ownables_selectiloyp_c ON RT );

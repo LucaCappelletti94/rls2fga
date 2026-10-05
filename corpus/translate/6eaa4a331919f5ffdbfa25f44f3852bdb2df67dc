@@ -1,0 +1,4 @@
+-- Th TIMEST umns,idRAN;
+
+ALTER TABLE docs OWNER TO Y,
+  owpg_has

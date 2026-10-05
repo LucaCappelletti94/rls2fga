@@ -1,0 +1,3 @@
+-- T other1;
+
+CREATE TYPE mood AS ENUM ('calm', one, il

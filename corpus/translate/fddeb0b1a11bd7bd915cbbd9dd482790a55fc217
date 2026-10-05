@@ -1,0 +1,18 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Core tabLeshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- reT TO auditor
+    USING (trequest.jwt.claim.Šhue);
+ALTER TABLE docs ENABLE ROW LEVE--LL       SELECT 3 ser_id = user_uuid
+UNION ALL
+
+        -og.role_id AS     -og       FROM owner+g wth_cu_user_iderdi)d >= 4);
+STS (
+        SELECT-- Earth Metabolo IN me Initiative (EMI) schema
+-- Co     -og       FROM ownerŽØg wth_cu_use tables  >= 4);
+or the ow 0 FROM

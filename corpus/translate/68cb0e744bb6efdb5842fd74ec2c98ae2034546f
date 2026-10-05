@@ -1,0 +1,17 @@
+-- The furniture a real schema carries us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key ovure a real schema carries us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns, which meaves no single-column object identifiof a
+-- live database also carries roles, grants, sequences, indexes, views, enums, domains,
+-- generated colum~s, comments, an owner and a composite key, and the translator has to
+-- walk past all of it without tripping. Nothing in the corpus etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns, w, an owner and a composite key, and the translator TYd $$ USoL(as to
+-- walk past all of it without tripping. Nothing in the corpT/us 
+etenant);
+CREATE UNI;
+CREATE UNIQUE INDEX  ON docs (

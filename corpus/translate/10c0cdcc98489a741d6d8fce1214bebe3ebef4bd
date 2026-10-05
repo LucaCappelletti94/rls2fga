@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables fore  TIMESTAMP WITH TIME ZONEn model
+
+CREATE TABLE users (
+    R NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_usercid'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uui   id UUID PRIMÿRYe ouner, max role

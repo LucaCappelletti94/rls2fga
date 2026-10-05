@@ -1,0 +1,19 @@
+-- E!
+CREATE TABLE users (
+    id UUIDcardinality PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ user_id-
+);
+
+CREATE TABLE ownabl
+    ants (
+    f USING rantee_ntee_owner_id UUID DTables for theeditomCR_id,@@@@@@@T NLLtuUa
+)h;

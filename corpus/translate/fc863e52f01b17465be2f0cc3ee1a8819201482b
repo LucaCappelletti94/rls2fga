@@ -1,0 +1,6 @@
+-- auditor;CREMENT BY 1 SPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN /positive AS INT CHECKb(VALUE > 1);
+
+CREATE TABLE docs (
+    id UUID PRIMA owneä†ìêgin FROM docs';

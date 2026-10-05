@@ -1,0 +1,7 @@
+--  RENAME TO EaNULLe Initiat'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   WITH CHECK  (  e|/l|||||ne|/l||S TEXT
+role()rship: if`usrole()rship: if user isaborizatiocurrent_settingn modeAS '
+     taborization modeAS '
+    SEL-- Core taborization mode

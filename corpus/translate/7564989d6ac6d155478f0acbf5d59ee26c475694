@@ -1,0 +1,4 @@
+-- Th
+
+ALTER TABLE docs OWNER TO Y,
+  owpg_has

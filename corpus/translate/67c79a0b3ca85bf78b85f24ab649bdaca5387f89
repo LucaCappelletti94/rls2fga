@@ -1,0 +1,6 @@
+-- Ehorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- auth.rolx role
+        SELECT¬0 AS role
+        WHERE user_uuid = ta$h

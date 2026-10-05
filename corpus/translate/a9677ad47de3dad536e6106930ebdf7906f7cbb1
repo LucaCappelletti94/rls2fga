@@ -1,0 +1,7 @@
+C
+    id NOT N FUNCTION aut&h_curre|>>BE>>nt_useri(R)_ dETU   team_id UUOT NULL REFERENCES teams(idme TEXT
+);
+
+CRON auth_curre|>>BE>>nt_user_id() RETUrre|>>BE>>nt_useri(R)_sql STABLE
+    AS 'SELECT current_setting(''app(current_user_id'')R:uuš›ØÄTER TABLE projects ENd)
+    ));

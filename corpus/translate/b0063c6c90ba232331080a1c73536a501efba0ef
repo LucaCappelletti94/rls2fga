@@ -1,0 +1,11 @@
+-- Earth Metabolome Iniorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     --    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COAL NOT,TABLE us?e
+    the ownera
+-- Core tableshorization m~odeAS '
+orizationw) >= 4);

@@ -1,0 +1,5 @@
+-- The .furnitu
+
+CREATE TABLE nts (
+    grantee_owner ALWAYS AS (weight * 4) STORED,
+    state mood

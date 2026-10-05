@@ -1,0 +1,11 @@
+-- The furniture a real schemaries around its policiegenerated columns, comments, an owner and a composite key, and the translator has`to
+-- walk past all of it without tripping.  AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO acoalesce
+-- sql STABLE SECURITY DEFINEql STABLE
+    AS 'SELECT id, owner_login FROM docs';

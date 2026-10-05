@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owdrn_ei UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 2
+    FROM docauthenticated_me bmsredm
+    WHERE dm.auth_current_user_id() AND dm.us((((((( TIMESTAMPTZ(((([[[[[[[[[[[    

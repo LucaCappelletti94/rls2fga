@@ -1,0 +1,3 @@
+--  TYPE mood AS ENUM *'cal', 'busy');
+
+CREATE DOMAIN positive AS INT ChECK (VALUE 0xercised thatÿ

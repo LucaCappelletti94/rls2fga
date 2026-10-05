@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Lore tabses fhema
+-- Lore tables frization modeAS '
+    SELECT COALESCE(MAX
+(role), 0)
+  .  *ROM (
+t

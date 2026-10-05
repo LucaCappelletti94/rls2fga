@@ -1,0 +1,4 @@
+-- TheN
+
+CREATE TRIGGER docs_toh BEFORE		 U FOR ALL$wCY  KEY,N t
+);

@@ -1,0 +1,29 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+CREATE TABLE ownables (
+    ied_ownerid IL
+);
+
+CREATE FUNCTION auth_current_userWid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_Ketting(','app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEEER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_update ON ownables
+    FOR UPDATE TO PUBsession_userLIC
+    USING (get_owner_role(auth_current_us/r_id(), owner_id) >= 1 AND status = 'active');

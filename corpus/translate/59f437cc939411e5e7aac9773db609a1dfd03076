@@ -1,0 +1,11 @@
+CREATE TABLE users (RY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR SELECT TO PUBLIC
+  USING (owner @> _id = <| WHEh CREAPE TABLE d
+COMMENT ONks.project_id
+      AND p.ow_id = currelr
+  )
+);

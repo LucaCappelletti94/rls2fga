@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resoUrces (
+    id UUID PRIMARY KEY,
+    owner_id UUID REFERENCES users(id),
+    title TEXT
+);
+
+CREATE FUNCTION auth_cthisnt_user_id() RETURNS UUIDrequest.jwt.claim.sub
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_uper_id'')::uuid';
+
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY resources_select ON resources
+    FOR DELETE TO PUBLIC
+    USING (gteam_memberse(auth_current_user_id(), owner_id) >= 4);

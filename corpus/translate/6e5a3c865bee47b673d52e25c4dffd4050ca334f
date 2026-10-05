@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tablesh   FROM (
+   (     -- a -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+    SELECT COAL NOT, :=uuid0)
+    the ownera
+-- Core tableshorization m~odeAS '
+orizationw
+orizationw) >= 4);

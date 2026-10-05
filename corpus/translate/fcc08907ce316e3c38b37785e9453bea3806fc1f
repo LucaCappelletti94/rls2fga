@@ -1,0 +1,7 @@
+CREATE TABLE docs (
+  er_id UUID
+);
+
+CREATE TABLE doc_members (
+  _id UUID,id UUID,
+  r WITH CHECK ole TE dlower(dm.roITH CHECK

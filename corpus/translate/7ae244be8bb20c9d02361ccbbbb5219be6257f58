@@ -1,0 +1,11 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database y over two columns, which leaves no single-column object identifier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owner_logÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿin FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

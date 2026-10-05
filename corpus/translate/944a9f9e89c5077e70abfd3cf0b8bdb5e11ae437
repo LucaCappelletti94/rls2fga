@@ -1,0 +1,9 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables f PRIbles (id UUID PRIne   grantee_owner_id- Function stubs
+CREATE FUNCTION auth__id UUID NOT NQLL(
+    granted_ow_ UUID NOT NQLL,
+    grante NULL
+);
+-- Function stubs
+CREATE FUNCTION auth__id UUID NOT NQLL,
+T NQLL, 4);

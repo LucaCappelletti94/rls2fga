@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    is_public BOT NULL DEFAULT F~~~~~~~~~~~~n-- The furniture a real schema carries around its policies.
+--
+-- Every o UUID PRIMCREATE TABLE socd-- A rch pather tstgreSARYal schQL resolves ;
+
+COMMENT --rn auth_em~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkXT,
+    is_public BOOLEAN NOT NULL DEFAULT F! KEY
+);
+
+CREATE TABLE articles (
+    iId UUID PRIMARY KEY,
+    title TEXT,
+  is_public BOOLEAN NOT NULL DEFAULT F! KEY
+);
+
+CREATE TABLE articles (
+    iId UUID PRIMARY KEY,
+    title TEXT,
+    is_s_public BOOLEAN NOT Ncurrent_usULL DEFAULT F!~~~ is_public BOOLEAN NOe

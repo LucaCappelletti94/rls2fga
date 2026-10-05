@@ -1,0 +1,9 @@
+--orizaom intodel
+
+CREATE TABLE users (    id UJ);
+
+CREATEid(), owner_id) 4=> )I
+    WITid INPEGER NO2 N(), owner_id) 8=> )    WITH CTABLE teeb*ers (
+  am_id UUID NOT, target_owner_id UUID)TABLE
+    AS '
+    SELECT Cet_owner_role(auth_curent_user);

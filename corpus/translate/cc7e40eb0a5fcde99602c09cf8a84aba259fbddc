@@ -1,0 +1,7 @@
+-- Coteam_
+
+ALTER  FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    ASESL E'CT current_sett]]]]]]]]]]]]]]]]]]]]_id'')::uuid';
+
+ALTER TABLE documeLE ROW LEVEATErrent_usic = TRUE);

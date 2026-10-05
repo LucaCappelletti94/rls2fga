@@ -1,0 +1,3 @@
+-- ts ';
+
+GRANT SELECT ON docs TO audur

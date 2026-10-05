@@ -1,0 +1,3 @@
+-- PostgreSQ.Y;
+
+CREATE POLICY account_managers ON  TIMESTAMPTZ  USING  NOT (e

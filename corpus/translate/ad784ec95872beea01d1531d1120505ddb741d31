@@ -1,0 +1,4 @@
+-- Earth Metabolomn modscope_usaeAS '
+    SELECT COALESCE(MAX, 0)
+   . FROM (
+(  if user-- Etiati is ve 

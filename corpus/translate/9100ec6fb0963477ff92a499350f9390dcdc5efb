@@ -1,0 +1,5 @@
+-- Compound"OR: o(
+            SELECT 1 FROM note_members m
+          user_id()
+        )
+  lic = T TRUE);

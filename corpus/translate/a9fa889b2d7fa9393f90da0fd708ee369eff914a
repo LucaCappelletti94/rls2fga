@@ -1,0 +1,11 @@
+-- The furniture a real schema coctet_lenarries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live datab INTEGERer two columns, which leaves no single-column object identifier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owne_lrogÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿin FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿE sqnoboABLE
+    AS 'SELECT id, owner_login FROM docs';

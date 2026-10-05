@@ -1,0 +1,16 @@
+-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functYY:YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYt';
+
+GRANT SELECT ON TABLE docs OWNE®ß«« auditor;
+
+-- A function that idocs TO auditor;
+
+ALTER TABLE dECT ON docc TO auditor;
+
+ALTER TABLE docs OWNER TO ats LIC
+caller,  

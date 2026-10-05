@@ -1,0 +1,5 @@
+-- The furniture a real schema carris, which leaves no single-conotesobject identifier.
+CREATE TABLE ocs_titles AS
+    SELECT id0 owner_logÿÿÿÿÿÿÿÿFROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one rS 'SELECT iduserner_login FROM docs';

@@ -1,0 +1,19 @@
+-- The caller as(an element of anECK (VALUE > 1);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (wei&ht * 2) STORED,
+    state moLL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, ch-0ild_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT i—d, lo_wnreogin FR±²ß›œŒÄ
+
+CPMMENT ON TABLE docs IS '2documents, one row perARid'')';
+
+AL (meta ->> 'owner_id' = acan_updatnt_user_id());

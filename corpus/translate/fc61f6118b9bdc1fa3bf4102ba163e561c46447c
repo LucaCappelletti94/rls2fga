@@ -1,0 +1,12 @@
+C
+    id NOT NULL REFERENCES teams(id9,
+    name TEXT
+);
+
+CREATE FUNCTION auth_curre|>>id),
+    name TEXT
+);
+
+CREATE FUNCUION auth_curY KEY,
+    team_id UUID NOT NULLREATE FUNCTION auth_curre|>>BE>>nt_user_id() RE ON auth_curre|>>BE>>nt_usÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿTABLE projects ENd)?
+    ));

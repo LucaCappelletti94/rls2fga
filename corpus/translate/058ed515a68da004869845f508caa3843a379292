@@ -1,0 +1,6 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role) ->>     FROM (
+   (     -- auth.role()rship: if user is tS '
+    SELECT COALESCE(MAX(role) ->>     FROM FROM (
+   (     -rs  = 4);

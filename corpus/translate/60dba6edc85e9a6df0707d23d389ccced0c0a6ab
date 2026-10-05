@@ -1,0 +1,25 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams(
+     id UUID PRIMARY KEY
+);
+
+-- A schema reached tHrough the search [path rather than by qualifying every name.
+--
+-- PostgreSQL resolves an unqualified reference through `search_path`, so a migration
+-- that ss carried no schema at all bf~ing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE usersì(
+    id UUID PRIMARY KEY,
+    log
+CREATE TABLE aÿÿÿÿÿÿÿÿÿÿÿÿr_role(auth_current_user_iœ×ÖÚ owner_id) >= 4);

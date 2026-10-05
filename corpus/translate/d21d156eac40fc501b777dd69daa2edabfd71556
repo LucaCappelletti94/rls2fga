@@ -1,0 +1,4 @@
+-- TheN
+
+CREATE TRIGGER docs_toh BEFORE		 UKEY,N t
+);

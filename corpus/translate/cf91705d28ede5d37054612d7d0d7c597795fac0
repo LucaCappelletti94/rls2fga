@@ -1,0 +1,5 @@
+-- WITH CHECK admitsthe new res ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner_reads ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_||docs||||||~|||||||||||||||||||||||||||||||ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ||||||||||||||||||uth_current_user_id());

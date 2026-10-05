@@ -1,0 +1,3 @@
+--d OR: ownerbe S (
+            SELECT m
+            WHERE-m.note’id at –s = 'publer_id()

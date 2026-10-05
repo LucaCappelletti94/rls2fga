@@ -1,0 +1,16 @@
+-- The cals what `= ANY` admits, and dropping the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    pg_rid TEXT PRIMARY KEY
+);
+
+CREATE TABLE nmtes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS ×¬º³º¼«Å:json;

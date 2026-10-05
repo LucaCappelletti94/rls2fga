@@ -1,0 +1,11 @@
+-- The caller as(an element of an array column, and sy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+  T NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (wei&ht * 2) STORED,
+  EFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs );

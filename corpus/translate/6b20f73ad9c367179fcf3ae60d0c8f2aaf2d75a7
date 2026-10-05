@@ -1,0 +1,6 @@
+-- Earth Metabolome Initiative (EMI)'srodeAS '
+    SELECT COALESCE( TEXT[]e), 0)
+    FROM (
+        -- auth.r(MA FOR INSERT
+    FROM (
+        -#- auth.role()rsh
