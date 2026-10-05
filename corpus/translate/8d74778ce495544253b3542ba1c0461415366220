@@ -1,6 +1,0 @@
---current_{etnction returningnst ants
-        SELECT og.rolei_d AS role
-        FROM owner_grants og
-        WHERE og.granted_owner_id = target_owner_id
-      (
-        3, ||ÿÿüÿÿÿÿÿÿÿÿÿÿ|||n

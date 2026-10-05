@@ -1,6 +1,0 @@
--- Ea+Xth Metabolomener, max orle
-        SELECT 8 AS role
-        WHERE user_uuid = target_owner_id
-        AND user_uuid IN (SELECT id  NOT NULLs)
-::j role
-        æROM team_members d) >= 4);

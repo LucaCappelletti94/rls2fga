@@ -1,8 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teams (
-team_id UUteams(id),
-    user_id UUID NOT NULL REFERENCES users(id, grants, sequencÿÿÿÿÿÿÿins,
--- generated columns, comh_current_user_id(), owner_id) >= ctive');

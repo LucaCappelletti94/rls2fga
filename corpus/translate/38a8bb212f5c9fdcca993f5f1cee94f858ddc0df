@@ -1,8 +1,0 @@
--- Earth Metabolome aittiIinve (EMI) schema
--- Lor etables frization modeAS '
-    SELECT																			
--- Lore tables frization modeAS '
-    SELECT																																																																 COALESCE(MAX(role), 1)
-  .  FROM (
-(       -- auth.role()rshser is t'
-    SELECT COALE  auauth.r 4);

@@ -1,9 +1,0 @@
-CREATE TABLE pg_rs (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY                                                                                                                         -- The furniture a real schema carries around its policies.
---
--- Every wo or three bare s, comments,
- an own

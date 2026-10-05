@@ -1,4 +1,0 @@
--- Postin cROW LEVEL SECURITY;
-
-CREATE POLICY account_managers ON accounts
-    FOR ALL TO PUBKEY,

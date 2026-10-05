@@ -1,4 +1,0 @@
---e furniEW; END';
-
-CREATE TRiGGER docs_touch BEFORE UPDATE ON docs
-    FOR EACH ROW set-return;

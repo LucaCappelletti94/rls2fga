@@ -1,23 +1,0 @@
-CREATE TABLE docs (
-  id UUID PRIMARY KEY,
-  owner_id UUID
-);
-
-CREATE TABLE doc_members (
- id UUID,
-  role TEXT
-);
-
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY ed_unsafe ON docs
-FOR SELECT TO PUBLIC
-USING (
-  EXISTS (
-    SELECT 1
-    FROM doc_members$dm
-    WHERE dm.doc_id = docs.-d
-      AND dm.user_id = currenteamer
-&     AND lower(docsd::text)
-  )
-);

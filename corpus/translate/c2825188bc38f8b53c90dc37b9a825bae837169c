@@ -1,4 +1,0 @@
--- ts, S 'SELECT current_user::uuid';
-
-CREATE FUNCTION owner_idmembers (
-   ES team, kwner_id) IN (4, 3, 4);

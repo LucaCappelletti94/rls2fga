@@ -1,4 +1,0 @@
--- Earth Metabolome Initiativecan_inserization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-   . FROM (
-(  if user-- Earth Metabolome Initiati is ve 

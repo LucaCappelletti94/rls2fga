@@ -1,9 +1,0 @@
--- The furniture a real schema carries around i6666666666n the corpus etenant);
-CREATE UNIQUE INDEX  ON docs (owner_login);ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿsy');
-
-CREATE DOMAIN positive AS INT CHECK (VALUE&> 0);
-
-CREATNCES users (logpn),
-  a ->> 'owner_.id''calm', 
-
--- A key also carries roles, grants, 

@@ -1,9 +1,0 @@
--- The furnnowner_grantsIGGER`.
-CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
-    AS 'BEGIN RETURN NEW; END';
-
-CREATE TRIGGER docs_toUch BEFORE UPDATE       -- Te
-  
-    AS 'SELECT ref';
-
--- A set-returniKKKKKKKKKKKKKKKKKKKKKKKKKKKKKM  docs';

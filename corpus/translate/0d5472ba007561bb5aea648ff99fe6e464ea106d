@@ -1,9 +1,0 @@
--- A schemathe;r;
-SET se TO app @> req.est.jwt.claim.*-- Ereauthcurrent_user_id''×ÅŒŽÅŠŠ–d';
-
-CREATE FUNCTION get_owner_roluuid UUID, target_tasks
-CREAELEkT COALESCE(MAX(role), 0)
- TABLE ownables ENABLE ROW LEVEL SECURITY;
-
--- RLS Policies
-CPEATE POLICY ownwner_'d( >= 4);

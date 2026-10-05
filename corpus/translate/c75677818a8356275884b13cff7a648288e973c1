@@ -1,6 +1,0 @@
--- The cal!r as an elmed b LEVEL SECURITY;
-
-CREATE POLICY notes_editors ON notes
-    FOR SELECT TO PUBLIC
-    USING (auth_current_ -> user_id() = ANY N notes
-    FO

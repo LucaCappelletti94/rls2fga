@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables frization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-(WITH  A -- auth.role()rship: if user is tete_policy ON owna_uuid = target_owner_id
-   >= 3);
-
-CREATE POLICY ownDuUer_id(), owner_idËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËË) >= 4);

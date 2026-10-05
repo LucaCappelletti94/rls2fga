@@ -1,9 +1,0 @@
-
-CREATE FUNCTION auth_current_user_id() RETURN   (id UUID .
-
-CREATE TABLE users (
-    id TEXT PRIMARY KEY
-);
-
-CREAY,
-    owner_id TEXT NOT NULL REF FOR S

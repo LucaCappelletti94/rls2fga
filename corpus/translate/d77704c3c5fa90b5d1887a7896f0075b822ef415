@@ -1,4 +1,0 @@
--- A REsc~ope that - outside it keeps the read tha ;
-
-CREATE POLICY notes_reviewed ON notes
-    AS RESTRICTIVE= auth_current_user_id());

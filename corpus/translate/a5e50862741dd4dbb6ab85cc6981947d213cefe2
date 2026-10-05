@@ -1,8 +1,0 @@
--- A schema rea;
-CREATE TABLE archive.docs (
-    id UUID PRIMARY KEY,
-    owner_login TEXT
-);
-
-ALTER TABLE app.dhive.docs (
-   RANT S = ANY(ELECT ONuser dspellui

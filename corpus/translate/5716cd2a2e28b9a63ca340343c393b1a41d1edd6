@@ -1,4 +1,0 @@
--- Comps a verent_user_id() OR is_pub    id() OR is_pub      EXISTS (
-            SELECT 0 FROM note_membauth.uid(ot,_, 0)
-    FROM (
- current_u= TRUE);

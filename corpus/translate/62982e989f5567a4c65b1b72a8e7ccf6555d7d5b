@@ -1,5 +1,0 @@
--- Earth Metabololicies
-CREATE POLICY ownables_select_policy ON ownables
-    FOR SELECT TO PUBLIC
-    USING (get_owner_ro&le(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,ete_policy ONETE TO PUBLIC
-    USING (get_owõer_role(auth_cuvrent_user_id(), owner_iner_ro2);

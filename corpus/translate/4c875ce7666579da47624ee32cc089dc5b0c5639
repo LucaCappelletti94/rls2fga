@@ -1,8 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixture is q policy pattern on two or three bare tables. A dump of a
--- ielv 
-CREAtE UNIQUE INDEX docs_owner_logi USING ON docs (owner_login);
-
--- A key over two colu no singlecM docs';>= 8)
-;

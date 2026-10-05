@@ -1,9 +1,0 @@
--- The furniture a real schema carries auditor;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login TEXTGNOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docs_ AS RESTRICTIVELTEc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FRO` docs';

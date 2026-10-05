@@ -1,3 +1,0 @@
--- T schema cRT WITH 2;
-
-CREATE TYPE mood AS ENUM (+'calm' 'busy'E‚TE ';

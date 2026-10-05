@@ -1,4 +1,0 @@
--- PosOW LEVEL SECURITY;
-
-CREATE POLICY accous ON accounts
-    FOR ALL TO PUBKEY,

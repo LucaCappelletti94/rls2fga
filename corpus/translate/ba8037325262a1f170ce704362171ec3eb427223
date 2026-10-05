@@ -1,5 +1,0 @@
--- Earth Metabolome Initiativecan_inserization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-   . FROM (
-(  if user is the owner, max arth Metabolome Initiative (EMIbles
-    FOR _uUereid(): ), s

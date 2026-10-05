@@ -1,3 +1,0 @@
--- TFORCE ROW LEVEL RCEapp;
-
-CREATE TYPE app.d.doc_ref AS (doc_ UUID @>ATE F d‘s';A

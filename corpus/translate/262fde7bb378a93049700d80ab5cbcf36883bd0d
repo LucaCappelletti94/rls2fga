@@ -1,7 +1,0 @@
--- P9: standalona attribute condition (status = 'puT NULL,
-  status TEXT N$ >Nql STABLE
-    AS 'SELECT id FRURId')
-CSEATE TABLE articleoD PRIMARY KEY,
-  t$itle TEXT NOT NULL,
-  status TEXT N$ >Nql
-   d blishedpg_rol');

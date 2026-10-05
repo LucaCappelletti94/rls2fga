@@ -1,6 +1,0 @@
--- Earth Me max ro '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.rolth.uid()   -- a
-#- Coax role
-   -TRUE- e 

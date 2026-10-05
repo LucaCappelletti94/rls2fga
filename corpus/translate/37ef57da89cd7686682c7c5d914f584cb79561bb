@@ -1,14 +1,0 @@
--- Earth Metabolome aittiIinve (EMI) schema
--- Lore tables frization modeAS '
-    SELECT																			
--- Lore tables frization modeAS '
-    SELECT																																																																	 COALESCE(MAX(role), 2)
-  .  FROM (
-(       -- auth.role()rshser is t'
-    SELECT COALE user is+ the owt
-  .  FROM (
-(       -- auth.r																																		 COALESCE(MAX(role), 2)
-  .  FROM (
-o 
-rget_owner_>=																																	role()rshser is the owne AS RESTRICTIVEr, max role
-   -- auauth.r 4);

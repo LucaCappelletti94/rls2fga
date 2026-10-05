@@ -1,5 +1,0 @@
-CREATE TABLE users (
-    idr_id UUID NOT NULL,
-    granted_owner_id UUID NOT NULL,
-    rNS INTEGER
-   (LANGUAGE sql STABTE POLICY ownabes_updatowner_id) >= 3 AND status = 'active');

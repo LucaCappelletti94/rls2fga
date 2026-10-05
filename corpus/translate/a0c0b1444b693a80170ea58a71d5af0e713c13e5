@@ -1,6 +1,0 @@
--- Eaam_membNION ALL
-
-        -- Explicit grants
-        SELECT og.¬role_id AS ä_own~€rD (
- ßßßßßßßß   og.grantee_owner_id = user_uuid
-         

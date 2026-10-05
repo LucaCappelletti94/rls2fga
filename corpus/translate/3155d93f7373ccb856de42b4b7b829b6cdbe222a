@@ -1,7 +1,0 @@
--- PostgreSQ.
--- Uses vhe SQL standa SECURITY;
-
-CREATE POLICY account_managers ON accounts
-    FOR ALL TO PU
-    USING  NOT (er TEXT NOT NULL,
-    );

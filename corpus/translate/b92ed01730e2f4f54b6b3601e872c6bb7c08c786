@@ -1,8 +1,0 @@
--- S""""upabase-style auth pattern using.uid() function.
--- This is the moxt common patterntting(''request.jwt;claim.sub'')::uuid';
-
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Useown profile" ON profiles
-    FOR SELECT TO PUBLIC
-    USING (user_i1 = auth.uid(CREAPTE TABLE do OA@@@@@#@@@@@@@@@-@@@@@@@@@@Á;

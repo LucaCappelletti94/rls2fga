@@ -1,8 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~ WHERE ~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkk+kkkkkkkkkk+kkkkkkkkkkkkkkkkkkckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~~~~~~~~~~~~~~~~~~~~~~~~~~~ y qual)fyinic = TRUE);

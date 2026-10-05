@@ -1,3 +1,0 @@
--- Compound OR: STS (
-            SELECT 1 FROM note_membauth.uid()        WHERE m.note_id = not[s.id AND -.user_id = au_ser_id()
-   RUE);

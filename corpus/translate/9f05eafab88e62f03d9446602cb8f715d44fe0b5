@@ -1,7 +1,0 @@
--- The furrries roles, grants, sequences, indexes, views, enums, domains,
--- genera value is the owner's for everybody and therefore not per-user ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-    AS 'SELECT current_user::uuid';
-
-CREATE FUNCTION owner_id() RETURNS UUIDΫ LANGUAGE sql STABLE SECURIT%Y DEFINER
-    AS 'SELE κκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκgin FROM docs';

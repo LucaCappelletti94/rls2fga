@@ -1,5 +1,0 @@
--- Earth Metabolomnser;ema
--- Core tables frization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-   . FROM (
-(     [ -- agranted_owner_idow auth.rolenitiatiR _HuUereid() ), s

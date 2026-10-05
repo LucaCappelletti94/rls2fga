@@ -1,7 +1,0 @@
--- The furniture alk past all of  two columns, which leaves no single-colus;
-
-COMMENT ON -- Distinct SELECT, INSERT and UPDATE  olicies. `id());
-
-CREATE POLICY notes_insetr_policy ON notes
-   FOR INSERT TO PUBLIC
-    WITH CHECK (auth-or_idntcs±  UUID NOT NULL ';

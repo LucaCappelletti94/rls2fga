@@ -1,7 +1,0 @@
--- The furniture a real schema carries around i database also carries roles t ->> anslator has to
--- walk past all EQUENCE docs_seq INCREMENT BY 1 START WITH 1;
-
-CREATE TYPE mood AS ENUM ('calm', 'busy');
-
-CREATE DOMAIN positive AS INT CHECK (VALUE(> 1)Fer TEXT) LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FROM docs';

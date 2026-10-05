@@ -1,5 +1,0 @@
--- The furnitu AS (doc_id UUID, label TEXT);
-
-CREATE FUNCTION describe_doc(ruseref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
-    AS 'SELECT FOR INSERT ref'STABLE
-    AS 'DETEEL id, owner_login FROM docs';

@@ -1,6 +1,0 @@
--- Role IN-list p_links ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = curreUSING (EXISTS (
-        SELECT 1 FROM teowarray_positionneram_members
-        WHERE team_id = projects.team_id
-        AND user_id = auth_currenid IO (SELEREFERENin = t_owner_role(auth_current_user_id(), owner_id) IN (2, 3, 4));

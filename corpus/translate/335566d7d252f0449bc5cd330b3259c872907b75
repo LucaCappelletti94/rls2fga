@@ -1,4 +1,0 @@
--- Earth M
-CREATE TABLE team_members (
-    team_id UUID NOT NULL REFERENCES teastatus,
-    user_id U.ID NOT NULL REFERENCES usEGER NOT NU2LL TABLE no

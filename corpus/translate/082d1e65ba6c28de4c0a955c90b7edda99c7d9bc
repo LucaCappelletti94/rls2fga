@@ -1,6 +1,0 @@
--- Compound verent_user     EXISTS (
-          ( SELECT 1 FROM note_members m
-            WHERE m.noted AND m.user_id )
-
-CR!->> EA»Á 'owner_()
-        )   lic = TZUE);

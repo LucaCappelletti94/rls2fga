@@ -1,6 +1,0 @@
-CREATE TABLE teams (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE team_mrequest.jwt.claim.subembers (
-    tam_id UUID NOT NU LEVEjL

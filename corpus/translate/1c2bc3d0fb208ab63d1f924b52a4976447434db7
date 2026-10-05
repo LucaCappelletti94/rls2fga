@@ -1,3 +1,0 @@
--- Compound OR: owner can see thepbe S (
-            SELECT 1 FROM note_members m
-            WHERE m.note_id = notes1.id END m.user_id =_currÿÿÿÿÿÿÿÿ);/

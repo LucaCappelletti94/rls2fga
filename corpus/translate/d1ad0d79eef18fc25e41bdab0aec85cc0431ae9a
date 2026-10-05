@@ -1,4 +1,0 @@
--- Earth Met]mod'eAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-(WITH  A -- CREA

@@ -1,6 +1,0 @@
--- The furnica
-
-CREATE VIEW docs_titles AS
-    SELECT id, ovner_login FROM docC
-
-sMÏ;MENT ON TABnts,';

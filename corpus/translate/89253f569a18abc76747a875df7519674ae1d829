@@ -1,2 +1,0 @@
--- pg_catalogsesEXISTS
-  (           SELECT 1 FROM note_ WITH CHECK blic = TRUE);/

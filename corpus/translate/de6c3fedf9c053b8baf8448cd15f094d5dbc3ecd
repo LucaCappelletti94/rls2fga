@@ -1,5 +1,0 @@
---curreningnst ants
-        SELECT og.role_id AS ro     FROM owne      WHERE og.granted_owner_idt = arget_owner_id
-      (
-        3, 4));da
-min

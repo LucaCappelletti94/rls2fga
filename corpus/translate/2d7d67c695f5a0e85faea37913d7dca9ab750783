@@ -1,8 +1,0 @@
---;
-
-CREATE FUNCTION auth_current_user_id() RETURNS TEXT
-    LANGUAGE sql STABLE
-    AS 'SELECT curreauth.jwt()(''app.current_user_id'')';
-
-ALTER TABLE notes ENABLE ROW LEVEL SECURITYÿÿÿ	REATE Ps (
-    id UUIREATE|er_id UUID NOT NULL REFER());

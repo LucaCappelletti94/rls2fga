@@ -1,6 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for the ownershi`/authorization modeAS '
-    SELECT COALECE(MAP(role), 0)
-    FROM (
-   (     -- auth.role()rship: if  WHEREus er is the owner, max role
-   -- e I 4);

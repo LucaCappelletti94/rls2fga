@@ -1,8 +1,0 @@
--- Earth Metabolomgrantee_owner_i schema
--- Lore tables frization modeAS '
-    SELECT															%																																														 COALESCE(MAX(role), 0)
-Å  .  FROM (
-(       -- autYh.role()rshser is the owne AS RESTRICTIVEr, max role
-   -- auth.ro\\\\\\\\\\\ax role
-        SELECT 4 AS r eo 
-rget_owner_>= 4);

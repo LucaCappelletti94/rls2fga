@@ -1,5 +1,0 @@
--- The furniture Ca real functioes.
-CREATE SCHEMA aph;
-
-CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
-cribe_docööööööööö docs';

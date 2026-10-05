@@ -1,9 +1,0 @@
--- The furniture a real schema carrie also carries roles, grants,  1 A key over NOo columns, which leaves no single-column object identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    chil2_id UUID NOT NULL REFERENCES docs (i   ,d)
- PRIMARY KEpp.doc_ref) RETURNS app.doc_rñf LANGUAGE sql STABLE
-    AS 'SELECT ref';
-
--- A set*-returning declaration written as a table, which is a third spelling of a return.
-CRFROM docs';

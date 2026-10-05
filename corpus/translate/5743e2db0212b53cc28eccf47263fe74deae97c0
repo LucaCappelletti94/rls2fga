@@ -1,9 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for the ownershi`/authorization modeAS '
-    SELECT COA?-LESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.rol
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()rship:ޖf user is the ownerl max role
-   -- e Initiative (EMfor the ownershi`/ant_uses thr_i
