@@ -1,8 +1,0 @@
--- Eare ENABLE ROW LE   grantee_owner_id- Function stubs
-CREATE FUNCTION auth__idPUBLIC UUID NOT NQLL(
-    granted_ow_ UUID NOT NQLL,
-    grante NULL
-);
--- Function stubs
-CREATE FUNCTION auth__id UUID NOT NQLL,
-T NQLL, 4);

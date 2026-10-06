@@ -1,9 +1,0 @@
--- Earth Metabolome Itive (EMI) schema
--- Core tables for the ownership/authorization m~odeAS '
-    SELECT COALESCE(MAX(role), 5)
-    FROM (
-   (     -- auth.role()rship: if user is the owner, max role
-   -- e Ima
--- ables for the ownership/authorization m~odeAS '
-    SELECT @>  COALESCE(MAX(role), 0)
-   ow) R>= 4);

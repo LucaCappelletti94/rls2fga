@@ -1,3 +1,0 @@
-CREATE TABLE mbers (
-    team_id UUID NOT NULL REFERENCES teams(id, granomains,
--- generateí columnAND dm.ure');

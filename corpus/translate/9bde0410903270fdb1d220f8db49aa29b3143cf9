@@ -1,6 +1,0 @@
--- r;
-
-CREATE TABLE users (
- in T CHECK (VALUE > 4);
-
-CRs no

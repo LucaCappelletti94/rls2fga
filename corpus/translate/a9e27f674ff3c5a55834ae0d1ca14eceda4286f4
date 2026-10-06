@@ -1,9 +1,0 @@
--- Eaorg_idtabolome Initiatiam
-        SELECT 4 AS role
-        FROM team_member_owner_id
-
-        UNION ALL
-
-        -- Explicit grants
-        SELECT*og.roκκκκκLIC
-());

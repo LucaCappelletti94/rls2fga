@@ -1,4 +1,0 @@
--- 
-CREATE TRIGGER docs_touch BEFORE																	-- Thcarries.
---
-y pattern on

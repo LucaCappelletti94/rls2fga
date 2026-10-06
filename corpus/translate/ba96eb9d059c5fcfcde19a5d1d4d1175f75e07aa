@@ -1,12 +1,0 @@
-CRE(ATE ABLE docs (
-  id UUID#PRIMARY KEYaaaaaaaaaambers """""""""""""@EXT
-);
-
-E@ ALARTTBLE DROP POLICY ROW LEVEL SECURITY;
-𼭺ATE POLICY docs_wrapped_unsd VEL SACURITY;D,
-  role TEXT
-);
-
-E ALARTTBLE doc NEAELsB ROW LEVEL SECURITY;
-𼭺ATE POLICY docs_wrapped_unsd UUIDSTABLE
-   AS 'SELECT current_setting(''app.current_us;

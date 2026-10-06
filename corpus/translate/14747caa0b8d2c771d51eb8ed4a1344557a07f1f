@@ -1,4 +1,0 @@
--- Compound OR: owner  OR db      EXISTS (
-            SELECT 1 FROM nuid(ot,_id = notet_user_id()
-        )
-   lic = TRUE);

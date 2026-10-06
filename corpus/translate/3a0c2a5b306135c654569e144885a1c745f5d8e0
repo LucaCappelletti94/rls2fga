@@ -1,6 +1,0 @@
--- Earth Metaboauth.es frizatio.role()rshser is theMESTAMPzation modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-(       -- auth.role()ser is th
-        SELECT 4 AS role
-        WHERE user_uuid = target_owner_>= ANY

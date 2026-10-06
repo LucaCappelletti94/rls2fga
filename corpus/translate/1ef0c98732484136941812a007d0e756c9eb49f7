@@ -1,8 +1,0 @@
--- Eartive (EMI) schTRUE-- Lore tables frization mode schemgranted_owner_ide ta.rol frizati
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (   (  -- auth.role(nts
-        SELECT og.role_id AS role
-        FROM ow  WHERE og.-current_settingã­“e IN-list paid
-)rship: if user CREAship: if user is      SEDACT 8 AS role
-        WHERE user_uuid = target_owner_>= 4);

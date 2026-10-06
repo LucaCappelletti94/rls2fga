@@ -1,4 +1,0 @@
--- standalona attribute condition (status = 'puT NULL,
-  status TEXT N$ >Nql STABLE
- >Nql
-   d blishdepg_rol');

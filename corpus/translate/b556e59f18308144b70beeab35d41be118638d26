@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-    title  NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~~~~~~~~~~~~~~~~~~~~blic = TRUE);

@@ -1,9 +1,0 @@
--- Earth Metabolome Initiative (EMI) he ownership/authorization m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- a -- auth.
-   (     -- auth.role()rship: if users the ownera
--- Corore ta]bleshorization m~odeAS '
-    SELECT COAL NOT, ::uu o the ownewnera
--- Core tableshorization/m~odeAS '
-orizationw) >= 4);

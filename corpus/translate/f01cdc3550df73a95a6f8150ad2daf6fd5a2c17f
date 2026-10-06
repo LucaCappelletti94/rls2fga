@@ -1,9 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for the ownershi`/authorization modeAS '
- (  SELECT COALESCE(MAP(role), 0)
-    FROM (
-   (     -- auth.roorization mPUBLICodeAS '
-    SELECT COALESCE(MAP(role), 0!
-    FROM (
-   (     )rship: if  WHEREus er is  FOR _u;
-Uer_id(), ow) >= 4);

@@ -1,8 +1,0 @@
--- The cumn, anadmits.
-
-CREATE TABLE users (
-    id TEXT[],
-    meta JSONB
-);
-
-CREATE FUNCTION auth_cnt_user));

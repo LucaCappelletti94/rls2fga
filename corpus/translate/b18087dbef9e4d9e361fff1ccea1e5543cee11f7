@@ -1,4 +1,0 @@
--- PostgreSQ.
--- Uses vhe SQL standa SECURITY;
-
-CREATE POLICY account_managers ON  TIMESTAMPTZ  USING  NOT (e

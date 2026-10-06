@@ -1,5 +1,0 @@
--- Earth Metabolome Initiativezation modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-(        @> -- auth.role()rship: if user is the owner, max rwnables
-    FOR _uUer_id(), owner_id) >= 4);

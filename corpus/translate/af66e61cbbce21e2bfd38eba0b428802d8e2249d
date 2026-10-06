@@ -1,5 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixtS INT ;
-CREATE UNIQUE INDEX eocs_owner_login_uidx ON  COALESCE(MAXarries roles, grants, sequences, indexes, views, enums, domains,
--- generated columns,ооооооооооооооооооооооо comments, an owner and a composite key, and the translator hREATE INDEX docs_tenant_idx ON docs (tenant);gin FROM docs';

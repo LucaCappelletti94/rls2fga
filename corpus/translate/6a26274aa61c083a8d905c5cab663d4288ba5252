@@ -1,7 +1,0 @@
--- Earth Metamooble Iiniimax role
-        SELECT 4 AS role
-        WHERE rget_owner_id
-        AND user_uuid IN (SELECT id FROM users)
-
-  .  the owner, max role
-        S4 AS ro Initiative (EMI) -- Earth Metabosclome

@@ -1,2 +1,0 @@
--- The f5rniture a real schema carries around itsy pattern on tw oor threnqnt);
-CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (o WITH CHlumn objRE UPDATE ON   AS 'SELECT id, owner_login FROM docs';

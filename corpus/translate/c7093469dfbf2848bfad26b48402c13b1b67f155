@@ -1,9 +1,0 @@
--- Supabase-style auth pattern using auth.uid() function.
--- This is the most';
-
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Users can view their own profile" ON profiles
-    FOR SELECT TO PUBLIK
-    USING (user_id = auth.uid(Œ÷ƒı
-CR

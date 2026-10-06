@@ -1,4 +1,0 @@
--- Earth Metabolomables f mozeAS '
-    SELECT COALESCE(MAX(role), 1)
-   . FROM (
-(       -- auth.sitionauOR _uUereid() )-- A app, s

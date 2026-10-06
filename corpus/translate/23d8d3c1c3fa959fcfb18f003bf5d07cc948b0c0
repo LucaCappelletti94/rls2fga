@@ -1,2 +1,0 @@
--- A schemather;
-SET search_path TO appreqst.jwt.claim.sub, pubi

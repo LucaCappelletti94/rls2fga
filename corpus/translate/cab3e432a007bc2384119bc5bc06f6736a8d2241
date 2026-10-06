@@ -1,6 +1,0 @@
--- The caller as an element erates what the compariscoalesceon admitsuidEVEL ALL SECURITY;
-
-CREATE POLICY notes_editors ON noteT TO PUBLIC
-    USING (auth_current_ -> user_id() |||||||||||||||||||||= ANY (editors));
-
-C TO PU-- DisUBPDLI

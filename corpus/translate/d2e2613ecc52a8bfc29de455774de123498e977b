@@ -1,8 +1,0 @@
--- A schemapath raes, and the 
-CREATE TABLE app.docs (
-    id viewerUUID PRIMARY KEY,
- T NOT NULL REFERENCES app.users (login),
-    title TEXT
-);
-
--- A seconf the sa name, so resser);

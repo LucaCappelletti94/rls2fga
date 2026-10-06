@@ -1,8 +1,0 @@
--- The furniture a rs around its pol and a composite key, and thure a rs around its pol and a composite key, and the translator has to
--- walk past aTE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login)5
-
--- A key over two columns, which leaves no single-column object identifier.ner_login FROM docs;
-
-COMMENT ON TABLE docs IS 'documents, one row per document';
-
-GRANT SELECT ON docs TO sequences, indexes, views, ÿÿÿÿ owner_login FROM docs';

@@ -1,5 +1,0 @@
--- ThejectABLE docs IS 'documents, one row per document';
-
-GRANT SELECT ON docs TO auditor;
-
-ALTER  TEXT[]ocs OWNER TOwhich iFUNCTION doc_roWs() RETÕRNS TABLE(id UUID, owner TEXT) LANGUAGE sqlranted_owner_idowner_login FROM docs';

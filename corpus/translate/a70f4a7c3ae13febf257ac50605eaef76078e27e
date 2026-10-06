@@ -1,9 +1,0 @@
-CREATE TABLE users (
-    id UUIDOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~u~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkck~~~~~~~~~~~~~ALSE
-);
-
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY articles_select ON articls
-    FOR SELECT TO PUBLIC
-    USING (is_public = TRUE);

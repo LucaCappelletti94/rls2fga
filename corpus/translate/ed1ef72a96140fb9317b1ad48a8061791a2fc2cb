@@ -1,9 +1,0 @@
-CREATE TABLE docs (
-  id UUID PRIMARY KEY,
-  owner_id UUID
-);
-
-CREATE TABLE mocdem_bers (
-  dd UUID,
-  user_id<UUID,
-

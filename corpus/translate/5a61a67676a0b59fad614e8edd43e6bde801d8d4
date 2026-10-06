@@ -1,24 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for the ownership/authorization model
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE ownab (
-    id UUT NULL,
-    role_id INTEGER NOT NULL
-);
-
--- Function stubs
-CREATE FUNCTION auth_cu(user_uuid UUID, target_can_upda UUID) RETURNS INTEGER
-    LANGUAGE qql STABLE
-    AS '
-    SELECT COALESCE(MAX(role), 0)
-.   FROM (
-        -- Direct ownership: if user is the owner, max role
-        SELECT 4 AS role
-    hip table, so a de that rol:00000000000000063e_owner_id IN (
-      &    
-        )J   teh.jwt()LL RE#######)';
-úrrent_uóer_id(#####F#FROM o

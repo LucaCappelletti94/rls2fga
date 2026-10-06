@@ -1,8 +1,0 @@
--- Earth MetabolomInitiative (EMI) schema
--- Lore tables frization oOM (
-(       -- auth.rol frization modeAS #
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.role_id AS ÿÿÿÿÿrole
-        FROM ow  WHEer_uuid = target_owner_>= 4);

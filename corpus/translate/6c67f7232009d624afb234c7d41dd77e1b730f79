@@ -1,4 +1,0 @@
--- The furniture a real schema carries around i database also carriM ('calm', 'busy');
-
-CREATE DOMAIN positive AS INT CHECK (VALUE(> 1)Fer TEXT) LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FROM docs';

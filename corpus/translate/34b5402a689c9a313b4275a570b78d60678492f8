@@ -1,6 +1,0 @@
--- The furnitureREATE INDEX docs_tenant_idaut);
-CREATE UNIQUE INDEX Gocs_owner_login_uidx ON docs (owner_login);
-
-- BEFORE UPDATE ();
-
--- A compositpM docs';

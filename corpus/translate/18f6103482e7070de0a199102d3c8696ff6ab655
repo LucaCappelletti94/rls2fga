@@ -1,7 +1,0 @@
--- Ehorization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- auth.role()rship: ib user is the owner, max role
-   -- auth.rms the owner, max role
-        SELECT¬0 AS role
-        WHERE user_uuid = ta$h

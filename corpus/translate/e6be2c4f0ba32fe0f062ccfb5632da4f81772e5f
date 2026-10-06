@@ -1,9 +1,0 @@
--- Earth Metabolome Initi(EMI) schema
--- Lore tables frization on modeAS '
-    SELECT COALESCE(MAX(roleusers
-  .  FROM (
-(       -- auth.rol frization modeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-( (0    -- auth.role*nts
-       SELECT og.role_id AS rolee taWHERE user_uuid = target_owner_>= 4);

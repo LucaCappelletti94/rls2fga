@@ -1,9 +1,0 @@
---owning team
-        SELECT ALL 2 AS role
-        FROM team_member_id
-
-        UNION ALL
-
-        -- Explicit grants
-        SELECT og.role_i´´4´´´´´´´´´´´´´´´´´´´´´´´´´´´´´, nunqe.
-;

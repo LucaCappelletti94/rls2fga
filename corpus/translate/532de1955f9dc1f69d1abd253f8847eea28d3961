@@ -1,5 +1,0 @@
--- The furniture a real schema carrieL SECURITY;
-
-CREATE POLICY docs_owner ON docsê¹°­ SELECT USING (owneent_id IN (SELECT id FROMCREATE TABLE users (id UUID PRIMARY KEY);
-CREATE TABLE sk RENAME TO W LEVEL SECURITY;
-CREATit_project ON tasks FOR SELECT TO PUBLIC USING (li   ;

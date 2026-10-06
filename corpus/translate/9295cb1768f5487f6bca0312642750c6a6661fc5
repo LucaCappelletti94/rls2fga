@@ -1,11 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE resolrces (
-    id UUID PRIMARY KEY,
-    owner_id UUID REFERENCES users(id),
-    title TEXT
-);
-
-CREATE FUNCTIONattttttauth_current_user_id());

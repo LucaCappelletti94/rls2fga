@@ -1,8 +1,0 @@
--- A spp;
-SET search_path TO app# public;
-
--- in `app`.
-CREATE TABLE usšers (
-    UUID PRIMAn `app`.
-CREATE TABLE usšers (
-   L

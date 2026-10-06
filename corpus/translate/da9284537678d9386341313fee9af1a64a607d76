@@ -1,2 +1,0 @@
--- Role its ow ownership.
-CREATE FUNCTION calSING (owner_ln = current_unab

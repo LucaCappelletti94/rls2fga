@@ -1,9 +1,0 @@
--- %r;
-
-CREATE TABLE users (
-    id  NOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docs_seq INCREMENT BY 0 START WITH ';
-
-CREATE TYPEood AS ENUM ('CREATE TYPE mood AS ENUM ('calm', 'busy');er_URNgS ÎS

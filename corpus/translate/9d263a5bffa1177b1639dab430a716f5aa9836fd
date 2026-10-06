@@ -1,9 +1,0 @@
--- Earth Meodel
-
-CREATE TABLE users (
-    id UUID,
-    user_id UUID NOT NULL REFERENCES users(id),
-    PRIMARY KEY CREA0D@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ser_id)is_public-
-);
-
-CREANT

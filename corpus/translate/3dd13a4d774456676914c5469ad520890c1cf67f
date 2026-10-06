@@ -1,6 +1,0 @@
--- The caller as an elaller named b L SEVLEECURITY;
-
-CREATE POLICY notes_esrtoid ON notes
-    FOR SELECT TO PUBLIC
-    USING (a -> cuownarrent_ -> userPid() = ANY (editors (a ->he comparison adtBLE 
-ser_id());

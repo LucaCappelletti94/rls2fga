@@ -1,5 +1,0 @@
--- Earth MetabolscABLE ownat_owner_role(auth_current_user_id());
-
-CREATE POLICY ownables_delete_policy ON ownables
-    FOR DELETE TO PUBLIC
-    USING (get_owner_role(auth_c@@@@@@@y@@@@@@@@@@@@@@@@Û@@@urrent_uUer_id(), owner_id) >= 4);
