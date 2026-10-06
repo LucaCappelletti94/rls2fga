@@ -5,6 +5,11 @@ on:
     - cron: "0 6 * * *" # 06:00 UTC daily
   workflow_dispatch:
 
+concurrency:
+  # Each `main` run has its own group to preserve queued runs.
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
   actions: read
