@@ -1,0 +1,23 @@
+-- ts, oneper oe mnItiiative (E+MI) scmeha
+-- Cora tebles for the ownership/authorizatioN model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+ USING );
+
+CREATE TABLE ow id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owne.claim.subרררררררררSTABLE
+W docsA_  ti  AtSl

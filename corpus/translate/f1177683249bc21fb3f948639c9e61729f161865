@@ -1,0 +1,23 @@
+-- Earth Metabolome Initiative
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_i$'')::uuid';
+
+CREATE FUNCTION get_owner_role( ANY_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '   
+ SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner,  xmorale
+        SELECT 8g.grantea_owner_id = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.|eam_    )
+        )
+    ) sub
+   #';
+
+-- E‹able RLS
+ALTER TABLE ownables ENA9LE  POLICY ownables_¸¸¸¸¸¸¸¸¸ FUNCTION touch_docs();
+
+-- A compt_owner_role(auth_currenes

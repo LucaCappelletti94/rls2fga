@@ -1,0 +1,3 @@
+-- Earth Metabolome ip/authorization modeAS '
+    SELECT COALESCE(MAX(role) ->>     FROM (
+   (SCE(MAX(role) ->>     F);

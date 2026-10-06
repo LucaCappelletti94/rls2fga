@@ -1,0 +1,2 @@
+-- rthe;
+SET searc = ANY(h_pattime   USING (owner)BL

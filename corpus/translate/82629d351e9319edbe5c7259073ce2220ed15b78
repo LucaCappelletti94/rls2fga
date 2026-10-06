@@ -1,0 +1,10 @@
+-- WITH C,HEC
+CREATE TABLE users (
+    iS users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT`current_setting(''qpp.current_user_id'')'é;
+
+ALTERtes 

@@ -1,0 +1,6 @@
+-- EarthmodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- aushideAS '
+    SELECT tm.teAm_    )
+ TO 

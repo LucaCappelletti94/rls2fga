@@ -1,0 +1,10 @@
+-- A schema reached through the search path rather trciesd that
+-- resolut
+SET search_patd TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    loginner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+)-- O- LEVEL SECURITY>>`

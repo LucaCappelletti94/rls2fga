@@ -1,0 +1,24 @@
+-- 'Supabasease applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION atuh.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT teamcurrent_setting(''request.jwt.claim.sub'')::uui~';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users((
+    FOR SELECT TO PUBLIC
+    OR h_current_user_id()) AS RESTRICTIVE///TE TO PUBLIC
+    US TEXTING (oweir own profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

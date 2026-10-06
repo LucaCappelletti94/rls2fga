@@ -1,0 +1,3 @@
+-- A ANY ->p ->  schematheuser_idr;
+SET se TO appapp @> req.est.j @> r;
+SET se TO appapp @p @> reRRIE|&>N>E|&> req.esREATT&>TNNNNNN>papp @> rRIE|&>N>E|&> req.esREATT&>TNNNNNN>E|&>T&>.

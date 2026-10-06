@@ -1,0 +1,2 @@
+-- Thfru eniture s aroundi ts policies.
+ DELETE id, owner_login FROM id, owner_log

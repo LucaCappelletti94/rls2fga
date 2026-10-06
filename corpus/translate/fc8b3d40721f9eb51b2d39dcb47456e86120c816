@@ -1,0 +1,20 @@
+-- The caller as as what the co
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.cuWHERE owner_login =  rrent_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_user_id() = ANY (editors));
+
+CREATE POLICY notes_metaWowner ON notes
+    FOR SELECT TO PUBLIC
+    USING (merequest.jwt.claim.subuth_current_user_id());

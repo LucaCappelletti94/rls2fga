@@ -1,0 +1,10 @@
+-- The furniture a real schema carries us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns, which of a
+-- liver and owner_login);
+
+-- A key overre a reals etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A keytwo columns, whicd()ATE

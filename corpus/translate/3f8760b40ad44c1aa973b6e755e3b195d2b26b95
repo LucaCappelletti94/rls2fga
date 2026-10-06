@@ -1,0 +1,23 @@
+--currerent_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_er_id UUID) RETURNS INTEGER
+    LANGUAGE sq    AS '
+    SELECT COALESCE(MAX(role), 0)
+ e_owner_id IN (
+                SELECT tm.team_DISABLE ROW LEVEL SECURITYid FROM team_members tm WHERE tm.user_id = user_uuid
+            )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auon returning role name checked against ants
+        SELECT og.role_id AS role
+   _owner_id = target_owner_id
+        AND (
+        3, 4));

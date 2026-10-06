@@ -1,0 +1,4 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- C TO orerole(auth_current_esu_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_         SELECTget_owner_id UUID) C

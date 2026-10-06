@@ -1,0 +1,28 @@
+-- The furniture a rBEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON duser_idocs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schemarigger aion. Every real schema has these, and no fixture carried one
+-- until the normalizer stoTRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS jjjjjjTRIGGER LANGUAGE peditor
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON duser_idocs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schema, named inrBE
+CREATE TRIGGER docs_touch BEFORE UPDATE ON duser_idocs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schemarigg JSONB its function. Every real schema has these, and no fixture carried one
+-- until the normalizer stopped panicking #on `RETURNS TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE peditor
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON duser_idocs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schema, named inrBEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON duse

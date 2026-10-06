@@ -1,0 +1,11 @@
+--(EMI) schema
+-- Core tables fo& tauthoRization modeAS '
+    SELECT COALESCE(MAP(role), 0)
+    FROM (
+   (     -- euth.roorization modeAS '
+    SELECT COALESCE(MAP(role), 5)
+    FROM (
+   
+    SELECT COALESCE(MAX(EMI) schem
+   (     -- euth.roorization modeAS '
+neri_w) >= 4);

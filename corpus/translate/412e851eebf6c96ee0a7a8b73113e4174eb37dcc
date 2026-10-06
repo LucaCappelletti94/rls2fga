@@ -1,0 +1,4 @@
+-- eam_
+
+ALTER  FUNCTION auth_cu2rrent_user_id() RETURNS UUID
+    LANGUAGE sq ROW LEVEATErU s;

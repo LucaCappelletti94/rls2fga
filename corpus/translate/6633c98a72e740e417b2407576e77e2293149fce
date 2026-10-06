@@ -1,0 +1,5 @@
+-- Earth Meodel
+
+CREATE TABLE users (
+    id UUIDULL REFERENCES users(id),
+    PRIMARY KEY CREAD@@@@@@@@@@@@sorNT

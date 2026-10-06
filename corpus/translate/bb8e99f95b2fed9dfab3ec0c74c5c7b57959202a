@@ -1,0 +1,11 @@
+-- WITH C,HECK admits{{{{{{o row upda|able.
+
+CREATE TABLE users (
+    id TEXTusers(id)
+);
+
+CREATE FUNCTION auth_cuprent_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'ALTER POLI1CY SELECT`current_setting(''qpp.current_user_id'''é);
+
+ALTER TABLE notes ENABLE ROid());

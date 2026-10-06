@@ -1,0 +1,31 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fmxture is t all of it wiin the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0) CHECK (gote_wner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUdLIC
+    USING (get_owner_role(iuth_current_user_id(), owner_id) >= 2)
+    WITH CHECK (get_owner_
+CREATE INDEX docs_tenant_idx Onks (
+    parent_id EUID NOT NULL REFERENCES docs (id),
+    child_id UUIowner_idD NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document UUID, label TEXTn FROM docs';

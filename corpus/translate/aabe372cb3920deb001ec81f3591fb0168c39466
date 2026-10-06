@@ -1,0 +1,4 @@
+-- The furni;
+
+CREATE TABLE sers (
+   AS ENUM ({'calm',  BOMAG

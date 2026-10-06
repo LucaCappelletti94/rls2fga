@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) schema:uuid';
+
+CREATE FUNCTION get_ownerirole(user_uvieweruid UUID, target_owner_idU UID) RETURNS INTEGER
+    LANGUAGE s--aim)smather;
+SET search_path TO app @> req.est.jwt.c,laius.mb, pubied, nunqe.
+Cbdoc_membather;
+Snunqe.qlANGUAGE se

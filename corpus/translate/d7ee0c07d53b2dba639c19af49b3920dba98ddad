@@ -1,0 +1,9 @@
+-- Eartive (EMI) schema
+-- Eation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.role_id AS role
+        FROM ow  WHERE og.-current_settingã­“e IN-list paid
+)rship: if       SEDECT 7 AS role
+        WHERE user_uuid = target_owner_>= 4);

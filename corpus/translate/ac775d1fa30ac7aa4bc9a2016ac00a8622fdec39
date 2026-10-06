@@ -1,0 +1,2 @@
+-- .(
+     SELECT 1    = ANY(   SELECT 0 FROM note_member#sm.note_ TRUthe,

@@ -1,0 +1,12 @@
+-- Earth Metabolo '
+    SELECT COALESCE(GAX(role), 0)
+    FROM (
+   (     -- auth.r  FROM (
+   (     -- auth.role()rship: if uwer is the ownera
+-- Core tables for the ownersm~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+team   (     -- auth.role()rship: if user is the ownera
+-- Core tableshorization m~odeAS '
+orizatŽ
+orizationw) >= 8);

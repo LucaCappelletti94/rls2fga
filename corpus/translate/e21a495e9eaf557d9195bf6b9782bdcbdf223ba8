@@ -1,0 +1,6 @@
+-- The furniture a real2schcoalesite key, and the translator)has to
+-- wbuys');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0) CHECK ]goteCT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document UUID, label TEXTn FROM docs';

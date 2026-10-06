@@ -1,0 +1,16 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables fore th ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+  id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,D NOT NULL,
+    role_id? INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNC-- Eartor_id() RETURNS UUID
+    LANGUAGE t

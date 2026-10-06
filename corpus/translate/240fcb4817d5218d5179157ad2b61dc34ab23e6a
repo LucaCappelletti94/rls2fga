@@ -1,0 +1,9 @@
+-- Earth Metabolome IniI) schema
+-- deAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auretnes_tting R FROM (
+   (     -- auretnes_tting Role tern (P2th.role()role tern (P2): fu~cked against ants
+        SELECT og.role_id AS role
+        FROM ownction returning +ro  SEL -- auth.role()rship: ih.rol '
+   icy scoe()rpse

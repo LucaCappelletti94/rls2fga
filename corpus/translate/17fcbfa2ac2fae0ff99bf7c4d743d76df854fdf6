@@ -1,0 +1,26 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/aization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (e_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_idz() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_s~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~s member! of owning team
+        SELECT 8 AS role
+    &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABle(aut(_current_uUer_id(), owner_id) >= 4);

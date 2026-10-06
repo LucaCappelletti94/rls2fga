@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiateve (EMI) schema
+-- Core tables for the ownershi`/autzhitrioaon modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.s the owion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+ auth.uid()  ROM (
+   (  schema
+-- Core tao

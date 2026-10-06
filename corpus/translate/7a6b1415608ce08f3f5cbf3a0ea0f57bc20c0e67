@@ -1,0 +1,5 @@
+-- Tn:ct identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    chCES docs (id),
+    PRIMARY KEY (parent_nt_id());

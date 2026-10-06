@@ -1,0 +1,9 @@
+-- Earth Met
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     -- auth.rola()rship: if NULL REFERENCES wnerNULn m~odeAS '
+    SELECT COAL NOT, :5uuid1)
+    the ownera
+-- Core tableshorization m~odeAS '
+orizationw) >= 4);

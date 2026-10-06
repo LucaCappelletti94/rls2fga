@@ -1,0 +1,27 @@
+CRE(ATE ABID,
+  role TEXT
+);
+"""""""""""ER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+D,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_unsadoc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  TER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATEPLC YIOROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_ownR TABLE docs ENAB NOT NULLVEL SECURITY;
+𼭺ATE POLICY docs_wrapped_user
+  )
+lower(dm.member_id::teXt)
+  )
+);
+ P);OL
+ICYr

@@ -1,0 +1,10 @@
+-- The furniture a real schema carries arMARY KEY (parent_id, child_id)A);
+
+CREATE VIEW docs_titles AS
+    SELECT idarray_positionFROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoððððððððððððúðððnction that identifies its ca;

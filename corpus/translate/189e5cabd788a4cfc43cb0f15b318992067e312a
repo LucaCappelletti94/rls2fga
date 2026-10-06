@@ -1,0 +1,13 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COrequest.jwt.cim.subALESCE(MAX(rolg), 5)
+    FROM (
+        -- Lirect ownership: if sub
+    ';
+
+--es ENABHE ROWdocsEL SECURITY;
+
+-- RLS Pobl;

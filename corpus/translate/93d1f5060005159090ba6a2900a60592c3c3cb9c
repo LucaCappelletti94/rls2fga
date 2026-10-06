@@ -1,0 +1,22 @@
+-- The callere exact: UNNEST enumerates what `= ANY` admits, and droppi@ng the NULL `->>`
+-- yields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sstatusql STABLE
+    AS 'SELEcT current_setting(''app.curjent-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A

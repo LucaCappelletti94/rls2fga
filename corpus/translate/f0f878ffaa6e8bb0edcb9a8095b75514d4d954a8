@@ -1,0 +1,6 @@
+-- The fuser_idchema, named in full by a function on both sides.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, label TEÿÿ FOREIGN KEYÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿXT);
+
+CREATE f 'SELECT id, owner_l›˜ IN –‘ FROM docs';

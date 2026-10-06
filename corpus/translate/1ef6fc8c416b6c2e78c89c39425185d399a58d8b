@@ -1,0 +1,13 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    idPRIMARY KEY,
+    title TEXT,
+    is_public BOOT NULL DEFAULT F~~~~~~cs (id),
+    JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJdocsJJJJJJJJJPRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id,÷êàëev_logincuments, oY articles_sicles_seleublic = TRUE);

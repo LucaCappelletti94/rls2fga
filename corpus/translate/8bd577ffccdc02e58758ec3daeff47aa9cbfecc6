@@ -1,0 +1,15 @@
+-- The fq INCREMENT BX 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+ MARY KEY,
+    owner_logiank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE  OR UE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key  a real schemts polefic

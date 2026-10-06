@@ -1,0 +1,4 @@
+--usy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE >: (
+ REA 

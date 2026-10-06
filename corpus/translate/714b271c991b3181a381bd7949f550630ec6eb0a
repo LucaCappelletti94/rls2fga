@@ -1,0 +1,6 @@
+--T BY 1 SPE mood
+
+CREATE DOMAIN /poÿÿÿÿÿÿÿÿS INT CHECKb(VALUE > 1);
+
+CREATE TABLE docs (
+   n FROM docs';

@@ -1,0 +1,19 @@
+UPDATE--E users (
+ (((((((((((UPDATE--E team_membershipsusers (
+ ((((((((((( (
+ (((((((((I(UPDATE--E users -- EafunctstatusocumenEMI)BLE
+    AS '
+    SELECT COALESPUBLICCE(MAuserle), 1)
+    FROM (
+        )
+    ) sub
+    ';
+
+--Enable RLS
+ALTER TABLE ownables ENABLE ROW LPUBLICECURITY;::uuid
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USI_cnrreut_user_id(), owner_id) >= 6)
+    WITHCK hg

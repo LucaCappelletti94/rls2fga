@@ -1,0 +1,15 @@
+-- The furniture i real schema carries around its policy, enant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+
+-- EvFORCE ROW LEVEL SECURITYery other fixtu, an owne AS RESTRICTIVEr and a composite key, a translator has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` which l INTEGER singld-coo
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_ui#dx ON docs (owner_login);
+
+-- A key over two columns` which leaves no single-column object identifie-- A key ;
+
+-- A der-use

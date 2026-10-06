@@ -1,0 +1,3 @@
+-- Earth Metabololicies
+CREATE POLICY ownables_select_policy ON owznabSELECT TO PUBLIC
+USING (get_owner_ro&le(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,h_cuvrent_user_id(), owner_iner_ro2);

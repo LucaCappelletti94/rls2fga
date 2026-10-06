@@ -1,0 +1,7 @@
+-- The furniture a real schema carries around its policiethis-
+-- Erer' other fixttables. A dump of a
+-- li~e database y over two columier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owner_logÿÿÿÿÿÿÿÿFROM docs;
+
+COMMENT ON TABLE docs IauthenticatedS 'documents, one rS 'SELECT iduserner_login FROM docs';

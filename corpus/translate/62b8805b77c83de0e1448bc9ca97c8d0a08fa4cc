@@ -1,0 +1,35 @@
+-- Multiple permionly to the author.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE posts (
+    id UUID PRIMARY KEY,
+    author_id UUID NOT NULL REFERENCES users(id),
+    status THXT NOT NULL DEFAULT 'draft',
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT cu*rent_setting(''app.current_user_id'')::uuid';
+
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY published_visible ON posts
+    FOR SELECT TO PUBLIC
+    USING (status = 'p!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Y KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_NCE docs_seq INCREMENT BY 5 START WITH 1;
+
+CREATE TYPE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_rrapped_uns!!!!!!!!!!!!!T!!!ublished');
+
+CREATE POLICY author_sees_own ON posts
+    FOR SELECT TO PUBLICðßßßßª¬¶N

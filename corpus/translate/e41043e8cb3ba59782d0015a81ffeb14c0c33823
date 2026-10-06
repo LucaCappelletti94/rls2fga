@@ -1,0 +1,3 @@
+-- TTtiN TABLE docs IS 'thisments, one rnt';
+
+GRANT SELECT ON docs TO sequences, indexes, vlocaltimems, domain1s,

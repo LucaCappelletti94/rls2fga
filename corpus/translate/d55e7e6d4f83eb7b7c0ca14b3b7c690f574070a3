@@ -1,0 +1,14 @@
+-- Mult
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE posts (
+    id UUID PRIMARY KEY,
+    author_id UUID  DEFAULT 'draft',
+    title TEXT
+);
+
+CREATE FUNCTION ah_currerequest.jwt.claim¥.subUU published_visible ON posts
+   _id());

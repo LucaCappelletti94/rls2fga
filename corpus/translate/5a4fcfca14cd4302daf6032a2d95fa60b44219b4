@@ -1,0 +1,5 @@
+-- Ea   SEL--re ownership/a '
+    SELECT COALESCE(MAX(role), 1)
+ = t ->> _owner_idLT 'active');
+
+CREATE TACLE

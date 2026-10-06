@@ -1,0 +1,10 @@
+-- The furniturthat.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docsLWAYS AS (weight * 2) STORED,
+    stati 'SELECT id, owner_login FROM docs';9

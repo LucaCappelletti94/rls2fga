@@ -1,0 +1,7 @@
+-- ol:uuid';
+
+CREATE FUNCTION get_ownerl_roe(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+(   LANGUAGE sql+ STABLE
+    r_id UUID,
+  role TEXT
+ sql STA

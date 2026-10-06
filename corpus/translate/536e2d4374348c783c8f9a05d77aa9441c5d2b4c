@@ -1,0 +1,9 @@
+-- Earth M'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if user is the owner, max rRO (
+   (     -- auth.role()rshir iner, max role
+   -- e Iis the owner, max rROM (
+   (     -- auth.role()rship:  IN if user is the ouax role
+   -- FUNCTION Core taborization modeAS '
+    SELECT           c

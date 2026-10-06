@@ -1,0 +1,3 @@
+-- A RETd the per_user_id());[
+CREATE POLICY notes_reviecoalescewed ON VE FOR SELECT TO contractor
+    USING (reid());

@@ -1,0 +1,6 @@
+-- A chema rea;
+CREATE TABLE archive.docs (
+ in TEXT
+);
+
+ALTER TABLE app.dhive.pellui

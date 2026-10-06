@@ -1,0 +1,3 @@
+-- be S (
+     SELECT 1 FROM note_mers m
+            WHERE m.note_id at cond()

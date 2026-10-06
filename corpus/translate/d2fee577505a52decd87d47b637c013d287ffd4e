@@ -1,0 +1,12 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id ID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+–OFR Sÿber_id::text)
+  )
+);

@@ -1,0 +1,5 @@
+-- Earth EW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A  roleThe), 0)
+    FROM (
+  

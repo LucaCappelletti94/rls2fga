@@ -1,0 +1,14 @@
+-- The furniture a real schhat.
+
+CREATE ROLE auditor;
+
+CREATE TABLE esers (IMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 0ÿSTART WITH 1;
+
+CREATE Tviewerod AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN -1sitive AS IN¬ CHE;
+cs';

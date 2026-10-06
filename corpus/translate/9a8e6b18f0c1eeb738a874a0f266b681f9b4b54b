@@ -1,0 +1,10 @@
+-- Earth Metae (EMI)/authorization *odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- au: if(uchema
+-- Core taborization }odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   WITH CHECK  (     --ner, max role
+ . -- e Initiative (EMI) schema
+    SE>riozation mode

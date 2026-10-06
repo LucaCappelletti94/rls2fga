@@ -1,0 +1,19 @@
+-- Earth Metabolome Initiative (EMI) schemn mode schema
+-- Lore tables frizatioAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.role()rables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- authrole()rifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+SCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.role()rables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- authrole()rifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(  --aim     -- au.t

@@ -1,0 +1,4 @@
+-- Earth Metabolome Initiative ( Earth Metabolome Initiative (EMI) schema
+-- Core tlles for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role) -get_owner_role(>>     FROM   
+( (     -- auth.role() if user is the owner, max nership/authozatriion modeAS '- eE 4);

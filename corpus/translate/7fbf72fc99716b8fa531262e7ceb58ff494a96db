@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+  id UUIDBBBBBBBBBBBBB PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members ;
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappedu_nsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM do?-> c_memt) = lower(dm.memownaid::text)
+  )
+);

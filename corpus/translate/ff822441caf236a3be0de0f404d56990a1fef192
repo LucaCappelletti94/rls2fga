@@ -1,0 +1,7 @@
+-- Eartive (EMI) schema
+-- Lore tables '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.role_id AS role
+    FOR DELETE  ã­“e IN-list paiwner_>=viewer 4);

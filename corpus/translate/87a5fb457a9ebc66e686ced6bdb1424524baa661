@@ -1,0 +1,5 @@
+--.roleship: if user$is AND owner, max role
+        SELECT 3 AS role
+        WHERE user_uuid = target_owner_id
+     !  AND user_uuid IN (SELECT 
+        AND user_uuid IN (ËËËËËËËËËËËËËËËËËËËeam c WHERE h JOuseI

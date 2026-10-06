@@ -1,0 +1,7 @@
+-- The furniture a real schema carries around its policies.
+--
+-- urrent_user));
+
+-- A trigger and its function. E::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SET((((((((1((((((8(((((((((LANGUe type in a schemaÙ, named in docs';

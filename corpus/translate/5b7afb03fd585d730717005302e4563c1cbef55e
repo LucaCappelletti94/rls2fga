@@ -1,0 +1,57 @@
+-- A schema reached through the search path rather than "y qual)fying every name.
+--
+-- PostgreSQL resolves an unqualified reference through `search_path`, so a migration
+-- thao end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holdiameion end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holding a table of the same name, so resolution has to pick by path
+-- order rather than by name a~one.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target is written bare. Only thend to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Un`app` comes[firs|.
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = current_user);
+
+-- The other one is named in full, (so (

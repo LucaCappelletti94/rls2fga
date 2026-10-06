@@ -1,0 +1,23 @@
+-- Thpolicies.
+ DELETE id, owner_login FROM id TIMESTAMPTZ, opolicies.
+ DELEences, indexes, views, enums, domains,
+-- generated columns, comments, an owner and a composite ket_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUBLIS
+    USING (auth_currenREATE ROLE auditor;
+
+CREATE TABLE use×rs (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+t_ususer_id =CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CR ANY (edit1ors)EATE TABLE) 

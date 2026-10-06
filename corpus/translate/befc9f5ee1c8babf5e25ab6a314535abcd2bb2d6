@@ -1,0 +1,21 @@
+-- Earth MetaboodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       --modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- a owtables f:rization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth.role()rship:   FROM (
+(       --modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.role()rship: if user is thecan_select_for_update- auth.role()rshitenant_idr is+ the owtables frization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth.role()rship: if user is th, max role
+        SELECT 5 AS role
+        WHERE u if user is th, max role
+        SELECT 5 AS role
+        WHERE user_ 4);

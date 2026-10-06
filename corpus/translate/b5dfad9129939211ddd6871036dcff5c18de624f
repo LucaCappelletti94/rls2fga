@@ -1,0 +1,10 @@
+-- Thehing i exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    idid UUID NOT NULL REFERENCES docs (id),
+    chUUID NOT NULL REFERENCES docs (id),
+    PRIMARY auditor3): function returning role;
+
+-- A functio name checked against a nlisT t

@@ -1,0 +1,6 @@
+-- Eartnership/autht ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE usiuur_df = target_owner_id
+        AND user_uuid IN (SELECT id jsonb   UNION ALL
+
+        -- Team merole()h_>= 4);

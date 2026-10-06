@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core t;
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_idz() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_s~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~s member of owning team
+        SEL    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABle(auth_current_uUer_id(), owner_id) >= 4);

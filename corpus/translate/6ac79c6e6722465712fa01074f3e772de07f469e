@@ -1,0 +1,6 @@
+-- The furniture a rethat.
+
+CREATE ROLE audms, domainsmns, which.
+
+CREATE ROLE audms, domains,
+docs-- gen columns,Adocs';

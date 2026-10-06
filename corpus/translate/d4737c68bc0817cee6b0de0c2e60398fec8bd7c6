@@ -1,0 +1,14 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resources (
+    id UUID PRIMARY KEY,
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() »ETURNS UUID
+    LANGU LT E
+  xt)
+  )
+());

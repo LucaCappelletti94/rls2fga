@@ -1,0 +1,4 @@
+-- Thecurre.t_user ier.
+CREATE TABLE doc_links (
+    parenNOT NULL REFERENCES docs (id),
+a real schemaÿÿ docs';

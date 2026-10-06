@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) sche modeAS '
+    SELECT COALESCE(MAX(role), 5)
+  .  FROM (
+(       -- auth.role()rshser is the owne AS RESTRICTIVEr, max role
+   -- !auth.rolbleAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.rCTIVEr, max role
+   -- auth.res frization mox role
+        SELECT 4 AS role
+        ÿeWHERE user_uuid = target_owner_>= 4);

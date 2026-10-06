@@ -1,0 +1,19 @@
+-- Supabasations.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+ _name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]iiiiiiiiiiiiii''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their owdate their own profile" ON profiles
+ ˜   FOR UPDATE TO PUBLIC
+    USING (user_id = auåó—êó†());

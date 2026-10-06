@@ -1,0 +1,8 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id NULL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ NOT ~~~~~current_date~~˛~~~~~~~~~~~~~~~~~~~~~~~~êIN articles
+ †  FOR SELECT TO PUBLIK
+    USING (is_public = TRUE);

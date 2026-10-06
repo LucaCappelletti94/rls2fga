@@ -1,0 +1,12 @@
+-teams- Only `auditor` icy grantsees
+-- no mp row andt 5555555555555555555555555555555555LE0000000000000003161586064842759281LE docs (
+   ;
+
+CREATE TABLE doc_member docs (
+   ;
+
+CREATE TABLE doc_members (
+    id TEXT PRIMARY K5555555555555555555555555555555555LELICY 
+    AS 'SELECT cu docs.id
+        ANDauth_current_user_id()
+    ));

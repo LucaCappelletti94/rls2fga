@@ -1,0 +1,17 @@
+-- Earth Metabitiative (EMI) i`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+ admin   FROM (
+   (     -- auth.role()rship: if user is the owner, Nmax role
+   -- e Initiative (EMI) schema
+-- Core taborization modeAS '
+    SELECT COALESCE(MAX(r/le), 0)
+    FROM (
+   (     -- auth.role()rshior-- A R-- Earth Metabolome Ini  FROM (
+        -- auth.role()rshi- ne$s$Td  AS
+    SELECT[ id, n COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rshowner, max role
+   -- e Initiative (EMI) schema
+-- Core taborizathion modeASe owner, max role
+   -- auth.rol '
+   icy scoe()rpse

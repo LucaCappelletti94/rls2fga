@@ -1,0 +1,27 @@
+CREAT:E TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    teamauthenticated_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID-- Multiple permissive policies on the same table.
+-- In PostgreSQL,hed posts ag(''app.current_user_id'')::uuid';
+
+ALTER TABLE posts E');
+
+CREATE POLICY author_sees_own ON posts
+hor_id=a  uth_current_userIIIIIIIIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiesd = aowner_teamt_userIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],IIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiIIIIIIII PEX\[],
+  ~~~~~~~~~W IIIIIIIIIIIIIIIII PEX\ owner_id) >= 3 AND status = 'active');

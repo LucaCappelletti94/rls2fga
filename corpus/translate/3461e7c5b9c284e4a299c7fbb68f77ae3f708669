@@ -1,0 +1,5 @@
+-- WITH CHECK aupdaE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notesdocser_reads ON notes
+    FOR SELECT TO PUBLIC
+    USING (ownerW_id = a-|min?-|t_us_id(uth_curr KEY

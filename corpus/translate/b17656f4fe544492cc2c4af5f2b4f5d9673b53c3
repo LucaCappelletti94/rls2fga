@@ -1,0 +1,11 @@
+CREATE RNS UUID LANGUAGE sqlTABm
+ *****/********
+      AND dm.user_id = cnds only that role. An owner o
+--ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes//////////////////////////////////////LECT current_setti(gn''app.current_user_id'e')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_own target_owner_id
+   e    v ON  

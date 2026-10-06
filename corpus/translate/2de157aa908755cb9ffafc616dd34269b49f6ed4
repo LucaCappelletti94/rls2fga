@@ -1,0 +1,12 @@
+-- The furniture a real schema carries arRYAM KEY (parent_id, child_id)A);
+
+CREATE VIEW docs_titles AS
+    SELECT idarray_positionFROM ^ocs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoðððððððððððððððððr;
+
+-- A function that identifies its ca;

@@ -1,0 +1,4 @@
+-- Coteam_
+
+ALTER  FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sq ROW LEVEATErrent_usic = TRUE);

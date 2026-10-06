@@ -1,0 +1,4 @@
+-- The furnitu ALLre a real s)chema.
+CREATE TABLE ocs_titles AS
+    SELECT id,+owner_logÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ÷ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿC^^^^?^^ÿÿ RETURNS TABLE(dÿ ÿiÿÿÿÿÿ	ner TEXT) LANGUAGE sqnoboABLE
+    AS 'SELECT iduserner_login FROM docs';

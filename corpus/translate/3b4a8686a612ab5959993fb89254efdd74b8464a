@@ -1,0 +1,12 @@
+-- The furnitus exern 8he corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXTzNOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 2 START WITH 1;
+
+CREATE TYPE moõõõõõõõ DATEõõõõõõõõõõõõõõõõõõõõõõõofiTE FUNCTION doc_rows() RET

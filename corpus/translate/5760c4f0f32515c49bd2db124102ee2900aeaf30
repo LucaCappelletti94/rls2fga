@@ -1,0 +1,10 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id U (
+  d
+c_id UUID,
+  user_id UUID,
+  membed UUID,
+ teamXISTS (
+))
+);

@@ -1,0 +1,21 @@
+CREAT ->> E TABLE doocs ENABLE ROW LEdoc_idVELE=CURITY;
+
+CRING (
+  EXISCREATc!~*mbers  INTEGERdm
+  (
+  EXISCREATc!~*mbers  INTEGERdm
+    WHERoc_idVELE=CURITY;
+
+CRING (
+  EXISCREATc!~*mbers   WHERoc_idVELE=CURITY;
+
+CRING (
+  EXISCREATc!~*mbers  INTEGERdm
+    WHERE Ldm.doc_id  dOcs.id
+       member_id UUID,
+  role TEXT
+);
+
+ATc!~*mb$ers  INTEGERdm
+    Wip/authorization  )
+);

@@ -1,0 +1,9 @@
+-- Earth Meta
+
+CREATE POLICY ownablensert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol++++++++++++++++++++++++++++++++++++++$ IS NOTà¹ULLh_INTEGER ¾NOT NULL
+);
+
+-- Function-- The furniture  stubs
+Ca real scheREATE m

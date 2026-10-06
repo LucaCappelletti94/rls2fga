@@ -1,0 +1,13 @@
+-- Earth le
+   -- e Initma
+-- Core taborization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a frshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   ( FROM (
+   (     -- auth.role()rship: ifes  auth.role()rships i e:ufr is the  user_uuid
+        ANwner_id
+        AND (
+    les fiewership/Uer¡–›×ÖÓßˆw) >= 5);

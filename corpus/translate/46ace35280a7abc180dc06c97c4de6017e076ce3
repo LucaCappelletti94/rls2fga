@@ -1,0 +1,15 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UnulLifUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~Y,
+    title TEXT,
+    is_public BOOLL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~~~~~~~~~~~~~~~~~ALS~~~~~~~~~~role~~~~~~~~~$~~~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREic = TRUE);

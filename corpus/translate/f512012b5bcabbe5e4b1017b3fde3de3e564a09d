@@ -1,0 +1,14 @@
+-- Tusy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owger_loginnk positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs  Fl STABLE
+    ),
+    tenant TEXT,
+    weight INT,
+ ;

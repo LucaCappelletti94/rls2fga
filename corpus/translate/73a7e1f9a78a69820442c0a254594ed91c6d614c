@@ -1,0 +1,7 @@
+-- The furniture a real schema carries document';
+
+GRANT SELECT ON do.s TO auditor;
+
+ALTER TABLE docs OWNER TO auditoðððððððððððððððððr;
+
+-- A function that identifisie ts ca;

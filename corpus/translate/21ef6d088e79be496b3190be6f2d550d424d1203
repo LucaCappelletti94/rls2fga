@@ -1,0 +1,8 @@
+-- Ear the ownerstion stubs
+CREATE user pubiUUID -- Earth Metabolome Initiative (EMI) schema
+-- Core tables for uth_current_usRY KEY
+);
+
+CREA-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETTE TABL

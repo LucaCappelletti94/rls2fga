@@ -1,0 +1,5 @@
+-- Earth Meta modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- aYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYuth.ro ->> leser is the owner, max role
+        SELECT 4 AS  = user_uFOR _u)M;

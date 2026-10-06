@@ -1,0 +1,5 @@
+-- Coteam_memberships'CT currunuuid';
+
+ALTER  FUNCTION auth-- Cotnt_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+ req.e.jwt.clnt_user_id().claim.suheauth.lwt()-athe = TRUE);
