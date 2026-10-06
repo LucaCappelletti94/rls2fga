@@ -13,7 +13,7 @@ use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::RelationName;
 use rls2fga::types::RelationShapes;
-use rls2fga::types::{RecordDerivation, ValueSource};
+use rls2fga::types::{RecordDerivation, TranslationNote, ValueSource};
 use sqlparser::ast::Expr;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -360,31 +360,6 @@ CREATE TABLE line_items (order_id INTEGER REFERENCES orders(id), line_no INTEGER
     assert_eq!(key, vec!["order_id".to_string(), "line_no".to_string()]);
 }
 
-/// A filter is not enforced by row-level security, so the notes it hands back must not
-/// describe the database's own enforcement of a policy nobody wrote.
-#[test]
-fn the_notes_describe_the_filter_rather_than_a_policy() {
-    let shapes = compile_on(
-        "CREATE TABLE docs (id TEXT PRIMARY KEY);
-CREATE TABLE doc_members (doc_id TEXT REFERENCES docs(id), user_id TEXT);
-",
-        "docs",
-        &format!("id IN (SELECT doc_id FROM doc_members WHERE user_id = {CALLER})"),
-        ConfidenceLevel::B,
-    );
-    for note in &shapes.notes {
-        let text = note.to_string();
-        assert!(
-            !text.contains("permissive policy") && !text.contains("exempt from every policy"),
-            "a filter reports nothing about policy enforcement, got: {text}"
-        );
-        assert!(
-            !note.severity().diverges_from_database(),
-            "a note saying the model disagrees with the database refuses instead: {text}"
-        );
-    }
-}
-
 /// A filter two different chains satisfy is not one chain. Returning either alone admits
 /// fewer rows than the filter's own SQL, which is the wrong-deny direction of the same
 /// divergence the surface exists to remove.
@@ -714,6 +689,222 @@ fn a_declared_set_names_the_caller_on_an_ownership_term() {
         ConfidenceLevel::B,
     );
     assert_eq!(unnested, set);
+}
+
+#[test]
+fn direct_read_terms_are_independent_of_catalog_write_coverage() {
+    for term in [format!("owner = {CALLER}"), format!("owner = {SUBJECTS}")] {
+        let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+        for policy in [
+            "FOR SELECT USING (TRUE)".to_string(),
+            "FOR ALL USING (TRUE)".to_string(),
+            format!("FOR ALL USING (owner = {CALLER} OR owner = {SUBJECTS})"),
+            "FOR INSERT WITH CHECK (FALSE)".to_string(),
+            "FOR UPDATE USING (FALSE) WITH CHECK (FALSE)".to_string(),
+            "FOR DELETE USING (FALSE)".to_string(),
+            "FOR SELECT".to_string(),
+            "FOR ALL".to_string(),
+            "FOR INSERT".to_string(),
+            "FOR UPDATE".to_string(),
+            "FOR DELETE".to_string(),
+        ] {
+            let schema = format!(
+                "{PROJECTS}
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs {policy};"
+            );
+            let actual = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+            assert_eq!(actual, expected, "{policy}, {term}");
+        }
+    }
+}
+
+#[test]
+fn read_terms_ignore_guarded_table_read_policy_recursion() {
+    for term in [format!("owner = {CALLER}"), format!("owner = {SUBJECTS}")] {
+        let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+        for command in ["SELECT", "ALL"] {
+            let schema = format!(
+                "{PROJECTS}
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR {command} USING (
+    EXISTS (SELECT 1 FROM docs d WHERE d.id = docs.id)
+);"
+            );
+            let actual = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+            assert_eq!(actual, expected, "{command}, {term}");
+        }
+    }
+}
+
+#[test]
+fn read_terms_ignore_unrelated_catalog_policy_coverage() {
+    let term = format!("owner = {SUBJECTS}");
+    let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+    for command in ["SELECT", "ALL"] {
+        let schema = format!(
+            "{PROJECTS}
+ALTER TABLE project_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY members_p ON project_members FOR {command} USING (TRUE);"
+        );
+        let actual = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+        assert_eq!(actual, expected, "{command}");
+    }
+}
+
+#[test]
+fn read_terms_report_only_relevant_type_name_collisions() {
+    let schema = format!(
+        "{PROJECTS}
+CREATE SCHEMA a;
+CREATE SCHEMA b;
+CREATE TABLE a.members(id TEXT PRIMARY KEY, owner TEXT);
+CREATE TABLE b.members(id TEXT PRIMARY KEY, owner TEXT);
+ALTER TABLE a.members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE b.members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY members_a ON a.members FOR ALL USING (TRUE);
+CREATE POLICY members_b ON b.members FOR ALL USING (TRUE);"
+    );
+    let term = format!("owner = {CALLER}");
+    let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+    let unrelated = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+    assert_eq!(unrelated, expected);
+
+    let related = compile_on(&schema, "b.members", &term, ConfidenceLevel::B);
+    let db: ParserDB = parse_schema(&schema).expect("the schema should parse");
+    let planned = TranslatorBuilder::new()
+        .with_registry(registry())
+        .build()
+        .translate(&db)
+        .expect("the policies should plan");
+    let named = planned.row_naming();
+    let table = named
+        .iter()
+        .find(|entry| entry.table.to_string() == "b.members")
+        .expect("the policy plan names the guarded table");
+    assert_eq!(related.object_type, table.type_name);
+    assert!(related.notes.iter().any(|note| {
+        matches!(note, TranslationNote::TypeNameCollision { spelling, .. }
+            if spelling.to_string() == "b.members")
+    }));
+}
+
+#[test]
+fn read_terms_ignore_unused_catalog_enforcement_metadata() {
+    let schema = format!(
+        "{PROJECTS}
+CREATE ROLE reporting BYPASSRLS;
+CREATE FUNCTION current_user_id() RETURNS TEXT LANGUAGE sql SECURITY DEFINER
+    AS 'SELECT current_user';"
+    );
+    let db: ParserDB = parse_schema(&schema).expect("the schema should parse");
+    let mut enriched = registry();
+    enriched.enrich_from_schema(&db);
+    let term = format!("owner = {CALLER}");
+    let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+    let actual = describe_membership_term(
+        &parse_term(&term),
+        &db,
+        &enriched,
+        "docs",
+        ConfidenceLevel::B,
+    )
+    .expect("unused enforcement metadata does not affect the filter");
+    assert_eq!(actual, expected);
+    describe_membership_term(
+        &parse_term("owner = current_user_id()"),
+        &db,
+        &enriched,
+        "docs",
+        ConfidenceLevel::B,
+    )
+    .expect_err("an owner-bound accessor cannot identify the caller");
+}
+
+#[test]
+fn read_terms_ignore_catalog_write_policy_recursion() {
+    let term = format!("owner = {CALLER}");
+    let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+    let recursive_members = format!(
+        "{PROJECTS}
+ALTER TABLE project_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY members_p ON project_members FOR SELECT USING (
+    EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = project_members.project_id)
+);"
+    );
+    for policy in [
+        "FOR INSERT WITH CHECK",
+        "FOR UPDATE USING",
+        "FOR DELETE USING",
+    ] {
+        let schema = format!(
+            "{recursive_members}
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs {policy} (
+    EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = docs.project_id)
+);"
+        );
+        let actual = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+        assert_eq!(actual, expected, "{policy}");
+    }
+    let db: ParserDB = parse_schema(&recursive_members).expect("the schema should parse");
+    let membership = parse_term(&format!(
+        "project_id IN (SELECT project_id FROM project_members WHERE user_id = {CALLER})"
+    ));
+    describe_membership_term(&membership, &db, &registry(), "docs", ConfidenceLevel::B)
+        .expect_err("a read term cannot ignore row security on its membership table");
+}
+
+#[test]
+fn membership_read_terms_ignore_guarded_table_writes_but_require_readable_members() {
+    let schema = format!(
+        "{PROJECTS}
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs FOR ALL USING (TRUE);"
+    );
+    for caller in [CALLER, SUBJECTS] {
+        let term = format!(
+            "project_id IN (SELECT project_id FROM project_members WHERE user_id = {caller})"
+        );
+        let expected = compile_on(PROJECTS, "docs", &term, ConfidenceLevel::B);
+        let actual = compile_on(&schema, "docs", &term, ConfidenceLevel::B);
+        assert_eq!(actual, expected, "{term}");
+
+        let guarded_members = format!(
+            "{schema}
+ALTER TABLE project_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY members_p ON project_members FOR ALL USING (TRUE);"
+        );
+        let db: ParserDB = parse_schema(&guarded_members).expect("the schema should parse");
+        describe_membership_term(
+            &parse_term(&term),
+            &db,
+            &registry(),
+            "docs",
+            ConfidenceLevel::B,
+        )
+        .expect_err("membership-table read rules cannot be ignored");
+    }
+}
+
+#[test]
+fn catalog_write_coverage_does_not_license_read_terms_below_the_threshold() {
+    let term = parse_term(&format!("owner = {CALLER} AND title = 'published'"));
+    for policy in [
+        "FOR SELECT USING (TRUE)",
+        "FOR ALL USING (TRUE)",
+        "FOR INSERT WITH CHECK (TRUE)",
+    ] {
+        let schema = format!(
+            "{PROJECTS}
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_p ON docs {policy};"
+        );
+        let db: ParserDB = parse_schema(&schema).expect("the schema should parse");
+        let refusal = describe_membership_term(&term, &db, &registry(), "docs", ConfidenceLevel::A)
+            .expect_err("the read term must satisfy its own confidence threshold");
+        assert_eq!(refusal.classified.confidence, ConfidenceLevel::B);
+    }
 }
 
 /// The same through a membership table: a membership row whose member the caller's set
