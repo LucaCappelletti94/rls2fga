@@ -711,7 +711,7 @@ pub(crate) fn build_filtered_schema_plan<DB: DatabaseLike>(
         registry,
         settings,
         bounds,
-        TypeScope::WithPolicies,
+        PlanScope::Policies,
     )
 }
 
@@ -729,26 +729,22 @@ pub(crate) fn build_schema_plan<DB: DatabaseLike>(
         registry,
         settings,
         &bounds,
-        TypeScope::WithPolicies,
+        PlanScope::Policies,
     )
 }
 
-/// Which tables earn a type, which is the schema's row-level security everywhere except
-/// on the term route, where a subscription filter guards a table that needs no policy.
+/// Whether the plan describes catalog policies or one supplied read filter.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum TypeScope<'a> {
-    WithPolicies,
-    AndAlso(&'a str),
+pub(crate) enum PlanScope<'a> {
+    Policies,
+    ReadTerm(&'a str),
 }
 
-/// Every classified policy under the key its table resolves to, plus a seeded entry for each
-/// row-level-security table no policy named.
-///
-/// Keyed by the resolved identity the policy already carries, so two policies quoting one
-/// table the same way land together and nothing re-reads the spelling as text.
+/// Group supplied policies by resolved table and seed uncovered RLS tables for policy plans.
 fn group_policies_by_table<'a, DB: DatabaseLike>(
     policies: &'a [ClassifiedPolicy],
     db: &DB,
+    scope: PlanScope<'_>,
 ) -> BTreeMap<String, Vec<&'a ClassifiedPolicy>> {
     let mut by_table: BTreeMap<String, Vec<&ClassifiedPolicy>> = BTreeMap::new();
     for cp in policies {
@@ -756,6 +752,9 @@ fn group_policies_by_table<'a, DB: DatabaseLike>(
             .resolved_table()
             .map_or_else(|| cp.table_name().to_string(), ToString::to_string);
         by_table.entry(key).or_default().push(cp);
+    }
+    if matches!(scope, PlanScope::ReadTerm(_)) {
+        return by_table;
     }
 
     // An RLS-enabled table with no policy denies every row, so seed it and let
@@ -846,27 +845,29 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     registry: &FunctionRegistry,
     settings: &GeneratorSettings,
     bounds: &UnboundedColumns,
-    scope: TypeScope<'_>,
+    scope: PlanScope<'_>,
 ) -> Result<SchemaPlan, PlanningError> {
     let condition_parameters = ConditionParameterAllocator::new(settings, registry)?;
     let mut all_types: BTreeMap<TypeName, TypePlan> = BTreeMap::new();
     let mut notes = Vec::new();
     let mut confidence_summary = Vec::new();
 
-    for function in registry.owner_bound_accessors() {
-        notes.push(TranslationNote::OwnerBoundFunction {
-            function: function.to_string(),
-        });
+    let catalog_policies = matches!(scope, PlanScope::Policies);
+    if catalog_policies {
+        for function in registry.owner_bound_accessors() {
+            notes.push(TranslationNote::OwnerBoundFunction {
+                function: function.to_string(),
+            });
+        }
+        report_row_level_security_bypasses(db, &mut notes);
     }
 
-    let by_table = group_policies_by_table(policies, db);
-
-    report_row_level_security_bypasses(db, &mut notes);
-
-    let declared_permissive = declared_permissive_policies(db);
+    let by_table = group_policies_by_table(policies, db, scope);
+    let declared_permissive = catalog_policies.then(|| declared_permissive_policies(db));
 
     let table_types = TableTypes::assign(db, scope, &settings.well_known, &mut notes)?;
-    let recursion = PolicyReadRecursion::detect(db, &table_types);
+    // Read terms refuse related-table RLS through classification, membership readability, and the caller-side check.
+    let recursion = catalog_policies.then(|| PolicyReadRecursion::detect(db, &table_types));
     // Answered once per membership table rather than once per clause naming it.
     let mut readability: BTreeMap<TableId, JoinTableReadability> = BTreeMap::new();
     let readability = &mut readability;
@@ -930,7 +931,10 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
 
                 // A clause reading a table whose policies loop cannot be planned, so PostgreSQL
                 // raises rather than filtering and every command that clause feeds must deny.
-                let recursive_targets = recursion.blocked_targets(canonical_table_name.as_str());
+                let recursive_targets =
+                    recursion.as_ref().map_or_else(BTreeMap::new, |recursion| {
+                        recursion.blocked_targets(canonical_table_name.as_str())
+                    });
 
                 // Whether a row of this table can be named at all, which decides whether any tuple
                 // source can be emitted for it. Resolved once here rather than per policy.
@@ -1027,23 +1031,24 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
                     update_check_was_filtered,
                 );
 
-                // An undefined action relation reads as "the consumer decides", which is
-                // how RLS coverage gaps become open access.
-                let declared_here: &[&DB::Policy] = declared_permissive
-                    .get(&source_table_name)
-                    .map_or(&[], Vec::as_slice);
-                fill_and_report_coverage(
-                    build.plan,
-                    build.notes,
-                    &source_table,
-                    declared_here,
-                    &SettledCommands {
-                        blocked: &blocked_commands,
-                        barrier_denied: &commands_denied_by_barriers_alone(&action_buckets),
-                        row_scoped_writes: &row_scoped_write_commands,
-                    },
-                    db,
-                );
+                if let Some(declared_permissive) = &declared_permissive {
+                    // Undefined policy actions must deny rather than leave access to the consumer.
+                    let declared_here: &[&DB::Policy] = declared_permissive
+                        .get(&source_table_name)
+                        .map_or(&[], Vec::as_slice);
+                    fill_and_report_coverage(
+                        build.plan,
+                        build.notes,
+                        &source_table,
+                        declared_here,
+                        &SettledCommands {
+                            blocked: &blocked_commands,
+                            barrier_denied: &commands_denied_by_barriers_alone(&action_buckets),
+                            row_scoped_writes: &row_scoped_write_commands,
+                        },
+                        db,
+                    );
+                }
             },
         );
     }
@@ -2112,7 +2117,7 @@ impl TableTypes {
     /// claim their canonical name first.
     fn assign<DB: DatabaseLike>(
         db: &DB,
-        scope: TypeScope<'_>,
+        scope: PlanScope<'_>,
         well_known: &WellKnownTypes,
         notes: &mut Vec<TranslationNote>,
     ) -> Result<Self, PlanningError> {
@@ -2126,8 +2131,8 @@ impl TableTypes {
         // A subscription filter guards a table that carries no policy, so its type
         // cannot wait for row-level security to be switched on.
         let forced = match scope {
-            TypeScope::WithPolicies => None,
-            TypeScope::AndAlso(table) => lookup_table(db, table).map(table_identity),
+            PlanScope::Policies => None,
+            PlanScope::ReadTerm(table) => lookup_table(db, table).map(table_identity),
         };
 
         let mut names: Vec<(bool, TableId)> = db
@@ -2170,12 +2175,14 @@ impl TableTypes {
                             type_name: disambiguated.clone(),
                         });
                     }
-                    notes.push(TranslationNote::TypeNameCollision {
-                        spelling: identity.clone(),
-                        prior: prior.identity.clone(),
-                        canonical: base.to_string(),
-                        renamed: disambiguated.to_string(),
-                    });
+                    if matches!(scope, PlanScope::Policies) || forced.as_ref() == Some(identity) {
+                        notes.push(TranslationNote::TypeNameCollision {
+                            spelling: identity.clone(),
+                            prior: prior.identity.clone(),
+                            canonical: base.to_string(),
+                            renamed: disambiguated.to_string(),
+                        });
+                    }
                     disambiguated
                 }
                 None => base,

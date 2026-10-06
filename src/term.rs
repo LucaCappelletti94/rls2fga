@@ -31,7 +31,7 @@ use crate::classifier::patterns::{
 };
 use crate::classifier::policy_classifier::classify_expr;
 use crate::generator::model_generator::{
-    build_plan_typing, CallerSetCompletion, GeneratorSettings, SchemaPlan, TypeScope, UsersetExpr,
+    build_plan_typing, CallerSetCompletion, GeneratorSettings, PlanScope, SchemaPlan, UsersetExpr,
 };
 use crate::generator::relations::relation_shapes;
 use crate::generator::row_naming::row_naming;
@@ -124,8 +124,7 @@ pub struct TermRefusal {
 
 /// Compile one subscription filter against `db`, or refuse it.
 ///
-/// `guarded_table` needs no policy and no row-level security switched on, since a
-/// subscription filter is not a policy.
+/// `guarded_table` needs no policy or row-level security, while row security on related tables still matters.
 ///
 /// # Errors
 ///
@@ -165,7 +164,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         registry,
         &settings,
         &bounds,
-        TypeScope::AndAlso(guarded_table),
+        PlanScope::ReadTerm(guarded_table),
     )
     .map_err(|err| refuse(err.to_string()))?;
     let tuples = generate_tuple_queries_from_plan(&plan, &bounds, db);
@@ -187,9 +186,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
             .map(|chain| (entry.type_name, chain))
         });
 
-    // Asked before the notes, since a related table carrying policies of its own makes
-    // the plan report a threshold that had nothing to do with it: this surface never
-    // classified that table's policies, and under this rule it never has to.
+    // Related-table RLS can change the filter's SQL answer for exempt readers.
     if let Ok((
         object_type,
         chain @ TermChain::Through {
@@ -212,8 +209,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         }
     }
 
-    // A note saying the model disagrees with the database is the whole reason this
-    // surface exists, so it refuses rather than reporting.
+    // A divergent read filter must refuse rather than report a gap.
     if let Some(note) = plan
         .notes
         .iter()
@@ -271,11 +267,7 @@ pub fn describe_membership_term<DB: DatabaseLike>(
         chain,
         caller,
         relations: named,
-        notes: plan
-            .notes
-            .into_iter()
-            .filter(describes_the_filter)
-            .collect(),
+        notes: plan.notes,
     })
 }
 
@@ -348,20 +340,6 @@ fn term_callers(classified: &ClassifiedExpr) -> Vec<TermCaller> {
         }
     }
     found
-}
-
-/// Whether a note says something about the compiled filter rather than about the
-/// database's own enforcement.
-///
-/// A filter is not enforced by row-level security, so which commands a policy covers and
-/// who bypasses policies are artifacts of wrapping the filter as one, and reporting them
-/// would describe a policy nobody wrote.
-fn describes_the_filter(note: &TranslationNote) -> bool {
-    !matches!(
-        note,
-        TranslationNote::NoPermissivePolicy { .. }
-            | TranslationNote::TableOwnerBypassesPolicies { .. }
-    )
 }
 
 /// The policy a filter would be if anyone had written it as one.
