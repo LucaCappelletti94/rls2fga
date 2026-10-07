@@ -126,7 +126,7 @@ pub(crate) enum TupleSource {
     },
 
     /// P4 membership, from `EXISTS` or an `IN` subquery.
-    /// Produces `(parent_type:fk_cols, member, user:user_col)`.
+    /// Produces `(parent_type:fk_cols, relation, user:user_col)`.
     ExistsMembership {
         join_table: TableId,
         /// Columns of `join_table` naming the parent resource, in the parent
@@ -135,6 +135,8 @@ pub(crate) enum TupleSource {
         user_col: ColumnName,
         /// Resolved from the table the columns reference, not from their names.
         parent_type: TypeName,
+        /// Distinct relations keep positive memberships and blocked sets separate.
+        relation: RelationName,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
@@ -470,6 +472,7 @@ pub(crate) enum TupleSourceKey<'a> {
         fk_cols: &'a [ColumnName],
         user_col: &'a ColumnName,
         parent_type: &'a TypeName,
+        relation: &'a RelationName,
         extra_predicates: ResidualSqlKey<'a>,
         gate: Option<&'a MembershipGate>,
     },
@@ -678,9 +681,11 @@ impl TupleSource {
             Self::TeamMembership { .. } => {
                 vec![(well_known.team.clone(), member_relation())]
             }
-            Self::ExistsMembership { parent_type, .. } => {
-                vec![(parent_type.clone(), member_relation())]
-            }
+            Self::ExistsMembership {
+                parent_type,
+                relation,
+                ..
+            } => vec![(parent_type.clone(), relation.clone())],
             Self::HolderMembers { holder_type, .. } => {
                 vec![(holder_type.clone(), member_relation())]
             }
@@ -778,6 +783,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
+                relation,
                 extra_predicates,
                 gate,
             } => TupleSourceKey::ExistsMembership {
@@ -785,6 +791,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
+                relation,
                 extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
@@ -1010,7 +1017,7 @@ impl TupleSource {
 mod tests {
     use super::*;
     use crate::classifier::patterns::{AttributeRequestPredicate, RequestValue, ResidualPredicate};
-    use crate::generator::well_known::owner_user_relation;
+    use crate::generator::well_known::{member_relation, owner_user_relation};
     use rls2fga_types::AttributeOperator;
 
     fn table(name: &str) -> TableId {
@@ -1102,6 +1109,7 @@ mod tests {
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1110,6 +1118,7 @@ mod tests {
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("member_id"),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1118,6 +1127,7 @@ mod tests {
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
                 sql: "role = 'admin'".to_string(),
                 guard: None,
@@ -1128,6 +1138,24 @@ mod tests {
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());
         assert_ne!(base.dedup_key(), with_predicate.dedup_key());
+    }
+
+    #[test]
+    fn dedup_key_separates_a_membership_from_its_blocklist_subtraction() {
+        let make = |relation: RelationName| TupleSource::ExistsMembership {
+            join_table: table("blocks"),
+            fk_cols: vec![ColumnName::from_stored("doc_id")],
+            user_col: ColumnName::from_stored("user_id"),
+            parent_type: TypeName::canonicalized("docs"),
+            relation,
+            extra_predicates: ResidualPredicates::default(),
+            gate: None,
+        };
+        assert_ne!(
+            make(member_relation()).dedup_key(),
+            make(RelationName::canonicalized("blocked")).dedup_key(),
+            "a positive set and its subtraction must not collapse into one query"
+        );
     }
 
     #[test]
@@ -1226,6 +1254,7 @@ mod tests {
                 fk_cols: vec![ColumnName::from_stored("doc_id")],
                 user_col: ColumnName::from_stored("user_id"),
                 parent_type: TypeName::canonicalized("docs"),
+                relation: member_relation(),
                 extra_predicates: ResidualPredicates::new(residual),
                 gate: gate.clone(),
             }

@@ -204,6 +204,12 @@ pub fn member_relation() -> RelationName {
     RolePrivilege::Member.relation_name()
 }
 
+/// Base name for a relation holding a blocklist's excluded callers.
+#[must_use]
+pub fn blocked_relation() -> RelationName {
+    RelationName::canonicalized("blocked")
+}
+
 /// Alias an unnested list element takes in generated SQL.
 ///
 /// Deliberately not `member`: it is a column alias, not the [`member_relation`],

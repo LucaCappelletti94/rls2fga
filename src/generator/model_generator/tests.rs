@@ -97,6 +97,7 @@ fn compose_action_with_only_restrictive_rules_maps_to_no_access() {
     let bucket = ModeBuckets {
         permissive: Vec::new(),
         restrictive: vec![UsersetExpr::Computed(RelationName::canonicalized("owner"))],
+        subtractions: Vec::new(),
         role_limited: Vec::new(),
     };
 
@@ -117,6 +118,7 @@ fn compose_action_with_only_a_role_limited_barrier_maps_to_no_access() {
     let bucket = ModeBuckets {
         permissive: Vec::new(),
         restrictive: Vec::new(),
+        subtractions: Vec::new(),
         role_limited: vec![RoleLimitedRule {
             policy: "docs_review".to_string(),
             rule: UsersetExpr::Computed(RelationName::canonicalized("reviewer")),

@@ -1016,7 +1016,7 @@ pub fn is_redundant_caller_presence(expr: &Expr, registry: &FunctionRegistry) ->
     }
 }
 
-fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
+pub(crate) fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
     let Some(name) = current_user_accessor_name(expr) else {
         return false;
     };

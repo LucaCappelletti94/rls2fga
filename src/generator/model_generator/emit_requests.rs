@@ -551,7 +551,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let reached =
         parent_plan.ensure_computed(gate_relation.to_string(), share_reach(link, gate_relation));
     UsersetExpr::TupleToUserset {
-        tupleset: parent.bridge_from(table_plan, source_table),
+        tupleset: parent.bridge_from(table_plan, source_table, parent.parent_type.clone()),
         computed: reached,
     }
 }

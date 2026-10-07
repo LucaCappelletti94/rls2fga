@@ -516,6 +516,15 @@ pub struct MembershipInCallerSet {
     pub source: SessionAttribute,
 }
 
+/// Correlated caller-identity memberships subtracted from a positive grant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MembershipExclusion {
+    /// The grant, absent only for a negative-only top-level restrictive clause.
+    pub base: Option<Box<ClassifiedExpr>>,
+    /// The blocked `P4` sets whose union is removed from the grant.
+    pub subtract: Vec<ExistsMembership>,
+}
+
 /// No known pattern matched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnclassifiedExpr {
@@ -586,6 +595,8 @@ pub enum PatternClass {
     /// grant is a request-completed gate on the parent rather than a subject named by
     /// the row: the member value is not a person.
     P18MembershipInCallerSet(MembershipInCallerSet),
+    /// A correlated blocklist removed from a positive grant.
+    MembershipExclusion(MembershipExclusion),
     /// A call to a declared single-expression `LANGUAGE sql` function, replaced
     /// by its body with the call-site arguments substituted.
     ExpandedFunction(ExpandedFunction),
@@ -620,6 +631,12 @@ where
         .map_or(ConfidenceLevel::D, |lowest| {
             core::cmp::min(lowest, ConfidenceLevel::B)
         })
+}
+
+/// Confidence of the positive grant, or `A` for a restrictive exclusion.
+#[must_use]
+pub fn exclusion_confidence(base: Option<&ClassifiedExpr>) -> ConfidenceLevel {
+    base.map_or(ConfidenceLevel::A, |base| base.confidence)
 }
 
 impl From<CreatePolicyCommand> for PolicyCommand {

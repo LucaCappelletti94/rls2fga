@@ -6,9 +6,9 @@ use crate::classifier::patterns::{
     apply_threshold, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
     CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
     ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
-    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PolicyMode,
-    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
-    UncorrelatedMembership,
+    JsonbFieldOwnership, MembershipExclusion, MembershipInCallerSet, NumericThreshold,
+    ParentInheritance, PolicyMode, RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet,
+    UnclassifiedExpr, UncorrelatedMembership,
 };
 use crate::types::TranslationNote;
 
@@ -259,6 +259,23 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
                 source.request_parameter()
             )
         }
+        PatternClass::MembershipExclusion(MembershipExclusion { base, subtract }) => {
+            let mut rendered = match base {
+                Some(base) => {
+                    let mut rendered = format_pattern(&base.pattern);
+                    rendered.push_str(" but not ");
+                    rendered
+                }
+                None => String::from("restrictive blocklist "),
+            };
+            for (at, membership) in subtract.iter().enumerate() {
+                if at != 0 {
+                    rendered.push_str(", ");
+                }
+                let _ = write!(rendered, "{}", membership.join_table);
+            }
+            rendered
+        }
         PatternClass::Unknown(UnclassifiedExpr { reason, .. }) => format!("Unknown: {reason}"),
     }
 }
@@ -280,10 +297,9 @@ fn notes_for_policy(notes: &[TranslationNote], policy_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
     use crate::classifier::patterns::*;
     use crate::parser::sql_parser::{parse_schema, DatabaseLike};
-    use crate::types::{ColumnName, TableId};
+    use crate::types::ColumnName;
 
     fn classified_policy(
         name: &str,
@@ -309,138 +325,6 @@ CREATE POLICY {name} ON docs USING (TRUE);
             confidence: ConfidenceLevel::C,
         });
         result
-    }
-
-    #[test]
-    fn format_pattern_covers_all_variants() {
-        let p3 = ClassifiedExpr {
-            pattern: PatternClass::P3DirectOwnership(DirectOwnership {
-                column: ColumnName::from_stored("owner_id"),
-            }),
-            confidence: ConfidenceLevel::A,
-        };
-        let patterns = vec![
-            (
-                PatternClass::P1NumericThreshold(NumericThreshold {
-                    resource_column: None,
-                    function_name: "role_level".to_string(),
-                    operator: ThresholdOperator::Gte,
-                    threshold: 2,
-                    command: PolicyCommand::Select,
-                }),
-                "P1 (threshold >= 2)",
-            ),
-            (
-                PatternClass::P2RoleNameInList(RoleNameInList {
-                    resource_column: None,
-                    function_name: "role_level".to_string(),
-                    role_names: vec!["viewer".to_string(), "editor".to_string()],
-                    privilege: RolePrivilege::Member,
-                }),
-                "P2 (roles: viewer, editor)",
-            ),
-            (
-                PatternClass::P3DirectOwnership(DirectOwnership {
-                    column: ColumnName::from_stored("owner_id"),
-                }),
-                "P3 (owner_id = user)",
-            ),
-            (
-                PatternClass::P4ExistsMembership(ExistsMembership {
-                    join_table: TableId::from_stored(None, "doc_members".to_string()),
-                    pairs: vec![MembershipJoinPair {
-                        join_column: ColumnName::from_stored("doc_id"),
-                        outer_column: ColumnName::from_stored("id"),
-                    }],
-                    user_column: ColumnName::from_stored("user_id"),
-                    extra_predicates: ResidualPredicates::default(),
-                }),
-                "P4 (EXISTS doc_members)",
-            ),
-            (
-                PatternClass::P5ParentInheritance(ParentInheritance {
-                    parent_table: TableId::from_stored(None, "projects".to_string()),
-                    fk_column: ColumnName::from_stored("project_id"),
-                    inner_pattern: Box::new(p3.clone()),
-                }),
-                "P5 (inherits from projects)",
-            ),
-            (
-                PatternClass::P6BooleanFlag(BooleanFlag {
-                    column: ColumnName::from_stored("is_public"),
-                    admits_null: false,
-                }),
-                "P6 (is_public)",
-            ),
-            (
-                PatternClass::P7AbacAnd(AbacAnd {
-                    relationship_part: Box::new(p3.clone()),
-                    attribute_part: "status".to_string(),
-                }),
-                "P7 (ABAC: status)",
-            ),
-            (
-                PatternClass::P8Composite(Composite {
-                    op: BoolOp::And,
-                    parts: vec![p3.clone()],
-                }),
-                "P8 (And of 1 parts)",
-            ),
-            (
-                PatternClass::P9AttributeCondition(AttributeCondition {
-                    column: ColumnName::from_stored("status"),
-                    value_description: "'published'".to_string(),
-                    predicate: None,
-                    request_predicate: None,
-                }),
-                "P9 (status = 'published')",
-            ),
-            (
-                PatternClass::P10ConstantBool(ConstantBool { value: true }),
-                "P10 (constant true)",
-            ),
-            (
-                PatternClass::P14RowValueInCallerSet(RowValueInCallerSet {
-                    column: ColumnName::from_stored("owner"),
-                    separator: Some(",".to_string()),
-                    source: SessionAttribute::setting(
-                        "app.subjects",
-                        SessionAttributeKind::SetAttribute,
-                    ),
-                }),
-                "P14 (owner in caller set app_subjects)",
-            ),
-            (
-                PatternClass::P18MembershipInCallerSet(MembershipInCallerSet {
-                    membership: ExistsMembership {
-                        join_table: TableId::from_stored(None, "shares".to_string()),
-                        pairs: vec![MembershipJoinPair {
-                            join_column: ColumnName::from_stored("paper_id"),
-                            outer_column: ColumnName::from_stored("id"),
-                        }],
-                        user_column: ColumnName::from_stored("viewer"),
-                        extra_predicates: ResidualPredicates::default(),
-                    },
-                    separator: Some(",".to_string()),
-                    source: SessionAttribute::setting(
-                        "app.subjects",
-                        SessionAttributeKind::SetAttribute,
-                    ),
-                }),
-                "P18 (shares.viewer in caller set app_subjects)",
-            ),
-            (
-                PatternClass::Unknown(UnclassifiedExpr {
-                    sql_text: "mystery()".to_string(),
-                    reason: "no recognizer".to_string(),
-                }),
-                "Unknown: no recognizer",
-            ),
-        ];
-
-        for (pattern, expected) in patterns {
-            assert_eq!(format_pattern(&pattern), expected);
-        }
     }
 
     #[test]

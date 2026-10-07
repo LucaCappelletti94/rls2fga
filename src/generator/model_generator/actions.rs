@@ -20,6 +20,7 @@ pub(crate) enum ActionTarget {
 pub(crate) struct ModeBuckets {
     pub(crate) permissive: Vec<UsersetExpr>,
     pub(crate) restrictive: Vec<UsersetExpr>,
+    pub(crate) subtractions: Vec<UsersetExpr>,
     /// Barriers that bind only the members of a role.
     pub(crate) role_limited: Vec<RoleLimitedRule>,
 }
@@ -185,6 +186,9 @@ pub(crate) fn dropped_attribute_guards(pattern: &PatternClass) -> Vec<&str> {
         PatternClass::ExpandedFunction(ExpandedFunction { inner, .. }) => {
             dropped_attribute_guards(&inner.pattern)
         }
+        PatternClass::MembershipExclusion(MembershipExclusion { base, .. }) => base
+            .as_ref()
+            .map_or_else(Vec::new, |base| dropped_attribute_guards(&base.pattern)),
         _ => Vec::new(),
     }
 }
@@ -267,14 +271,22 @@ pub(crate) fn compose_action(
 
     let Some(permissive) = permissive else {
         // Barriers alone grant nobody anything, whichever roles they bind.
-        return (restrictive.is_some() || !bucket.role_limited.is_empty())
-            .then(|| deny_expr(table_plan));
+        return (restrictive.is_some()
+            || !bucket.subtractions.is_empty()
+            || !bucket.role_limited.is_empty())
+        .then(|| deny_expr(table_plan));
     };
 
     let mut expr = match restrictive {
         Some(restrictive) => UsersetExpr::Intersection(vec![permissive, restrictive]),
         None => permissive,
     };
+    if let Some(subtract) = combine_union(bucket.subtractions.clone()) {
+        expr = UsersetExpr::Exclusion {
+            base: Box::new(expr),
+            subtract: Box::new(subtract),
+        };
+    }
 
     // Members of the bound roles have to satisfy the barrier, everyone else is
     // untouched by it. Each barrier wraps the previous result, so a second one costs
@@ -354,7 +366,9 @@ pub(crate) fn policy_clause_targets<P: PolicyLike>(
 fn barriers_alone(bucket: Option<&ModeBuckets>) -> bool {
     bucket.is_some_and(|bucket| {
         bucket.permissive.is_empty()
-            && (!bucket.restrictive.is_empty() || !bucket.role_limited.is_empty())
+            && (!bucket.restrictive.is_empty()
+                || !bucket.subtractions.is_empty()
+                || !bucket.role_limited.is_empty())
     })
 }
 

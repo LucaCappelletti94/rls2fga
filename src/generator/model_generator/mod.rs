@@ -16,7 +16,7 @@ use crate::generator::notes::SkippedTuples;
 use crate::generator::role_relations::{sorted_role_relation_names, RoleRelationName};
 use crate::generator::tuple_generator::{resolve_bridge_columns, UnboundedColumns};
 use crate::generator::well_known::{
-    can_delete_relation, can_insert_relation, can_insert_returning_relation,
+    blocked_relation, can_delete_relation, can_insert_relation, can_insert_returning_relation,
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
     can_upsert_relation, deny_relation, member_relation, owner_team_relation, owner_user_relation,
@@ -70,8 +70,8 @@ use actions::{
 };
 use dsl::render_dsl;
 use emit_membership::{
-    emit_abac_and, emit_composite, emit_exists_membership, emit_parent_inheritance,
-    emit_uncorrelated_membership,
+    emit_abac_and, emit_blocked_set, emit_composite, emit_exists_membership,
+    emit_membership_exclusion, emit_parent_inheritance, emit_uncorrelated_membership,
 };
 use emit_ownership::{
     emit_attribute_condition, emit_boolean_flag, emit_constant_bool, emit_direct_ownership,
@@ -273,6 +273,8 @@ pub(crate) struct TypePlan {
     /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
     /// its own relation, so two keys must never share a name even on hash collision.
     wildcard_gate_relations: BTreeMap<String, RelationName>,
+    /// Distinct predicates must never share a blocked relation.
+    blocked_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
@@ -303,7 +305,10 @@ fn reserved_relation_subjects(
 ) -> Option<Vec<DirectSubject>> {
     if *relation == deny_relation() {
         Some(vec![DirectSubject::Type(well_known.nobody.clone())])
-    } else if *relation == member_relation() || *relation == owner_user_relation() {
+    } else if *relation == member_relation()
+        || *relation == owner_user_relation()
+        || *relation == blocked_relation()
+    {
         Some(vec![DirectSubject::Type(well_known.user.clone())])
     } else if *relation == public_relation() {
         Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
@@ -336,6 +341,7 @@ impl TypePlan {
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
             wildcard_gate_relations: BTreeMap::new(),
+            blocked_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
             narrowed_relations: BTreeSet::new(),
@@ -434,6 +440,27 @@ impl TypePlan {
             .entry(relation.clone())
             .or_insert(wildcard);
         self.wildcard_gate_relations
+            .insert(memo_key.to_string(), relation.clone());
+        relation
+    }
+
+    /// Relation carrying the users one blocklist predicate excludes.
+    fn blocked_relation_for(&mut self, memo_key: &str) -> RelationName {
+        if let Some(existing) = self.blocked_relations.get(memo_key) {
+            return existing.clone();
+        }
+        let subjects = vec![DirectSubject::Type(self.well_known.user.clone())];
+        let relation = yield_until_free(blocked_relation().as_str(), memo_key, |relation| {
+            reserved_relation_subjects(relation, &self.well_known)
+                .is_some_and(|held| held != subjects)
+                || generator_defines(relation)
+                || self.direct_relations.contains_key(relation)
+                || self.computed_relations.contains_key(relation)
+        });
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert(subjects);
+        self.blocked_relations
             .insert(memo_key.to_string(), relation.clone());
         relation
     }
@@ -1293,18 +1320,46 @@ impl<DB: DatabaseLike> TableBuild<'_, DB> {
                 // Nothing here can be planned, so translating it leaves dead relations.
                 return;
             }
+            let ctx = PatternCtx {
+                policy_name: cp.name(),
+                registry: self.registry,
+                db: self.db,
+                table_types: self.table_types,
+                source_table: self.source_table,
+                membership_reads_bypass_rls: false,
+                settings: self.settings,
+                condition_parameters: self.condition_parameters,
+            };
+            if let PatternClass::MembershipExclusion(MembershipExclusion {
+                base: None,
+                subtract,
+            }) = &classified.pattern
+            {
+                if cp.mode() == PolicyMode::Restrictive {
+                    if let Some(set) = emit_blocked_set(
+                        subtract,
+                        &ctx,
+                        self.plan,
+                        &mut *self.other_types,
+                        self.notes,
+                        self.readability,
+                    ) {
+                        let set = match &scope_relation {
+                            Some(scope) => scoped_policy_expr(set, scope),
+                            None => set,
+                        };
+                        action_buckets
+                            .entry(target)
+                            .or_default()
+                            .subtractions
+                            .push(set);
+                        return;
+                    }
+                }
+            }
             let expr = translate_pattern(
                 &classified.pattern,
-                &PatternCtx {
-                    policy_name: cp.name(),
-                    registry: self.registry,
-                    db: self.db,
-                    table_types: self.table_types,
-                    source_table: self.source_table,
-                    membership_reads_bypass_rls: false,
-                    settings: self.settings,
-                    condition_parameters: self.condition_parameters,
-                },
+                &ctx,
                 self.plan,
                 &mut *self.other_types,
                 self.notes,
@@ -2477,6 +2532,9 @@ fn translate_pattern<DB: DatabaseLike>(
             notes,
             readability,
         ),
+        PatternClass::MembershipExclusion(exclusion) => {
+            emit_membership_exclusion(exclusion, ctx, table_plan, all_types, notes, readability)
+        }
         PatternClass::P5ParentInheritance(parent_inheritance) => emit_parent_inheritance(
             parent_inheritance,
             ctx,
