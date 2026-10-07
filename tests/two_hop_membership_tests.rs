@@ -28,6 +28,31 @@ CREATE TABLE orders (id TEXT PRIMARY KEY REFERENCES ownables(id), title TEXT);
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ";
 
+const SHARED_COMPOSITE_SCHEMA: &str = "
+CREATE TABLE principals (id TEXT PRIMARY KEY);
+CREATE TABLE entities (tenant TEXT, id TEXT, PRIMARY KEY (tenant, id));
+CREATE TABLE owners (id TEXT, tenant TEXT, PRIMARY KEY (tenant, id));
+CREATE TABLE resources (
+    id TEXT, tenant TEXT, PRIMARY KEY (tenant, id),
+    FOREIGN KEY (id, tenant) REFERENCES entities (id, tenant));
+CREATE TABLE ancestors (
+    resource_id TEXT, owner_id TEXT, resource_tenant TEXT, owner_tenant TEXT,
+    PRIMARY KEY (resource_id, owner_id, resource_tenant, owner_tenant),
+    FOREIGN KEY (resource_id, resource_tenant) REFERENCES entities (id, tenant),
+    FOREIGN KEY (owner_id, owner_tenant) REFERENCES owners (id, tenant));
+CREATE TABLE memberships (
+    owner_id TEXT, member_id TEXT REFERENCES principals (id), tenant TEXT,
+    PRIMARY KEY (tenant, owner_id, member_id),
+    FOREIGN KEY (owner_id, tenant) REFERENCES owners (id, tenant));
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+CREATE POLICY resources_read ON resources FOR SELECT USING (
+    EXISTS (SELECT 1 FROM ancestors a
+            WHERE a.resource_id = resources.id AND a.resource_tenant = resources.tenant
+              AND EXISTS (SELECT 1 FROM memberships m
+                          WHERE m.owner_id = a.owner_id AND m.tenant = a.owner_tenant
+                            AND m.member_id = current_setting('app.user_id', true))));
+";
+
 const CALLER: &str = "current_setting('app.user_id', true)";
 
 fn nested(guard: &str) -> String {
@@ -67,6 +92,193 @@ fn row_records(translation: &Translation, table: &str, cells: &[(&str, &str)]) -
         .filter(|shape| matches!(&shape.derivation, RecordDerivation::FromRow { table: source, .. } if source.name() == table))
         .flat_map(|shape| records_from_row(shape, &row).expect("the row decides its records"))
         .collect()
+}
+
+fn mixed_membership_schema(indirect_first: bool) -> String {
+    let (read, delete) = if indirect_first {
+        ("a_read", "z_delete")
+    } else {
+        ("z_read", "a_delete")
+    };
+    let base = SCHEMA
+        .replace(
+            "ALTER TABLE orders ENABLE ROW LEVEL SECURITY;",
+            "ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;",
+        )
+        .replace(
+            "ownable TEXT NOT NULL REFERENCES ownables(id),",
+            "ownable TEXT NOT NULL REFERENCES ownables(id) ON DELETE CASCADE,",
+        );
+    let indirect = nested("").replace("orders.id", "ownables.id");
+    format!(
+        "{base}
+CREATE POLICY {read} ON ownables FOR SELECT USING ({indirect});
+CREATE POLICY {delete} ON ownables FOR DELETE USING (
+    EXISTS (SELECT 1 FROM memberships m
+            WHERE m.owner_id = ownables.owner_id AND m.member_id = {CALLER}));"
+    )
+}
+
+#[test]
+fn changing_parent_owner_preserves_closure_records() {
+    for indirect_first in [true, false] {
+        let db = parse_schema(&mixed_membership_schema(indirect_first)).expect("the schema parses");
+        let translation = TranslatorBuilder::new()
+            .with_min_confidence(ConfidenceLevel::A)
+            .with_session_attributes([SessionAttribute::setting(
+                "app.user_id",
+                SessionAttributeKind::CallerId,
+            )])
+            .build()
+            .translate(&db)
+            .expect("the mixed policies plan");
+        let closure = row_records(
+            &translation,
+            "ownable_ancestors",
+            &[("ownable", "o1"), ("owner", "org1")],
+        );
+        let old_parent = row_records(
+            &translation,
+            "ownables",
+            &[("id", "o1"), ("owner_id", "org1")],
+        );
+        let new_parent = row_records(
+            &translation,
+            "ownables",
+            &[("id", "o1"), ("owner_id", "org2")],
+        );
+        let retained: BTreeSet<_> = closure
+            .union(&old_parent)
+            .filter(|record| !old_parent.contains(*record))
+            .chain(new_parent.iter())
+            .cloned()
+            .collect();
+        let bridge = closure.first().expect("the closure emits its owner bridge");
+        assert_eq!(bridge.object, "ownables:o1");
+        assert_eq!(bridge.subject, "owners:org1");
+        assert!(
+            retained.contains(bridge),
+            "changing the parent owner removed the closure bridge, indirect_first={indirect_first}"
+        );
+    }
+}
+
+#[test]
+fn shared_entity_composite_keys_preserve_tenant_identity() {
+    let db = parse_schema(SHARED_COMPOSITE_SCHEMA).expect("the shared composite schema parses");
+    let translation = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db)
+        .expect("the shared composite schema plans");
+    for (tenant, member) in [("t1", "alice"), ("t2", "bob")] {
+        let closure = row_records(
+            &translation,
+            "ancestors",
+            &[
+                ("resource_id", "r1"),
+                ("resource_tenant", tenant),
+                ("owner_id", "org1"),
+                ("owner_tenant", tenant),
+            ],
+        );
+        let bridge = closure
+            .first()
+            .expect("the closure emits its composite owner bridge");
+        assert_eq!(closure.len(), 1);
+        assert_eq!(bridge.object, format!("resources:{tenant}|r1"));
+        assert_eq!(bridge.subject, format!("owners:{tenant}|org1"));
+        let members = row_records(
+            &translation,
+            "memberships",
+            &[
+                ("owner_id", "org1"),
+                ("tenant", tenant),
+                ("member_id", member),
+            ],
+        );
+        let grant = members.first().expect("the membership emits its grant");
+        assert_eq!(members.len(), 1);
+        assert_eq!(grant.object, bridge.subject);
+        assert_eq!(grant.subject, format!("user:{member}"));
+    }
+}
+
+#[test]
+fn shared_entity_composite_keys_reject_unrelated_entities() {
+    let sql = format!(
+        "CREATE TABLE other_entities (tenant TEXT, id TEXT, PRIMARY KEY (tenant, id));{}",
+        SHARED_COMPOSITE_SCHEMA.replace(
+            "FOREIGN KEY (resource_id, resource_tenant) REFERENCES entities (id, tenant)",
+            "FOREIGN KEY (resource_id, resource_tenant) REFERENCES other_entities (id, tenant)",
+        )
+    );
+    let db = parse_schema(&sql).expect("the unrelated entity schema parses");
+    let translation = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db)
+        .expect("the unrelated entity schema plans");
+    assert!(translation
+        .notes()
+        .iter()
+        .any(|note| matches!(note, TranslationNote::ClauseBelowThreshold { .. })));
+}
+
+#[cfg(all(feature = "client", not(target_os = "windows")))]
+#[tokio::test]
+#[ignore = "requires Docker with PostgreSQL and OpenFGA"]
+async fn shared_entity_composite_membership_postgres_openfga_parity() {
+    use core::time::Duration;
+    use rls2fga::types::ActionStatement;
+    use support::parity::{assert_agrees, assert_postgres, Cluster, ParityCase, Principal};
+
+    tokio::time::timeout(Duration::from_secs(240), async {
+        let cluster = Cluster::start().await;
+        for from_rows in [false, true] {
+            let name = format!("shared_entity_composite_{from_rows}");
+            let case = ParityCase::reading(
+                &name,
+                SHARED_COMPOSITE_SCHEMA,
+                &[
+                    "INSERT INTO principals VALUES ('alice'), ('bob'), ('outsider')",
+                    "INSERT INTO entities VALUES ('t1', 'r1'), ('t2', 'r1')",
+                    "INSERT INTO resources VALUES ('r1', 't1'), ('r1', 't2')",
+                    "INSERT INTO owners VALUES ('org1', 't1'), ('org1', 't2')",
+                    "INSERT INTO ancestors VALUES ('r1', 'org1', 't1', 't1'), ('r1', 'org1', 't2', 't2')",
+                    "INSERT INTO memberships VALUES ('org1', 'alice', 't1'), ('org1', 'bob', 't2')",
+                    "CREATE ROLE app_reader LOGIN; GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_reader",
+                ],
+                ["alice", "bob", "outsider"]
+                    .into_iter()
+                    .map(|subject| Principal::with_setting(subject, "app_reader", "app.user_id", subject))
+                    .collect(),
+            )
+            .with_attributes(r#"[{"key":"app.user_id","kind":"caller_id"}]"#);
+            let case = if from_rows { case.loading_from_rows() } else { case };
+            let run = support::parity::run(&cluster, &case).await;
+            for (subject, first, second) in [
+                ("alice", true, false),
+                ("bob", false, true),
+                ("outsider", false, false),
+            ] {
+                assert_postgres(&case, &run, subject, "resources:t1|r1", ActionStatement::Select, first);
+                assert_postgres(&case, &run, subject, "resources:t2|r1", ActionStatement::Select, second);
+            }
+            assert_agrees(&case, &run);
+            println!("{name} compared {} PostgreSQL/OpenFGA decisions", run.compared());
+        }
+    })
+    .await
+    .expect("shared composite membership parity completes within four minutes");
 }
 
 #[test]
@@ -340,6 +552,56 @@ async fn two_hop_membership_postgres_openfga_parity() {
     })
     .await
     .expect("two-hop parity completes within four minutes");
+}
+
+#[cfg(all(feature = "client", not(target_os = "windows")))]
+#[tokio::test]
+#[ignore = "requires Docker with PostgreSQL and OpenFGA"]
+async fn mixed_parent_and_closure_memberships_postgres_openfga_parity() {
+    use core::time::Duration;
+    use rls2fga::types::ActionStatement;
+    use support::parity::{assert_agrees, assert_postgres, Cluster, ParityCase, Principal};
+
+    tokio::time::timeout(Duration::from_secs(240), async {
+        let cluster = Cluster::start().await;
+        for indirect_first in [true, false] {
+            let schema = mixed_membership_schema(indirect_first);
+            for from_rows in [false, true] {
+                let name = format!("mixed_memberships_{indirect_first}_{from_rows}");
+                let case = ParityCase::reading(
+                    &name,
+                    &schema,
+                    &[
+                        "INSERT INTO principals VALUES ('alice'), ('bob'), ('carol')",
+                        "INSERT INTO owners VALUES ('fk_owner'), ('closure_owner')",
+                        "INSERT INTO ownables VALUES ('o1', 'fk_owner')",
+                        "INSERT INTO ownable_ancestors VALUES ('o1', 'closure_owner')",
+                        "INSERT INTO memberships VALUES ('fk_owner', 'alice', 'read'), ('closure_owner', 'bob', 'read'), ('fk_owner', 'carol', 'read'), ('closure_owner', 'carol', 'read')",
+                        "CREATE ROLE app_reader LOGIN; GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_reader; GRANT DELETE ON ownables TO app_reader",
+                    ],
+                    ["alice", "bob", "carol"]
+                        .into_iter()
+                        .map(|subject| Principal::with_setting(subject, "app_reader", "app.user_id", subject))
+                        .collect(),
+                )
+                .with_attributes(r#"[{"key":"app.user_id","kind":"caller_id"}]"#);
+                let case = if from_rows { case.loading_from_rows() } else { case };
+                let run = support::parity::run(&cluster, &case).await;
+                for (subject, select, delete) in [
+                    ("alice", false, false),
+                    ("bob", true, false),
+                    ("carol", true, true),
+                ] {
+                    assert_postgres(&case, &run, subject, "ownables:o1", ActionStatement::Select, select);
+                    assert_postgres(&case, &run, subject, "ownables:o1", ActionStatement::Delete, delete);
+                }
+                assert_agrees(&case, &run);
+                println!("{name} compared {} PostgreSQL/OpenFGA decisions", run.compared());
+            }
+        }
+    })
+    .await
+    .expect("mixed membership parity completes within four minutes");
 }
 
 #[test]

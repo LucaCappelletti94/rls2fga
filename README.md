@@ -131,6 +131,8 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 
 `P19` emits resource-to-owner tuples from closure rows and owner-to-user tuples from membership rows. Far-table literal guards select separate member relations, and a role `IN` list unions one relation per role. Both scanned tables retain membership-read checks and `MembershipTableGuarded` disclosures.
 
+`P19` correlates the resource's full primary key through a direct foreign key or a shared entity key. Composite keys follow primary-key order, and closure and parent bridges use independent relations.
+
 ## What the crate refuses
 
 An unrecognised expression is denied rather than guessed at, which is safe but narrower than the policy. Implement `PolicyOracle` and call `consult_oracle` to answer for your own shapes: each refusal is offered with its reason, and bailing is the default, so an oracle implementing nothing changes nothing. Use it rather than rewriting classifications yourself, since a refusal nests inside composites and every enclosing pattern has to be regraded. `classifier::oracle` documents the traps with a worked example.

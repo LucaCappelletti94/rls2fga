@@ -990,8 +990,10 @@ pub(crate) fn emit_indirect_membership<DB: DatabaseLike>(
         closure_object_cols.iter().chain(&closure_subject_cols),
     );
     let _ = write!(bridge_key, "{}:{owner_type}", owner_type.as_str().len());
-    let bridge_relation =
-        table_plan.ownership_relation(&format!("indirect:{bridge_key}"), owner_type.as_str());
+    let bridge_relation = table_plan.ownership_relation(
+        &format!("indirect:{bridge_key}"),
+        &format!("indirect_{owner_type}"),
+    );
     table_plan.ensure_direct(
         bridge_relation.clone(),
         vec![DirectSubject::Type(owner_type.clone())],

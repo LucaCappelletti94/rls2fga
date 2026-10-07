@@ -973,18 +973,18 @@ fn guarded_column_references<DB: DatabaseLike>(
     entity_column: &str,
 ) -> bool {
     guarded.foreign_keys(db).into_iter().flatten().any(|fk| {
-        fk.host_column(db)
-            .ok()
-            .flatten()
-            .is_some_and(|h| h.stored_column_name() == column)
-            && fk
-                .referenced_table(db)
-                .is_ok_and(|t| table_identity(t) == table_identity(entity))
-            && fk
-                .referenced_column(db)
-                .ok()
-                .flatten()
-                .is_some_and(|c| c.stored_column_name() == entity_column)
+        if !fk
+            .referenced_table(db)
+            .is_ok_and(|table| table_identity(table) == table_identity(entity))
+        {
+            return false;
+        }
+        let (Ok(hosts), Ok(referenced)) = (fk.host_columns(db), fk.referenced_columns(db)) else {
+            return false;
+        };
+        hosts.zip(referenced).any(|(host, target)| {
+            host.stored_column_name() == column && target.stored_column_name() == entity_column
+        })
     })
 }
 
