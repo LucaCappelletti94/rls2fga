@@ -125,6 +125,7 @@ async fn every_parity_case_agrees() {
             a_witness_link_and_a_caller_set_gate_do_not_share_a_tupleset,
             distinct_acl_tables_do_not_share_a_member_relation,
             distinct_team_membership_tables_do_not_share_access,
+            a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_access,
         ]
     ];
     let total = cases.len();
@@ -4310,6 +4311,66 @@ CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
             subject,
             object,
             ActionStatement::Select,
+            allowed,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// A plain read and a temporally-gated read of the same join table through the same
+/// foreign key and user column must not pool. An expired member must still pass the
+/// plain policy but fail the gated one.
+async fn a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_access(
+    cluster: Arc<Cluster>,
+) {
+    let case = ParityCase::reading(
+        "runner-plain-and-gated-same-join-table",
+        r"
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE members (
+    doc_id INT REFERENCES docs(id),
+    user_id TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (doc_id, user_id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+        AND m.user_id = current_setting('app.user_id', true)));
+CREATE POLICY docs_delete ON docs FOR DELETE USING (
+    EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+        AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+",
+        &[
+            "INSERT INTO docs (id) VALUES (1);
+             INSERT INTO members (doc_id, user_id, expires_at) VALUES
+                 (1, 'expired_member', now() - interval '1 day')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT, DELETE ON docs TO app_reader;
+             GRANT SELECT ON members TO app_reader",
+        ],
+        vec![Principal::with_setting(
+            "expired_member",
+            "app_reader",
+            "app.user_id",
+            "expired_member",
+        )
+        .with_clock()],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (statement, allowed) in [
+        // The plain policy never checks expiry, so an expired row still satisfies it.
+        (ActionStatement::Select, true),
+        // The gated policy requires expires_at > now(), which this row no longer meets:
+        // the plain source's unconditional tuple must not leak into the gated relation.
+        (ActionStatement::Delete, false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "expired_member",
+            "docs:1",
+            statement,
             allowed,
         );
     }

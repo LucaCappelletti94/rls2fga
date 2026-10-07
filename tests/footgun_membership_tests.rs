@@ -1713,3 +1713,143 @@ CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
          team type, got {team_types:?}:\n{dsl}"
     );
 }
+
+/// Two `ACL` tables gating two different privileges on one guarded table must not share a
+/// member relation, so membership in either table must not grant the other's privilege.
+#[test]
+fn distinct_acl_tables_do_not_share_a_member_relation() {
+    let db = db_of(
+        r"
+CREATE TABLE principals(id UUID PRIMARY KEY);
+CREATE TABLE resources(id UUID PRIMARY KEY);
+CREATE TABLE read_acl(resource_id UUID REFERENCES resources(id), user_id UUID REFERENCES principals(id));
+CREATE TABLE delete_acl(resource_id UUID REFERENCES resources(id), user_id UUID REFERENCES principals(id));
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+CREATE POLICY resources_read ON resources FOR SELECT USING (
+  EXISTS (SELECT 1 FROM read_acl m WHERE m.resource_id = resources.id AND m.user_id = current_user));
+CREATE POLICY resources_delete ON resources FOR DELETE USING (
+  EXISTS (SELECT 1 FROM delete_acl m WHERE m.resource_id = resources.id AND m.user_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let select = relation_definition(&dsl, "resources", "can_select")
+        .expect("resources should define can_select");
+    let delete = relation_definition(&dsl, "resources", "can_delete")
+        .expect("resources should define can_delete");
+    assert_ne!(
+        select, delete,
+        "read_acl and delete_acl name different rows, so can_select and \
+         can_delete must not share the member relation:\n{dsl}"
+    );
+}
+
+/// A `P4` witness membership and a `P18` caller-set gate resolving to the same parent
+/// type through different columns of one join table must not share a link relation.
+#[test]
+fn a_witness_link_and_a_caller_set_gate_do_not_share_a_tupleset() {
+    let db = db_of(
+        r"
+CREATE TABLE principals(id TEXT PRIMARY KEY);
+CREATE TABLE owners(id TEXT PRIMARY KEY);
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE memberships(
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    lead_id TEXT NOT NULL REFERENCES owners(id),
+    user_id TEXT NOT NULL REFERENCES principals(id),
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM memberships m WHERE m.owner_id = docs.owner_id
+    AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+CREATE POLICY projects_select ON projects FOR SELECT USING (
+  EXISTS (SELECT 1 FROM memberships m WHERE m.lead_id = projects.owner_id
+    AND m.user_id = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+    );
+    let dsl = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([
+            SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+            SessionAttribute::setting("app.subjects", SessionAttributeKind::SetAttribute),
+        ])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let share_links: Vec<_> = relation_definitions(&dsl, "owners")
+        .into_iter()
+        .filter(|(_, body)| body.starts_with('[') && body.contains("_share"))
+        .collect();
+    assert_eq!(
+        share_links.len(),
+        2,
+        "docs reaches the owner through owner_id and projects through lead_id, two \
+         different memberships columns, so owners should define two separate share \
+         links, got {share_links:?}:\n{dsl}"
+    );
+}
+
+/// A plain read and a temporally-gated read of the same join table through the same
+/// foreign key and user column must not pool. The plain source's unconditional subject
+/// would otherwise let the gated relation's policy grant access past its own deadline.
+#[test]
+fn a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_a_relation() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE members(doc_id UUID REFERENCES docs(id), user_id TEXT, expires_at TIMESTAMPTZ,
+    PRIMARY KEY(doc_id, user_id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+    AND m.user_id = current_setting('app.user_id', true)));
+CREATE POLICY docs_delete ON docs FOR DELETE USING (
+  EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+    AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+",
+    );
+    let dsl = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let member_bodies: Vec<(String, String)> = relation_definitions(&dsl, "docs")
+        .into_iter()
+        .filter(|(_, body)| body.starts_with("[user"))
+        .collect();
+    assert_eq!(
+        member_bodies.len(),
+        2,
+        "the plain policy and the gated policy read members through the same join \
+         table and column, so docs should still define two separate member relations, \
+         got {member_bodies:?}:\n{dsl}"
+    );
+    assert!(
+        member_bodies.iter().any(|(_, body)| body == "[user]"),
+        "the plain source's relation must hold only the unconditional subject, \
+         got {member_bodies:?}:\n{dsl}"
+    );
+    assert!(
+        member_bodies
+            .iter()
+            .any(|(_, body)| body.starts_with("[user with ") && !body.contains(", user]")),
+        "the gated source's relation must hold only the conditional subject, not the \
+         plain source's unconditional one, got {member_bodies:?}:\n{dsl}"
+    );
+}

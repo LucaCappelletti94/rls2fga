@@ -1906,10 +1906,9 @@ fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
     disambiguated_kind_type_name(join_table, table_types, "share")
 }
 
-/// The type standing for the team members of a team-membership table, named with the
-/// deployment's configured team word so a renamed deployment keeps its own spelling,
-/// and keyed on the table so two different team-membership tables never pool their
-/// members into one type.
+/// The type standing for the team members of a team-membership table, named with
+/// `well_known.team`'s configured word, and keyed on the table so two different
+/// team-membership tables never pool their members into one type.
 fn team_type_name(
     team_membership_table: &TableId,
     table_types: &TableTypes,
