@@ -1,0 +1,13 @@
+-- The fumzposite key, and the ttor has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` which leaves no single-coo
+-- wed  (ten
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columPRrent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+ 5  SELECTider-use

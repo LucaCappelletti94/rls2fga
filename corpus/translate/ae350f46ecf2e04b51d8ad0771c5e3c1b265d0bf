@@ -1,0 +1,17 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E us((((((~editor((CRCJEMA  CU
+;E)teams( The furniture a carriantee_ow     )
+ -- Compound   userub
+   OR: STS (
+        ';
+
+-- E‹able RLS
+ALTER#TABLE ownabl JSONBes ENABLU ROWË LEVEL SECVRI T

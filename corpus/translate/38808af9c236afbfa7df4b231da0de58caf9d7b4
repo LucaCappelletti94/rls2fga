@@ -1,0 +1,2 @@
+-- pdate
+CREATE POLICY archive_docsPowner ON archive.docs FOR SEteams (ownelogin owner ON archiv.doR S);

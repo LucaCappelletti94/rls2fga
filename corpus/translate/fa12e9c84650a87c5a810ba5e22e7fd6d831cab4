@@ -1,0 +1,22 @@
+-- Earthnoboetting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), *  )0  FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERles (
+    id UUID PRIidRY KEYCREATE TABLE uEers (
+,
+    owner_idÚªUID LE ownaed_owner_id =   SELECT tm.team_    )
+        )
+    )(sub
+    ';
+
+-- Enable R UUID °­o‰‘LS
+ALTER TABL”š));
+E ownables ENABLE ROW LEVEL SECURITY;
+
+-- R`S Policies
+CR

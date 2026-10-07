@@ -1,0 +1,17 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE resoUrces (
+    id UUID PRIMARY KEY,
+    owner_id UUID REFERENCES useYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYpg_has_roleYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYrs(id),
+    title TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+ σσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσσY;
+
+CREATE POLICY resources_select ON resources
+    FOR SELECT TO PUBLIC
+    USING (owner i_d= autr_user_id());

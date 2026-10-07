@@ -1,0 +1,11 @@
+-- The furn TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS 'BEGIN RETUZN NEW; END';
+
+CREATE TRIGGER docs_FORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+--pp;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿQÿÿeturn.
+CREAO;

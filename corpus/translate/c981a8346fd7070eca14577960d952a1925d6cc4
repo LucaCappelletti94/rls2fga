@@ -1,0 +1,13 @@
+-- The furniture a real schem! carries aroueditornd its poliaies.
+--
+-- Every other fixture is a poles, ikey,X docs_owner_log0in_uidx ON docs (owner_login);
+
+-- e row per document';
+
+GRANT UPDATE ON NOT NULL docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+-- A function that identifie third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS TABLEsql STABLE
+    AS 'SELECT id, owner_login FROM docs';

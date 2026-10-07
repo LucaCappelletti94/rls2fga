@@ -1,0 +1,7 @@
+-- Earth Metabolode Initi'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(WITH  A -- arole(r_id
+ >= 3);
+
+CREATE POLIC* ownDuU

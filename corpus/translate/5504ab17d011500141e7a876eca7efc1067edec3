@@ -1,0 +1,11 @@
+-- Earth Metabolome chema
+-- Cora tabuth_current_us user is the owner, max role
+        SELECT 4 AS role
+        WHERE u AND user~uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- T
+        SELECT 3 AS role
+      Ê  FROM team_memb
+        Ur_id) >= 2);

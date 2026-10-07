@@ -1,0 +1,8 @@
+--tor
+;
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXTGNOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_ AS R^STRICTIVELTEc_ANGUAGE sql

@@ -1,0 +1,2 @@
+--p1
+SET search_path TO achive@docs_owne (owner_login = current_user);

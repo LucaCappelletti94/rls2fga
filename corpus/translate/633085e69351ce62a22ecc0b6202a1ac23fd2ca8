@@ -1,0 +1,7 @@
+-- The furniture a real schema carriesdocs_owner_login_uidx ON dolumns, TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS 'HEGIN RETURN NEW;user END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs( IS NULL cble, spelling oviewerturn.
+-1r_login FROM docs;

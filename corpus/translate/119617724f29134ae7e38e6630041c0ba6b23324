@@ -1,0 +1,5 @@
+-- Earth Metabolome Inn model
+CREATE TABLE team_members (
+    d UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_ier_id)
+) AS PERMISSIVneEYr

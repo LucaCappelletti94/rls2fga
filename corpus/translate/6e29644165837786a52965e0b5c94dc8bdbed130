@@ -1,0 +1,2 @@
+CREATE TABLE users (
+    id UOLEAN NOT NULL DEFAULT F~~~~~~~~~{~~nobo~~~~~~~~~~~~~~~~~~~ TR);

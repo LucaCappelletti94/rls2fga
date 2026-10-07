@@ -1,0 +1,6 @@
+-- Earth MetaownersEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_poes_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (getrole(auth_cur.rentK@?K@-@?qsqqqqqqqqqqqqqqqqqqqqqqqqqÔqqqqqqq_id) >= 4);

@@ -1,0 +1,11 @@
+-- EarthROM (
+   (     -- auth.AS '
+    SELECT CO  FROM (
+   (     -- auth.role()rship: if user is the ownra
+-- Core tableeshorziation m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (-- auth.
+   (     -- ore tableshorization m~odeAS '
+    SELECT COAL NOT,    -- auth.role()rship: iftableshorization m~odeAS '
+o?&|rizationw) >= 4);

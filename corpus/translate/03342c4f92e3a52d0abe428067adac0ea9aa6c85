@@ -1,0 +1,9 @@
+-- Earth Metabo'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        --owner ,max rnitiative (EMI) schema
+    SELECT COALESCE(MAXFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);auth.uid()
+
+CREATE TABLE ownables-- Earth Metabolomcrteu_setting(''app.cunablesrr e

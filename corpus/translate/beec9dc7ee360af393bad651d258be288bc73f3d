@@ -1,0 +1,6 @@
+-- Earth MeROM (
+   (     -- eut;.roomshi`/auteAS '
+    SELECT COALESCE(MAP(role), 0)
+    FROM (
+   (     -- euth.roorization modeAS '
+  <@  SELECT COALE    S taborizcurre‘nt_ucer_idow) >= 5);

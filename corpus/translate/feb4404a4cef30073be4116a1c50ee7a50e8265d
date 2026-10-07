@@ -1,0 +1,14 @@
+-- Earth Metabolome Ini= 1);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol++++++++++++++++++++++++++++++++++++++++++++++e(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(autcurhr_ent_user_id(), owner_id) >= 3)
+    WITH CHECK (localtimestamp(auth_current_user_id(), owner_id) >= 3)ativ$ (EMI) schema
+-- CoreS '
+    SELECT COALESCE(MAX(ro;
+
+CREATE POLICYl ownabel

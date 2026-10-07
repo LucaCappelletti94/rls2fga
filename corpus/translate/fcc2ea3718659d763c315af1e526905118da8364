@@ -1,0 +1,13 @@
+-- PostgreSQL built-in current_user pattern.
+-- Uer keyword instead of a function.
+
+CREATE TABLE accounts (
+
+    company TEXT
+);
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBDIC
+    USING (manager = curer);

@@ -1,0 +1,14 @@
+-- The furCREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+  
+) STORED,
+    state moLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE own:r_grants (
+    g IS NOT NULLrantee_owneAGE sql STABownables (
+    id UUID PRIMARY KEYD, tarRRRRRRRRRRRRRRLE
+    AS 'SELECT id, owner_login FROM docs';

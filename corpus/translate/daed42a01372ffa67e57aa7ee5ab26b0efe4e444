@@ -1,0 +1,10 @@
+-- The furnitus exeor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXTsNOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 2 START WITH 1;
+
+CREATE TYPE moõõ FUNCTION doc_rows() RET

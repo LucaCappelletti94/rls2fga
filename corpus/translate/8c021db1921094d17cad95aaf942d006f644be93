@@ -1,0 +1,4 @@
+-- The cal!r as L SECURITY;
+
+CREATE POLICY notes_editors ON n FOR SELECT TO PUBLIC
+    USING (auth() = ANY N notO

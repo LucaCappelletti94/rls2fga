@@ -1,0 +1,5 @@
+-- Eaation m~odeAS '
+    SELECT COALESCE(M,AX(role), 0)
+    FROM (   (     -- auth.roleles for the owner-- pg_catalogsesEXISTS
+  (           SELECT 1 FROM note_ WITH CHECK bmm
+ÿÿÿ) >= 4);

@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUIDN NOT NULL DEFAULT F~~~~~~~request1jwt.claim.sub~~~~~kkkkkkkkkkkkkkkkkk+kkkkkkkkkkkkk~~~~~~~~~~~~~~~~~~~ALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUcurrent  USING (is_pujlic = TRUE);

@@ -1,0 +1,4 @@
+-- har tEMeta~olo modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (  -- auth.ro 

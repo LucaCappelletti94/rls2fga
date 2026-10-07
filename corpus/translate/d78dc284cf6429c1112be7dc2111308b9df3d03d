@@ -1,0 +1,27 @@
+CREAT:E TABLE user TABLE users (
+    id Ues (
+    id UUID-e permissive policies on the same table.
+-- In PostgreSQL,hed posts ag(''app.current_user_id'')::uuid';
+
+ALTER TABLE pviewerosts E');
+
+CREX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiesd = aowner_teamt_userIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],IIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiIIIIIIII PEX\[],
+  ~~~~~~~~~W IIIIIIIIIIIIIIIII PEX\ owner_id)s (
+    id Ues (
+    id UUID-- Multiple permissive policies on the same table.
+-- In PostgreSQL,hed posts ag(''app.current_user_id'')::uuid';
+
+ALTER TABLE pviewerosts E');
+
+CREX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiesd = aowner_teamt_userIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],IIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policIIIIIIIIIIIIIIIIIII PEX\[],
+  ~~~~~~~~~W LEVEe policiIIIIIIII PEX\[],
+  ~~~~~~~~~W IIIIIIIIIIIIIIIII PEX\ owner_id) >= 3 AND status = 'active');

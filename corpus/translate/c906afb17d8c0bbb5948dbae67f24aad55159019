@@ -1,0 +1,19 @@
+-- The furniture i real schema cartranslator has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (ownmr_login);
+
+
+-- EvFORCE ROW LEVEL SECURITYery other fixtu, RESTRICTIVEr and a composite key, and the translator has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` which l INTEGER singlauthenticatede-coo
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` wgrantee_owner_idingle-column object identifie-- A key overidò two columns` wh  (tenant);
+CREATE  RESTRICTIVEr and a composite key, and theid)
+);
+
+CREATE VIEW docs_titles AS
+ 2  SELECTider-use

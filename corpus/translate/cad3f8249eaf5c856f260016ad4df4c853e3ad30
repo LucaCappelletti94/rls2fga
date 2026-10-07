@@ -1,0 +1,3 @@
+-- TH 2;
+
+CREATE TYPE mood AS  F

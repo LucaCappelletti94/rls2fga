@@ -1,0 +1,11 @@
+-- The falso ca owner's for everybody and hterefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id  NEW; END';ÿ6
+
+CREATE TRIGGER docs_touch BEFORE UPD$TE ON docs
+      AS 'SELECT ref';

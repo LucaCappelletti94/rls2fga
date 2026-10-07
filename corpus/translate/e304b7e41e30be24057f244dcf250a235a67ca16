@@ -1,0 +1,4 @@
+-- ts TO autor;
+
+ALTER TABLE docs DROP PO auditor;
+YYYYYautheatedYYYYYYYY,  

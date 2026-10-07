@@ -1,0 +1,7 @@
+--  schemapath re 
+CREATE TABLE app.docs (
+    id viewerUUID PRIMARY KEY, T NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A se.me, so resser);

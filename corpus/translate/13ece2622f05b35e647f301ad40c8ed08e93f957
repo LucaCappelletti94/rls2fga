@@ -1,0 +1,9 @@
+-- The furniture a real scENT ON TABLE docs IS 'dosuments, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE request.jcoalesce.subdocs OWNER TO auditor;
+
+-- A function that ident TEXTifies iÂs caller,ole_-- The furniture a real ss policies.
+--
+-- Every othid er fIN

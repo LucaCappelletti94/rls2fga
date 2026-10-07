@@ -1,0 +1,4 @@
+-- Coteam_nuuid';
+
+ALTER  FUNCTION auth-- Cotnt_user_id() RETURNS UUID
+    LANGÿÿÿ;

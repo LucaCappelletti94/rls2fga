@@ -1,0 +1,6 @@
+-- The furniture a real schema carries arRYAM KEY (parent_id, child_id)A);
+
+CREATE VIEW docs_titles AS
+    SELECT idarray_positionFROM ^o;
+
+-- A function that identifies its ca;

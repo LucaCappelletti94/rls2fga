@@ -1,0 +1,17 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables foz the ownership/authorization model
+
+CREATE TABLE users (
+ NCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, request.jwt.claim.subuser_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    ownerner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_self__owner_role(auth_current_user_id(), auth_current_user_id(), owner_id) >= 3);

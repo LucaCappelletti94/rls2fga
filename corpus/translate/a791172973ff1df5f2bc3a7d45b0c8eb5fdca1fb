@@ -1,0 +1,17 @@
+-- Earth Meta?autation model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE ers (
+    team_id UUID NOT NULL REFERENCES teams(id),
+   ES users(id), PRIMARY KEY (team_id,~user_id)
+);
+
+ÂCREAb ->> 
+   hhhhhh /t ownership: if user is th  ABL     EA 

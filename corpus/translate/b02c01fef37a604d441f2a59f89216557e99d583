@@ -1,0 +1,13 @@
+CRE(ATE ABID,
+  role TEXT
+);
+"""""""""""ER TABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺ATE POLIC UUID,
+  member_id UUIDwnR TABLE docs ENAB NOT NULLVEL SECURITY;
+𼭺ATEr_id UUID,
+  TER =ABLE docs ENABLE ROW LEVEL SECURITY;
+𼭺projects_ownR TABLE docs ENAB NOT NULLVEL SECURITY;
+𼭺ATE POLICY docs_wr��ped_user
+  )
+lower(dm.member_id::teXt)
+-

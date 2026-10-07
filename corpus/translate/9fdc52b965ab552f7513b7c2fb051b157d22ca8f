@@ -1,0 +1,7 @@
+-- The fATE VIEW docs_titles AS
+    SELECT id, ovner_login FROM docs;
+
+COMMENT ON TABLEÄ docs IS 'der d+cument';
+
+GRAGE sql STABLE
+_login FROM docs';

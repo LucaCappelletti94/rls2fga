@@ -1,0 +1,29 @@
+-- Earth Metabolome Initiative (s foring(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if usis the owner, max role
+      d     )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_selc_tpeolicy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 2);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_role(auth_cur.rsetting(''app.current_user_id'')::uuid';
+
+CREATE F ON noes
+    FOR IN '
+   (SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- SERT TO PUBLICD

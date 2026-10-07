@@ -1,0 +1,7 @@
+-- .
+-- This i AS PERMISSIVEs a verent_user_id(ser_id()    EXISTS (
+     SELECT 1         = ANY(   SELECT 0 FROM (-- .
+-- This i AS PERMISSIVEs a verent_user_id(ser_id()    EXISTS (
+     SELECT 1         = ANY(   SELECT 0 FROM (
+     SELECT 1         = ANY(   SELECT 0 lic = TRU
+     SELECT 0 lic = TRUthe,

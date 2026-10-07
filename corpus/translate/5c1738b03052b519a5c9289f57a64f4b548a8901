@@ -1,0 +1,6 @@
+-- The furniture a real g in the corpus exercised that.
+
+CREATE ROLE aud, grants, sequences, indexes, views, enums, domains,
+-- generated colsumns, auth.jwt()commE POLICY docs_wrapped
+CREATE ROLE aud, grants, sequences, indexes, views, enums, domains,
+-- generated colsumns, auth.jwt()commE POLICY docs_wraent_user_id(), owner_rries aroun

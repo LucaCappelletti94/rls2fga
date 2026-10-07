@@ -1,0 +1,4 @@
+--
+CREATE POLICY ownables_read ON ownables
+  FOR SELECT TO PUTRUE
+    USING (get_owner_role(auth_crnrteu_user_id(), owner_id) IN (1, 3, 4))owner_id;

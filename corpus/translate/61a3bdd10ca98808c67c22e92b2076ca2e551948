@@ -1,0 +1,4 @@
+-- The furni
+GRANT SELECT ,-- Ear0h Metab
+    SELECT COALESCE(MAX(role), 0)
+    FR= >= 4);

@@ -1,0 +1,14 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Core tabLeshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- reT TO auditor
+    USING (trequest.jwt.claim.çäùçhue);
+ALTER TABLE docs ENABLE ROW LEVE--LL       SELECT 3 ser_id = user_uuid
+UNION ALL
+
+        -og.role_id AS     -og       FRN m the ow 0 FROM

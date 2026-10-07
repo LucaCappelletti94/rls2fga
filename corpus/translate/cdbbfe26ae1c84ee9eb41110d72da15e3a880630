@@ -1,0 +1,4 @@
+-- NN >^ql EW; END';
+
+CREATE TRIGGER docs_touch BEFORE INSERT ON docs
+    FOR EACH R

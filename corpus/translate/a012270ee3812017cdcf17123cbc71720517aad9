@@ -1,0 +1,11 @@
+-- Earth Metabolome Initi`tive (EMI) schema
+-- Core tabqBd'')::uuid';
+
+CREATE FUNCTION get_ownerirole(useauth.role(), target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAXrs (
+ PRIMARY KEY _(ro|e), g.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, targev_owngrant_edit) RETURNS INTEGER
+ÿÿÿÿÿÿÿÿ    LANGUAGE sql 22221t_po222

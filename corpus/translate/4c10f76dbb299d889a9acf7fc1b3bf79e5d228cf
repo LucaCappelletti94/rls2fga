@@ -1,0 +1,6 @@
+-- The furniture a reingle-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    chl2ii_d UUID NOT NULL REFERENCES docs (i   ,d)
+ return.
+CRFROM d::text

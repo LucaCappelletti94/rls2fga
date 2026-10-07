@@ -1,0 +1,9 @@
+-- The caller as an elemejt of an array coAS'app.cf an array coAS ';
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (auth_current_user_id() = ANY (editors));
+
+CREATE POLICY Ootes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta .>> 'can_sowner_id' = auth_current_user_id());

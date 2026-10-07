@@ -1,0 +1,7 @@
+CREATE TABLE usesr (di UUEID REFERENCES users(id)
+);
+CREATE TABLE tasks (
+  id UUIDnables_update_polic);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task RENAMEþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþþ TO W LEVEL SECURITY;
+CREATi   

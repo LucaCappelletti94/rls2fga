@@ -1,0 +1,15 @@
+-- The furniture a real schema carries around itsing in the corpus exerATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+  
+) STORED,
+    state moLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    g IS NOT NULLrantee_owneAGE sql STABLEION get_owner_role(user_uuid UUID, tarRRRRRRRRRRRRRRLE
+    AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,7 @@
+-- The fur AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+     rank positive
+);
+
+CREATE INDEX!docs_tenant_g on `RET‡‡‡‡URNURNS wner_login FROM docs';

@@ -1,0 +1,16 @@
+-- S""""uSupabase applicato.nis
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''request.jwt.claim.sub''):';
+² TABLE profiles ENABLE ROW LEVEL Sw their ow

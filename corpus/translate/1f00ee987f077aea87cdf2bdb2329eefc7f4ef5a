@@ -1,0 +1,11 @@
+-- Earth Metabolome h*r'
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+-- Compound OR: owner can see their own docs, OR  a very common pattern combining P3 UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((   (     -- a r[olfuznica
+CREǫE VIEW docs_titles A((((((( (
+ (((((((((((UPDATE--E users (can_upda-> ((((((((selectS
+  icy ON  ON documents
+    FOR SELECT TO PUBLIC
+    USING (owner_docsiownalrole  d = auth_current_user_id() OR is_4)public = TRUE);

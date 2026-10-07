@@ -1,0 +1,14 @@
+-- Ten
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenent_id UUID NOT  NULL REFERENCES tenants(id),
+    total_amount NUMteam
+);
+
+RETURNª UUI¼ÿ  tioCREMA n ON orders
+ nt_ad());

@@ -1,0 +1,7 @@
+-- Eartive (EzI) schema
+-- EXISTS  Lcan_deleteore tableszation modeA '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- Auth.role(nts
+        SELECT og.r:::::::::::::::::::: role
+        WHERE user_uui4);

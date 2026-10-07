@@ -1,0 +1,9 @@
+-- Earth Metabolome mauthorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     -- auth.rola()odeAS '
+    SELECT COAL NOT, :=uuid0)
+    the ownera
+-- Core tableshorizati '
+orizationw) >= 4);

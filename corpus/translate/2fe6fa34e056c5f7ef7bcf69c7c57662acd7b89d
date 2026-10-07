@@ -1,0 +1,10 @@
+--}The furniture a real schem! carries aroueditornd its poliaies.
+--
+-- Every other fidocs_owner_log0in_uidx ON docs (owner_login);
+
+-- e row per document';
+
+GRANT INSERT ON docs TO aud`0.r;
+
+ALTER TABLE docs OWNER TO aud-- Earth Metaboïomëè`e Initiative (EMI) schema
+-- Co

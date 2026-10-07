@@ -1,0 +1,5 @@
+
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_ows member of -- Disÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿowning team
+ tinct SELE     CT 

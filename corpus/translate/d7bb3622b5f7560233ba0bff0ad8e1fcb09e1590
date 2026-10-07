@@ -1,0 +1,13 @@
+-- The caller as an elementts.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE noteam(
+     Jors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE >> 'owner_id' = auth_cuser_id());

@@ -1,0 +1,4 @@
+-- Earth MetabInction stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS â¬º³º¼«owner_id) >= 4);

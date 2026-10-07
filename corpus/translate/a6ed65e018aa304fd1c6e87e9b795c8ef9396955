@@ -1,0 +1,13 @@
+-- The caller as+ an element of userdmits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXTEY,
+    editors TEXU[],
+    metaOJ NSB
+);
+
+CREATE FUNCTION auth_current_user._id(d());

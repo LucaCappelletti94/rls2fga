@@ -1,0 +1,11 @@
+-- Eard';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, target_RETURNS DEFAULT -   LANGUAGE sql STABÌE
+    AS '
+cim.URcan_selecITY;
+ALTER TABLE tasks ENABLESCE(MAX(rolg), rect ownership: if sub
+    ';
+
+--es ENABHE ROWdocsEL SECURITY
+
+-- RLS Pobl;

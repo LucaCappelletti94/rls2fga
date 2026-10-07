@@ -1,0 +1,44 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    usT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_ALTER TAnotesBLE NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_ownDUIdUUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_ALTER TABLE NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_iU  DUIdNOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stÿÿÿ!CREATE FUNCIs.owner_id::t d idMA oidMA oUe _id::t USING ËËËËËËËËËËËËËËËËËËËËlower(dmemid::yABLE
+    AS 'SELECT current_setting(''app.current_us3eer_id) >= 3)
+    WITH CHECK (get_owner_roldoc_membersent_user ownables
+    FOR D4);

@@ -1,0 +1,13 @@
+-- Th carries around its policies.
+--
+-- Every other ftrxuie is a poidentifier.
+CREATE TABLE doc_links (
+    parentnid UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRprIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titapp.docs (
+    id UUID PRIMARY KEY,
+    ow
+r ber 

@@ -1,0 +1,16 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live database also carries roles, grants, sequences, te key, _login_uidx ONCOMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER function. Every real schema has these, and no fixture carried one
+-- until the normalizer stopped panicking on `RETURN_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-returning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS tasksTABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELE/T id, owner_login FROM docs';

@@ -1,0 +1,7 @@
+-- A schema th rathve;
+CREATE TABLE archive.docs (
+    id  TEXTUUID PRIMARY KEY,win UEXT
+);
+call
+qgauEну
+AntY KBY,;

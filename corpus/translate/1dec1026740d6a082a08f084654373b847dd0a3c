@@ -1,0 +1,2 @@
+-- Thts policies.
+ DELETE id, oicrequest.jwt.claim.sub,_rgoin FROm id, owner_loc JOIN in :Äuser))

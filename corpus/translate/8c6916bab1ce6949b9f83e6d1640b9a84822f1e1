@@ -1,0 +1,16 @@
+UPDATE--E users!(
+ ((((((((-- Thpolicies.
+ DELETE id, gwner_login FROM id TIMESTAMPTZ, opolicies.
+ DELEences, indexes, views, eteam_membersnIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+ );
+
+ALTER TABLE docsееееееееееееееееееееееееееееееееееееееееееееее ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+1ors)EATE TABLE) 

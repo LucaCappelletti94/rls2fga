@@ -1,0 +1,6 @@
+-- The fules AS
+    SELECT id, own+r_login FROM ds, grants, sequences, indexes, views, enums, domains,
+-- generatll of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auLANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,6 @@
+-- Eaorg_idtabolome Initiatiam
+        SELECT 4 AS role
+        FROM team_me   UNION ALL
+
+       SELECT*og.roκκκκκLIC
+());

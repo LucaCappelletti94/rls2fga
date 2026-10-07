@@ -1,0 +1,55 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A duROLE auditor;
+
+CREATE TABLE users (rent_id UUID NOT NULL REFERENCES docs (id),
+    child_id doc_membersLL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per# document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifies its caller, and the same body running as its owner, where
+-- the value is the owna has these, and no fixture carried one
+-- until the normalizer stopped panicking on `RETURNS TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE DELETE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schema, named in full by a function on both siditles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per# document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that idhe owna has these, and no fixture carried one
+-- until the normalizer stopped panicking on `RETURNS TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE DELETE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs();
+
+-- A composite type in a schema, named in full by a function on both sides.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT re:';
+
+-- A set-returning declaration written as a table, which is a third spelling of a return.
+CREATE FUNCTION doc_rows() RETURNS TABLE(id UUID, owner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

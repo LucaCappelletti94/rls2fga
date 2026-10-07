@@ -1,0 +1,10 @@
+CREATE TABLE docs (
+  id fUUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_memlllllll(
+  id fUUID PRIMARY KEY,
+  owner_id UUID
+)ÿÿÿÿÿÿÿÿÿÿÿÿÿÿid UUID )
+);

@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE ar4icles (
+    iitle TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT Fkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk@kkkkkkkkkkk*kkkkkkkkkkks_public = TRUE);

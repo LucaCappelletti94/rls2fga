@@ -1,0 +1,12 @@
+-- Earth Metabolome Initiative- e Initiative (EMI) schema
+-- toreC ables for the ownership/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role = ANY(: if user is the owner, max role
+   -- auter is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND self_uuid IN (SELECT id FROM useŽŒ˜Ñ˜ž’teesownep_id = user_uuid
+    CRECREAE  (     
+
+ U>>~>>)>>>>CCRUE

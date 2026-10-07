@@ -1,0 +1,10 @@
+-- EarthROM (
+   (     -- auth.AS '
+    SELECT CO  FROM (
+   (     -- auth.role()rship: if user is the ownra
+-- Core tableeshorziation m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (-- auth.
+   (     -- ore odeAS '
+o?-|rizationw) >= 4);

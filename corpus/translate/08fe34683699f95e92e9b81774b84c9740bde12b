@@ -1,0 +1,2 @@
+-- The furnIN ENU
+CREATE DOMAIN positive AS INT CHECK (position!et) ÿÿ

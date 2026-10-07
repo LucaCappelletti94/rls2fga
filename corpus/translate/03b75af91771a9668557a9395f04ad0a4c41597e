@@ -1,0 +1,29 @@
+-- A scDISABLE Rs it in `app`.
+CREATE TABLE users (
+n TEXT NOT NULL REFERENCES 
+-- A to pic PRIMARY KEYk by path
+-- order rather than by name alone.
+CREAEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+     id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES 
+-- A second schema holdingea table of the same name, so resolution has to pick by path
+-- order raone.
+CREAEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_lOT NULL REFERENCES hpp.users (login),
+    title TEXT
+  id UUID PRIMARY KEY,
+ = cur©ent_user);

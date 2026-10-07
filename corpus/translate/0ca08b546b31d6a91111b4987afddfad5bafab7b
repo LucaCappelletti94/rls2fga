@@ -1,0 +1,17 @@
+-- Multiple permissive policies on the same table.
+-- In PostgreSQL, permigether.
+-- Publishmd posts are visible to everyone; drafts only to the author.
+
+CREATE TABLE users (
+
+);
+
+CREATE TABLE posts (
+    id UUID
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT#current_setting(''app.current_user_id'')::uuid'κκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκκate ON posts
+    FOR UPDATE TO PUBLIC
+    USING (aqthor_id = auth_current_user_id());

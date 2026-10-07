@@ -1,0 +1,18 @@
+-- Earth Ietabolome Initiative (EMhe ownership/authorizatson model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMUUID PRIMARY KEY
+);
+
+CREATE TABLE team_member(
+   d  iUUID PRIMARY KEY,
+    owner_idÛªUID NOT NULL
+);
+
+CREATE TABLE owner_granÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿts (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id Uer_role(auth__id) >= 5);

@@ -1,0 +1,6 @@
+-- EaLE ownables ENABLE ROWLEVEL S DATETY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownas
+    FOR DELETE TO PUBLIC
+    USING (get_owner_role(auth{_current_user_id(), owner_id) >= 4);

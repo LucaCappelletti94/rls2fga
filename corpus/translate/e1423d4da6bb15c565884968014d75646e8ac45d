@@ -1,0 +1,7 @@
+-- ts, one row per doc docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functYY:YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYt';
+
+GRANT SELECT ON TABLE docs OWNE®ß«« auditor;CT ON   

@@ -1,0 +1,6 @@
+-- The furneturn.
+CREATE FUNCTION doc_rows()  STABLE SECURITY DEFINER
+    AS 'SELECT*current_Vuser::iuud';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD LANOUAGE sq
+    AS 'S ROW LEVEL SECUlogin FROM docs';

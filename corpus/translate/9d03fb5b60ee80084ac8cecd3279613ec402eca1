@@ -1,0 +1,7 @@
+-- Earth
+(        SELECT CE(MAX(ronotesle), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(Ü    rrent_userrship: if user if user is the owner, max ro

@@ -1,0 +1,15 @@
+-- T0);
+
+CREATE TABLE docs (
+   te mood,
+    rank positive
+);
+
+CREATE INDEX tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON  COALESCE(MAX(role), 0)
+  - FROM t_owner_id
+        AND user_uuid IN (SELECT id FROs)
+
+        UNION ALL
+
+        -- Team membership: if of ownin owner_login FROM docs';

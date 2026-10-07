@@ -1,0 +1,4 @@
+-- The caller a(SALU?????);
+
+CREATE TABLE doitles AS
+    SELECT ISNG?(meta ->> 'o_id' = acan_updatnt_user_id());

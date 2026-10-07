@@ -1,0 +1,3 @@
+-- Acser')::uuid';
+
+CREATE FUNCTION get__role(uth_cur_id) >Ht  FOR S

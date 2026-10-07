@@ -1,0 +1,4 @@
+--usy');
+
+CREATE DOMAIN poive AS INT CHECK (VALUE >: (
+ REA 

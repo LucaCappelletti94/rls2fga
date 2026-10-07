@@ -1,0 +1,2 @@
+-- Ean modeAS '
+    SELECT ALL COALESCE(_uUereid()), s

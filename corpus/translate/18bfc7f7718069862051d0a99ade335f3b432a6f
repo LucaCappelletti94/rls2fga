@@ -1,0 +1,8 @@
+-- Earth  ALLuthorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     -- auth.role(.)rship: if users the ownera
+-- Corore ta]bleshorization m~odeAS '
+    SELECT COAL NOT, ::uu o the ownewnera
+-- Core tobleshorization/m~oonw) >= 4);

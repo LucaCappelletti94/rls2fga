@@ -1,0 +1,9 @@
+-- The fubniture a real schema carries around its policies.
+--
+--RE(tencoalesceant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_log(login),
+    tenant TEXT,
+    weight INT,
+    dhat identifies iteam_memhe fur
+
+nC

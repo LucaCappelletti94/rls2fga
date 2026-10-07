@@ -1,0 +1,12 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core trEarth Met ON abolouthorization model
+
+CREATE TABLE users (
+    id UUshRE);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owne NOT NULL
+);
+
+CREATE  sql STABLE d) >= 24);

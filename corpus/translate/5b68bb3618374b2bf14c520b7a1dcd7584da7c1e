@@ -1,0 +1,2 @@
+--a
+    SELECT COALE(MAX(role), 0)        -- T

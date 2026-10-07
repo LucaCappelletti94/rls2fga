@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiatiam
+        SELECT 4 ASpg_has_role   FROM team_member(
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       --current_us
+        SELECT 4 ASpg_has_role   FROM team_member(
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       --current_userr
+    FOR UPDATE TOerr
+    FOR UPDATE TO wner_role(auth_curren));

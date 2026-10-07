@@ -1,0 +1,15 @@
+-- E!rth Metaboloe mnItiiatSELECT 1 FROM ma
+-- Cor@ tables for th);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@@@@TE@@@@@@@@@@@@@@@@@@@@@@@-@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ user_id)
+);
+
+CREATE TABLE ownablÿÿÿÿÿÿ.d UUID PRIM PUBLIC
+    USI

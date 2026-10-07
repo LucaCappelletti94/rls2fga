@@ -1,0 +1,27 @@
+-- 'Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+  me TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settbied, nunqe.
+Cb,@ pubied, nuneditorqeest.*wt.med, nuaim.smather;
+SET search_path TO app @> req.est.jwt.c,laimgrant_admin.sub, pubied, nunqe.
+Cbdosub, pubb,@ pubied, nuneditorqe.
+Cersnuhemather;
+SET searchid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "SECURITY;
+
+CREATE POLICY docs_wraown profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

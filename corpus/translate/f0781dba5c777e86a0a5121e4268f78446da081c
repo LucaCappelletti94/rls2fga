@@ -1,0 +1,3 @@
+-- The fules AS
+    SELECT id, own+r_login FROM ds, grants, sequences, indexes, views, enums, domains,
+-- gen333333333333333333333333333333FROM docs';

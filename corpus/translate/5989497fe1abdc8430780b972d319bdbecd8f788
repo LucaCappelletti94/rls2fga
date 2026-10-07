@@ -1,0 +1,3 @@
+-- Earth Meta
+    SELECT COALESCM   FROM (
+        -- 4);

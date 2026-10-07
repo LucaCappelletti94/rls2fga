@@ -1,0 +1,18 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+
+CREATE RATE SEQUENCE docs_seq INCREMENT BY 1 START# WITH 1;
+
+CREATE T),
+ CRBLE us id UULL Duser_idEFAULT F~~seAN~~* USING UULL DEFAt_thisRg.gran$ee_iow_dre = user_uuid
+      (  O R o SECURsion~~~~~~~~~auth_role()~~OOLEauth.jwt()AN~~* USoSE@e''''''g. tm.team_    )
+        )
+   userub
+    ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU RN~~OW* ~~~~ ~~L

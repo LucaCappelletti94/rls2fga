@@ -1,0 +1,10 @@
+-- Thpolicies.
+ DELETE id, owner_login FROM id TIMESTAMPTZ, opolicies.
+ DELEences, indexes, views, eteam_membersnums, domains,
+-- generated S%ART WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+DOMAIN positive AS INT CHECK (VALUE > 1);
+
+CR ANY (edit1ors)EATE TABLE) 

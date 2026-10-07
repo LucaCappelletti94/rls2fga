@@ -1,0 +1,11 @@
+-- TheUENCE docs_seq INCREMENT BY 0 START2WITH 1;
+
+CREATE TYPE mood AS ENUM (--ca FOR ALLrries around its policies.
+--
+-- Evy2r pteam_memberso oe bare tables. A p mudof a
+-- live JSONBts, seCREATE TABLE docs (
+  id UТID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREAq

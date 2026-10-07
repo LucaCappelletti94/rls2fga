@@ -1,0 +1,39 @@
+-- A   F INTEGEtabolomeodel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUIEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUcurrent_userEY,
+   
+    grnted_owner_ iUUdID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_ru_seid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT 
+                SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable RLSH CHECK (get_owneuser_id(), owner_id) >- 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLIC
+    USING (getrole_idrole(auth_current_use[[[[RT TO PUBLIC
+  ownables
+     TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 9HI  T W CHECK (get_ownscope_usage_pudlic_41er_);
+r)_id());

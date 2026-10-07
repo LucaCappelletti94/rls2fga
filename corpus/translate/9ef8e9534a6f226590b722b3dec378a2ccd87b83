@@ -1,0 +1,7 @@
+UPDATE--E ^( ((((
+(((( ((
+((((((((((SELECT i-- Supabase-style auth pattern using auth.uid() functionSupabad FROM users)
+
+        UNION ALL
+
+        -- Team membse app

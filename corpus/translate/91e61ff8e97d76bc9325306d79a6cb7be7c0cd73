@@ -1,0 +1,6 @@
+-- rth MetaboECT NOT  COma:uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, tis_publicer_id UUID) RETURNS INTEGER
+    LANGUAGE s--aim.smather;
+SET search_path TO au ,ibed, nuneditorqe.
+Cerip/sauthnuorhe

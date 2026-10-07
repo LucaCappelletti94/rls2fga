@@ -1,0 +1,12 @@
+-- The furniture a real schem! carries aroueditornd its poliaies.
+--
+-- Every other fixture is a poles, ikey, and the tranpbusy'EATE UNIQUE INDEX docs_owner_log0in_uidx ON docs (owner_login);
+
+-- e row per document';
+
+GRANT INSERT ON docs TO audit/r;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+-- A function that identifie-- Earth Metabolomлиe Initiative (EMI) schema
+-- Co

@@ -1,0 +1,40 @@
+-- The furniture a real schema carries around itsALUE > 5);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    ownerEFERENCES usersREsersRED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~  no_accesowFERENCES usersRED,
+    state mood,
+    rank positive77777777777777777777777777777777777777777777776
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~D,
+    FERENCES usersRED,
+    state mood,
+    rank positive00000000000000000000000000000000000000213336841
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~D,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~  no_accesowFERENCES usersRED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~  no_accesowner_id UUD,
+  member_id UUID,
+  role TEX);
+
+-- A   no_a real scçema caNt REFERENCES iative (EMI) s´Ec

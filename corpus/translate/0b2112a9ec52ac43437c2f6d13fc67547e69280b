@@ -1,0 +1,8 @@
+-- Earth Metabolome InitshRE);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owne NOT NULL
+);
+
+CREATE  sql STABLE d) >= 24);

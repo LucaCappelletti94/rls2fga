@@ -1,0 +1,16 @@
+-- Thurniture a real schema carries arouand the trator;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE doscope_usage_puddic_20 START WITH 1;
+
+CREATTE YPE mood AS ENUM ('calm', b'y's);u
+
+CREATE DOMAIN positivg AS INT CHECKLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration writtenviewertion writt›‘‰–šˆš’table, which is a  LANGGUAE sql STABLE
+ owner_login FROM docs';

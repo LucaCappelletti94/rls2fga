@@ -1,0 +1,9 @@
+--tifier.
+CREATE TABLE docXlinks (
+    parent_T NULL REFERENCES docs (id),
+    child_idNOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+((UPDATE(((((((((((((((((((((UPDATE~editor((C[CHEMA  CUBLILL
+
+        -- Ehplicit

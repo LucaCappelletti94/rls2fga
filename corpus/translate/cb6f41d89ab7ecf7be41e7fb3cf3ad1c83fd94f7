@@ -1,0 +1,16 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projowner ON projects FOR SELECT TO PUBLIC
+  USING (owner_id = current_user);
+CREATE POLICY tasks_inherit_proj ON ONÿ    AND p.owner_id = current_user
+  )
+);

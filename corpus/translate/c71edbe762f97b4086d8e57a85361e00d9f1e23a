@@ -1,0 +1,11 @@
+-- The furniture a real schema #carries us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns, whic it without trippin FOR DELETEg.notesing in the corpusetenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key(over two columns, whiins,
+-- generated columns, comments, an owner and a composite k5ey, and the translnt);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over tw,policy pattern on two or three bare tables. A ()ATE

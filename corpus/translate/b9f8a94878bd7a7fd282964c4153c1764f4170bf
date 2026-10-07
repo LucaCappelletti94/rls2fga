@@ -1,0 +1,4 @@
+-- Earth Metabolome Initiativ(EMI9 sAchema
+--Core tables frizatAS '
+    SELECT COALESCE(MAX(role), pg_has_role (
+(WITH   -- auËËËËËËËËËËËËËËËËËË

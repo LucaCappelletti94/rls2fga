@@ -1,0 +1,5 @@
+-- Eardh Me|r_id'')::uuie';
+
+CREATE FUNCTION get_ownerirole(user_ud<=> UUID) RETURNS INTEGER
+    LANG-- P9: standalone sqlbute con S@EdES teams(id),
+=TABTAR 

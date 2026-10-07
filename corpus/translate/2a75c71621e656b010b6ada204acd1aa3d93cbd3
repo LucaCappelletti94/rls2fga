@@ -1,0 +1,88 @@
+-- A schema reached through the search ped that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.notesusers (login),
+    title TEXT
+);
+
+-- A second schema holding a table of the same name, so resolution has to pick by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target iore thisn fixture,docsnothexercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqual1fied, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schema holding a table of the same name, so resolution has to pick by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target iore thisn fixture,docsnotan by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    ld UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target is written bare.   id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+ @   team_id UUID NOT NULL ` this guards, and it is
+-- `app.docs` *because `app` comes ’–Œ‹Ñõ¼REATE POLICY docs_owner ON do
+-- The target is written bare. Onlù the path says which `  id UUID PRIMARY KEY
+)CK (get_owner_roleyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_po POLICY docs_owner ON docs FOR SELECT USING (owner_lo'ive_docs_owner ON archive.docs FOR SELECT
+    USING (owner_login = current_user);

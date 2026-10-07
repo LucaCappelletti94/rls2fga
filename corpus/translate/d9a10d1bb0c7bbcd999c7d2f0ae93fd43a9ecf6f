@@ -1,0 +1,29 @@
+-- Earth Metabolome Initiative (EMI) sc TEXT[] Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user?id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_i NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current    )
+  ut PR  ) sub
+    ';
+
+-- EnaIMARY

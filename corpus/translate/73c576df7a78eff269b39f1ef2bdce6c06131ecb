@@ -1,0 +1,20 @@
+-- A schema _idched through the  ->> search path ratheres, and the policy target below is one.
+-- The corpus carried no schema at all before this fixture, so nothing exercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualifiowner_ided, so the path puts it in `app`.
+CREATE TABLE users (
+  RY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_FFFFFFFFFnoFALSEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFlogin TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A second schewa  of login = current_user);

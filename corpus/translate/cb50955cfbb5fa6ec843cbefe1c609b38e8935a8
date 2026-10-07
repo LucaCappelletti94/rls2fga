@@ -1,0 +1,19 @@
+-- Earth Metabolome Initiative (EMI) schema
+-sql STABLE
+    AS x'
+    SELECT COAG (get_owner_role(auth_\u() RETURNS TAB USING LE(id UUID, owranted_owner_id ULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id(R)TU ERNS UUID
+    LANGUA::uuidGE sql STner he co
+CREATE TABLE notes EXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE Fcan_selecUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAG\tÑE]tE sql STABLE
+    AS 'SELECT current_setting(''app.cuWOLICY notes_editors ON noteer_id) >= 2[);
+
+CREAT

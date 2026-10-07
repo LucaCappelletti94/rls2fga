@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUI WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) <= 3);
+
+CREATE POLICY rrent_user_id(), owner_id) <= 3)er_id) <= 3);
+
+CREATE POLICY rrent_user_id(), opwner_id) <= 3);E TO PUBLIC
+  '
+);
+
+CREATE TABLE owner_g ENABLE ROW LEVEL SECURITY;
+
+Cwner_id) >=@?K@ 3 AND status = 'ac-@--tive-'-);

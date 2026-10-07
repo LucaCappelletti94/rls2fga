@@ -1,0 +1,24 @@
+-- Earth Metabolome Initiative (EMI) schema;
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'DELETESELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCer_id IN (
+~  =             SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLole(auth_current_user_id(), owner_id) >= 2);
+
+CREATE POLICY ownables_insert_policy ON request.jwt.c FOR SELECTlaim.subownables
+    FOR INSERT TO PUBLIC
+    W);

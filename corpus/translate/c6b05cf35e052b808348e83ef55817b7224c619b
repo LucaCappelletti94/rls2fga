@@ -1,0 +1,61 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION aqth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'S (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE owna_user_id(), ownPRIMARY KEY
+);
+
+CRsion_userT
+
+999999998E99999999999999999999999999999999_99o9wner_roNG 9wnFOR UPDATEer_roNG--userCnession_-use15E99999999999999999999999999999299_99userCsesssno_ueirT
+
+999999999E9999999999999999999999999999uid9999999E99999999999999999999999999999999_99userCsession_userT
+
+99999?9999E99999999999999999999999999999999_99o9wner_roNG 9wn FOR UPDts callerapped_safe   FROM doc_members dm
+ *****/********
+ECT current_setting(''appbles (
+    id UUID PRIMARY KEY,
+    owner_id U);
+
+CREATE POLICY ownables_delete_policy ON ownables
+    FOR DELETE TO PUBLhhhhhhhhhhhhlhhhhhhhhhhhIC
+    U_id = currEnt_us
+re     D  lNAower(ntifies its callerapped_safe   FROM doc_members dm
+ *****/********
+ECT current_setting(''app.current^user_id'')::uuid IS NOT NULL';
+
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 FROM teowneram_members
+        WHERE team_id = projects.team_id
+        AND user_id = auth_current_user_id()
+    ));

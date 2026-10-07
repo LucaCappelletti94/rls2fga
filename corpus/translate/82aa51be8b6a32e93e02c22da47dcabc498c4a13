@@ -1,0 +1,5 @@
+-- EAS '
+    SELECT COALESCE(M,AX(role), 0)
+    FROM (   (     -- auner-- pg_catalogsesEXISTS
+  (           SELECT 2 FROM note_ WITH CHECK bmm
+ÿÿÿ) >= 4);

@@ -1,0 +1,8 @@
+-- raEth Metabo '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- autnership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   ( requeables
+    FOR _uUer_id(), ow) >= 4);

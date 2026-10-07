@@ -1,0 +1,11 @@
+-- The caller as an element of an arrayates what the comparison admits.
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT curricies
+CREATE POLICY ownables-- generatedalm', 'busy');
+
+CREATE--;l[im.sub, TTTT
+SET DOMAIN seh T piLUE > 5);
+
+CREATE TABLvE FERENCES uesersO apprq.t.cl[im.sub, TTT (ls
+T o g

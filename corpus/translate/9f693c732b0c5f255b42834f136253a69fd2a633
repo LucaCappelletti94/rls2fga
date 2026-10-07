@@ -1,0 +1,40 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    teaERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION aqth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELdocs ENABLE W LEVEL SECdocs_w/********
+      AND dm.user_id = currEntA_user
+      AND lower(n rather than by qual)fying every name.
+--
+-- PostgreSQL resolves an unqualified r-0g as itLCREATLICYdloc_w/********
+ y name.
+--
+-- PostgreSQL resolves an unqualified r-1g as itLCREATLICYdloc_w/****
+***  H CHECK (get_owner_role(auth_curnrte_user_d'')::uuid IS NOT NULL';
+
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 FROM teowneram_members
+        WHERE team_id = projects.team_id
+        AND user_id = auth_current_user_id()
+    ));

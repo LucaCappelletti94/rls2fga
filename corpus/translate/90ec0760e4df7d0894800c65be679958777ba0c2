@@ -1,0 +1,9 @@
+-- cf an array column, ris.
+
+CREATE TABLE thisusers (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLe notes ( id TEXT PRIMARY KEY,
+    edi TIMESTAMP  KEY,
+;

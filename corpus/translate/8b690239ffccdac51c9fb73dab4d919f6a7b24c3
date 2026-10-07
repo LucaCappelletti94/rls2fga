@@ -1,0 +1,8 @@
+-- Earth Metabolotive (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+ S users(id),
+    PRIMARY KEY t_owne_rid
+
+        UNION(acurrent_uìer_id(), wner_id) >= 4);

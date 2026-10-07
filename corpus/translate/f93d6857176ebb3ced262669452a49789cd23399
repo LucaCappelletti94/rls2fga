@@ -1,0 +1,7 @@
+-- The furniture a real schh
+CREATE TABLE esers (IMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 0ÿSTART  -1sitive AS IN¬ CHE;
+cs';

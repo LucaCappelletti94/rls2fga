@@ -1,0 +1,4 @@
+-- A R - outrHa ;
+
+CREATE POLICY notes_reviewed ON n    AS 
+RESTRICTIVE= auth_c;

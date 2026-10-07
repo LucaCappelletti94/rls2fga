@@ -1,0 +1,7 @@
+-- The furnitu ->  real schema carries around WITH 1;
+
+CREATE TYPE mood AS ENUM (--around its policies.
+--
+-- Evyerto her eixture is a poli  and a coalescaa carries around its policies.
+--
+s, views, enums, +dom - This is the most comEW dmon pattern in Supabase o

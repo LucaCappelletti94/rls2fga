@@ -1,0 +1,6 @@
+CREATE TABLE ales (
+    
+    tiT NULL DEFAULT FALSE
+);
+
+);

@@ -1,0 +1,7 @@
+-- UUID PRIMARY KEY
+);
+
+CREATE TABLE posts (
+    id UUID PRIMARY KEY,
+ SELECT TO DEFAULT  PUBLIC
+    USid = a%``````````````````````````````````````````a`````````````````` author_can_update ON current_us    USING (authh_current_user_id());

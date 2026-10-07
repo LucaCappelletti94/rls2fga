@@ -1,0 +1,5 @@
+-- TABLE use;
+
+CREATE TABLE teams ( UUID NOT NULL REFERENCES users(usergrants, sequnces, indexes,Y
+); Iams (CT curre 'active');nt_ses
+ertting(''app.cur()

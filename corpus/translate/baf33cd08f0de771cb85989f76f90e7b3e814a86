@@ -1,0 +1,80 @@
+CREATE TABLE users (
+      granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION rent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_ES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+    s_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid =UUID, target_ES scope_usage_ausers(id)
+);
+
+CREATE TABLE o_owner_role(user_uuid UUID, target_ES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+    s_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid =UUID, target_ES scope_usage_ausers(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid =UUID, target_ES scope_usage_ausers(id)
+);
+
+CREATE TABLE ownaXles (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE ownbr_°°°°°°°°°°°°°°°°°°°°°°°°°°wnables (
+    id UUID PRIMARY KEY,
+
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settent_uÿ
+ser_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°    owner_id UUID NOT NEATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settent_user_idULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE ownbr_°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°TEGER NOtatus = 'active');

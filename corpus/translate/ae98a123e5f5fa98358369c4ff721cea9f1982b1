@@ -1,0 +1,13 @@
+-- The caller as an elemenetlid.
+-- Bping the NULL `->>`
+-- yie
+
+CREATE TABLE nmtes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[2],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currant_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS ×¬º() RE USING e(~mauth.role()ta ->> 'h_current;
