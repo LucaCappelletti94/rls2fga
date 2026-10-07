@@ -976,6 +976,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             fk_cols,
             user_col,
             parent_type,
+            relation,
             extra_predicates,
             gate,
         } => {
@@ -1009,7 +1010,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 return Some(TupleQuery {
                     comment: format!("-- {parent_type} membership from {join_table}"),
                     sql: format!(
-                        "SELECT {object_sql} AS object, 'member' AS relation, \
+                        "SELECT {object_sql} AS object, '{relation}' AS relation, \
                          {subject_sql} AS subject\n\
                          FROM {join_table_sql}{where_clause};"
                     ),
@@ -1041,7 +1042,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     gate.condition
                 ),
                 sql: format!(
-                    "SELECT {object_sql} AS object, 'member' AS relation, \
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {subject_sql} AS subject,\n\
                      \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
                      FROM {join_table_sql}{where_clause}{group_by};",
@@ -1257,6 +1258,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             holder_type,
             member_table,
             user_col,
+            relation,
             extra_predicates,
             gate,
         } => {
@@ -1282,7 +1284,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     comment: format!("-- Everyone listed in {member_table}, held by {holder_type}"),
                     sql: format!(
                         "SELECT DISTINCT {object_sql} AS object, \
-                         'member' AS relation, {subject_sql} AS subject\n\
+                         '{relation}' AS relation, {subject_sql} AS subject\n\
                          FROM {member_table_sql}{where_clause};"
                     ),
                     description: None,
@@ -1313,7 +1315,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     gate.condition
                 ),
                 sql: format!(
-                    "SELECT {distinct}{object_sql} AS object, 'member' AS relation, \
+                    "SELECT {distinct}{object_sql} AS object, '{relation}' AS relation, \
                      {subject_sql} AS subject,\n\
                      \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
                      FROM {member_table_sql}{where_clause}{group_by};",

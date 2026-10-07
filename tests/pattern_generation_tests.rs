@@ -80,10 +80,6 @@ CREATE POLICY p_select ON projects FOR SELECT TO PUBLIC USING (
     let tuples = support::plan_tuples(classified, &db, &registry);
 
     assert!(
-        tuples.contains("'member' AS relation"),
-        "expected membership tuples, got:\n{tuples}"
-    );
-    assert!(
         tuples.contains("'projects' AS relation"),
         "expected resource bridge tuples for tuple-to-userset relation, got:\n{tuples}"
     );

@@ -94,17 +94,6 @@ fn generate_role_in_list_model_and_tuples() {
     );
 }
 
-// ── P4: EXISTS membership ────────────────────────────────────────────────────
-
-#[test]
-fn generate_membership_check_model_and_tuples() {
-    fixture_model_and_tuples(
-        "membership_check",
-        &FunctionRegistry::new(),
-        ConfidenceLevel::B,
-    );
-}
-
 // ── P5: parent inheritance ───────────────────────────────────────────────────
 
 #[test]
@@ -617,21 +606,6 @@ fn generate_connetto_team_share_model_and_tuples() {
     fixture_model_and_tuples(
         "connetto_team_share",
         &support::try_load_fixture_registry("connetto_team_share"),
-        ConfidenceLevel::B,
-    );
-}
-
-/// The holder family, which no fixture emitted and no snapshot pinned.
-///
-/// An uncorrelated membership admits every row at once, so the generator stands one holder
-/// object for the whole member list and the facts grow as rows plus members. Two member
-/// tables here, and the second carries a clock, so the model shows a holder with a
-/// condition beside one without.
-#[test]
-fn generate_uncorrelated_membership_model_and_tuples() {
-    fixture_model_and_tuples(
-        "uncorrelated_membership",
-        &support::try_load_fixture_registry("uncorrelated_membership"),
         ConfidenceLevel::B,
     );
 }

@@ -46,19 +46,31 @@ CREATE POLICY p ON public.docs FOR SELECT USING (
     )
 }
 
-/// The SQL of every query that loads `member` tuples for the membership above.
+/// The SQL of every query that loads the `doc_members` tuples for the membership above.
 fn member_query_sql(conjunct: &str) -> String {
     let db = db_of(&membership_with(conjunct));
     let outputs = translator(ConfidenceLevel::B)
         .translate(&db)
         .expect("translation should plan")
         .outputs_accepting_gaps();
-    let tuples = format_tuples(outputs.tuple_queries());
-    tuples
-        .split(";\n")
-        .filter(|query| query.contains("'member' AS relation"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut sql = String::new();
+    for query in outputs.tuple_queries() {
+        let Some(description) = &query.description else {
+            continue;
+        };
+        if !description
+            .tables
+            .iter()
+            .any(|table| table.name() == "doc_members")
+        {
+            continue;
+        }
+        if !sql.is_empty() {
+            sql.push('\n');
+        }
+        sql.push_str(&query.sql);
+    }
+    sql
 }
 
 /// `pg_has_role(role, privilege)` tests `current_user`, so the loader's own role decides
