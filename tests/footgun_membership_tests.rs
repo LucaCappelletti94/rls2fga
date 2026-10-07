@@ -20,6 +20,7 @@ use support::footgun::{
     relation_denies, scope_admits_role, translation, translator, tuples_reading_from, type_names,
     CORRELATION_SCHEMA,
 };
+use support::{classify_sql, plan_at};
 
 /// `x = ANY (SELECT ...)` is another spelling of `x IN (SELECT ...)`.
 #[test]
@@ -1126,7 +1127,7 @@ fn session_attr_plan(sql: &str) -> rls2fga::translator::Outputs {
         )])
         .build();
     let (classified, registry) = translator.classify_with_effective_registry(&db);
-    support::plan_at(classified, &db, &registry, ConfidenceLevel::B)
+    plan_at(classified, &db, &registry, ConfidenceLevel::B)
 }
 
 /// The sharing subquery reads its table as the caller, so that table's own rules decide
@@ -1558,5 +1559,157 @@ CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
         bridge.sql.contains("\"tenant_id\"") && bridge.sql.contains("\"paper_id\""),
         "the bridge names the paper by both columns of its key:\n{}",
         bridge.sql
+    );
+}
+
+/// Two `role_threshold` functions with their own grant table and their own
+/// `team_membership` table must not pool their team rows into one `team` type:
+/// membership under one function's table must not carry the other's grants.
+#[test]
+fn distinct_team_membership_tables_do_not_share_a_team_type() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE teams(id UUID PRIMARY KEY);
+CREATE TABLE team_members_a(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE team_members_b(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE owner_grants_a(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE owner_grants_b(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE docs_a(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE docs_b(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role_a(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_a og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_a tm WHERE tm.user_id = user_uuid))
+    ) sub';
+CREATE FUNCTION get_role_b(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_b og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_b tm WHERE tm.user_id = user_uuid))
+    ) sub';
+ALTER TABLE docs_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_select ON docs_a FOR SELECT TO PUBLIC
+    USING (get_role_a(auth_current_user_id(), owner_id) >= 2);
+CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
+    USING (get_role_b(auth_current_user_id(), owner_id) >= 2);
+";
+    let registry_json = r#"{
+      "get_role_a": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_a", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members_a", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "get_role_b": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_b", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members_b", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+    }"#;
+    let (classified, db, registry) = classify_sql(sql, Some(registry_json));
+    let model = plan_at(classified, &db, &registry, ConfidenceLevel::A);
+    let dsl = model.model();
+    let team_types: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name.contains("team"))
+        .collect();
+    assert_eq!(
+        team_types.len(),
+        2,
+        "team_members_a and team_members_b name different rows, so get_role_a and \
+         get_role_b must not pool them into one team type, got {team_types:?}:\n{dsl}"
+    );
+    assert_ne!(
+        team_types[0], team_types[1],
+        "two distinct team_membership tables must mint two distinct team types:\n{dsl}"
+    );
+}
+
+/// Two `role_threshold` functions that share the very same `team_membership` table must
+/// still pool it into one team type: splitting a legitimately shared source would lose
+/// the sharing the schema actually declares.
+#[test]
+fn the_same_team_membership_table_across_two_functions_shares_one_team_type() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE teams(id UUID PRIMARY KEY);
+CREATE TABLE team_members(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE owner_grants_a(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE owner_grants_b(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE docs_a(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE docs_b(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role_a(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_a og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members tm WHERE tm.user_id = user_uuid))
+    ) sub';
+CREATE FUNCTION get_role_b(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_b og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members tm WHERE tm.user_id = user_uuid))
+    ) sub';
+ALTER TABLE docs_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_select ON docs_a FOR SELECT TO PUBLIC
+    USING (get_role_a(auth_current_user_id(), owner_id) >= 2);
+CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
+    USING (get_role_b(auth_current_user_id(), owner_id) >= 2);
+";
+    let registry_json = r#"{
+      "get_role_a": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_a", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "get_role_b": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_b", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+    }"#;
+    let (classified, db, registry) = classify_sql(sql, Some(registry_json));
+    let model = plan_at(classified, &db, &registry, ConfidenceLevel::A);
+    let dsl = model.model();
+    let team_types: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name.contains("team"))
+        .collect();
+    assert_eq!(
+        team_types.len(),
+        1,
+        "both functions name the same team_members table, so they must share one \
+         team type, got {team_types:?}:\n{dsl}"
     );
 }

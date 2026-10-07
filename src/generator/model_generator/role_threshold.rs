@@ -1,11 +1,14 @@
 use super::*;
 
 use crate::generator::db_lookup::{TEAM_PRINCIPAL_TABLES, USER_PRINCIPAL_TABLES};
+use crate::generator::well_known::owner_team_relation;
 use crate::types::TypeName;
 pub(super) struct RoleThresholdTables<'a> {
     pub(super) source: &'a TableId,
     pub(super) grant: &'a TableId,
     pub(super) team_membership: Option<&'a TableId>,
+    /// The type `team_membership`'s rows belong to, present exactly when it is.
+    pub(super) team_type: Option<&'a TypeName>,
 }
 
 /// Populate `TupleSource` entries on `table_plan`, on the owner the ladder judges, and on
@@ -24,6 +27,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     let source_table = tables.source;
     let grant_table = tables.grant;
     let team_membership_table = tables.team_membership;
+    let team_type = tables.team_type;
     let Some(FunctionSemantic::RoleThreshold {
         grant_table: _,
         grant_grantee_col,
@@ -79,13 +83,13 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
             },
         });
     }
-    if has_team {
+    if let Some(team_type) = team_type {
         if let Some(tpi) = team_principal.clone() {
             identities.push(TupleSource::OwnerIdentity {
                 owner_type: scope.type_name.clone(),
                 principal_table: tpi.table,
                 principal_identity_col: tpi.identity_col,
-                subject_type: table_plan.well_known.team.clone(),
+                subject_type: team_type.clone(),
                 relation: owner_team_relation(),
             });
         } else {
@@ -98,20 +102,20 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
     }
 
     // --- Team membership ---
-    if let (Some(tm_table), Some(membership)) = (team_membership_table, team_membership.as_ref()) {
+    if let (Some(tm_table), Some(membership), Some(team_type)) =
+        (team_membership_table, team_membership.as_ref(), team_type)
+    {
         let membership_source = TupleSource::TeamMembership {
             membership_table: tm_table.clone(),
             team_col: membership.team_col.clone(),
             user_col: membership.user_col.clone(),
+            team_type: team_type.clone(),
         };
         table_plan.add_source(membership_source.clone());
         all_types
-            .entry(table_plan.well_known.team.clone())
+            .entry(team_type.clone())
             .or_insert_with(|| {
-                TypePlan::new_with_well_known(
-                    table_plan.well_known.team.clone(),
-                    &table_plan.well_known,
-                )
+                TypePlan::new_with_well_known(team_type.clone(), &table_plan.well_known)
             })
             .add_source(membership_source);
     }
@@ -163,6 +167,7 @@ pub(super) fn populate_role_threshold_sources<DB: DatabaseLike>(
         role_cases,
         user_principal,
         team_principal,
+        team_type: team_type.cloned(),
     };
 
     // Every fact the ladder reads belongs to the owner, so they hang on its plan and two

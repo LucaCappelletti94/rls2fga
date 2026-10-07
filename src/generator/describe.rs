@@ -384,9 +384,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             membership_table,
             team_col,
             user_col,
+            team_type,
         } => Some(from_row(
             membership_table,
-            &well_known.team,
+            team_type,
             value_column(membership_table, team_col, db),
             &member_relation(),
             &well_known.user,

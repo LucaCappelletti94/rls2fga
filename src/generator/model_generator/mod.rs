@@ -310,7 +310,12 @@ fn reserved_relation_subjects(
     } else if *relation == public_relation() {
         Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
     } else if *relation == owner_team_relation() {
-        Some(vec![DirectSubject::Type(well_known.team.clone())])
+        // The team type is per-source (one per team_membership_table), so no single
+        // subject type can be declared here. An empty subject list never equals a real
+        // caller's subjects, so every caller yields away from this name except
+        // `TypePlan::claim_owner_team_relation`, which bypasses this check as the sole
+        // legitimate owner.
+        Some(Vec::new())
     } else {
         None
     }
@@ -503,6 +508,19 @@ impl TypePlan {
         self.direct_relations
             .entry(relation.clone())
             .or_insert(subjects);
+        relation
+    }
+
+    /// Claims the literal `owner_team` relation for a role-threshold function's own
+    /// owner type, the sole legitimate source for it. Unlike [`Self::ensure_direct`],
+    /// this does not consult [`reserved_relation_subjects`]: that reservation exists to
+    /// keep `owner_team` free from every other caller until this one claims it, not to
+    /// disambiguate this call's own subjects, which vary with `team_type`.
+    fn claim_owner_team_relation(&mut self, team_type: &TypeName) -> RelationName {
+        let relation = owner_team_relation();
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert_with(|| vec![DirectSubject::Type(team_type.clone())]);
         relation
     }
 
@@ -1776,7 +1794,7 @@ fn prune_plain_subjects_fed_only_by_gated_sources(
     for plan in all_types.values() {
         for source in &plan.table_tuple_sources {
             let carries_condition = source_carries_condition(source);
-            for target in source.feeds(&plan.type_name, well_known) {
+            for target in source.feeds(&plan.type_name) {
                 all_gated
                     .entry(target)
                     .and_modify(|known| *known &= carries_condition)
@@ -1886,6 +1904,18 @@ fn holder_type_name(member_table: &TableId, table_types: &TableTypes) -> TypeNam
 /// The type standing for the share rows of a caller-set membership on `join_table`.
 fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
     disambiguated_kind_type_name(join_table, table_types, "share")
+}
+
+/// The type standing for the team members of a team-membership table, named with the
+/// deployment's configured team word so a renamed deployment keeps its own spelling,
+/// and keyed on the table so two different team-membership tables never pool their
+/// members into one type.
+fn team_type_name(
+    team_membership_table: &TableId,
+    table_types: &TableTypes,
+    well_known: &WellKnownTypes,
+) -> TypeName {
+    disambiguated_kind_type_name(team_membership_table, table_types, well_known.team.as_str())
 }
 
 /// Builds the base kind-suffix type name and appends a hex hash if `table_types` already claims it.
