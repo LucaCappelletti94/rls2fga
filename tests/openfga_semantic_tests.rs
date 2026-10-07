@@ -3,7 +3,7 @@
 use openfga_client::client::{OpenFgaClient, TupleKey};
 use openfga_client::tonic::transport::Channel;
 
-use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{records_from_row, ConfidenceLevel};
 
 mod support;
 
@@ -12,6 +12,7 @@ struct Scenario {
     fixture: &'static str,
     min_confidence: ConfidenceLevel,
     tuples: Vec<(&'static str, &'static str, &'static str)>,
+    rows: Vec<(&'static str, support::Row)>,
     checks: Vec<(&'static str, &'static str, &'static str, bool)>,
 }
 
@@ -31,6 +32,7 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "earth_metabolome",
             min_confidence: ConfidenceLevel::B,
             tuples: support::openfga::EARTH_METABOLOME_TUPLES.to_vec(),
+            rows: vec![],
             checks: support::openfga::EARTH_METABOLOME_CHECKS.to_vec(),
         },
         // P2: Role IN-list
@@ -46,6 +48,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("owner_grants_owner:o1", "grant_viewer", "user:carol"),
                 ("owner_grants_owner:o1", "grant_editor", "user:dave"),
             ],
+            rows: vec![],
             checks: vec![
                 ("user:alice", "can_select", "ownables:res1", true),
                 ("user:bob", "can_select", "ownables:res1", true),
@@ -68,6 +71,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("resources:r1", "owner", "user:alice"),
                 ("resources:r2", "owner", "user:bob"),
             ],
+            rows: vec![],
             checks: vec![
                 ("user:alice", "can_select", "resources:r1", true),
                 ("user:alice", "can_delete", "resources:r1", true),
@@ -83,12 +87,22 @@ async fn openfga_semantic_checks_all_patterns() {
             name: "P4_membership_check",
             fixture: "membership_check",
             min_confidence: ConfidenceLevel::B,
-            tuples: vec![
-                ("teams:t1", "member", "user:alice"),
-                ("teams:t1", "member", "user:bob"),
-                ("teams:t2", "member", "user:carol"),
-                ("projects:p1", "teams", "teams:t1"),
-                ("projects:p2", "teams", "teams:t2"),
+            tuples: vec![],
+            rows: vec![
+                (
+                    "team_members",
+                    support::row(&[("team_id", "t1"), ("user_id", "alice")]),
+                ),
+                (
+                    "team_members",
+                    support::row(&[("team_id", "t1"), ("user_id", "bob")]),
+                ),
+                (
+                    "team_members",
+                    support::row(&[("team_id", "t2"), ("user_id", "carol")]),
+                ),
+                ("projects", support::row(&[("id", "p1"), ("team_id", "t1")])),
+                ("projects", support::row(&[("id", "p2"), ("team_id", "t2")])),
             ],
             checks: vec![
                 ("user:alice", "can_select", "projects:p1", true),
@@ -111,6 +125,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("tasks:task2", "projects", "projects:proj1"),
                 ("tasks:task3", "projects", "projects:proj2"),
             ],
+            rows: vec![],
             checks: vec![
                 ("user:alice", "can_select", "tasks:task1", true),
                 ("user:alice", "can_select", "tasks:task2", true),
@@ -127,6 +142,7 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "public_flag",
             min_confidence: ConfidenceLevel::B,
             tuples: vec![("articles:a1", "public_when_is_public", "user:*")],
+            rows: vec![],
             checks: vec![
                 ("user:anyone", "can_select", "articles:a1", true),
                 ("user:alice", "can_select", "articles:a1", true),
@@ -155,6 +171,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 // editor rung, so `grant_viewer` reaches no permission and is no longer
                 // declared. He stays the denied case with no grant at all.
             ],
+            rows: vec![],
             checks: vec![
                 // `abac_status` declares only an UPDATE policy, so no SELECT policy
                 // admits any row and `can_update` denies: naming a row to change means
@@ -211,6 +228,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ("documents:doc1", "public_when_is_public", "user:*"),
                 ("documents:doc2", "owner", "user:bob"),
             ],
+            rows: vec![],
             checks: vec![
                 ("user:alice", "can_select", "documents:doc1", true),
                 ("user:bob", "can_select", "documents:doc2", true),
@@ -227,6 +245,7 @@ async fn openfga_semantic_checks_all_patterns() {
             fixture: "constant_bool",
             min_confidence: ConfidenceLevel::B,
             tuples: vec![("docs:d1", "public_viewer", "user:*")],
+            rows: vec![],
             checks: vec![
                 ("user:anyone", "can_select", "docs:d1", false),
                 ("user:alice", "can_select", "docs:d1", false),
@@ -257,6 +276,7 @@ async fn openfga_semantic_checks_all_patterns() {
                 ),
                 ("pg_role:editor", "member", "user:alice"),
             ],
+            rows: vec![],
             checks: vec![
                 // RLS admits every member of 'editor', so the model has to as well.
                 ("user:alice", "can_select", "docs:d1", true),
@@ -297,8 +317,8 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
 
     // 3. Generate and upload JSON model
     let (classified, db, registry) = support::try_load_fixture_classified(scenario.fixture);
-    let model =
-        support::plan_at(classified.clone(), &db, &registry, scenario.min_confidence).json_model();
+    let outputs = support::plan_at(classified, &db, &registry, scenario.min_confidence);
+    let model = outputs.json_model();
     let model_id =
         support::openfga::write_authorization_model(&mut service_client, &store_id, &model).await;
 
@@ -306,11 +326,32 @@ async fn run_scenario(grpc_port: u16, scenario: &Scenario) -> Vec<String> {
     let client: OpenFgaClient<Channel> = service_client.into_client(&store_id, &model_id);
 
     // 5. Write tuples
-    let tuples: Vec<TupleKey> = scenario
+    let mut tuples: Vec<TupleKey> = scenario
         .tuples
         .iter()
         .map(|(obj, rel, user)| support::openfga::make_tuple(obj, rel, user))
         .collect();
+    for (table, row) in &scenario.rows {
+        for description in outputs
+            .tuple_queries()
+            .iter()
+            .filter_map(|query| query.description.as_ref())
+            .filter(|description| {
+                description
+                    .row_table()
+                    .is_some_and(|source| source.name() == *table)
+            })
+        {
+            for record in records_from_row(description, row).expect("the row should yield records")
+            {
+                tuples.push(support::openfga::make_tuple(
+                    &record.object,
+                    record.relation.as_str(),
+                    &record.subject,
+                ));
+            }
+        }
+    }
 
     support::openfga::write_tuples(&client, tuples).await;
 

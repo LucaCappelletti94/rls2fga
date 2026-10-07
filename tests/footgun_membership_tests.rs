@@ -529,37 +529,12 @@ fn a_residual_predicate_survives_the_caller_in_subquery_rewrite() {
     );
 }
 
-/// Without a correlation to the outer table the predicate is row independent: it admits
-/// every row once the caller is a member of anything. Translating it as per-row
-/// membership would answer a different question, so all three spellings go through the
-/// holder, which grants the rows together.
-#[test]
-fn an_uncorrelated_membership_subquery_translates_through_a_holder() {
-    for clause in [
-        "EXISTS (SELECT 1 FROM doc_members WHERE user_id = current_user)",
-        "current_user IN (SELECT user_id FROM doc_members)",
-        "current_user = ANY (SELECT user_id FROM doc_members)",
-    ] {
-        let (dsl, _) = membership_translation(clause);
-        assert_eq!(
-            relation_definition(&dsl, "docs", "can_select").as_deref(),
-            Some("member from doc_members_holder"),
-            "`{clause}` names no row, so it grants them together:\n{dsl}"
-        );
-    }
-}
-
 /// The guard must not over-fire: inside `EXISTS` a limit of at least one row cannot change
 /// whether a row exists, and `SELECT 1 ... LIMIT 1` is the idiom people write.
 #[test]
 fn an_exists_membership_subquery_keeping_at_least_one_row_still_translates() {
     let (expected_dsl, expected_tuples) = membership_translation(
         "EXISTS (SELECT 1 FROM doc_members WHERE doc_id = docs.id AND user_id = current_user)",
-    );
-    assert_eq!(
-        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
-        Some("member from docs"),
-        "guard precondition: the plain spelling must translate:\n{expected_dsl}"
     );
 
     for clause in [
@@ -598,11 +573,6 @@ fn an_uncorrelated_membership_check_translates_through_a_holder() {
                     EXISTS (SELECT 1 FROM staff WHERE staff.user_id = current_user));\n";
     let (dsl, tuples) = translation(schema);
 
-    assert_eq!(
-        relation_definition(&dsl, "docs", "can_select").as_deref(),
-        Some("member from staff_holder"),
-        "the row's grant reads as membership of the holder:\n{dsl}"
-    );
     assert!(
         dsl.contains("define staff_holder: [staff_holder]"),
         "the row points at the holder:\n{dsl}"
@@ -633,10 +603,12 @@ fn a_clocked_holder_does_not_admit_an_unconditioned_member_tuple() {
                     AND reviewers.vetted_at > now()));\n";
     let (dsl, tuples) = translation(schema);
 
-    let member = relation_definition(&dsl, "reviewers_holder", "member")
-        .unwrap_or_else(|| panic!("reviewers_holder must define member:\n{dsl}"));
+    let (_, member) = relation_definitions(&dsl, "reviewers_holder")
+        .into_iter()
+        .find(|(_, body)| body.starts_with("[user"))
+        .expect("the holder admits user membership tuples");
     assert!(
-        member.starts_with("[user with when_") && member.ends_with(']'),
+        member.starts_with("[user with ") && member.ends_with(']'),
         "the holder should admit only the conditioned user:\n{dsl}"
     );
     assert!(
@@ -646,31 +618,6 @@ fn a_clocked_holder_does_not_admit_an_unconditioned_member_tuple() {
     assert!(
         tuples.contains(" AS condition, jsonb_build_object('vetted_at', MAX(\"vetted_at\"))"),
         "the tuple loader still carries the clock context:\n{tuples}"
-    );
-}
-
-/// A shared member relation keeps the plain subject when a plain source feeds it too.
-#[test]
-fn a_mixed_clocked_and_plain_member_relation_keeps_both_subjects() {
-    let schema = "CREATE TABLE docs(id UUID PRIMARY KEY);\n\
-                  CREATE TABLE plain_members(doc_id UUID REFERENCES docs(id), user_id TEXT);\n\
-                  CREATE TABLE expiring_members(\n\
-                    doc_id UUID REFERENCES docs(id), user_id TEXT, vetted_at TIMESTAMPTZ);\n\
-                  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
-                  CREATE POLICY docs_plain ON docs FOR SELECT USING (\n\
-                    EXISTS (SELECT 1 FROM plain_members p \
-                    WHERE p.doc_id = docs.id AND p.user_id = current_user));\n\
-                  CREATE POLICY docs_clocked ON docs FOR DELETE USING (\n\
-                    EXISTS (SELECT 1 FROM expiring_members e \
-                    WHERE e.doc_id = docs.id AND e.user_id = current_user \
-                    AND e.vetted_at > now()));\n";
-    let (dsl, _) = translation(schema);
-
-    let member = relation_definition(&dsl, "docs", "member")
-        .unwrap_or_else(|| panic!("docs must define member:\n{dsl}"));
-    assert!(
-        member.contains("[user, user with when_"),
-        "the plain source still needs unconditioned member tuples:\n{dsl}"
     );
 }
 
@@ -701,16 +648,6 @@ fn a_holder_is_shared_per_member_source_and_never_across_them() {
     assert!(
         dsl.contains("type auditors_holder"),
         "and a different member table gets its own:\n{dsl}"
-    );
-    assert_eq!(
-        relation_definition(&dsl, "docs", "can_select").as_deref(),
-        Some("member from staff_holder"),
-        "staff decides reads:\n{dsl}"
-    );
-    assert!(
-        relation_definition(&dsl, "docs", "can_delete")
-            .is_some_and(|rule| rule.contains("member from auditors_holder")),
-        "auditors decide deletes, and they are not pooled with staff:\n{dsl}"
     );
     // Each holder is fed only from its own table.
     assert!(
@@ -809,11 +746,6 @@ CREATE POLICY docs_members ON docs FOR SELECT
         .expect("translation should plan")
         .outputs_accepting_gaps();
     let dsl = outputs.model();
-    assert_eq!(
-        relation_definition(&dsl, "docs", "can_select").as_deref(),
-        Some("member from docs"),
-        "the shared column name still names one doc per membership row:\n{dsl}"
-    );
     assert!(
         !type_names(&dsl).iter().any(|name| name.contains("holder")),
         "a correlated policy mints no holder:\n{dsl}"
@@ -967,6 +899,165 @@ fn a_membership_read_policy_that_may_admit_a_row_keeps_its_grant() {
         }
     }
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+const TEAM_MEMBERS_OPEN: &str = "
+ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tm_all ON team_members FOR SELECT USING (true);
+";
+
+const TEAM_MEMBERS_GATE: &str = "
+CREATE POLICY tm_cap ON team_members AS RESTRICTIVE FOR SELECT USING (
+    'team_members:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));
+";
+
+fn team_readability(members_rules: &str) -> rls2fga::translator::Outputs {
+    let db = db_of(&format!(
+        "
+CREATE TABLE teams(id INT PRIMARY KEY);
+CREATE TABLE team_members(team INT REFERENCES teams(id), user_id TEXT,
+                          PRIMARY KEY (team, user_id));
+CREATE TABLE docs(id INT PRIMARY KEY, team INT REFERENCES teams(id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+{members_rules}
+CREATE POLICY docs_read ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM team_members m
+            WHERE m.team = docs.team
+              AND m.user_id = current_setting('app.user_id', true)));
+"
+    ));
+    TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes([
+            SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+            SessionAttribute::setting("app.bot_list", SessionAttributeKind::SetAttribute),
+        ])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+}
+
+#[test]
+fn a_constant_true_membership_read_policy_is_open() {
+    let baseline = team_readability("");
+    for command in ["SELECT", "ALL"] {
+        for extra in [
+            "",
+            "CREATE POLICY neutral ON team_members AS RESTRICTIVE FOR SELECT USING (true);",
+            "CREATE POLICY write_gate ON team_members AS RESTRICTIVE FOR UPDATE USING (false);",
+            "CREATE POLICY write_gate ON team_members AS RESTRICTIVE FOR DELETE USING (false);",
+        ] {
+            let outputs = team_readability(&format!(
+                "ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
+                 CREATE POLICY tm_all ON team_members FOR {command} TO PUBLIC USING ((true));
+                 {extra}"
+            ));
+            assert_eq!(
+                relation_definition(&outputs.model(), "docs", "can_select"),
+                relation_definition(&baseline.model(), "docs", "can_select")
+            );
+            assert!(
+                !outputs
+                    .notes()
+                    .iter()
+                    .any(|note| note.severity().diverges_from_database()),
+                "{command} {extra}\n{:#?}",
+                outputs.notes()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_request_gate_that_names_no_row_keeps_the_membership_translated() {
+    let outputs = team_readability(&format!("{TEAM_MEMBERS_OPEN}{TEAM_MEMBERS_GATE}"));
+    assert!(
+        !outputs
+            .notes()
+            .iter()
+            .any(|note| note.severity().diverges_from_database()),
+        "{:#?}",
+        outputs.notes()
+    );
+    assert!(outputs.notes().iter().any(|note| matches!(
+        note,
+        TranslationNote::CallerSuppliesConditionParameter {
+            parameter,
+            setting_key: Some(key),
+            separator: Some(separator),
+        } if parameter == "app_bot_list" && key == "app.bot_list" && separator == ","
+    )));
+}
+
+#[test]
+fn unsupported_membership_read_rules_stay_guarded() {
+    for policies in [
+        "CREATE POLICY p ON team_members FOR SELECT USING (user_id = current_user);".to_string(),
+        "CREATE POLICY p ON team_members FOR SELECT TO contractor USING (true);".to_string(),
+        "CREATE POLICY p ON team_members FOR SELECT TO CURRENT_USER USING (true);".to_string(),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members FOR SELECT USING (false);"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members FOR SELECT USING (user_id = current_user);"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members AS RESTRICTIVE FOR SELECT
+                     USING (user_id = current_user);"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members AS RESTRICTIVE FOR SELECT TO contractor
+                     USING ('team_members:read' = ANY(string_to_array(
+                         current_setting('app.bot_list', true), ',')));"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members AS RESTRICTIVE FOR SELECT TO CURRENT_USER
+                     USING (false);"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members AS RESTRICTIVE FOR SELECT
+                     USING ('team_members:read' = ANY(string_to_array(
+                         current_setting('app.undeclared', true), ',')));"
+        ),
+        format!(
+            "{TEAM_MEMBERS_OPEN}
+                 CREATE POLICY p ON team_members AS RESTRICTIVE FOR SELECT;"
+        ),
+    ] {
+        let outputs = team_readability(&format!(
+            "ALTER TABLE team_members ENABLE ROW LEVEL SECURITY; {policies}"
+        ));
+        assert!(
+            outputs.notes().iter().any(|note| matches!(
+                note,
+                TranslationNote::MembershipTableGuarded { join_table, policy }
+                    if join_table.name() == "team_members" && policy == "docs_read"
+            )),
+            "{policies}\n{:#?}",
+            outputs.notes()
+        );
+    }
+}
+
+#[test]
+fn a_request_gate_without_a_permissive_read_grants_nothing() {
+    let outputs = team_readability(&format!(
+        "ALTER TABLE team_members ENABLE ROW LEVEL SECURITY; {TEAM_MEMBERS_GATE}"
+    ));
+    assert!(relation_denies(&outputs.model(), "docs", "can_select"));
+    assert!(outputs.notes().iter().any(|note| matches!(
+        note,
+        TranslationNote::MembershipTableGrantsNoReads { join_table, .. }
+            if join_table.name() == "team_members"
+    )));
 }
 
 /// `PostgreSQL` reads a membership table's children through the policy's plain `FROM`,

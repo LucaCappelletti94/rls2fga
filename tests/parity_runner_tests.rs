@@ -3176,20 +3176,24 @@ CREATE POLICY shares_read ON paper_shares FOR SELECT USING (true);
         ],
     )
     .with_attributes(SUBJECTS_ONLY);
-    // The share table's own row security is disclosed, and the answers still agree: its
-    // policy exposes every share, so the loader reads what each caller would.
-    support::parity::run_disclosing_and_check(
-        &cluster,
-        &case,
-        &[
-            ("viewer_x", "papers:1", true),
-            ("viewer_y", "papers:1", true),
-            ("viewer_x", "papers:2", false),
-            ("viewer_z", "papers:2", true),
-            ("viewer_z", "papers:1", false),
-        ],
-    )
-    .await;
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        ("viewer_x", "papers:1", true),
+        ("viewer_y", "papers:1", true),
+        ("viewer_x", "papers:2", false),
+        ("viewer_z", "papers:2", true),
+        ("viewer_z", "papers:1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
 }
 
 /// Ported from
@@ -3249,16 +3253,18 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (
          FROM paper_shares s
          CROSS JOIN (VALUES ('viewer_live'), ('viewer_gone')) AS c(subject)",
     );
-    // The share table's own row security is disclosed, and the answers still agree.
-    support::parity::run_disclosing_and_check(
-        &cluster,
-        &case,
-        &[
-            ("viewer_live", "papers:1", true),
-            ("viewer_gone", "papers:1", false),
-        ],
-    )
-    .await;
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, visible) in [("viewer_live", true), ("viewer_gone", false)] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            "papers:1",
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
 }
 
 /// Ported from `two_deadline_witness_parity_postgres18_and_openfga`.

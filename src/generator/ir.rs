@@ -126,7 +126,7 @@ pub(crate) enum TupleSource {
     },
 
     /// P4 membership, from `EXISTS` or an `IN` subquery.
-    /// Produces `(parent_type:fk_cols, member, user:user_col)`.
+    /// Produces `(parent_type:fk_cols, relation, user:user_col)`.
     ExistsMembership {
         join_table: TableId,
         /// Columns of `join_table` naming the parent resource, in the parent
@@ -135,6 +135,8 @@ pub(crate) enum TupleSource {
         user_col: ColumnName,
         /// Resolved from the table the columns reference, not from their names.
         parent_type: TypeName,
+        /// The relation the member tuple feeds, kept per source.
+        relation: RelationName,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
@@ -346,6 +348,8 @@ pub(crate) enum TupleSource {
         holder_type: TypeName,
         member_table: TableId,
         user_col: ColumnName,
+        /// The relation the member tuple feeds, kept per source.
+        relation: RelationName,
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
         gate: Option<MembershipGate>,
@@ -470,6 +474,7 @@ pub(crate) enum TupleSourceKey<'a> {
         fk_cols: &'a [ColumnName],
         user_col: &'a ColumnName,
         parent_type: &'a TypeName,
+        relation: &'a RelationName,
         extra_predicates: ResidualSqlKey<'a>,
         gate: Option<&'a MembershipGate>,
     },
@@ -579,6 +584,7 @@ pub(crate) enum TupleSourceKey<'a> {
         holder_type: &'a TypeName,
         member_table: &'a TableId,
         user_col: &'a ColumnName,
+        relation: &'a RelationName,
         extra_predicates: ResidualSqlKey<'a>,
         gate: Option<&'a MembershipGate>,
     },
@@ -678,11 +684,19 @@ impl TupleSource {
             Self::TeamMembership { .. } => {
                 vec![(well_known.team.clone(), member_relation())]
             }
-            Self::ExistsMembership { parent_type, .. } => {
-                vec![(parent_type.clone(), member_relation())]
+            Self::ExistsMembership {
+                parent_type,
+                relation,
+                ..
+            } => {
+                vec![(parent_type.clone(), relation.clone())]
             }
-            Self::HolderMembers { holder_type, .. } => {
-                vec![(holder_type.clone(), member_relation())]
+            Self::HolderMembers {
+                holder_type,
+                relation,
+                ..
+            } => {
+                vec![(holder_type.clone(), relation.clone())]
             }
             Self::PolicyScope { scope_relation, .. } => own(scope_relation),
             Self::PolicyScopeRoles {
@@ -778,6 +792,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
+                relation,
                 extra_predicates,
                 gate,
             } => TupleSourceKey::ExistsMembership {
@@ -785,6 +800,7 @@ impl TupleSource {
                 fk_cols,
                 user_col,
                 parent_type,
+                relation,
                 extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
             },
@@ -992,11 +1008,13 @@ impl TupleSource {
                 holder_type,
                 member_table,
                 user_col,
+                relation,
                 extra_predicates,
                 gate,
             } => TupleSourceKey::HolderMembers {
                 holder_type,
                 member_table,
+                relation,
                 user_col,
                 extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
@@ -1010,7 +1028,7 @@ impl TupleSource {
 mod tests {
     use super::*;
     use crate::classifier::patterns::{AttributeRequestPredicate, RequestValue, ResidualPredicate};
-    use crate::generator::well_known::owner_user_relation;
+    use crate::generator::well_known::{member_relation, owner_user_relation};
     use rls2fga_types::AttributeOperator;
 
     fn table(name: &str) -> TableId {
@@ -1102,6 +1120,7 @@ mod tests {
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1110,6 +1129,7 @@ mod tests {
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("member_id"),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
         };
@@ -1117,6 +1137,7 @@ mod tests {
             join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
+            relation: member_relation(),
             parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
                 sql: "role = 'admin'".to_string(),
@@ -1226,6 +1247,7 @@ mod tests {
                 fk_cols: vec![ColumnName::from_stored("doc_id")],
                 user_col: ColumnName::from_stored("user_id"),
                 parent_type: TypeName::canonicalized("docs"),
+                relation: member_relation(),
                 extra_predicates: ResidualPredicates::new(residual),
                 gate: gate.clone(),
             }

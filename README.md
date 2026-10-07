@@ -111,7 +111,7 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 | P1 | `NumericThreshold` | `role_fn(user, resource) >= N` | Hierarchical relations from the level |
 | P2 | `RoleNameInList` | `role_fn(user, resource) IN ('viewer', ...)` | One relation per role name |
 | P3 | `DirectOwnership` | `owner_id = current_user_id()` | `owner: [user]` |
-| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members ...)`, `IN`, `= ANY` | A `member` relation |
+| P4 | `ExistsMembership` | `EXISTS (SELECT 1 FROM members ...)`, `IN`, `= ANY` | Source-specific membership relations |
 | P5 | `ParentInheritance` | FK join carrying a parent-side rule | `owner from parent`, gated by the parent's `can_select` |
 | P6 | `BooleanFlag` | `is_public = TRUE` | `[user:*]` |
 | P7 | `AbacAnd` | Relationship check `AND` attribute guard | Relationship half only, guard as a TODO |
@@ -120,7 +120,7 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 | P10 | `ConstantBool` | `TRUE`, `FALSE` | `[user:*]`, or no access |
 | P11 | `ArrayMembership` | `current_user = ANY (editors)` | Relation named after the column, one tuple per element |
 | P12 | `JsonbFieldOwnership` | `data ->> 'owner' = current_user` | `owner: [user]`, read from the field |
-| P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object, so the grant reads as `member from staff_holder` |
+| P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object with source-specific membership relations |
 | P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate asking whether the caller's list holds the row's value |
 | P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, equality against the caller's value |
 | P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, no column takes part |
@@ -137,6 +137,10 @@ Two refusals are deliberate. Reading the body of a `SECURITY DEFINER` function w
 ## Reads gate the other commands
 
 Naming a row to change means reading it, so `can_update` and `can_delete` intersect `can_select`, while an `UPDATE` naming no row is `can_update_without_reading`. Plain `INSERT` reads nothing, but `RETURNING` a column and naming an `ON CONFLICT` target both read the new row back, which is `can_insert_returning`, and `INSERT ... ON CONFLICT DO UPDATE` is `can_upsert`. A locking read (`FOR UPDATE` and friends) also applies the `UPDATE` policies, so check `can_select_for_update` rather than `can_select`. A policy expression reads every table it names, so an inherited parent rule intersects the parent's `can_select` and a membership table granting no reads denies outright.
+
+Membership tables whose permissive read policies all use `USING (true)` and apply to `PUBLIC` need no caveat when their restrictive read policies are absent or constant `true`. Supported restrictive gates using only literals and declared session attributes are `AND`ed onto the membership arm and require those attributes in each check context. Row-dependent or role-scoped membership rules retain `MembershipTableGuarded`.
+
+Membership tuple relations are isolated by table, correlation, user column, predicates and condition inputs. Parent and share-row bridges are isolated by the columns they traverse.
 
 ## Runtime data you have to supply
 
