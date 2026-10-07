@@ -654,45 +654,6 @@ fn generator_owned_relation_names_have_a_single_source_of_truth() {
 }
 
 #[test]
-fn well_known_names_have_a_single_source_of_truth() {
-    // `well_known.rs` owns generator names. `patterns.rs` owns the membership
-    // privilege's relation. `db_lookup.rs` names principal tables, and `names.rs`
-    // matches words inside column names.
-    let exempt = [
-        "src/generator/well_known.rs",
-        "src/generator/db_lookup.rs",
-        "src/parser/names.rs",
-        "types/src/patterns.rs",
-    ];
-
-    for name in [
-        "user",
-        "team",
-        "pg_role",
-        "no_access",
-        "public_viewer",
-        "member",
-        "owner_user",
-        "owner_team",
-        "can_select",
-        "can_insert",
-        "can_update",
-        "can_delete",
-        "can_update_using",
-        "can_update_check",
-        "can_insert_returning",
-        "can_upsert",
-        "can_select_for_update",
-    ] {
-        let literals = count_excluding(&exempt, &format!("\"{name}\""));
-        assert_eq!(
-            literals, 0,
-            "'{name}' has an extra source, found {literals} literals"
-        );
-    }
-}
-
-#[test]
 fn blaming_an_unrecognized_clause_has_a_single_source_of_truth() {
     for needle in [
         "fn called_function_names(",

@@ -901,7 +901,7 @@ async fn run_in(
 
     let objects = objects(conn, &naming, &case.not_read_directly);
     let tuples = if case.loading_from_rows {
-        tuples_replaying_pure_queries(conn, case, planned.tuple_queries(), &objects)
+        tuples_replaying_pure_queries(conn, case, planned.tuple_queries())
     } else {
         super::execute_tuple_queries_for_parity(conn, planned.tuple_queries())
     };
@@ -1380,10 +1380,10 @@ fn tuples_replaying_pure_queries(
     conn: &mut PgConnection,
     case: &ParityCase,
     queries: &[rls2fga::generator::tuple_generator::TupleQuery],
-    objects: &[Object],
 ) -> Vec<super::LoadedTuple> {
     let mut loaded = std::collections::BTreeSet::new();
     let mut pure = 0usize;
+    let mut rows_by_table = BTreeMap::new();
     for query in queries {
         if query.skipped.is_some() {
             continue;
@@ -1391,7 +1391,7 @@ fn tuples_replaying_pure_queries(
         let table = query
             .description
             .as_ref()
-            .and_then(|description| description.row_table().map(TableId::sql_name));
+            .and_then(|description| description.row_table());
         let (Some(description), Some(table)) = (query.description.as_ref(), table) else {
             loaded.extend(super::execute_tuple_queries_for_parity(
                 conn,
@@ -1400,11 +1400,23 @@ fn tuples_replaying_pure_queries(
             continue;
         };
         pure += 1;
-        for object in objects.iter().filter(|object| object.table == table) {
-            let records = records_from_row(description, &super::JsonRowValues(&object.row))
-                .unwrap_or_else(|error| {
-                    panic!("{}: evaluating {}: {error:?}", case.name, object.name)
-                });
+        let rows = rows_by_table.entry(table).or_insert_with(|| {
+            // Source schemas are supplied at runtime.
+            diesel::sql_query(format!(
+                "SELECT to_jsonb(t) AS row FROM {} t",
+                table.sql_name()
+            ))
+            .load::<JsonRow>(conn)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "reading {} as its owner failed with {error}",
+                    table.sql_name()
+                )
+            })
+        });
+        for JsonRow { row } in rows {
+            let records = records_from_row(description, &super::JsonRowValues(row))
+                .unwrap_or_else(|error| panic!("{} row replay failed with {error:?}", case.name));
             for record in records {
                 loaded.insert(super::LoadedTuple {
                     object: record.object,

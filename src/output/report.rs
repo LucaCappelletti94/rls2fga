@@ -6,9 +6,9 @@ use crate::classifier::patterns::{
     apply_threshold, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
     CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
     ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
-    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PolicyMode,
-    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
-    UncorrelatedMembership,
+    IndirectMembership, JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold,
+    ParentInheritance, PolicyMode, RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet,
+    UnclassifiedExpr, UncorrelatedMembership,
 };
 use crate::types::TranslationNote;
 
@@ -186,6 +186,11 @@ fn format_pattern(pattern: &crate::classifier::patterns::PatternClass) -> String
         PatternClass::P4ExistsMembership(ExistsMembership { join_table, .. }) => {
             format!("P4 (EXISTS {join_table})")
         }
+        PatternClass::P19IndirectMembership(IndirectMembership {
+            bridge_table,
+            membership: ExistsMembership { join_table, .. },
+            ..
+        }) => format!("P19 (EXISTS {join_table} via {bridge_table})"),
         PatternClass::P13UncorrelatedMembership(UncorrelatedMembership {
             member_table, ..
         }) => {

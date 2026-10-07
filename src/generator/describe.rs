@@ -409,6 +409,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             parent_type,
             extra_predicates,
             gate,
+            relation,
         } => {
             let mut guards: Vec<Guard> = fk_cols
                 .iter()
@@ -426,7 +427,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         extra_predicates,
                         ReplayScope::Object {
                             object_type: parent_type.clone(),
-                            relations: vec![member_relation()],
+                            relations: vec![relation.clone()],
                         },
                         format!(
                             "the membership row carries a residual predicate only SQL can \
@@ -439,7 +440,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     join_table,
                     parent_type,
                     ObjectKey::new(key_parts(join_table, fk_cols, db)),
-                    &member_relation(),
+                    relation,
                     &well_known.user,
                     value_column(join_table, user_col, db),
                     guards,
@@ -456,7 +457,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     extra_predicates,
                     ReplayScope::Object {
                         object_type: parent_type.clone(),
-                        relations: vec![member_relation()],
+                        relations: vec![relation.clone()],
                     },
                     format!(
                         "several membership rows can grant one (object, user), so the latest \
@@ -488,7 +489,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                 RecordTemplate {
                     object_type: parent_type.clone(),
                     object_key: ObjectKey::new(key_parts(join_table, fk_cols, db)),
-                    relation: member_relation(),
+                    relation: relation.clone(),
                     subject_type: well_known.user.clone(),
                     subject_key: subject_column(join_table, user_col, db),
                     context: Some(RecordContext {

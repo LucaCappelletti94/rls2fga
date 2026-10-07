@@ -635,7 +635,7 @@ fn table_with_joins_is_sampled(item: &TableWithJoins) -> bool {
             .any(|join| table_factor_is_sampled(&join.relation))
 }
 
-fn table_factor_is_sampled(factor: &TableFactor) -> bool {
+pub(super) fn table_factor_is_sampled(factor: &TableFactor) -> bool {
     match factor {
         TableFactor::Table { sample, .. } => sample.is_some(),
         TableFactor::NestedJoin {
@@ -712,7 +712,7 @@ pub(crate) fn projected_select(query: &Query) -> Option<&Select> {
 
 /// Why a subquery cannot be read as the plain set of rows in the table its `FROM` names.
 #[derive(Clone, Copy)]
-enum SubqueryRefusal {
+pub(super) enum SubqueryRefusal {
     /// A clause thins the rows the subquery returns.
     Shaped(&'static str),
     /// A `WITH` clause binds names inside the subquery, so a name in its `FROM` may be
@@ -730,7 +730,7 @@ impl SubqueryRefusal {
     /// a subset at all: the rows may come from anywhere the `WITH` reads. A lock is a
     /// subset again, but of a set the reader's own update rights decide. All three want
     /// different advice.
-    fn reason(self) -> String {
+    pub(super) fn reason(self) -> String {
         match self {
             Self::Shaped(clause) => format!(
                 "Subquery result is shaped by {clause}, so it admits fewer rows than a \
@@ -785,7 +785,7 @@ fn query_level_refusal(query: &Query) -> Option<SubqueryRefusal> {
 }
 
 /// The `Select` an `EXISTS` tests, paired with the reason it cannot be read plainly.
-fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusal>)> {
+pub(super) fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusal>)> {
     let Expr::Exists {
         subquery,
         negated: false,
@@ -801,7 +801,7 @@ fn exists_subquery_select(expr: &Expr) -> Option<(&Select, Option<SubqueryRefusa
 }
 
 /// As [`exists_subquery_select`], for the callers that need the rows read plainly.
-fn readable_exists_select(expr: &Expr) -> Option<&Select> {
+pub(super) fn readable_exists_select(expr: &Expr) -> Option<&Select> {
     let (select, refusal) = exists_subquery_select(expr)?;
     refusal.is_none().then_some(select)
 }
@@ -875,7 +875,7 @@ pub fn recognize_p4_in_subquery<DB: DatabaseLike>(
 /// the subquery's own source, the tested value the guarded table. Without them a column
 /// both tables spell alike reads as either, which drops the correlation and grants the
 /// guarded table whole.
-fn membership_exists_from_in_subquery(
+pub(super) fn membership_exists_from_in_subquery(
     expr: &Expr,
     registry: &FunctionRegistry,
     outer_table: &str,
@@ -948,7 +948,7 @@ fn single_projected_column(select: &Select) -> Option<Expr> {
     extract_column_name(expr).is_some().then(|| expr.clone())
 }
 
-fn classify_membership_select<DB: DatabaseLike>(
+pub(super) fn classify_membership_select<DB: DatabaseLike>(
     select: &Select,
     db: &DB,
     registry: &FunctionRegistry,
@@ -1501,6 +1501,46 @@ fn scans_root_entity_by_its_key<DB: DatabaseLike>(db: &DB, table: &str, column: 
     })
 }
 
+pub(super) fn diagnose_membership_select_ambiguity<DB: DatabaseLike>(
+    select: &Select,
+    db: &DB,
+    registry: &FunctionRegistry,
+    outer_table: &str,
+    state: &ExpansionState,
+) -> Option<String> {
+    match analyze_membership_select(select, db, registry, outer_table, state) {
+        MembershipSelectAnalysis::AmbiguousMultiple => Some(
+            "Ambiguous membership pattern: multiple candidate membership sources matched"
+                .to_string(),
+        ),
+        MembershipSelectAnalysis::AmbiguousNoUniqueJoin => Some(
+            "Ambiguous membership pattern: could not infer a unique membership join".to_string(),
+        ),
+        MembershipSelectAnalysis::JoinsAnotherTable { tables } => Some(format!(
+            "Membership subquery reads {} together, and a single OpenFGA relation cannot \
+                 carry a condition on the joined table, so split the check or pre-compute a \
+                 membership table",
+            tables.join(" and ")
+        )),
+        MembershipSelectAnalysis::ScansEntityByOwnKey { join_table } => Some(format!(
+            "Subquery selects '{join_table}' rows by their own primary key, so they are \
+                 '{join_table}' entities rather than membership rows, and the foreign key \
+                 from the policy's table to '{join_table}' should make the link parent \
+                 inheritance"
+        )),
+        MembershipSelectAnalysis::RescansGuardedTable => Some(format!(
+            "Subquery reads '{outer_table}', the table the policy guards, so PostgreSQL \
+                 raises infinite recursion on every read and no reference in it names the \
+                 guarded row, so drop the inner scan and correlate against '{outer_table}' \
+                 directly"
+        )),
+        MembershipSelectAnalysis::UnkeyedPairing { reason } => Some(reason),
+        MembershipSelectAnalysis::Unique { .. }
+        | MembershipSelectAnalysis::Uncorrelated { .. }
+        | MembershipSelectAnalysis::NoMatch => None,
+    }
+}
+
 pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     expr: &Expr,
     db: &DB,
@@ -1508,52 +1548,11 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     outer_table: &str,
     state: &ExpansionState,
 ) -> Option<String> {
-    fn diagnose_select<DB: DatabaseLike>(
-        select: &Select,
-        db: &DB,
-        registry: &FunctionRegistry,
-        outer_table: &str,
-        state: &ExpansionState,
-    ) -> Option<String> {
-        match analyze_membership_select(select, db, registry, outer_table, state) {
-            MembershipSelectAnalysis::AmbiguousMultiple => Some(
-                "Ambiguous membership pattern: multiple candidate membership sources matched"
-                    .to_string(),
-            ),
-            MembershipSelectAnalysis::AmbiguousNoUniqueJoin => Some(
-                "Ambiguous membership pattern: could not infer a unique membership join"
-                    .to_string(),
-            ),
-            MembershipSelectAnalysis::JoinsAnotherTable { tables } => Some(format!(
-                "Membership subquery reads {} together, and a single OpenFGA relation cannot \
-                 carry a condition on the joined table, so split the check or pre-compute a \
-                 membership table",
-                tables.join(" and ")
-            )),
-            MembershipSelectAnalysis::ScansEntityByOwnKey { join_table } => Some(format!(
-                "Subquery selects '{join_table}' rows by their own primary key, so they are \
-                 '{join_table}' entities rather than membership rows, and the foreign key \
-                 from the policy's table to '{join_table}' should make the link parent \
-                 inheritance"
-            )),
-            MembershipSelectAnalysis::RescansGuardedTable => Some(format!(
-                "Subquery reads '{outer_table}', the table the policy guards, so PostgreSQL \
-                 raises infinite recursion on every read and no reference in it names the \
-                 guarded row, so drop the inner scan and correlate against '{outer_table}' \
-                 directly"
-            )),
-            MembershipSelectAnalysis::UnkeyedPairing { reason } => Some(reason),
-            MembershipSelectAnalysis::Unique { .. }
-            | MembershipSelectAnalysis::Uncorrelated { .. }
-            | MembershipSelectAnalysis::NoMatch => None,
-        }
-    }
-
     if let Expr::Exists { .. } = expr {
         let (select, refusal) = exists_subquery_select(expr)?;
         return match refusal {
             Some(refusal) => Some(refusal.reason()),
-            None => diagnose_select(select, db, registry, outer_table, state),
+            None => diagnose_membership_select_ambiguity(select, db, registry, outer_table, state),
         };
     }
 
@@ -1585,7 +1584,7 @@ pub(crate) fn diagnose_p4_membership_ambiguity<DB: DatabaseLike>(
     let Expr::Exists { subquery, .. } = &rewritten else {
         return None;
     };
-    diagnose_select(query_select(subquery)?, db, registry, outer_table, state)
+    diagnose_membership_select_ambiguity(query_select(subquery)?, db, registry, outer_table, state)
 }
 
 pub(crate) fn diagnose_p5_parent_inheritance_ambiguity<DB: DatabaseLike>(
@@ -1799,25 +1798,45 @@ pub(super) fn selection_references_current_user(
     })
 }
 pub(super) fn table_factor_parts(tf: &TableFactor) -> Option<(String, Option<String>)> {
-    if let TableFactor::Table { name, alias, .. } = tf {
-        Some((
-            name.to_string(),
-            alias
-                .as_ref()
-                .map(|a| stored_ident_name(&a.name).into_owned()),
-        ))
-    } else {
-        None
+    let TableFactor::Table {
+        name,
+        alias,
+        args: None,
+        version: None,
+        sample: None,
+        json_path: None,
+        with_ordinality: false,
+        with_hints,
+        partitions,
+        index_hints,
+    } = tf
+    else {
+        return None;
+    };
+    if !with_hints.is_empty()
+        || !partitions.is_empty()
+        || !index_hints.is_empty()
+        || alias
+            .as_ref()
+            .is_some_and(|alias| !alias.columns.is_empty())
+    {
+        return None;
     }
+    Some((
+        name.to_string(),
+        alias
+            .as_ref()
+            .map(|alias| stored_ident_name(&alias.name).into_owned()),
+    ))
 }
 
 #[derive(Debug, Clone)]
-struct RelationSource {
-    table_name: String,
-    alias: Option<String>,
+pub(super) struct RelationSource {
+    pub(super) table_name: String,
+    pub(super) alias: Option<String>,
 }
 
-fn relation_sources(select: &Select) -> Vec<RelationSource> {
+pub(super) fn relation_sources(select: &Select) -> Vec<RelationSource> {
     let mut sources = Vec::new();
     for from in &select.from {
         if let Some(source) = relation_source_from_table_factor(&from.relation) {
@@ -2536,13 +2555,17 @@ pub(super) fn qualifier_matches_table(
 /// Each caller decides what an unprovable answer means, because the safe direction
 /// differs: a self scan must refuse when it cannot be ruled out, and a foreign source
 /// must refuse when it cannot be ruled in.
-fn written_tables_are_same<DB: DatabaseLike>(db: &DB, left: &str, right: &str) -> Option<bool> {
+pub(super) fn written_tables_are_same<DB: DatabaseLike>(
+    db: &DB,
+    left: &str,
+    right: &str,
+) -> Option<bool> {
     let left = resolve_table_id(db, left)?;
     let right = resolve_table_id(db, right)?;
     Some(left == right)
 }
 
-fn combine_predicates_with_and(predicates: Vec<Expr>) -> Option<Expr> {
+pub(super) fn combine_predicates_with_and(predicates: Vec<Expr>) -> Option<Expr> {
     let mut iter = predicates.into_iter();
     let first = iter.next()?;
     Some(iter.fold(first, |acc, next| Expr::BinaryOp {

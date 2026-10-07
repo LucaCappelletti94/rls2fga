@@ -22,6 +22,8 @@ use crate::types::ColumnName;
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
+/// Membership reached through a closure table.
+mod indirect;
 /// Whether a residual answers every caller alike.
 mod invariant;
 /// Request-scoped values a deployment declared readable.
@@ -34,6 +36,10 @@ pub use attribute::{
     residual_predicate,
 };
 pub(crate) use attribute::{conjunct_reads_only_the_row, residual_predicate_reading};
+pub use indirect::recognize_p19;
+pub(crate) use indirect::{
+    diagnose_p19_indirect_membership_ambiguity, prove_indirect_membership, ProvenIndirectMembership,
+};
 pub(crate) use invariant::{residual_relations, MembershipScope};
 pub use session::recognize_session_attribute;
 pub(crate) use session::{

@@ -5,7 +5,10 @@
 
 use super::*;
 
-use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
+use crate::classifier::recognizers::{
+    prove_indirect_membership, resolve_membership_pairing, MembershipPairing,
+    ProvenIndirectMembership,
+};
 
 /// Disclose the residual, naming the relations an exemption rests on.
 ///
@@ -575,6 +578,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                 context,
                 aggregate: !rows_unique,
             }),
+            relation: member_relation(),
         };
         table_plan.add_source(membership_source.clone());
         if let Some(parent_plan) = all_types.get_mut(parent_type) {
@@ -813,4 +817,322 @@ pub(crate) fn emit_composite<DB: DatabaseLike>(
         BoolOp::Or => combine_union(child_exprs).unwrap_or_else(|| deny_expr(table_plan)),
         BoolOp::And => combine_intersection(child_exprs).unwrap_or_else(|| deny_expr(table_plan)),
     }
+}
+
+fn indirect_source_key<'a>(
+    table: &TableId,
+    columns: impl Iterator<Item = &'a ColumnName>,
+) -> String {
+    let table_name = table.sql_name();
+    let mut key = format!("{}:{table_name}", table_name.len());
+    for column in columns {
+        let _ = write!(key, "{}:{column}", column.as_str().len());
+    }
+    key
+}
+
+fn residual_literal_token(value: &AttributeLiteral) -> String {
+    match value {
+        AttributeLiteral::Text(text) => canonical_fga_type_name(text).to_string(),
+        AttributeLiteral::Number(number) => canonical_fga_type_name(number).to_string(),
+        AttributeLiteral::Boolean(flag) => {
+            if *flag {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        _ => "literal".to_string(),
+    }
+}
+
+fn residual_relation_base(extra_predicates: &ResidualPredicates) -> String {
+    let mut base = String::from(member_relation());
+    for guard in extra_predicates.row_guards() {
+        let token = match guard {
+            ResidualGuard::Compare(predicate) if predicate.operator == AttributeOperator::Eq => {
+                residual_literal_token(&predicate.value)
+            }
+            ResidualGuard::Compare(predicate) => {
+                format!(
+                    "{}_{}",
+                    predicate.operator.gate_token(),
+                    residual_literal_token(&predicate.value)
+                )
+            }
+            ResidualGuard::IsTrue(column) => canonical_fga_type_name(column.as_str()).to_string(),
+            ResidualGuard::NotNull(column) => {
+                format!("{}_not_null", canonical_fga_type_name(column.as_str()))
+            }
+        };
+        base.push('_');
+        base.push_str(&token);
+    }
+    for _ in extra_predicates.requests() {
+        base.push_str("_time");
+    }
+    base
+}
+
+/// Reach owner memberships through the closure table's direct tupleset.
+pub(crate) fn emit_indirect_membership<DB: DatabaseLike>(
+    indirect: &IndirectMembership,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    notes: &mut Vec<TranslationNote>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+) -> UsersetExpr {
+    let IndirectMembership {
+        bridge_table,
+        membership,
+        ..
+    } = indirect;
+    let ExistsMembership {
+        join_table,
+        pairs: _,
+        user_column,
+        extra_predicates,
+    } = membership;
+    let policy_name = ctx.policy_name;
+    let db = ctx.db;
+    let table_types = ctx.table_types;
+    let ProvenIndirectMembership {
+        bridge_pairs: pairs,
+        far_pairs,
+        owner_table,
+    } = match prove_indirect_membership(db, ctx.source_table, indirect) {
+        Ok(proven) => proven,
+        Err(reason) => {
+            notes.push(TranslationNote::ExpressionRefused {
+                policy: policy_name.to_string(),
+                reason: reason.to_string(),
+            });
+            return deny_expr(table_plan);
+        }
+    };
+    let owner_type = table_types.resolve(&owner_table);
+    let mut member_key = indirect_source_key(
+        join_table,
+        far_pairs
+            .iter()
+            .map(|pair| &pair.join_column)
+            .chain([user_column]),
+    );
+    let residual_sql = extra_predicates.sql().unwrap_or_default();
+    let _ = write!(member_key, "{}:{residual_sql}", residual_sql.len());
+
+    // Each scanned table's read policy gates the corresponding hop.
+    let Some(bridge_scope) = noted_membership_read_scope(bridge_table, ctx, readability, notes)
+    else {
+        return deny_expr(table_plan);
+    };
+    let Some(far_scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
+        return deny_expr(table_plan);
+    };
+
+    let gate = declare_temporal_condition(
+        extra_predicates,
+        join_table,
+        policy_name,
+        table_plan,
+        &ctx.settings.request_time_parameter,
+        ctx.condition_parameters,
+        db,
+    );
+    if let Some((condition, _)) = &gate {
+        let _ = write!(member_key, "{}:{condition}", condition.as_str().len());
+    }
+    let far_fk_cols: Vec<ColumnName> = far_pairs
+        .iter()
+        .map(|pair| pair.join_column.clone())
+        .collect();
+    let closure_object_cols: Vec<ColumnName> =
+        pairs.iter().map(|pair| pair.join_column.clone()).collect();
+    let closure_subject_cols: Vec<ColumnName> = far_pairs
+        .iter()
+        .map(|pair| pair.outer_column.clone())
+        .collect();
+    // Independent row clocks require one witness per membership row.
+    let correlation_cols: Vec<&ColumnName> = far_fk_cols.iter().chain([user_column]).collect();
+    let rows_unique = row_uniquely_keys(join_table, &correlation_cols, db);
+    let witness = match &gate {
+        Some((condition, context)) if !rows_unique => {
+            if let Some(identity_cols) = resolve_row_identity(join_table, db) {
+                Some((condition.clone(), context.clone(), identity_cols))
+            } else if context.len() == 1 {
+                // One carried value cannot mix distinct rows' clock comparisons.
+                None
+            } else {
+                notes.push(TranslationNote::ExpressionRefused {
+                    policy: policy_name.to_string(),
+                    reason: format!(
+                        "the rows of '{join_table}' have no declared identity, and \
+                         several clock comparisons cannot be compressed into one \
+                         fact without mixing rows"
+                    ),
+                });
+                return deny_expr(table_plan);
+            }
+        }
+        _ => None,
+    };
+    let conditional_member = match &gate {
+        Some((condition, _)) if witness.is_none() => Some(DirectSubject::ConditionalType {
+            type_name: table_plan.well_known.user.clone(),
+            condition: condition.clone(),
+        }),
+        _ => None,
+    };
+
+    let mut bridge_key = indirect_source_key(
+        bridge_table,
+        closure_object_cols.iter().chain(&closure_subject_cols),
+    );
+    let _ = write!(bridge_key, "{}:{owner_type}", owner_type.as_str().len());
+    let bridge_relation =
+        table_plan.ownership_relation(&format!("indirect:{bridge_key}"), owner_type.as_str());
+    table_plan.ensure_direct(
+        bridge_relation.clone(),
+        vec![DirectSubject::Type(owner_type.clone())],
+    );
+    table_plan.add_source(TupleSource::ShareBridge {
+        join_table: bridge_table.clone(),
+        identity_cols: closure_subject_cols,
+        object_cols: closure_object_cols,
+        guarded_type: table_plan.type_name.clone(),
+        share_type: owner_type.clone(),
+        relation: bridge_relation.clone(),
+    });
+
+    if owner_type != table_plan.type_name {
+        let owner_plan = all_types.entry(owner_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(owner_type.clone(), &table_plan.well_known)
+        });
+        owner_plan.names_rows_of(&owner_table);
+    }
+    announce_residual(extra_predicates, gate.is_some(), policy_name, notes);
+
+    let membership = if let Some((condition, context, identity_cols)) = witness {
+        let share_type = share_type_name(join_table, table_types);
+        let member_rel = {
+            let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
+                TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
+            });
+            share_plan.indirect_member_relation(
+                &member_key,
+                residual_relation_base(extra_predicates),
+                vec![DirectSubject::ConditionalType {
+                    type_name: table_plan.well_known.user.clone(),
+                    condition: condition.clone(),
+                }],
+            )
+        };
+        let share_source = TupleSource::MembershipShareMembers {
+            join_table: join_table.clone(),
+            identity_cols: identity_cols.clone(),
+            user_col: user_column.clone(),
+            share_type: share_type.clone(),
+            relation: member_rel.clone(),
+            condition,
+            extra_predicates: extra_predicates.clone(),
+            context,
+        };
+        table_plan.add_source(share_source.clone());
+        if let Some(share_plan) = all_types.get_mut(&share_type) {
+            share_plan.add_source(share_source);
+        }
+        let mut link_key =
+            indirect_source_key(join_table, far_fk_cols.iter().chain(&identity_cols));
+        let _ = write!(link_key, "{}:{share_type}", share_type.as_str().len());
+        let witness_member = {
+            let owner_plan = if owner_type == table_plan.type_name {
+                &mut *table_plan
+            } else {
+                let Some(plan) = all_types.get_mut(&owner_type) else {
+                    return deny_expr(table_plan);
+                };
+                plan
+            };
+            let link =
+                owner_plan.ownership_relation(&format!("indirect:{link_key}"), share_type.as_str());
+            let reached = owner_plan.ownership_relation(
+                &format!("indirect_reach:{member_key}"),
+                &format!("{share_type}_{member_rel}"),
+            );
+            owner_plan.ensure_direct(link.clone(), vec![DirectSubject::Type(share_type.clone())]);
+            owner_plan.add_source(TupleSource::ShareBridge {
+                join_table: join_table.clone(),
+                identity_cols,
+                object_cols: far_fk_cols,
+                guarded_type: owner_type.clone(),
+                share_type,
+                relation: link.clone(),
+            });
+            owner_plan.ensure_computed(reached, share_reach(link, member_rel))
+        };
+        UsersetExpr::TupleToUserset {
+            tupleset: bridge_relation,
+            computed: witness_member,
+        }
+    } else {
+        let subjects = vec![conditional_member
+            .unwrap_or_else(|| DirectSubject::Type(table_plan.well_known.user.clone()))];
+        let owner_plan = if owner_type == table_plan.type_name {
+            &mut *table_plan
+        } else {
+            let Some(plan) = all_types.get_mut(&owner_type) else {
+                return deny_expr(table_plan);
+            };
+            plan
+        };
+        let member_relation_name = owner_plan.indirect_member_relation(
+            &member_key,
+            residual_relation_base(extra_predicates),
+            subjects,
+        );
+        let membership_source = TupleSource::ExistsMembership {
+            join_table: join_table.clone(),
+            fk_cols: far_fk_cols,
+            user_col: user_column.clone(),
+            parent_type: owner_type.clone(),
+            extra_predicates: extra_predicates.clone(),
+            gate: gate.map(|(condition, context)| MembershipGate {
+                condition,
+                context,
+                aggregate: !rows_unique,
+            }),
+            relation: member_relation_name.clone(),
+        };
+        table_plan.add_source(membership_source.clone());
+        if let Some(owner_plan) = all_types.get_mut(&owner_type) {
+            owner_plan.add_source(membership_source);
+        }
+        UsersetExpr::TupleToUserset {
+            tupleset: bridge_relation,
+            computed: member_relation_name,
+        }
+    };
+    let membership = apply_membership_read_scope(
+        membership,
+        &MembershipReadScopeInput {
+            read_scope_roles: &bridge_scope,
+            join_table: bridge_table,
+        },
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+    );
+    apply_membership_read_scope(
+        membership,
+        &MembershipReadScopeInput {
+            read_scope_roles: &far_scope,
+            join_table,
+        },
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+    )
 }

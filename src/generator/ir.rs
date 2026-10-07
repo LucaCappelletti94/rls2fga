@@ -125,8 +125,11 @@ pub(crate) enum TupleSource {
         user_col: ColumnName,
     },
 
-    /// P4 membership, from `EXISTS` or an `IN` subquery.
-    /// Produces `(parent_type:fk_cols, member, user:user_col)`.
+    /// P4/P19 membership, from `EXISTS` or an `IN` subquery.
+    /// Produces `(parent_type:fk_cols, relation, user:user_col)`.
+    ///
+    /// P4 names the relation `member`; a P19 far hop names one per residual set,
+    /// since distinct guards must not pool their members into one relation.
     ExistsMembership {
         join_table: TableId,
         /// Columns of `join_table` naming the parent resource, in the parent
@@ -139,6 +142,8 @@ pub(crate) enum TupleSource {
         extra_predicates: ResidualPredicates,
         /// The clock condition its member tuple names, absent for a plain membership.
         gate: Option<MembershipGate>,
+        /// The relation the tuples fill.
+        relation: RelationName,
     },
 
     /// P4/P5 child-to-parent link. Produces `(type:pk, relation, parent_type:fk_cols)`.
@@ -472,6 +477,7 @@ pub(crate) enum TupleSourceKey<'a> {
         parent_type: &'a TypeName,
         extra_predicates: ResidualSqlKey<'a>,
         gate: Option<&'a MembershipGate>,
+        relation: &'a RelationName,
     },
     ParentBridge {
         table: &'a TableId,
@@ -678,9 +684,11 @@ impl TupleSource {
             Self::TeamMembership { .. } => {
                 vec![(well_known.team.clone(), member_relation())]
             }
-            Self::ExistsMembership { parent_type, .. } => {
-                vec![(parent_type.clone(), member_relation())]
-            }
+            Self::ExistsMembership {
+                parent_type,
+                relation,
+                ..
+            } => vec![(parent_type.clone(), relation.clone())],
             Self::HolderMembers { holder_type, .. } => {
                 vec![(holder_type.clone(), member_relation())]
             }
@@ -780,6 +788,7 @@ impl TupleSource {
                 parent_type,
                 extra_predicates,
                 gate,
+                relation,
             } => TupleSourceKey::ExistsMembership {
                 join_table,
                 fk_cols,
@@ -787,6 +796,7 @@ impl TupleSource {
                 parent_type,
                 extra_predicates: ResidualSqlKey::of(extra_predicates, Gated::when(gate.is_some())),
                 gate: gate.as_ref(),
+                relation,
             },
             Self::ParentBridge {
                 table,
@@ -1010,7 +1020,7 @@ impl TupleSource {
 mod tests {
     use super::*;
     use crate::classifier::patterns::{AttributeRequestPredicate, RequestValue, ResidualPredicate};
-    use crate::generator::well_known::owner_user_relation;
+    use crate::generator::well_known::{member_relation, owner_user_relation};
     use rls2fga_types::AttributeOperator;
 
     fn table(name: &str) -> TableId {
@@ -1104,6 +1114,7 @@ mod tests {
             parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
+            relation: member_relation(),
         };
         let different_user = TupleSource::ExistsMembership {
             join_table: table("members"),
@@ -1112,6 +1123,7 @@ mod tests {
             parent_type: TypeName::canonicalized("projects"),
             extra_predicates: ResidualPredicates::default(),
             gate: None,
+            relation: member_relation(),
         };
         let with_predicate = TupleSource::ExistsMembership {
             join_table: table("members"),
@@ -1125,9 +1137,24 @@ mod tests {
                 relations: Vec::new(),
             }]),
             gate: None,
+            relation: member_relation(),
+        };
+        let named = TupleSource::ExistsMembership {
+            join_table: table("members"),
+            fk_cols: vec![ColumnName::from_stored("project_id")],
+            user_col: ColumnName::from_stored("user_id"),
+            parent_type: TypeName::canonicalized("projects"),
+            extra_predicates: ResidualPredicates::default(),
+            gate: None,
+            relation: RelationName::canonicalized("member_read"),
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());
         assert_ne!(base.dedup_key(), with_predicate.dedup_key());
+        assert_ne!(
+            base.dedup_key(),
+            named.dedup_key(),
+            "two residual sets must not pool their members into one query"
+        );
     }
 
     #[test]
@@ -1228,6 +1255,7 @@ mod tests {
                 parent_type: TypeName::canonicalized("docs"),
                 extra_predicates: ResidualPredicates::new(residual),
                 gate: gate.clone(),
+                relation: member_relation(),
             }
         };
 

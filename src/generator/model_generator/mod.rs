@@ -70,8 +70,8 @@ use actions::{
 };
 use dsl::render_dsl;
 use emit_membership::{
-    emit_abac_and, emit_composite, emit_exists_membership, emit_parent_inheritance,
-    emit_uncorrelated_membership,
+    emit_abac_and, emit_composite, emit_exists_membership, emit_indirect_membership,
+    emit_parent_inheritance, emit_uncorrelated_membership,
 };
 use emit_ownership::{
     emit_attribute_condition, emit_boolean_flag, emit_constant_bool, emit_direct_ownership,
@@ -273,6 +273,9 @@ pub(crate) struct TypePlan {
     /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
     /// its own relation, so two keys must never share a name even on hash collision.
     wildcard_gate_relations: BTreeMap<String, RelationName>,
+    /// P19 far-hop key → its member relation. One relation per residual set a
+    /// membership table carries, so distinct guards never pool into one.
+    indirect_member_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
@@ -336,6 +339,7 @@ impl TypePlan {
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
             wildcard_gate_relations: BTreeMap::new(),
+            indirect_member_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
             narrowed_relations: BTreeSet::new(),
@@ -434,6 +438,38 @@ impl TypePlan {
             .entry(relation.clone())
             .or_insert(wildcard);
         self.wildcard_gate_relations
+            .insert(memo_key.to_string(), relation.clone());
+        relation
+    }
+
+    /// Allocate a member relation for one complete tuple source.
+    fn indirect_member_relation(
+        &mut self,
+        memo_key: &str,
+        base: impl Into<String>,
+        subjects: Vec<DirectSubject>,
+    ) -> RelationName {
+        if let Some(existing) = self.indirect_member_relations.get(memo_key) {
+            return existing.clone();
+        }
+        let base = clamp_relation_name(base.into());
+        let taken = |name: &RelationName, plan: &Self| {
+            reserved_relation_subjects(name, &plan.well_known).is_some()
+                || generator_defines(name)
+                || plan.direct_relations.contains_key(name)
+                || plan.computed_relations.contains_key(name)
+        };
+        // Distinct attempts cannot exhaust the finite set of occupied names.
+        let mut attempt = 0usize;
+        let mut relation = RelationName::canonicalized(&base);
+        while taken(&relation, self) {
+            relation = yielded_relation_name(&base, memo_key, attempt);
+            attempt += 1;
+        }
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert(subjects);
+        self.indirect_member_relations
             .insert(memo_key.to_string(), relation.clone());
         relation
     }
@@ -2471,6 +2507,14 @@ fn translate_pattern<DB: DatabaseLike>(
         }
         PatternClass::P4ExistsMembership(exists_membership) => emit_exists_membership(
             exists_membership,
+            ctx,
+            table_plan,
+            all_types,
+            notes,
+            readability,
+        ),
+        PatternClass::P19IndirectMembership(indirect_membership) => emit_indirect_membership(
+            indirect_membership,
             ctx,
             table_plan,
             all_types,

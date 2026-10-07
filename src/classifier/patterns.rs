@@ -167,6 +167,12 @@ impl ResidualPredicates {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The conjuncts, for a caller rebuilding the residual around one of them.
+    #[must_use]
+    pub(crate) fn conjuncts(&self) -> &[ResidualPredicate] {
+        &self.0
+    }
     pub(crate) fn sql_conjuncts(
         &self,
         include_requests: bool,
@@ -516,6 +522,19 @@ pub struct MembershipInCallerSet {
     pub source: SessionAttribute,
 }
 
+/// Membership reached through a closure table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndirectMembership {
+    /// The closure table scanned beside the guarded row.
+    pub bridge_table: TableId,
+    /// Closure columns paired with the guarded table's full primary key in key order.
+    pub pairs: Vec<MembershipJoinPair>,
+    /// The owner entity the closure's owner columns reference.
+    pub owner_table: TableId,
+    /// Far membership correlated to the closure's owner columns in owner-key order.
+    pub membership: ExistsMembership,
+}
+
 /// No known pattern matched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnclassifiedExpr {
@@ -586,6 +605,8 @@ pub enum PatternClass {
     /// grant is a request-completed gate on the parent rather than a subject named by
     /// the row: the member value is not a person.
     P18MembershipInCallerSet(MembershipInCallerSet),
+    /// Membership reached through a closure table.
+    P19IndirectMembership(IndirectMembership),
     /// A call to a declared single-expression `LANGUAGE sql` function, replaced
     /// by its body with the call-site arguments substituted.
     ExpandedFunction(ExpandedFunction),

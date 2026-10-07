@@ -978,6 +978,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             parent_type,
             extra_predicates,
             gate,
+            relation,
         } => {
             let join_table_sql = join_table.sql_name();
             let fk_parts = quoted_key_parts(fk_cols);
@@ -1009,7 +1010,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                 return Some(TupleQuery {
                     comment: format!("-- {parent_type} membership from {join_table}"),
                     sql: format!(
-                        "SELECT {object_sql} AS object, 'member' AS relation, \
+                        "SELECT {object_sql} AS object, '{relation}' AS relation, \
                          {subject_sql} AS subject\n\
                          FROM {join_table_sql}{where_clause};"
                     ),
@@ -1041,7 +1042,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     gate.condition
                 ),
                 sql: format!(
-                    "SELECT {object_sql} AS object, 'member' AS relation, \
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {subject_sql} AS subject,\n\
                      \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
                      FROM {join_table_sql}{where_clause}{group_by};",

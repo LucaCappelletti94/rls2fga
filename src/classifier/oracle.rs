@@ -67,9 +67,9 @@ use crate::classifier::patterns::{
     composite_confidence, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
     CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
     ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
-    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PatternClass,
-    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
-    UncorrelatedMembership,
+    IndirectMembership, JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold,
+    ParentInheritance, PatternClass, RoleNameInList, RowValueEqualsCallerScalar,
+    RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
 };
 
 /// Which clause of a policy an expression came from.
@@ -305,6 +305,7 @@ where
         | PatternClass::P2RoleNameInList(RoleNameInList { .. })
         | PatternClass::P3DirectOwnership(DirectOwnership { .. })
         | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P19IndirectMembership(IndirectMembership { .. })
         | PatternClass::P6BooleanFlag(BooleanFlag { .. })
         | PatternClass::P9AttributeCondition(AttributeCondition { .. })
         | PatternClass::P10ConstantBool(ConstantBool { .. })

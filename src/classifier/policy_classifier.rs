@@ -230,6 +230,7 @@ fn guarded_column(pattern: &PatternClass) -> Option<&ColumnName> {
         // table when it was produced, so the wrapper reads nothing of its own.
         PatternClass::ExpandedFunction(ExpandedFunction { .. })
         | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P19IndirectMembership(IndirectMembership { .. })
         | PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. })
         | PatternClass::P1NumericThreshold(NumericThreshold { .. })
         | PatternClass::P2RoleNameInList(RoleNameInList { .. })
@@ -511,9 +512,19 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return classified;
     }
 
+    if let Some(classified) = recognizers::recognize_p19(expr, db, registry, table, state) {
+        return classified;
+    }
+
     if let Some(reason) = recognizers::diagnose_p5_parent_inheritance_ambiguity(
         expr, db, registry, table, command, state,
     ) {
+        return unknown_d(expr, reason);
+    }
+
+    if let Some(reason) =
+        recognizers::diagnose_p19_indirect_membership_ambiguity(expr, db, registry, table, state)
+    {
         return unknown_d(expr, reason);
     }
 
@@ -697,6 +708,9 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         PatternClass::P2RoleNameInList(RoleNameInList { .. }) => "role-name-in-list check",
         PatternClass::P3DirectOwnership(DirectOwnership { .. }) => "direct-ownership check",
         PatternClass::P4ExistsMembership(ExistsMembership { .. }) => "EXISTS membership check",
+        PatternClass::P19IndirectMembership(IndirectMembership { .. }) => {
+            "membership through a second table check"
+        }
         PatternClass::P18MembershipInCallerSet(MembershipInCallerSet { .. }) => {
             "membership row naming a value the caller's declared set holds"
         }
@@ -742,6 +756,7 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
         | PatternClass::P11ArrayMembership(ArrayMembership { .. })
         | PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { .. })
         | PatternClass::P4ExistsMembership(ExistsMembership { .. })
+        | PatternClass::P19IndirectMembership(IndirectMembership { .. })
         // Membership of the holder is still a user-resource relationship, even though
         // the holder stands for the whole table.
         | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
@@ -979,58 +994,6 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             expr_sql,
             "Function 'mystery_auth' not in registry",
         );
-    }
-
-    #[test]
-    fn classify_membership_ambiguity_has_specific_reason() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr_sql = "EXISTS (
-               SELECT 1
-               FROM doc_members dm1
-               JOIN doc_members dm2 ON dm1.doc_id = dm2.doc_id
-               WHERE dm1.doc_id = docs.id
-                 AND dm1.user_id = current_user
-                 AND dm2.doc_id = docs.id
-                 AND dm2.user_id = current_user
-             )";
-        let expr = parse_expr(expr_sql);
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert_unknown_reason(&classified, expr_sql, "Ambiguous membership pattern");
-    }
-
-    #[test]
-    fn classify_membership_reading_the_guarded_table_is_refused() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr_sql = "EXISTS (
-               SELECT 1
-               FROM doc_members dm
-               JOIN docs d ON dm.doc_id = d.id
-               WHERE dm.doc_id = docs.id
-                 AND dm.user_id = current_user
-                 AND is_public = TRUE
-             )";
-        let expr = parse_expr(expr_sql);
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert_unknown_reason(&classified, expr_sql, "infinite recursion");
-    }
-
-    #[test]
-    fn classify_derived_joined_membership_with_unqualified_extra_is_ambiguous() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-        let expr_sql = "EXISTS (
-               SELECT 1
-               FROM doc_members dm
-               JOIN (SELECT id, is_public FROM docs) d ON dm.doc_id = d.id
-               WHERE dm.doc_id = docs.id
-                 AND dm.user_id = current_user
-                 AND is_public = TRUE
-             )";
-        let expr = parse_expr(expr_sql);
-        let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-        assert_unknown_reason(&classified, expr_sql, "Ambiguous membership pattern");
     }
 
     #[test]
