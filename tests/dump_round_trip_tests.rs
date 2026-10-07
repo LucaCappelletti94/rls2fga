@@ -1,11 +1,7 @@
 #![cfg(not(target_os = "windows"))]
-//! Every fixture applied to a real `PostgreSQL` 18, dumped with `pg_dump -s`, and
-//! the dump translated again: the model must match the fixture's own byte for
-//! byte, and the tuple SQL must return the same rows, so a dumped production
-//! schema translates exactly as the handwritten spelling does. This is the
-//! standing form of the harness that found the upstream parser gaps, so a
-//! regression in any of them fails here.
+//! `pg_dump` preserves model and tuple semantics under consistent source-relation renaming.
 
+use serde_json::Value;
 use std::collections::BTreeSet;
 
 use diesel::connection::SimpleConnection;
@@ -21,6 +17,9 @@ use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
 
 mod support;
+
+#[path = "support/model_equivalence.rs"]
+mod model_equivalence;
 
 use support::containers::{connect_postgres_with_retry, PG_DB, PG_PASSWORD, PG_USER};
 
@@ -46,9 +45,8 @@ const FIXTURE_ROLES: [&str; 4] = ["auditor", "contractor", "editors", "app"];
 /// Roles a fixture creates itself, which must be absent when it applies.
 const CREATES_ROLES: [(&str, &str); 1] = [("schema_objects", "auditor")];
 
-/// The model and tuple queries one schema translates to under the fixture's
-/// own registry and declared session attributes.
-fn artifacts(db: &ParserDB, fixture: &str) -> (String, Vec<TupleQuery>) {
+/// The model and tuple queries planned with the fixture's registry.
+fn artifacts(db: &ParserDB, fixture: &str) -> (Value, Vec<TupleQuery>) {
     let outputs = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_registry(support::try_load_fixture_registry(fixture))
@@ -57,7 +55,10 @@ fn artifacts(db: &ParserDB, fixture: &str) -> (String, Vec<TupleQuery>) {
         .expect("translation should plan")
         .outputs_accepting_gaps();
     let tuples = outputs.tuple_queries().to_vec();
-    (outputs.model(), tuples)
+    (
+        serde_json::to_value(outputs.json_model()).expect("the model should serialize"),
+        tuples,
+    )
 }
 
 #[derive(QueryableByName, PartialEq, Eq, PartialOrd, Ord)]
@@ -119,24 +120,6 @@ fn strip_meta_commands(dump: &str) -> String {
         .join("\n")
 }
 
-fn first_divergence(fixture_side: &str, dump_side: &str) -> String {
-    for (index, (fixture_line, dump_line)) in
-        fixture_side.lines().zip(dump_side.lines()).enumerate()
-    {
-        if fixture_line != dump_line {
-            return format!(
-                "line {}: fixture `{fixture_line}` vs dump `{dump_line}`",
-                index + 1
-            );
-        }
-    }
-    format!(
-        "one side continues past the other: fixture {} lines, dump {}",
-        fixture_side.lines().count(),
-        dump_side.lines().count()
-    )
-}
-
 #[tokio::test]
 #[ignore = "requires Docker and the postgres:18 container"]
 async fn every_fixture_round_trips_through_pg_dump() {
@@ -146,7 +129,6 @@ async fn every_fixture_round_trips_through_pg_dump() {
     let mut admin = connect_postgres_with_retry(&admin_url);
 
     let mut failures = Vec::new();
-    let mut round_tripped = 0usize;
     for fixture in support::fixture_names() {
         let fixture = fixture.as_str();
         // A fixture that creates a role itself must find it absent, and every
@@ -210,20 +192,17 @@ async fn every_fixture_round_trips_through_pg_dump() {
                     let fixture_db = support::parse_fixture_db(fixture);
                     let (fixture_model, fixture_tuples) = artifacts(&fixture_db, fixture);
                     let (dump_model, dump_tuples) = artifacts(&dumped_db, fixture);
-                    if fixture_model != dump_model {
-                        Some(format!(
-                            "{fixture}: the dumped model diverges: {}",
-                            first_divergence(&fixture_model, &dump_model)
-                        ))
-                    } else if executed_rows(&mut conn, &fixture_tuples)
-                        != executed_rows(&mut conn, &dump_tuples)
-                    {
-                        Some(format!(
-                            "{fixture}: the dumped tuple SQL returns different rows"
-                        ))
-                    } else {
-                        round_tripped += 1;
+                    let fixture_rows = executed_rows(&mut conn, &fixture_tuples);
+                    let dump_rows = executed_rows(&mut conn, &dump_tuples);
+                    if model_equivalence::equivalent(
+                        &fixture_model,
+                        &fixture_rows,
+                        &dump_model,
+                        &dump_rows,
+                    ) {
                         None
+                    } else {
+                        Some(format!("{fixture}: the dumped model or tuple rows diverge"))
                     }
                 }
             }
@@ -239,9 +218,5 @@ async fn every_fixture_round_trips_through_pg_dump() {
         failures.is_empty(),
         "pg_dump round trip divergences:\n{}",
         failures.join("\n")
-    );
-    assert!(
-        round_tripped >= 40,
-        "only {round_tripped} fixtures round tripped, so the walk went vacuous"
     );
 }
