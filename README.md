@@ -131,7 +131,7 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 
 `P19` emits resource-to-owner tuples from closure rows and owner-to-user tuples from membership rows. Far-table literal guards select separate member relations, and a role `IN` list unions one relation per role. Both scanned tables retain membership-read checks and `MembershipTableGuarded` disclosures.
 
-`P19` correlates the resource's full primary key through a direct foreign key or a shared entity key. Composite keys follow primary-key order, and closure and parent bridges use independent relations.
+`P19` correlates the resource's full primary key through a direct foreign key or a shared entity key. Composite keys follow primary-key order, closure and parent bridges use independent relations, and a witness-row link is named from its own source rather than the bare shared-row type, so it cannot pool with an unrelated membership reaching the same type.
 
 ## What the crate refuses
 

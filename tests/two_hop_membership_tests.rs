@@ -985,3 +985,87 @@ fn quoted_far_role_lists_preserve_identifier_case() {
         .outputs()
         .expect("the quoted role list has no gaps");
 }
+
+#[test]
+fn p19_and_direct_witness_links_do_not_share_a_tupleset() {
+    let schema = "
+CREATE TABLE principals (id TEXT PRIMARY KEY);
+CREATE TABLE owners (id TEXT PRIMARY KEY);
+CREATE TABLE ownables (id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id), lead_id TEXT REFERENCES owners(id));
+CREATE TABLE memberships (
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    lead_id TEXT NOT NULL REFERENCES owners(id),
+    member_id TEXT NOT NULL REFERENCES principals(id),
+    role TEXT NOT NULL,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (id));
+CREATE TABLE ownable_ancestors (
+    ownable TEXT NOT NULL REFERENCES ownables(id),
+    owner TEXT NOT NULL REFERENCES owners(id),
+    PRIMARY KEY (ownable, owner));
+CREATE TABLE orders (id TEXT PRIMARY KEY REFERENCES ownables(id), title TEXT);
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orders_read ON orders FOR SELECT USING (
+    EXISTS (SELECT 1 FROM ownable_ancestors a WHERE a.ownable = orders.id
+      AND EXISTS (SELECT 1 FROM memberships m WHERE m.owner_id = a.owner
+          AND m.member_id = current_setting('app.user_id', true) AND m.expires_at > now())));
+CREATE POLICY ownables_read ON ownables FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m WHERE m.lead_id = ownables.lead_id
+        AND m.member_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+";
+    let db = parse_schema(schema).expect("the witness-order schema parses");
+    let translation = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db)
+        .expect("both the P19 and the direct witness policies translate");
+    let row = support::row(&[
+        ("id", "m1"),
+        ("owner_id", "orgA"),
+        ("lead_id", "orgB"),
+        ("member_id", "alice"),
+        ("role", "read"),
+        ("expires_at", "2100-01-01T00:00:00Z"),
+    ]);
+    let links: Vec<_> = translation
+        .relations()
+        .iter()
+        .flat_map(|relation| &relation.shapes)
+        .filter(|shape| matches!(&shape.derivation, RecordDerivation::FromRow { table, .. } if table.name() == "memberships"))
+        .flat_map(|shape| records_from_row(shape, &row).expect("the row decides its records"))
+        .filter(|record| record.object.starts_with("owners:"))
+        .collect();
+    assert_eq!(
+        links.len(),
+        2,
+        "expected one owner-link record from the P19 witness and one from the direct witness",
+    );
+    assert_ne!(
+        links[0].relation, links[1].relation,
+        "the P19 and the direct membership witness links must not share a tupleset"
+    );
+}
+
+#[test]
+fn nested_far_residual_subqueries_reading_the_guarded_row_are_refused() {
+    for guard in [
+        " AND m.role = (SELECT max(a2.owner) FROM ownable_ancestors a2 WHERE a2.ownable = orders.id)",
+        " AND m.role = (SELECT max(a2.owner) FROM ownable_ancestors a2 WHERE a2.ownable = a.ownable)",
+    ] {
+        let translation = translate(&nested(guard), "");
+        assert!(
+            translation
+                .notes()
+                .iter()
+                .any(|note| matches!(note, TranslationNote::ClauseBelowThreshold { .. })),
+            "a far residual correlated through a subquery to the guarded row or the \
+             closure alias must be refused, guard={guard}",
+        );
+    }
+}

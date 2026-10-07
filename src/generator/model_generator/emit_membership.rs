@@ -1056,8 +1056,10 @@ pub(crate) fn emit_indirect_membership<DB: DatabaseLike>(
                 };
                 plan
             };
-            let link =
-                owner_plan.ownership_relation(&format!("indirect:{link_key}"), share_type.as_str());
+            let link = owner_plan.ownership_relation(
+                &format!("indirect:{link_key}"),
+                &format!("indirect_{share_type}"),
+            );
             let reached = owner_plan.ownership_relation(
                 &format!("indirect_reach:{member_key}"),
                 &format!("{share_type}_{member_rel}"),

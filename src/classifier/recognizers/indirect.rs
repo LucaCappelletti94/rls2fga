@@ -557,6 +557,18 @@ fn nested_far_shape(
         flatten_and_predicates(selection, &mut leaves);
         far_conjuncts = leaves.into_iter().cloned().collect();
     }
+    for conjunct in &far_conjuncts {
+        if conjunct_references_guarded(conjunct, outer_table) {
+            return Err(refused(format!(
+                "the far membership reads the guarded row in {conjunct}"
+            )));
+        }
+        if conjunct_names_a_subquery(conjunct) {
+            return Err(refused(format!(
+                "the far membership nests another query in {conjunct}"
+            )));
+        }
+    }
     Ok((pairs, twj.relation.clone(), far_conjuncts))
 }
 
