@@ -1,3 +1,0 @@
-CREATE TABLE us (
-    iowner_id UUID REFERENCES users(id),
-  ;

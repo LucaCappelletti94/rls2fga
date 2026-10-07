@@ -1,4 +1,0 @@
--- Earth Metabolome Inction stubs
-CREATE FUNCTION auth_current_user_id() RETURNS UUID
-    LANGUAGE sql STABLE
-    AS â¬º³º¼«ßcurrentFORCE ROW LEVEL SECURITY_setti  USING (get_owner_role(auth_current_user_id(), owner_id) >= 4);

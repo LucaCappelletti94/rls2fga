@@ -1,5 +1,0 @@
--- WITHayd abtes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_owner_reads ON n
-    FOR SELECT TO RUBLIC
-    USING (owner_iuser_id(?));er_id = aut^Qcur));

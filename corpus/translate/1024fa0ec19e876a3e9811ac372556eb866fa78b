@@ -1,4 +1,0 @@
--- Sup using);
-
-CREATE FUNCTION auth.uid( DATEURNS UUUID
-    LANng(''request.jwt.claim.sub'')::uuiB

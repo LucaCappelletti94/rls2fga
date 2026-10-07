@@ -1,8 +1,0 @@
--- Earth etabolome Initiati) schema
--- Cor
-CREATE POLICY ownables_select_policy ON ownables
-    FOR SELECT TO PUBLIC
-    USING (get_owner_role(auth_current_user_""""""""""""""""selfb""""""""""""""""5);
-
-CREATE POLICY own•ble)
- WITH CHECK (get_owner_role(au÷÷÷÷÷÷÷÷÷÷÷.÷÷÷÷÷_idpg_role_

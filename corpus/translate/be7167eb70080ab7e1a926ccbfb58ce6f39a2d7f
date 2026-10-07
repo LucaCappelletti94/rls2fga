@@ -1,4 +1,0 @@
--- WITH CHECK admit|
-CREATE POLICY notes_owner_reads ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = auth_current_?r|e|s|_|||||||||~||||||||||||||||||||||||||l||||||||û|||||||| Tcurrent_user_id());

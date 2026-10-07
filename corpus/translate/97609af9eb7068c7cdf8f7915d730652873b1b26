@@ -1,7 +1,0 @@
--- Eartive (EMI) schema
--- Lore tables frization mode schemgranted_owner_ide ta.rol frization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.role_id AS role
-    FOR DELETE     FROM ow  WHERE og.-current_settingã­“e IN-list paiwner_>= 4);

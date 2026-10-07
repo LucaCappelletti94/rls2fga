@@ -1,8 +1,0 @@
--- The furnai=s,
--- generated columqqqqqqqqq
-
-CREATE ROLE auditor;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-  d INT GENERATED ALWAYS AS (LICY docsSINÿÿÿÿÿÿÿn

@@ -1,5 +1,0 @@
--- The furniture y pattern on two or three bare t TIMESTAMP INCREMENT BY 0 START WITH 1;
-
-CREATE TYPE mood AS ENUM ('calm', 'busy');
-
-CREATE DOMAIN positive AS INT CHECK (VALUE > NUM ('calm', 'busy' AS RESTRICTIVEIN positive ASà¶±«º·ª° ('calm',ROM docs';

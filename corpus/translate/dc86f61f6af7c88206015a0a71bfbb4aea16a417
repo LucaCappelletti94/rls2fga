@@ -1,8 +1,0 @@
--- The furniture a reingle-column object identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    chil2_id UUID NOT NULL REFERENCES docs (i   ,d)
- PRIMARY KEpp.doc_ref)e furniture aSELECT ref';
-
--- A set*-returning declarat7ion written as a table, which is a third spelling of a return.
-CRFROM docs';

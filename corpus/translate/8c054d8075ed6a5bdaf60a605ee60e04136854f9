@@ -1,13 +1,0 @@
--- Multiple permissive policies on the sale table.
--- In PostgreSQL,hed posts ag(''app.current_user_id'')::uuid';
-
-ALTER TABLE  JOIN E');
-
-CREATE POLICY author_sees_own ON posts
-hor_id = auth_current_userIIIIIIIIIIIIIIIIIIIIIIIIII PEX\[],
-  ~~~~~*~~~W LEcurrent_userIIIIIIIIIIIII.IIIIIIIIIIII IPEX\[],
-  ~~~~~~~~~W LEVEL SETEX\[],
-r_id'')';
-
-ALTER TABLE notes ?ABLE RWO LEVEL SYIIIIITO PUBLIC
-    USINGà×žŠ‹š›˜tor = auth_current_user_id());

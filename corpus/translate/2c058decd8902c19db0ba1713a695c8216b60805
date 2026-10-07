@@ -1,20 +1,0 @@
--- Multiple permissive policies on the same table.
--- In PostgreSQL,hed posts ag(''app.current_user_id'')::uuid';
-
-ALTER TABLE  JOIN E');
-
-CREATE POLICY author_sees_own ON posts
-hor_id = auth_current_userIIIIIIIIIIIIIIIIIIIIIIIIII PEX\[],
-  ~~~~~*~~~W LEVEe sts ag(''app.current_user_id'')::uuid';
-
-ALTER TABLE posts E');
-
-CREATE POLICY author_sees_own ON posts
-hor_id = auth_current_userIIIIIIIIIIIIIIIIIIIIIIIIII PEX\[],
-  ~~~~~~~~~W LEVEL SECURITYTEX\[],
-r_id'')';
-
-ALTER TABLE notes ?ABLE RWO LEVEL SECUäITYÿÿÿIIIIIIIIIYIIII)';
-
-ALTER TABLE notes ?ABLE RWO LEVEL SECUäITYÿÿÿIIIIIIIIIYIIIIITO PUBLIC
-    USINGà×žŠ‹š›˜tor = auth_current_user_id());

@@ -1,5 +1,0 @@
--- The furniturel schema carries aralm',
-CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
-
-CREATE TABLE docs œUediteditorors$E sql SgABLE
-    AS 'SELECT id, owner_login FROM docs';

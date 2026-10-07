@@ -1,4 +1,0 @@
--- Earth Metabolome ip/authorization modeAS '
-    SELECT COALESCE(MAX(role) ->>     FROM (
-   (     -- auth.role()rship: if user is tS '
-    SELECT COALESCE(MAX(role) ->>     F);

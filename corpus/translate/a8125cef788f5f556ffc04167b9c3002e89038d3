@@ -1,3 +1,0 @@
--- Earth Metabolome Initia modeAS '
-    SELECT COALESCE(MAX(role) -get_owner_role(>>     FROM   
-( (     -- auth.role() if user itho  swener, max nership/authozatriion modeAS '- eE 5);

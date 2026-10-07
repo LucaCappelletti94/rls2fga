@@ -1,11 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixture is  S E'ASLECT*current_user::uuid';
-
-CREATE FUNCTION doc_ids() RETURNS SET(((((((((((((((8(((((((((LANGUAGE sql ©«ABLE
-    AS 'SELECT id FROM doc
-;'
-sALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-ALT*R TABLE doTION touch_docs();
-
--- A composite type in a schema, named in docs';

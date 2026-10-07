@@ -1,6 +1,0 @@
--- EarthmodeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- auth.role()rshideAS '
-    SELECT tm.teAm_    )
- TO 

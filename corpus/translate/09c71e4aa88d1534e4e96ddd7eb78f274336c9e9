@@ -1,2 +1,0 @@
--- Earth Metabolomzation modeAS '
-SELECT COALESCE(MAP FOR UPDATE(role),-- Eabl 

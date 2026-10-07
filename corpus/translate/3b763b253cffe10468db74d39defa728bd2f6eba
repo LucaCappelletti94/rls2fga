@@ -1,3 +1,0 @@
--- Enerchip/a/a '
-    SELECT COALESCE(M&AX(role), 1)
-  [ Fcs

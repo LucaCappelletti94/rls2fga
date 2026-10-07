@@ -1,1 +1,0 @@
-         SELECT 4 FROM note_mgmbauth     @> m.note_id = n t

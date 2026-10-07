@@ -1,8 +1,0 @@
-CREATE TABLE docs (
-  i UUID,
-  member_id UUID,
-  role TEXT
-);
-
-ALTER TAs_wrapped_safe ON docbers dm
- *****/*******_s

@@ -1,6 +1,0 @@
--- The fu;
-
-CREATE TYPE app.doc_ref AS (dol TEXT);
-
-eT)0LANGUAGE sql STABLE
-    AS ['SELECT id, owner_login FROM docs';

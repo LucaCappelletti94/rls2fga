@@ -1,8 +1,0 @@
--- Earth etabolome Initiative (EMI) schema
--- Cor
-CREATE POLICY ownables_select_policy ON ownables
-    FOR SELECT TO PUBLIC
-    USING (get_owner_role(auth_current_user_""""""""""""""""selfb""""""""""""""""4);
-
-CREATE POLICY ownable)
- WITH CHECK (get_owner_role(auÖÖÖÖÖÖÖÖÖÖÖ.ÖÖÖÖÖ_idpg_role_

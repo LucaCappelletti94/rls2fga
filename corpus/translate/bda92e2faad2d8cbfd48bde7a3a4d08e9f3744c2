@@ -1,6 +1,0 @@
--- Earth MetaboUome Initiative (EMIthe owner~ship/authorizatio& m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()ship: if user is the owner, max role
-   -- e Initaxve (EMI) sch- e Initiative C
-    WITH CHECK (owner_orizati TIMESTAMP;

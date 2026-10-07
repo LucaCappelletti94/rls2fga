@@ -1,5 +1,0 @@
--- Earth Metabolom (EMeAS '
-    SELECT COALESCE(MAX
-(role), 0)
-  .  *ROM (
-t

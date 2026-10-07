@@ -1,8 +1,0 @@
--- Earth
-(       -- auth.role()rship: if user is the ownewtables frization modeAS '
-    SELECT CE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rship: ifAS '
-    SELECT COALESCE(MAX(role), 0)
-  .  FROM (
-(       --current_userrship: if user is the owner, max ro

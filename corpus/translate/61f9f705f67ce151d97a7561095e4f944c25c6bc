@@ -1,3 +1,0 @@
--- A schemach patl ratherboth spellings appeupdateone schema.
-CREATE POLICY archive_docsPowner ON archive.docs FOR SELECT
-    USING (owner_login owner ON archiv.docs FOR S);

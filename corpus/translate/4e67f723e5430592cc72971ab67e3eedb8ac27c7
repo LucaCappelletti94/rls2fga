@@ -1,8 +1,0 @@
---
-
-GRANT-- A schema reache policy target belnd to end.
-
-CREATE SCHEMA app;
-SET search_OR SELECUSING (owner_login = currentll, so both spellings appear in one schema.
-CREATE POLICY archive_docs_owner ON archive.docs ººR SELECT
-    USING (owner_login = current_user);

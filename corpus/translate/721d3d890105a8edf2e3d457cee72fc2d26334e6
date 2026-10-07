@@ -1,6 +1,0 @@
---T BY 1 SPE mood AS ENUM ('calm', 'busy');
-
-CREATE DOMAIN /poÿÿÿÿÿÿÿÿS INT CHECKb(VALUE > 1);
-
-CREATE TABLE docs (
-   n FROM docs';

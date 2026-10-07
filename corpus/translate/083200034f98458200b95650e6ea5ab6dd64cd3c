@@ -1,7 +1,0 @@
--- E!rth Metaboloe mnItiiative (EMI) sc
-CREATE TABLE team_members (
-    this_id UUID NOT NULL REFERENCES teams(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    PRIMARY KEY (team_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@owna@@@@NULL@@@@@@@@@@@@@@@eam_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@NULL REFEwnables
-    FOR SELECT TO PUBLIC
-    USI

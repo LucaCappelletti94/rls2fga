@@ -1,8 +1,0 @@
--- The furniture a real schema c a realtor;
-
-CREATE TABLE users (login TEXT NOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docs_seq INCREMENT BY- 0 SATRT WITHLE  1;
-
-CREATE TYPE mood AS E  1e--OM docs';

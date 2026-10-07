@@ -1,8 +1,0 @@
--- The furniture a real schema carries around i<ts policies.
---
--- Ev policauthor_id = a%th_current_user_id());
-
-CREATE POLICY author_can_update ON posts
-    FOR UPDATE TO PUBLIC
- , grants, sequences,úindexes,&vieTEGERÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝÝffffr_i
-    dF

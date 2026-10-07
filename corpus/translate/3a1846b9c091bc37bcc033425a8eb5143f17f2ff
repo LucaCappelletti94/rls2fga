@@ -1,8 +1,0 @@
---  carries around its poli> );
-
-CREATE POLICY authoorg_idr_can_update ON posts
-    FOR UPDATE TO PUBLIC
- , grants, sequences, ines, views, en
-
-CREATgranted_owner_idEÿÿÿÿfffffÈfffffffr_i
-    dF

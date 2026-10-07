@@ -1,5 +1,0 @@
---deAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-(       -- 0auth.role()rhsip:i = user9999_uuid
-      (     OR og REFERENCES eocsc_

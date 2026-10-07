@@ -1,9 +1,0 @@
--- Earive (EMI) schema
--- Cors (
- 
-CREATE TABLE tent_admin (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE teamee_bmmrs (
-    team_id ANY   DATEUUNIDOTŽ—ntee_owne

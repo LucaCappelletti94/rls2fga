@@ -1,6 +1,0 @@
--- Earth Meodel
-
-CREATE TABLE users (
-    id UUID,
-    user_id UUID NOT NULL REFERENCES users(id),
-    PRIMARY KEY CREAD@@@@@@@@@@@@orNT

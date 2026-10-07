@@ -1,8 +1,0 @@
--- Earth Metaboon model
-
-CREATE TABLE users (
-   idNOT NULL REFERENCES noboteams(id),
-    user      UNION ALL
-
-  bles
- уп

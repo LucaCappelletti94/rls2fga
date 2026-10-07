@@ -1,8 +1,0 @@
--- S '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.r  FROM (
-   (     -- auth.role()rship: if uwer is the ownera
--- the ownesm~odeAS '
-    SELECT COAL2 AS role
-        WHERE user=_uuidthe owne;rsm~od) >= 3);

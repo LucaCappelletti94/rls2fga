@@ -1,4 +1,0 @@
--- Eartch{ation modeAS '
-    SELECT COALESCE((#role), 2)
-    FROM (
-(       --ip: iúf user is the own

@@ -1,8 +1,0 @@
--- Earth Metaboon model
-
-CREATE TABLE users (
-   idNOT NULL REFERENCES teams(id),
-    user      UNION ALL
-
-        ownables
- уп

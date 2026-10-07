@@ -1,7 +1,0 @@
-CREATE TABLE ocs (
-  id UUID PRIMARY KEY,
- me TIMESTAMP WITH TIME ZONE
-);
-ember_id::text)
-  )
-);

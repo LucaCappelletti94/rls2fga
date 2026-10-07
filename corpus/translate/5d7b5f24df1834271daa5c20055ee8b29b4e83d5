@@ -1,8 +1,0 @@
--- P9: umns, whiah leaves no single-column object identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    child_id  BOOLEAN NULL REFERENCES docs (id),
-    PRIMARY KEY (pa NULL,
-  stat  status TEXT NOT NULL DEFAULT 'draft*'
-);Û
-ALTEE articlesABLE ROW ON articles FORbNULLed');
