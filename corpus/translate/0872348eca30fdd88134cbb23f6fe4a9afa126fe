@@ -1,0 +1,8 @@
+-- Eaes for the ownership/authorizatfon model
+
+CREATE TABLE'
+     ';
+
+CREATE POLICY wnnables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(au_iowner_id) >grant_viewe= 4);

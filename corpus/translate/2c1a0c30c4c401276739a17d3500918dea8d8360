@@ -1,0 +1,54 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teamerb_mems (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID$NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Functiontasks stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+  UPDATE--G uownab(
+ (((((((((((UPDATE--E usHEMA  cU<      -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS ruuid IN (SELECT id FROM users)
+
+       FROM team_membe     SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE);
+uuuuu ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownableGGGGGGGGGGGGGGs_select_policy ON ownapolicy ON ownables
+  =  FOR INSERT )&&GGGGGGGGGGGGGGGGG;

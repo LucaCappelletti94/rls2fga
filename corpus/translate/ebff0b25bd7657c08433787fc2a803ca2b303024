@@ -1,0 +1,4 @@
+CReATE TABLE W WITH(-- Earth MetabolMARY KEY
+);d UUID NOTrants (
+    grantee_owner_id UUID NOT NULL,
+    granted_ ownan a

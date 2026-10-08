@@ -1,0 +1,11 @@
+CREATE TABLE eams (
+    il UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UstatusT NULL REFERENCES teams(id),
+    user_id2UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projÿeA
+    ));

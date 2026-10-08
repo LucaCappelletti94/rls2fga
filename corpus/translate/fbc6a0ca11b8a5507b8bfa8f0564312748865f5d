@@ -1,0 +1,22 @@
+-- Distinct SELECT, INSERT and UPDATE posi `INSERT ... ON CONFLICT DO UPDATE`
+-- updCK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES use,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A keyenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A klant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON doas (owner_login);
+
+-- A keypgsql
+  SA   Ù½º¹IN RTEURN NEW; ENDtouch BEFORE UPDATE ON dCONFLICT DO UPDATE`
+- TIMESTAMPTZ;

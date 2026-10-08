@@ -1,0 +1,23 @@
+-- Earth Metabolome Initthe ownership/authorizrent_user_id'')g::Xuuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID,uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner,d
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(sru_euuid UUID, target_owner_id U2ID) RETURNS INTEGES
+       AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        - -Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURLS Policies
+CREATE POLICY ownables_sel2222222ec222222222222222t_po222

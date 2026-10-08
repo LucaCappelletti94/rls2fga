@@ -1,0 +1,6 @@
+CREATE TABLE users (
+   );
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    titleET N NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapp.current_usic = TRUE);

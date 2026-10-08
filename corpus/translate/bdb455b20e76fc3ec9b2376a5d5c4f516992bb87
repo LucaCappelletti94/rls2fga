@@ -1,0 +1,5 @@
+--eT f h-at
+--r';
+
+CREATE TRIGGER docsEFORE DELETE As tips,
+-

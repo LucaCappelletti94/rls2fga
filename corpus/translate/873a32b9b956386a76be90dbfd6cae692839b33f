@@ -1,0 +1,7 @@
+-- The furnitdump of a
+-- live databaserries roles, gra coth sides.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, labd UUID, label T,XT);
+
+CREATEÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿc(r docs';

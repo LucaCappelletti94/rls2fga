@@ -1,0 +1,16 @@
+CREATE TABLE users (
+    id UUIY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PFAULT F!~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~Y,
+    title TEXT2147483647ubligc~on~~~ob~~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkk~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkwkMARY KEY
+);
+
+kkkkkkkkkkkkXT,
+    is_public BOOLEAN NOT NULL DEFAULT UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUF!~~~~~~~~~~~nobo~~~~~~~~~k~ublic BOOLEAN NOT NULL DEFAULT F!~~~1~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkFAULT F~~~~~~~~on~~~ob~~~~~~~~~~k~kkkkkk~kkkkkkkkkkkkkkkkk~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkwkMARY KEY
+);
+
+kkkkkkkkkkkkXT,
+    is_public BOOLEAT,
+    i s_public BOOLEAN NOT NULL DEFAULT F!~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkk

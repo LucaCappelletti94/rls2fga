@@ -1,0 +1,17 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/   (     -- auth.role()rship: if usee tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+   (     -- ip: if user is the ownera
+-- Core tableri'
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+   (     -- auth.
+    (     -- ip: if user is the ownera
+-- Core tableri'
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+   (     -- authodeAS '
+    SELECT COALESCE JOIN (MAX(role), 0)ra
+--  m~odeAS '
+orizationw) >= 4);

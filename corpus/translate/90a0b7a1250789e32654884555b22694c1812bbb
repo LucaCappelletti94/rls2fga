@@ -1,0 +1,7 @@
+-- Earth Metabolome mauthorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     --g auth.rola()rshiATA  (REATA  (
+~= UUREATA  (RATA  (
+~]ationw) >= 4);

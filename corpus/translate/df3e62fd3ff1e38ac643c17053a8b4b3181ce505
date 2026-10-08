@@ -1,0 +1,5 @@
+--
+
+GRANT-- A schema reache
+CREATE SCHEMA app;
+ST search_ORUSING (o = cu (owner_login = current_user);

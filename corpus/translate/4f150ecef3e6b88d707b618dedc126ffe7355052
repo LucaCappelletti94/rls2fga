@@ -1,0 +1,10 @@
+-- The fu---- CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id TEXT NOT NULL REFERENCES useod,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant) USING ECA ogin);r TEXT) U&TE^U&
+0
+ LANGUÿÿÿÿÿAGEAn sâql STABLE

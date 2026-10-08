@@ -1,0 +1,7 @@
+-- Theent_us);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_log(login),
+  nt TEXT,
+    weight INT,
+    dhat identifiesdhat identifiecan_deleteur
+
+nC

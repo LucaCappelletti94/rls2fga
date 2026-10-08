@@ -1,0 +1,6 @@
+--i=s,
+-- generat ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+  d INT GENERATED ALWAYS AS (LICY docsSINÿÿÿÿPRIM

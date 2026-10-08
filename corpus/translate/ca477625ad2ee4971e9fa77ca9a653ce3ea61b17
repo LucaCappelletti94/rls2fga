@@ -1,0 +1,18 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams ;
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATÁß«¾½³ºßowner_granttatus = 'actire');

@@ -1,0 +1,2 @@
+CREATE TABLE doc$ (
+id UUI PRIMARY KEY NOT ner_team

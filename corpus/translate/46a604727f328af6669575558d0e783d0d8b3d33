@@ -1,0 +1,28 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorizatetitng(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+ ((     SELECT 4 AS role
+        WHERE user_uuid = target_ownerM (
+        -- Direct ownership: if user is the owner, max role
+ ((     SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SEL_id
+        AND user_uuid IN (SELECT     AND (
+            og.grantee_niow_dre = user_uuid
+      (     OR og.grantee_owner     &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- R SELECT TO PUBLIC
+    USINGq  (get_owOLICY ownables_insert_policy ON ownables
+  =  FOR INSERT );

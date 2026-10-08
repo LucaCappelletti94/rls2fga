@@ -1,0 +1,19 @@
+UPDATE--E ^ JSONB( ((((
+(((((((((((((( (((((
+(((((((((((((       SELECT 1 FROM nuse WHERE ect (
+    is (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT Nееееееееееееееееееее  granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX({ole), 0)
+    FROcoalesceowner_id = user_uuid
+      (     OR og.grantee_owner_id IN (
+                SELECT tm.team_    )
+    si;
+

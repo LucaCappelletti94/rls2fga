@@ -1,0 +1,10 @@
+-- Eardh Metabolome Ioitiative (r_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uUid UUID, target_owner_id UUID) RETURNS INTEGERA    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg),  >app.current    &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS

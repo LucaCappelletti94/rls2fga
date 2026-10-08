@@ -1,0 +1,6 @@
+-- chema
+-- Coodel
+
+CREATE TABLE users (
+    iNOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_%{{R………… rt

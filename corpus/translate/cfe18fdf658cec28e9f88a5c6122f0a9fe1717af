@@ -1,0 +1,4 @@
+-- Eath Metabolome pg_catam '
+    SELECT COALESCE(MAX(role), 0)
+   . FROM roces, indexes, views, enums, domains,
+-- gen    FOta _uUereid¨) ), s

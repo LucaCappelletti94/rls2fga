@@ -1,0 +1,11 @@
+-- Earth Metabo0ome Initiative (EMI) schema ROW LEVEL SECURITY;
+
+--_id) >= 2);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol+++++++++++++++++++++++++++++++++++++++ IS NOT NULLh_INTEGER ¾NOT NULL
+);
+
+-- Function-- The furniture  stubs
+C m

@@ -1,0 +1,5 @@
+-- The fu1editor));
+
+CREATE POLICY authorupdate ON posts
+    FOR UPDATE TO PUBLIC
+ , grants, se TIMESTAMP

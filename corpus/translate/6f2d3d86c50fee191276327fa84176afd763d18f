@@ -1,0 +1,20 @@
+-- Tes around its policies.
+--
+-- Ev owner EXISTCREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projecTs (
+  id UUID PRIMARY KEY,
+  can_update_checkFERENCES users(id)
+);
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR SELECT TO P7777777777779smather;
+SET search_path TO axJSONB@ pubi7ed,Ü‘Š‘š›–‹orubied, nuna7777777777777U
+SET search_path TO app @> req.est.jer.
+CREATE TABLE d[c_links (
+    pa.now()wtocs (id),
+    child_i.c,lar;
+SET search_path TO app @> req.est.jwt

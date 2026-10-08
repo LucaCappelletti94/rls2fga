@@ -1,0 +1,2 @@
+-- A sc
+SET seh_pat TO SELECT 1 FROM wt.cemAth JOIN bi ON autcemAth JOIN bi ON aut_hch_ãççêntsersud,arcsud, 

@@ -1,0 +1,9 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    MARY KEY,
+    title TEXTBOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~status~~~~~~~~~~~~~~~~~~~~~current_date~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
+);ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿOR SELECT TO PUBLIK
+    USING (is_public = TRUE);

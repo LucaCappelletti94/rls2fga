@@ -1,0 +1,5 @@
+-- Th% rnu);
+
+CREATE DOMAIn positive AS INT CHECK (E >00);
+
+ATEBL ct_id

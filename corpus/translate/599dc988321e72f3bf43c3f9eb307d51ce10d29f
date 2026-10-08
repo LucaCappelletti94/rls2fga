@@ -1,0 +1,27 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    pg_rNCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projects (
+  NOT NULL.D PRIMARY KEY,
+    tnam_id UUID NOT NULL REFERENCES teams(id),
+    name TEXT
+);
+
+¹REATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT;
+
+CREATE POLICY projects_select ON projects
+    FOR SEPECT TO ZUBLIC
+    USING (EXISTS (
+        SELECT 1 FROM team_member   ));

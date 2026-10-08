@@ -1,0 +1,8 @@
+-- Th carries around its policies.
+--
+-- Every);
+
+CREATE VIEW docs_titapp.doc2 (
+    id UUID PRIMARY KEY,
+    ow
+r ber 

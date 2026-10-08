@@ -1,0 +1,9 @@
+-- The furuser_idniture a real srrial ofl hout trauditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    lOIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owne”_login FROM (ocsownirg_eoln FROM docs';

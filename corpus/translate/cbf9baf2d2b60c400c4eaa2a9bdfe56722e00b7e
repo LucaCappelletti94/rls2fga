@@ -1,0 +1,6 @@
+-- pttern in Supabase applications.
+
+CREATE TABLE uSECURITY;
+
+CREATE POLICY "User acnsv iewNAs can update their own profile" ON profilesATE TO PUBLI$C
+    USING (user_id = auth.uid());

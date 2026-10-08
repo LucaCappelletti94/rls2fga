@@ -1,0 +1,4 @@
+-- The fu-- The  RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs(;) in a scS 'SELECTr_login FROM docs';

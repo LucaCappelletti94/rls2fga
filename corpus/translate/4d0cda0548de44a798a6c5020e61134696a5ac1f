@@ -1,0 +1,5 @@
+-- Ear +bles l
+
+CREATE TABLE users (
+  iole_id INTEGER NOT NULL
+); ÿ;

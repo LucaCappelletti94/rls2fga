@@ -1,0 +1,10 @@
+-- ;The furnitureREATEl TEXT');
+
+CREATE FUNCTION descr.be_doa(ref app.doc_ref) ;
+
+-- A set-r!eturning N do funirtureREATEl TEXT);z
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturni--

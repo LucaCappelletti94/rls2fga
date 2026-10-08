@@ -1,0 +1,8 @@
+UPDATE--E ^ JSONB( ((((
+(((((((((((((( (((((
+(((((((((((((       SELECT 1 FROM nuse WHERE ect (
+    is (
+    team_id UUID NOT NULL REFERENCES teams(id),
+      SELECT tm.team_    )
+    si;
+

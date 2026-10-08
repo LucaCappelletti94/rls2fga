@@ -1,0 +1,8 @@
+-- Supabase-stuseryld();
+
+CREATE POLICY "UserE sql0STABL RErsuvENAs can update te" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.- AUL					 users (
+    id UUID  (
+    id UUID ());
+);

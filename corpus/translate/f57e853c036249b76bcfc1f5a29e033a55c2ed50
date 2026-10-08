@@ -1,0 +1,8 @@
+-- The row per document';
+
+GRANT INSERT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+-- A funcåñ
+GRANT INSERTTER TABLEa 

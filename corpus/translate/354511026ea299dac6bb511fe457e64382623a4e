@@ -1,0 +1,8 @@
+-- Earth Metabolo/an m~odeAS '
+   (SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (  (  -- auth.rorole()rship: if urer is the owsho
+   (     -- auorg_id   (    -- auth.role()rshi '
+    SELECT  TIMESTAMPTZ ALLe), 0)
+    M (
+4);

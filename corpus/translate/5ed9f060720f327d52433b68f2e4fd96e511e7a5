@@ -1,0 +1,2 @@
+-- A schemher;
+SET search_path TO appqst.wt.cim.su, pubi

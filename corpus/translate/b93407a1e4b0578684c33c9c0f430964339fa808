@@ -1,0 +1,10 @@
+-- ATE ROLE auditor;
+
+CREATE TABLE users (
+    id UKEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 3 START 1H
+-- T
+R, 

@@ -1,0 +1,4 @@
+--E SCHEMA s
+  SELECT o
+,       FROM chemaati
+n

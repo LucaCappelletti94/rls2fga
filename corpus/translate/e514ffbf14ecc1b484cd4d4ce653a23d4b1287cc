@@ -1,0 +1,7 @@
+-- Earth Metabolome Initncti TABLE ownables ENABLE ROW LEVEusersL SECURITY;
+
+-- RLS Policies
+CREATE POLICY notesownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_uete_policy ON ownables
+    FORle(auth_cu

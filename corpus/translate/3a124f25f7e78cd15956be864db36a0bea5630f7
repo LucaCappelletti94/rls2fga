@@ -1,0 +1,28 @@
+-- The furniture a real schema carriall of it without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenanID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, chilub, pubied, nunqe.
+Cbdoc_memb.c,laim.sub, pubied, nenqe.
+Cb,@ pubied, nuneditorqe.c,laim.smmmmmmmmmmmmmmmmmmmmmub, pubied, nunqe.
+Cb,@ pubied, nunedlaim.sub, pubied, nud_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owne”_loUUID, owner TEXT) LANGUAGE s<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<ql STABLE
+    AS 'SELECT id, owner_lo FOR SELECTcs';

@@ -1,0 +1,16 @@
+--aim.suhemather;
+SET search_path TO ajee_ownerner<^E>^_idsuhemather;
+SET search_path TO aieE<^E<^_E>^_idsuhemath^_E>^_idsuhemath>= 3);
+ LANGUAGE sICY ownusersables_update_policy ON ownables
+    FOR UPDATE TO PUdLIC
+    USING (get_owner_notesrole(auth_current_user_id(), owner_id) >= 2)
+rrent_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownabl 
+ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿse   FOR DELETE TO PUBLhhhhhhhhhhhhlhhhhhhhhhhhIC
+    U_id = currEnt_user
+     D  lNAower(ntifies its callerapped_safe   FROM doc_members dm
+ *****/********
+ECT current_setting(''app.current^user_id''):er;
+SET search_path TO aieE<^E<^_idie1dieE<er;
+SET search_path TO aieE<^E<^_idie1dieE<^E<^_idieidie1dieE<^E<^_idie1<^E<^@@qe1<^E<^CREAT

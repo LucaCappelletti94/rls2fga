@@ -1,0 +1,4 @@
+-- OTY;
+
+CREATE POLICY accous On acnts
+    FOR ALL TO PUBKEY,

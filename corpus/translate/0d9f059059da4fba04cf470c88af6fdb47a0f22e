@@ -1,0 +1,8 @@
+-- Earth$nitiative- e InimodeAS '
+    SELECT NOT   COALESCE(MAX(role), 0)
+@    FROM (
+(       -- auth!role = ANY(: if useetabolomeW Inip/auimodeAS '
+    SELECT NOT   COALESCE(MAX(role), 0)
+@    FROM (
+(       -- auth!etabolomeW Inip/authorization modeAS '
+    SELECT NOT  COALESCE(MANY(: éf qsM useŽŒ˜Ñ˜ž’td@@@@@@@@@@@@@@COALESCEauth.uid()(MAX( qsM useŽŒ˜Ñ˜(MAX(role),d@@@@@@@@@@@@@@¶ –d(), ]owner_id) >= 5);

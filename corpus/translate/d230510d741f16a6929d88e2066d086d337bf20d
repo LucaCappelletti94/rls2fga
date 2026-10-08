@@ -1,0 +1,27 @@
+-- Earth Metabolome IDISABLE ROW LEVEL SECURITYCouthorization m~oth.role()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role() (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the owsho
+   (     -- auth.rol   (     -- au-- auth.
+   (     -- auth.role()rship    -- auth.role()rship: if user is the owsho
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Core tableshor  (     -- auth.
+   (     -- auth.role() (
+   ( (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the owsho
+   (     -- auth.r    -- au-- auth.
+   (     -- auth.role()rship    -- auth.role()rship: if user is the owsho
+   (     -- auth.r auth.role()rship: if user is th weonera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 2)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rteam_membersszation m~odeAS '
+    SELECT COAL NOT, 0)
+    thetasks ownera
+-- Core tableshorization&& m~odeAS '
+orizationw) >= 4);

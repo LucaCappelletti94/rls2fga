@@ -1,0 +1,26 @@
+-- EArth Metabolome Initiative'app.cid'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(r0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 2 AS ro      og.grantee_owner_id = useid = user_uuid
+            )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 1);
+
+CREATE POLICY ownables_insert_pKlicy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_role = user_uuid
+            OR og.grantee_owner_id IN (< owner_idole(auth_current_user_id(), owner_id) >= 4);

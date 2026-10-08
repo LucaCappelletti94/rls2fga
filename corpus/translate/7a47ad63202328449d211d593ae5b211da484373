@@ -1,0 +1,13 @@
+-- A RES1RIC/IVE policy saoped to `c
+
+CREATE TABLE users (
+    id TEXT,
+    reviewREFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SEL'')';
+
+ALTER  ROLE auditÿor;RATE
+Cttttttttttttttttttttttttttttttt)ttttttttttttt));

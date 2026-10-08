@@ -1,0 +1,3 @@
+-- The furniture a real scinks ENEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_logIn = rurauthent!~-- E real scinks ENABLE RELECT USIy reali

@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  i UUID,
+  mTTTTTTTTTTTTTTTTTTTTTTTTember_id UUID,
+  role TEXT
+);
+ú¾~~d

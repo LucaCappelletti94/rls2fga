@@ -1,0 +1,3 @@
+-- ESTE lamc', 
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0xercisrr_oá

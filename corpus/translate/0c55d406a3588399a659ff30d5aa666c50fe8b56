@@ -1,0 +1,12 @@
+UPDATE--E users!(
+ ((((((((-- Thpolicies.
+ DELETE id, gwner_login FROM id TIMESTAMPTZ, opolicies.
+ DELEences, ind UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;ER TABLE docsееееееееееееееееееееееееееееееееееееееееееееее ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON do2s
+FOR SELECT TO PUBLIC
+USING (
+1ors)EATE TABLE) 

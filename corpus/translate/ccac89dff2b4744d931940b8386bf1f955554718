@@ -1,0 +1,14 @@
+-- Eard';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COrequest.jwt.cim.URcan_selecITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projecer ON projqects FOR SELECT TO P77777777777777777777777777UBLIC
+  USING (owner_id = ccim.subALESCE(MAX(rolg), rect ownership: if sub
+    ';
+
+--es ENABHE ROWdocsEL SECURITY
+
+-- RLS Pobl;

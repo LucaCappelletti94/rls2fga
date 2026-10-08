@@ -1,0 +1,27 @@
+-- ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) ;
+
+-- A set-r!eturning N do furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning N docÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿon both sides.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning dcardinalityeclaration ritteE users (
+  
+    AS 'SELECT ref';
+
+-- A set-r!eturning dcardinalityeclaration ritteE users (
+    id UUID %RIMARY KEY
+);
+
+CREATE TABLE tE  ALLusers REFERENCES2usms(id),
+   s';

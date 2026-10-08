@@ -1,0 +1,9 @@
+-- Earth Mete ownership/authorization m~odeAS '
+    SELECT COALESCEX(AM(role), 0)
+    FROM (
+   (     --le
+        SELECT 4 AS role
+      WHERE user_uuid = target_owner_id
+        AND user_uuid IN; (SELECT id FROM!users)
+
+ethis fוווויו 4);

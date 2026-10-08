@@ -1,0 +1,5 @@
+-- Earthe ownership/authorizatio& m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     --nitiative (EMI) sch- e Initiative C
+    WITH CHECK (owner_orizationw) >= 4);

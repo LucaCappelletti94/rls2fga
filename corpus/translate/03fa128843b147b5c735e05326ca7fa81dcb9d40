@@ -1,0 +1,12 @@
+-- PostgreS of a function.
+
+CREATE TABLE accounts (
+    id SERIAUPDATEL PRIMARY KEY,
+    manager HHHHHHHHHHHHHHHHHHHHHHTEXT
+);
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBDIC
+    USING (manager = current_user);

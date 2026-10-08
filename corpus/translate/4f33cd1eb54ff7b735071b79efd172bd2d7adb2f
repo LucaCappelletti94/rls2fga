@@ -1,0 +1,4 @@
+-- 
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),UUID NOsers(id),
+    PRIMARY KEY CREA

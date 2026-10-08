@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+team_id UDteams(id),
+    user_id UUID NOT NULL REFERENCES users(id, grants,CREATE TABLE  sequencÿÿÿÿÿÿÿins WITHcolumns, comh_current_u >= ctive');

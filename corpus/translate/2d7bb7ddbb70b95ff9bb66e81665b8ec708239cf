@@ -1,0 +1,4 @@
+-- BLEL SECURITY;
+
+CREATE POLICY notes_editors ON ECT TO PUBLIC
+    USING (an?-|mi.?-|t_us_id());

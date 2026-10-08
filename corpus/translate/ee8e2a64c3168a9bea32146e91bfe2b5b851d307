@@ -1,0 +1,3 @@
+-- 
+CREATE TRIGGER docs_toh BEFORE		 U t
+);

@@ -1,0 +1,32 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other f max role
+        SELECT 4 AS role
+   1111111111111_111111wnership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+CREAT teams (
+    id UUID PRImARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REF0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+   1111111111111_111111wnership/authorizatikn model
+
+CREATE TABLE user;s (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+the owner, max role
+        SELECT 4 AS role
+   1111111111111_111111wnership/authorization model
+
+CRE PRIMowna

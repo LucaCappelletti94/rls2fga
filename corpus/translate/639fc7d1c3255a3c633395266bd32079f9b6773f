@@ -1,0 +1,11 @@
+CREATE TABLE docs (
+  i UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON doUBLIC
+USING (
+  EXISTt_us(dmrequest.jwt.claim.çäùﬁı÷ƒı

@@ -1,0 +1,9 @@
+-- Earth MetacoUomeInitiaeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.ro (
+   (       SELECT iprojectsd ,*wne>=- WITH CHECK REATE TABLE us
+);
+
+)ói;
+;

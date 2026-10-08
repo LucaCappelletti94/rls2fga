@@ -1,0 +1,18 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/aut
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_i$'')::uuid';
+
+CREATE FUNCTION gut_owner_role( ANY_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS ' @ 
+ S  ) sub
+   #';
+
+-- E‹able RLS
+ALTER TABLE ownab
+
+-- RLS Policiâs
+CREATE POLICY¸¸¸¸¸¸¸¸¸M

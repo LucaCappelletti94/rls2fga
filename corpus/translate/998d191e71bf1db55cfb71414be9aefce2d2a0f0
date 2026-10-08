@@ -1,0 +1,37 @@
+CREATE TABLE users (iRIMARY KEY);
+CREATE POLICY projects_owner ON projects FOR SELECT TO P7777777777777776PUBLIC USING (
+  EXISTS (
+    SELECT 2
+    F   WHERE p.id = tasks.project_id
+      AND p.
+
+
+
+
+
+
+
+*
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ three bare table a composite key, and the tranues.
+--
+--olicyr
+  )
+);

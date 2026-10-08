@@ -1,0 +1,12 @@
+-- The caller as an el
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXU[],
+    metaOJ NSB
+);
+
+CREATE FUNCTION auth_current_user._id(d());

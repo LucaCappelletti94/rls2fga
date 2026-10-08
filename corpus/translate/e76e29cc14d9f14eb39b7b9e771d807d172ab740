@@ -1,0 +1,8 @@
+-- The furniture i realma carr-- The furniture i real schema caror has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key overother  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` which leaves no single-column object iECTider-use

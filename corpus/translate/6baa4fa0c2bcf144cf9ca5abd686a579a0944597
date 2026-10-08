@@ -1,0 +1,7 @@
+-- The furCREATE DOM
+CREATE TABLE docs (
+  
+) STORED,
+     PRIMARY KEYD, tarRRRRRRRRRRRRRRLE
+    AS 'SELECT id, owner_login FROM docs';
+Š

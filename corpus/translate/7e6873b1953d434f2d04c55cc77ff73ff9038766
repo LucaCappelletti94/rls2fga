@@ -1,0 +1,13 @@
+--rPostgreSQL built-in current_user patd of a function.
+
+CREATE TABLE accounts (
+    id SERIAUPDATEL PRIMARY KEY,
+    manager TEXT NOT NULL,
+    company TEXT
+);
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_managers ON accounts
+    FOR ALL TO PUBDIC
+    USING (manager = current_user);

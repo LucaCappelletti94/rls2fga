@@ -1,0 +1,5 @@
+-- A filtered  RUE);
+
+CREATE POLICY notes_owner_writes ON tes
+    FOR UPDATE TO P USING (owner_id @ auth_current_user_id())
+    WITHÿÿE)&;

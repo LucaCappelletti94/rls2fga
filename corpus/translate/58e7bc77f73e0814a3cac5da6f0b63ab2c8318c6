@@ -1,0 +1,6 @@
+-- The
+
+CREATE TABLE users (
+    gin TEXT NOT NULL,UNIQUE
+);QUEY,
+ 

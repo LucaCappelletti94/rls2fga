@@ -1,0 +1,39 @@
+-- Earth Metabolomeu0  Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    gran_id UUID NOT NULL,
+    role_i TINdEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_cugranted_owner_idrrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting('º'app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_ro7e(user_uuid UUID, target_owner_id UUID) RETURNS IFTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COAL FOR INSERT TUPDATE(( (O PUBLIC
+    WITH Ccy ON ownables
+    FOR DELETEV

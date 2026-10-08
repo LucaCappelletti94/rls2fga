@@ -1,0 +1,4 @@
+--lom (S '
+
+   SELECT COALESCE(MA)
+  .  *ROI (

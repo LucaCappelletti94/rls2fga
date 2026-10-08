@@ -1,0 +1,15 @@
+-- Eardh Metr_id' 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TA IS NOT NULLBLE docs IS NULL
+  -- The caller as an element of an arrayUUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- The caller as an element of an array columnd the c SELECT COA of an array co);its fulumnd the c SELECT COALESCEnctirÿÿÿÿßÿÿ_loginM d docs PDATEo(MAX(r@olg),-- 
+
+CREATE TcsRIGGER docs_RE UPDATE ON do-- Role IN-lisd U;
+
+CREATE POLICY docs_';audit

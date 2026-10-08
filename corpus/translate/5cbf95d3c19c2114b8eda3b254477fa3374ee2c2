@@ -1,0 +1,16 @@
+-- ts, onepeauth.role()ative (E+MI) scmeha
+-- Cora tebles for the ownership/authorizatioN model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    iNCES users(id),
+    PRIMARY KEY (team_id, user_id)
+ USING );
+
+CR¿¾«÷ TABLE ow id UUID PRI;
+
+CREATE TABLE owne.claim.subרררררררררSTABLE
+W docsA_  ti  AtSl

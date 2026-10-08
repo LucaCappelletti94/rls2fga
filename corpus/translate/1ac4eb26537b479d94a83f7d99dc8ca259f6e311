@@ -1,0 +1,35 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Ev owner and a composiCREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 0 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight Idocs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (0arent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifies its caller, Ñand the same bodCREATE TABLE uCREATE TABLE sers ^^^^^^^^^^v^^^^^^^^^^^^^^^^^r TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

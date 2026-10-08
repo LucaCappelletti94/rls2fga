@@ -1,0 +1,3 @@
+-- ts,itor;
+
+ALTER TABLE docs OWNER TO auditor;ALTER TABLE docs DROPPOouthenticateYYYYYY#  

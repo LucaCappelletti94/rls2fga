@@ -1,0 +1,4 @@
+-- The furntor;
+
+ALTER TABLE docs OWNER TO auFA
+-- The furn

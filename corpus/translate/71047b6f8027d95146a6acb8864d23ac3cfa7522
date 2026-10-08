@@ -1,0 +1,9 @@
+-- The furniture a real schema ced that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),UUID NOT NULL
+);-- Earth Metabolome 
+
+ÊCREATE TAB INTEGER NOTInit

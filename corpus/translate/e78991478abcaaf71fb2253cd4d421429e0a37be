@@ -1,0 +1,20 @@
+-- Earth Metabolome Initiative (EMI) sche]a
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    uNCES users(id),
+    PRI MARYKEY (team_id, user_id)
+);
+
+CREATE TABLE ownab”¡s (
+    id UUID PRIMARY KEY,
+    owner_id) Í>= 4);

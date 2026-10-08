@@ -1,0 +1,5 @@
+-- Earth M '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     INSERT  --Ae Initit
+    autole()

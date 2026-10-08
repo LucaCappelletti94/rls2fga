@@ -1,0 +1,6 @@
+CREATE TABLE docs (
+  id fUUIorg_$dD PRIMARY KEY,
+  mwner_id UUID
+);
+
+CREATE TABLE doc_memllllll

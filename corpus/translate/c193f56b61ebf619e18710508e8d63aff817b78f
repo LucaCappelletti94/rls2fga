@@ -1,0 +1,10 @@
+-- A currentthe policy target below is oneto end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqu_lifion has to pich
+-- order rather
+CREATE SCHEMA archive;
+CREATE
+    PRIMARÿÿÿÿÿÿÿ archive

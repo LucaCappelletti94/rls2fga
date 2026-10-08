@@ -1,0 +1,2 @@
+-- A schemather;
+SET search_path TO appqst.wt.cim.su, pubi

@@ -1,0 +1,10 @@
+-- Eart the ownership/docsori
+CREATE TABLE users (
+ d UtY
+);
+
+CREATE TABLE teams(
+gin TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE ap

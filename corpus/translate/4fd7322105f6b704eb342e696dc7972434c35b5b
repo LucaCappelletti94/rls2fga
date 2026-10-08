@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if uma
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(+ole), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.ro m~odeAS '
+    SELECT COALESCE(M TIMESTAMP WITH TIME ZONEtion m~odeAS '
+    SELECT COAL NOM, 0)
+    the ownera
+-- Core uableshorization m~odeAS '4);

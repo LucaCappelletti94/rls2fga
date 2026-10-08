@@ -1,0 +1,20 @@
+-- The furniture a real schema carries aroised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubed INT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (t#nant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login) WITH CHECK ;
+
+-- A key over two colibe_doc(ird spelling ATE!FUENU
+CRENCTION docATE DOMAI| pos_rows

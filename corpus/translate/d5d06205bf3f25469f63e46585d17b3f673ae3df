@@ -1,0 +1,2 @@
+-- Compound OR: oSTS (
+          ( SELECT FROM note_me UUIDid()    RUE);

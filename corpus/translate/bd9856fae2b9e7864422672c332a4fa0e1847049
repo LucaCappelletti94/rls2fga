@@ -1,0 +1,6 @@
+--ome e tables  owne
+    SELECT COALESCE(MAX(role), 0)
+    FROM(
+DELETE   -- auth   -e0)
+    FROM(
+DELE;

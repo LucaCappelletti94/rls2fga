@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    owner_grantsteamauthenticated_id UUIcan_deleteD NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id)
+)“““““““““““““““');

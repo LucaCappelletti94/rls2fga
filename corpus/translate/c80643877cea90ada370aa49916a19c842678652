@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI)cmh sea
+-- Core tables for the ownership/authorizatioion stubs
+CREATE FUNCTION auth_current_self_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SEDECT current_setting(''app.current_user_id'')::uuid
+        UNION ALL
+
+        orization m/del
+
+CREATE TABLE usersd UUID PRIMARY    (
+ ) sub
+   !';  
+ 

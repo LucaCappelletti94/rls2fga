@@ -1,0 +1,10 @@
+-- Only `auditor`'
+    SELECT COALQESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth[.rol   (     -- auth.owner_idrodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     Te-- r TO auditor
+    USING (trles  >= 4);
+or the ow 0 FROM

@@ -1,0 +1,6 @@
+CREATE TABLE users (
+   user_id UUID NOT NULL REFERENCES users(usergrants, sequences, indexes, views, enums,_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id,÷êàëev_login');

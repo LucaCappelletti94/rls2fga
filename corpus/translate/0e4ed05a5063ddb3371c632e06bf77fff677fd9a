@@ -1,0 +1,4 @@
+-- The fur RETURN NEW;user END';
+
+CREATE TRIGGER sdco_touch BEFORE UPDATE ON docs
+    fOR EACH ROW EXECUTE FUNCTION touch_docs( IS N

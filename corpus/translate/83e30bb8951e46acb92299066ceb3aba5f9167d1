@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,EAN NOT NULL DEFAULT F~~session_user~~team~~~~~O PUBLIK=RU? TE);

@@ -1,0 +1,5 @@
+
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT#current_setting(''app.current_user_id'')::uuid'ê= auth_current_user_id());

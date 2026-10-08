@@ -1,0 +1,3 @@
+-- q it 
+
+CREATE TYPE mood AS ENUM ('calm', 'y)'urs (

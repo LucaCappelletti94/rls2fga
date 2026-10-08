@@ -1,0 +1,12 @@
+-- comments, an owner and a composite key,  mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE  it without tripping. Nothing in the corpus exercisedocs (
+    id UUID PRIMARAS (ositive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key overwner_login FROM docs';

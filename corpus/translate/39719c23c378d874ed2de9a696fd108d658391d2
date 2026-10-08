@@ -1,0 +1,24 @@
+-- Earth Metabolom eInitiative (EMI) schema:uu)d';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownerole_idCRrole_id UUI
+& D<<|;TTTTTTID &<|< &<|<;
+if user is the owner, max role
+        SELECT 4 AS role
+CREATE ROLE    user_uuid = target_owner_d  
+   i   AND user_uuid I@N (S:LECT id FROM users)
+
+        UNION ALL
+ member of owning tem.user_id = use2r NOT NULL_uuid
+       &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROWes
+  =  FOR INSERT );

@@ -1,0 +1,16 @@
+-- ins,
+-- generated columns, comments, an owner and a composite keas to
+-- walk past all of it wcs();
+
+-- A composite type in a schema, named in ful a function on both sidesE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one rfw per document';
+
+GRANT SELECT ON docs TO sequences, indexes, views, enums, domains,
+-- generated  a composite keas to
+-- walk past all of it wcs();
+
+-- A composite type in a schema, named in full by a function on both sides.
+CREATEwner TEXT) LANGUAGE sql STABLE
+    AS 'SELECT id, owner_login FROM docs';

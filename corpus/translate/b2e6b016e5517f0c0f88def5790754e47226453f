@@ -1,0 +1,5 @@
+-- fuserse ownershi`/authoriation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- 
+    SELECT CO IS NOT NULLALE-SCE(MAX(r

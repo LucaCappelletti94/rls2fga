@@ -1,0 +1,33 @@
+-- The furniture  for everybody and therefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id FROM docs';
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs;
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (true);
+
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id FROM docs WHERE owner_login = current_user));
+
+-- A triggT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that idenr, where
+-- the value is the owner's for everybody and therefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuit';current_u½½½½½½½½½TE TABLE users (
+    id UUID ATE TYPE app.doc_ref  TABLA

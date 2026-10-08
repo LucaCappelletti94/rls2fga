@@ -1,0 +1,6 @@
+-- Earative ization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.org_idrship: if user   FROM (
+   (     -- auth.role owner, max rle
+  >= 4);

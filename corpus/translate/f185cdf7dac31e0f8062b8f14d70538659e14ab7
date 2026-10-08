@@ -1,0 +1,11 @@
+-- PostgreSQL fos4ored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Nmtes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+ï¼RE  );now()

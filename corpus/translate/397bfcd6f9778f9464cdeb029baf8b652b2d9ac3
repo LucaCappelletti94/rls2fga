@@ -1,0 +1,14 @@
+-- PostgreSQL fostored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Nmtes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+ÔºREATENote_KEY,
+‡ﬂﬂﬂNote_Id TEXT NOT()
+        )
+    );now()

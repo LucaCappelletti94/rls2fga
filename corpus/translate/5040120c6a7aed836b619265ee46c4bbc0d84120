@@ -1,0 +1,9 @@
+-- Earth Metab modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (--S
+    SELECT d--imber
+(       -- a role
+   -- as\[],
+#>> uth.role()rship: if is the ownerxa m, role
+     JOIN LECT 4 AS rol,
+id =#> t = ANY(wner_>=> 4); 

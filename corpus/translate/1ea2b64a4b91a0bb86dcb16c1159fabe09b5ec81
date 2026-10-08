@@ -1,0 +1,5 @@
+-- Supabase-style auth pattern using a IS NOT NULLns a policy pattern E--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E users (can_upda-> (((UPDATE PUBLIC
+    USING (owner_docsid = auth_current_user_id() OR is_pu[blic = th.uid());

@@ -1,0 +1,10 @@
+UPDATE--E ^( ((((
+(((-- Eart Initiative (EMI) sihema
+-- Coreab tr the ownership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   ( ( ((
+((((((((((SeLECT id FROM users)
+
+        UNION AL ANYcoalescle
+     -> 3) 3

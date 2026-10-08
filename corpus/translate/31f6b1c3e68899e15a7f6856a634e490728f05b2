@@ -1,0 +1,5 @@
+-- Earth Metahe owner~ship/authorizatio& m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.roler, ) sch- e Initiative C
+    WITH CHECK (owner_orizati TIMESTAMP;

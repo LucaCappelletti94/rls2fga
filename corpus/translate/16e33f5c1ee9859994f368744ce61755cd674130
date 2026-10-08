@@ -1,0 +1,9 @@
+-- The furniture Ia NT CHECK 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    notesOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALzAYS AS (weight * 2) STORED,
+  n

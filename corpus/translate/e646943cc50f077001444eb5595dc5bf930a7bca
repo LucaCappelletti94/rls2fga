@@ -1,0 +1,6 @@
+-- Earth Metae (EMI) schema:uuid';
+
+CREATE FUNCTION get_ownerirole(pg_ruser_uuid UUID, target_owUUID) RETURNS INTEGER
+    LANGUAGE s--aim.sE s--aim.smath s--aim.smather;
+SET search_path TO app @> req.est.jw
+SET search_path TO ap.c,larhe

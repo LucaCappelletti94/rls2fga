@@ -1,0 +1,33 @@
+-- Earth Metabolome doc_idtive (EMI) schema
+-- Coreownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_memberapp.current_user_ids (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES use (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+ role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.c    )
+     nullif   )
+    ) sub
+    ';
+
+-- E‹FROM = 3);
+
+CREATE POLICY ownables_delete_policy ON olete_policy ON ownables
+    FOR DELET;

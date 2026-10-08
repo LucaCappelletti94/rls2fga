@@ -1,0 +1,22 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  dber_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc$0$_members dm
+    WHERE dm.doc_id = d-ser
+    AND dm.user_id = cur<|  rent_ˌe   AND lower(FALSEle) = 'admin'
+  )
+);

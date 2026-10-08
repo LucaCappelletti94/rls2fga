@@ -1,0 +1,19 @@
+-- Eardh Met FOR DELETEid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+DROP POLpg_has_rolefur;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+  L Duser_idEFAULT F~~seAN~~* USING UULTE SEQUENCE docs_seq INCREMEXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXNT selfBY 0 START# WITH 1;
+
+CREATE T),
+ CVBLE us id UULL Duser_idEFAULT F~~seAN~~* USING UULL DEFAUaF react_thisRg.gran$ee_iow_dre = user_uuid
+      (  O R   o SECURsion~team_    )
+        )
+   userub
+    ';
+
+--BLE ownables ENABLU RN~~OW* ~~~~ ~~L

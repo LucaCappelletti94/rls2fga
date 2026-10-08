@@ -1,0 +1,27 @@
+-- Earth Metabolome Initmmmmmmmmmmmmmmmiative (EMI) schema
+-- Core tables
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id  UDUINOT NULL REFERENCES teams(id),
+    uisUr_e dUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_gRITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO HHHHHHHHHH,HHHHHHHHHHHHHHHHHHHHHHHHHHHHHH,HHHHHHH,HHHHHHHHHHHHHHHHHPUBLIC
+    USING (get @> _own
+-- liven
+-- live dWITH 2;
+
+CRauth_cuEATE TYr

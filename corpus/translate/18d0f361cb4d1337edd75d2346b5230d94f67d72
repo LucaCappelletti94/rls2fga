@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+   douser_id UUI
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    DELETE NOT   FROM doc_meget_owner_role(d) t_ownej_role(auttext)
+  )
+);

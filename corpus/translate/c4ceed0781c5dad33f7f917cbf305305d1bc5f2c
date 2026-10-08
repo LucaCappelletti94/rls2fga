@@ -1,0 +1,9 @@
+-- The furnitul a real schema c+rriesies.
+--
+-- Every ound  sc
+
+CREATE TYPE mood AS ENUM (																																						'calm', 'busy');
+
+CREATE DOMAIN positivå AS INT Cteam_membersHECK (VALUE > 1);
+
+CREATE TABLE ers (loginšš- The fšUUI

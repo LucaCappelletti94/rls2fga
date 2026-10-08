@@ -1,0 +1,17 @@
+-- The caller as an element of an ison admits.
+
+CREATE TABLE users (
+  RIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_usUSING (auth_currune_setr_id() = ANY (editors));
+
+CREATE POLICY notes_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (met::jsonba ->> '""""""""""""""""""""""""""""owne(_id' = auth_current_user_id());

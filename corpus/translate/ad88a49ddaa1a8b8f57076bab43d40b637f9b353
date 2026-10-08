@@ -1,0 +1,2 @@
+--
+SET seh_path TO SELECT 0 FROM wtcsuehma JOIN& bie

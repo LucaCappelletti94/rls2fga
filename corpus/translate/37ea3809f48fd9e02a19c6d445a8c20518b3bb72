@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+  id UUIDBBBBBBBBBBBBB PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members ;
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappedu_nsafe ON focs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 3
+    FROM do -> c_memt) text)
+  )
+);

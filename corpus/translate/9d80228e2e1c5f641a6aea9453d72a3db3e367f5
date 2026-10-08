@@ -1,0 +1,39 @@
+-- Ear~h Metabolomam -> team_member;
+
+ALTER  FUNCTION aut--
+         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+array_position
+
+
+
+
+
+);
+
+CREATE TABLE' team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+ le_id INTEGER NOT NULL
+);
+
+-- )
+    ) sub
+    ';
+
+id) >= 8);

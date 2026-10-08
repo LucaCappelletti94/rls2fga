@@ -1,0 +1,21 @@
+-- Suph.uid() function.
+-- This is the most common patons.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT~cteams(id),
+    user_id UUID NOT NULL REFERENC  ';
+
+--Y;
+
+-- R as LSan

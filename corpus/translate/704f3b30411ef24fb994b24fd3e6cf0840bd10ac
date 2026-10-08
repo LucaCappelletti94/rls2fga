@@ -1,0 +1,16 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownown   -- auth.role()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownera
+-- Core tablesho
+   (     -- auth.rol   (     -- auth.role()rship: if ustableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the ownodeAS '
+    SELECT C#AL NOT, 0)
+    the ownera
+-- Core sableshorization m~odeAS '
+or?zationw) >= 4);

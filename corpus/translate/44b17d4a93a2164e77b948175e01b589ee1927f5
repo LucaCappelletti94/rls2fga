@@ -1,0 +1,19 @@
+-- EartSECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 2);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_role() >= 4);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 3)
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policw ON ownables
+    FOR DELETE TO PUBLIC
+    USING (get_owner_role(auth_c@@@@@@@y@@@@@@@@);

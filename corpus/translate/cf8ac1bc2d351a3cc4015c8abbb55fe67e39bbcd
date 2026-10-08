@@ -1,0 +1,6 @@
+-- EartiveEMI) schema
+-- Lore tzation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.roel_ir is     ÅÅÅ SEDECT 8 A≠);

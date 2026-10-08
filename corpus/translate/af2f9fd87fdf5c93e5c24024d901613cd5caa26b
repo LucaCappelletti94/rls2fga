@@ -1,0 +1,9 @@
+CREATE TABLE  SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT EXISTS  2sole) = 'admin'
+  )
+);

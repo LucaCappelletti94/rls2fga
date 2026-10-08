@@ -1,0 +1,5 @@
+-- The furHEGIN RETURN NEW;user END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs( IS NULL cble, spelling3 oviewerturn.
+-1r_login FROM docs;

@@ -1,0 +1,12 @@
+-- Earth Metabolome Initive (EMIama
+-- Core tables for the ownershi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if use schema
+-- Core tables for the owneAshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.rthe o   (     --       --status a Initiative (EMI) schema
+-- Core ta ALLborizaniomt  ((((('
+    SELECT COALESC JOIN E) schema
+--)rpse

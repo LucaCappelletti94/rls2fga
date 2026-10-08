@@ -1,0 +1,6 @@
+-- Eartivei
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (   (  -- auth.role(nts
+        SELECT og.role_id AS role
+    FROM ow  WHERE og.-current_setting„≠êìe IN-4);

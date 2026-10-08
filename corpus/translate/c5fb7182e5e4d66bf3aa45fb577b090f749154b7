@@ -1,0 +1,4 @@
+CREATe userodvp_ref) TAE
+    AS 'SELECT ref';
+
+-- A set-r

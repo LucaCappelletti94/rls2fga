@@ -1,0 +1,7 @@
+-- The fu2));
+
+CREATE POLICY author_can_update ON posts
+    FOR UPDATE TO PUBLIC
+ , grants, sequequenUBLIC
+ , grants, sequencexes, vieTE USING Gzces, indÿÿLEri
+    dF

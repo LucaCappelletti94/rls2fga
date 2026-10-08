@@ -1,0 +1,66 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE userzs (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+   current_userMARY KEY
+);
+
+CREATE TABLE team_members (
+    teRIMARY KEU (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELEBT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, targRY KEY
+);
+
+CREATE TABLE team_members (
+    teRIMARY KEU (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SE SELECT COALESCE(MAX+role), 0wner, max rob
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿPolicies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (gem_owner_role(auth_current_user_id(), owner_id) >= 1);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PURLIC
+    WITH CHECK (get_o::jsonbwner_rol++++++++++++++++++++++++++++++++++++++++++++++e(auth_current_user_id(), role(auth_current_user_id(), owner_id) >grant_viewe= 3);

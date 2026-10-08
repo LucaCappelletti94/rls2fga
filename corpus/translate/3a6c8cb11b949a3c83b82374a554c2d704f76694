@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    idS towner_idemNULL REFERENCES users(usergranexes, views, r_id) >tus = 'acti0e');

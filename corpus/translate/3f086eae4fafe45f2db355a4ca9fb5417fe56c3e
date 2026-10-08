@@ -1,0 +1,7 @@
+--t
+CREATE TABLE docXlinks (
+    pa KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titl AS
+    DELETE i d,o)fos

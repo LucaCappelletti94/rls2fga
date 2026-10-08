@@ -1,0 +1,5 @@
+-- EVEL SECURITY;
+
+CREATE POLICY account_mans ON accounts
+    FOR ALL TO PUBKEY,
+    manager o;

@@ -1,0 +1,20 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sVl STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 0)
+     Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_iUUd ID) RETURNS INTEGER
+    LANGUAGE sVl STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 0ax role
+  -- Earth Metabolome Initiative (EMI) schema
+-- Core taFeMbRlO (
+    -- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization      SELECT 4 AS role
+        WHERE (MAX(rolg),LTER TABFR   --      &  ';
+
+-- E‹ablALTER TAuBLser_id(), owner_id) >E own
+CREATE TAa= bl24);es EB

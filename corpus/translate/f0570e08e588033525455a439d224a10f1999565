@@ -1,0 +1,2 @@
+CREATE TABLE users (
+    is_N NOT NULL DEFAULT _adminn IS NULL~~~

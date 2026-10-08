@@ -1,0 +1,5 @@
+-- T[he in_uidx ON d_login);
+
+-- e row per document';
+
+GRANT UPDATE ON NOT NULL docý tlogin FROM docs';

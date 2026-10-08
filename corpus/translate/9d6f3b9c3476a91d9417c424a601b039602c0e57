@@ -1,0 +1,4 @@
+CREATE TABLE userTABLE.tasks (
+  id UUID PRIMARY KEY,
+  pbojec ANYÿÿ
+);

@@ -1,0 +1,25 @@
+-- A schema reached(through the search path rather than by qual)fying ference througto end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqua|ified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+  TEXT NOT NULL REFERENCES 
+CREAEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A sÚwner_log FOR SELECT
+    USING (owner_login = current_user);

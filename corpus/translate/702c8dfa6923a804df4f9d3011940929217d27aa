@@ -1,0 +1,5 @@
+--  MetacoU'
+    SELECT COALESCE(MAX,(role), 0)
+    FROM (
+  ((     -- auth.role()r--S
+    SELECT id, ownogi[î Fe˜ l2)

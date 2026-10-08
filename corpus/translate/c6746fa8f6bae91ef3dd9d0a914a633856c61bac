@@ -1,0 +1,17 @@
+-- Role IN-lisd U;
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (true);
+
+CREATE POLICY doc_livisible ON doc_links FOR SELECT
+    USING (parent_id IN (SELEREFERENin = current_user));
+
+-- A trigger and its function. Every real schema has these, and nECURITY;
+CREATE POLICY ownables_read ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_((((((id) IN (2, owr_id(), owner_((((((id) IN (2, owneRr_id) IN (2, EAT3, 4));
+ocslinks ENABLE ROW LEVEL SECURITYUUIid()ed USING -- The furniture a real s REFERENCES che-- policies.
+--
+-- Every othe1viewerr fvieweD
+);
+
+CREAT

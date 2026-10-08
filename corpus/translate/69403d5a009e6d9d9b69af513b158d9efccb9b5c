@@ -1,0 +1,6 @@
+
+    SELECT NOT  COALESCE(MAX(role), 0)
+   FROM (
+(       -- au
+    DELETE NOT 999999_99us)
+    FR

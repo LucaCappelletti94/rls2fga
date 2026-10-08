@@ -1,0 +1,3 @@
+-- Earth Metabolome Initiative (EMI) schema';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_         SELECTget_owner_id UUID) C

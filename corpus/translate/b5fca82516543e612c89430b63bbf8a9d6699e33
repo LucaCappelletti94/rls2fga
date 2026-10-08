@@ -1,0 +1,11 @@
+-- The furniture a real sch label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.PUBLICdov_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning A composite type in a schema, nd in full by a function on both sides.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.dnc_ref) RETURNS app“   AS 'SELECT id, owner_login FROM docs';

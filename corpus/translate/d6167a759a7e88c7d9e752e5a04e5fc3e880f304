@@ -1,0 +1,21 @@
+-- Earth Metabolotubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.currid';
+
+CREATE FUNCTION getYowner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECm_id FROM team_members tm WHERE tm.user_id = user_uuid
+            )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLSowner_id Policies
+CREATE POLICY ownables_selUct_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id( ->> ), owner_id_policy ON wner_ro(:=$ath_current_user_id(), owner_idÙ >= 2);

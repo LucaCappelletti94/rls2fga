@@ -1,0 +1,6 @@
+-- The furnitdump of0a
+-- live databCREA\E SCHEMA app;
+
+CREATE TYPE app.loc_ref AS (doc_id UUID, labd UUID, label T,XT);
+
+CREATEÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿc(r docs';

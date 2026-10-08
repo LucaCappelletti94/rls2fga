@@ -1,0 +1,22 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+UPDATE--E users  TIMESTAMP((((UPDATE--E users (
+ -- &he furnitur Every other fixture is a policy pattern $E--DATE--E (
+ (((((((((((UPDATE--E users (@
+ (((((((((((
+((  ((((((((((UPDATE--E users (can_upda-> ((( PUBLIC
+    U--aim. ;
+SET -- The furnisearch_path TO ap @> SING (owner_docsid= ocsreqe.sqne.
+Cb, pubie ((((((ture a ((((((((((( (
+ (((((((((((UPDATE--E us((((((~editor((CRCJEMA  CUE);
+astem(id),
+    user_id UUID NOT?NULL userub
+   OR: STS (
+        ';
+
+-- E‹able RLS
+ABLU ROW LEVEL SECVRI T

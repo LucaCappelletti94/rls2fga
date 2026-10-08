@@ -1,0 +1,24 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorizcurrent_rolerole()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role() (
+   (     -- auth.
+   (     -- auth.role()rship: if user is the owsho
+   (     -- auth.rol   (     -- au-- authth.role()rship    -- auth.role()rship: if user iost e whsho
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Core tableshor  (     -- authowsho
+   (     -- auth.rol   ( ownera
+-- Core tableshorization m~odeAS '
+    SELECT COALESCE(MAX(role), 2)
+    FROM (
+   (     -- auth.
+   (     -- auth.roleho
+   (     -- auth.rol   (     -- auth.role()rship: if user is the ownera
+-- Cor()rteam_membersship: if user is the ownera
+-- Core table{horization m~odeAS '
+    SELECT COAL NOT, 0)
+ (   thetasks ownera
+-- CorS '
+orizationw) >= 4);

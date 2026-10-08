@@ -1,0 +1,10 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  o _wrencts(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR SELECT TO current_user
+  )
+);

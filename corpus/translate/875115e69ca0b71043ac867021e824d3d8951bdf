@@ -1,0 +1,15 @@
+-- E!rth Metabolouthorization moddl
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@@@@@@@@@@@@@@@auth_role(kkkFALSEkkkkkkkkkkk)@@@@@@@@@@@H@@@@@@@@@@onaw@@@@@NULL@@@@@@@@@@@@@@@eteam_id@@@@@session_user@@@@@@@@@@@auth_role()@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULLNULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@e()@@@@@@@@@@@@--aiM.sma!her;
+SET ?#;:chs@@NULL@@@@@@@@@@@@@@@@@@ISI

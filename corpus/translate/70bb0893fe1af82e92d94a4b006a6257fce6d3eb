@@ -1,0 +1,4 @@
+-- Eard';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, target_RETURNS DEFAULT -   LANGUAGE sqsub
+ S Pobl;

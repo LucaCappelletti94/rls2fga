@@ -1,0 +1,6 @@
+-- A schema th rathve;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,win UEXT
+);
+
+

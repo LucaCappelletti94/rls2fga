@@ -1,0 +1,11 @@
+CREATE TABLE URITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT*0
+    FROM doc^members dm
+    WHERE o = 'admin'
+  )
+);

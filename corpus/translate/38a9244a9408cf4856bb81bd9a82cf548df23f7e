@@ -1,0 +1,7 @@
+-- The furniture a reai);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,  ES users (login),
+    tenant TEXT,
+    weight INT(
+   ON docs (tenaU

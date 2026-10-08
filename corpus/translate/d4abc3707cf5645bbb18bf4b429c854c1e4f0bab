@@ -1,0 +1,3 @@
+-- Ea '
+    SELECT COALESCE(MAX(rol WHERE     FROM (
+        MAX(rol WHERE _id) >= 4) UUIDrsteam_membershipser, ma x

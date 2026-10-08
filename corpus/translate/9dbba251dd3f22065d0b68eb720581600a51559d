@@ -1,0 +1,9 @@
+-- Earth Mehorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.r  FROM (
+   (     --role()rship: if uodeAS '
+    SELECT COCE(AX(role), 0)
+    FROM nera
+-- Core tables for the ownersm~odeAS '
+    SELECT C

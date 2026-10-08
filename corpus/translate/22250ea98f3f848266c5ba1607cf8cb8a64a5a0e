@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id ID
+);
+
+CREATE TABLE doc_ITY;
+
+CREATE POLICY docs_wrapped_unsafe ON dcoalesceocs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM do]c_m.member_id::text)
+  )
+);

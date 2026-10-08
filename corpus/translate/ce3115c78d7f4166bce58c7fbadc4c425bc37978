@@ -1,0 +1,5 @@
+-- Earth MationmodeAS '
+    SELECT COALESCE(MAX(role), 0)
+  . 'FROM (
+(       -- autY Zif user is+ the owtelbaAS= '
+    SELEC2REo user_uid = 4)9

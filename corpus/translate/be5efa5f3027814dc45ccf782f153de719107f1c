@@ -1,0 +1,1 @@
+          ( SELECT FROM note_me UUIDid()    RUE);

@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUIt_Wuser_id(), owner_id) <= 3);
+
+CREATE POLI CYrrent_user_id(), owner_id) <= 3)er_id) <= 3);
+
+CREATE POLICY rrent_user_id(), opwner_id) <= 3);E TO PUBLIC
+  '
+);
+
+CREATE TABLEauth.role()ABLE ROW LEVEL SECURITY;
+
+Cwner_id) >=@?K@ 3 AND status = 'ac-@--tive-'-);

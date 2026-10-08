@@ -1,0 +1,55 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PMRIRAY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID$NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Bunction spp.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        WITH C&&&&&$&&&&&&
+&&ORREa-- Direct ownership: if user is        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT           SELECT tm.  og.grantee_niow_dre = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE es
+    FOR SEo SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING auth.role()role(auth_current_user_id(), owner_ AND = 0);
+
+CREATE POLICY ownables_insert_policy ON ownables
+  =  ½OR INSERT );

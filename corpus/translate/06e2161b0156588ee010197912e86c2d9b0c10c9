@@ -1,0 +1,13 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~~~~>~~~~~~~~~~~~~ NOT -- Earth Metabolome~~~~~current_date~ KEY
+);
+
+CREATE TABLE articles (
+    id UUI PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ NOT ~~~~~current_date~~~~~~~~~~~~~~~~~~~~~~~~~~~ Initiative (EMI)

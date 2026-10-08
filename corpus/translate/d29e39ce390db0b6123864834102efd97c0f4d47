@@ -1,0 +1,14 @@
+-- E!rth M-- Eartschema
+-- Core tablesAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if usrole
+   -- e Initiative (modeAS '
+    SELECT COALESCE((role), 0)
+ .  FROM (
+      @@@owna@@@@NULL@@@@@@@@@@@@@@@eam_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@N@@@@@@@@@@D@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@@@@FALSE@@@@@@@@@@@@@@@@@@@@ user_id)
+);
+
+CREATE TA\LE ownablÿÿÿÿÿÿÿes (
+    id U frantee_owner_id UUID .OT NULL,
+    granted_owner_id UUIDUSI
