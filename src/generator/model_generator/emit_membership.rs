@@ -8,7 +8,7 @@ use super::*;
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
 pub(super) struct MembershipSourceGate<'a> {
-    pub condition: &'a str,
+    pub condition: &'a ConditionName,
     pub context: &'a [GateContextColumn],
     pub aggregate: bool,
     pub clocked: bool,
@@ -69,7 +69,7 @@ pub(super) fn membership_source_key(
         return key;
     };
     source_key_part(&mut key, "gated");
-    source_key_part(&mut key, gate.condition);
+    source_key_part(&mut key, gate.condition.as_str());
     let _ = write!(
         key,
         "{}:{}:{}:",

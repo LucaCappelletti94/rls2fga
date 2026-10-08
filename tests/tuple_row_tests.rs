@@ -316,7 +316,11 @@ fn a_conditional_tuple_needs_a_condition_and_a_readable_context() {
         .iter()
         .find(|query| query.condition.is_some())
         .expect("the tenant gate writes conditional tuples");
-    let condition = query.condition.as_deref().expect("the conditional query");
+    let condition = query
+        .condition
+        .as_ref()
+        .expect("the conditional query")
+        .as_str();
     let RecordDerivation::FromRow { template, .. } = &query
         .description
         .as_ref()

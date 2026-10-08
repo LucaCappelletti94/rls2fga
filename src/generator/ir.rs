@@ -11,7 +11,7 @@ use crate::generator::well_known::member_relation;
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::types::{
-    ColumnName, ContextWitness, RelationName, RequestComparison, TableId, TypeName,
+    ColumnName, ConditionName, ContextWitness, RelationName, RequestComparison, TableId, TypeName,
 };
 
 /// Principal table (users or teams) named by a role-threshold function.
@@ -40,7 +40,7 @@ pub(crate) struct GateContextColumn {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MembershipGate {
     /// The condition the member tuple names, declared on the parent or holder type.
-    pub condition: String,
+    pub condition: ConditionName,
     /// Columns the row fills the condition context with, one per clock comparison.
     pub context: Vec<GateContextColumn>,
     /// True when several member rows can key the same `(object, user)`, so the query
@@ -195,7 +195,7 @@ pub(crate) enum TupleSource {
         table: TableId,
         identity_cols: Vec<ColumnName>,
         relation: RelationName,
-        condition: String,
+        condition: ConditionName,
         /// Condition parameter the row supplies, and the column it reads.
         row_parameter: String,
         column: ColumnName,
@@ -209,7 +209,7 @@ pub(crate) enum TupleSource {
         table: TableId,
         identity_cols: Vec<ColumnName>,
         relation: RelationName,
-        condition: String,
+        condition: ConditionName,
         /// Condition parameter the tuple supplies, and where its value comes from.
         row_parameter: RowParameter,
         /// Condition parameter the caller supplies in every check context.
@@ -236,7 +236,7 @@ pub(crate) enum TupleSource {
         /// Synthetic type the share objects belong to.
         share_type: TypeName,
         relation: RelationName,
-        condition: String,
+        condition: ConditionName,
         /// Condition parameter the share row supplies.
         row_parameter: String,
         /// Column of `join_table` holding the value the caller's set must contain.
@@ -286,7 +286,7 @@ pub(crate) enum TupleSource {
         /// The share type's member relation this policy's tuples feed. Minted per
         /// condition, so two policies over one join table never collide their clocks.
         relation: RelationName,
-        condition: String,
+        condition: ConditionName,
         /// Residual filter on the membership row, requests excluded by the condition.
         extra_predicates: ResidualPredicates,
         /// Clock comparisons composed into the condition, one context column each.
@@ -514,7 +514,7 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
-        condition: &'a str,
+        condition: &'a ConditionName,
         row_parameter: &'a str,
         column: &'a ColumnName,
     },
@@ -522,7 +522,7 @@ pub(crate) enum TupleSourceKey<'a> {
         table: &'a TableId,
         identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
-        condition: &'a str,
+        condition: &'a ConditionName,
         row_parameter: &'a RowParameter,
         request_parameter: &'a str,
         comparison: RequestComparison,
@@ -533,7 +533,7 @@ pub(crate) enum TupleSourceKey<'a> {
         identity_cols: &'a [ColumnName],
         member_col: &'a ColumnName,
         relation: &'a RelationName,
-        condition: &'a str,
+        condition: &'a ConditionName,
         row_parameter: &'a str,
         request_parameter: &'a str,
         extra_predicates: ResidualSqlKey<'a>,
@@ -553,7 +553,7 @@ pub(crate) enum TupleSourceKey<'a> {
         user_col: &'a ColumnName,
         share_type: &'a TypeName,
         relation: &'a RelationName,
-        condition: &'a str,
+        condition: &'a ConditionName,
         extra_predicates: ResidualSqlKey<'a>,
         context: &'a [GateContextColumn],
     },
@@ -1240,7 +1240,7 @@ mod tests {
     #[test]
     fn dedup_key_drops_a_request_conjunct_exactly_where_the_query_does() {
         let gate = MembershipGate {
-            condition: "unexpired".to_string(),
+            condition: ConditionName::canonicalized("unexpired"),
             context: vec![GateContextColumn {
                 parameter: "expires_at".to_string(),
                 column: ColumnName::from_stored("expires_at"),
@@ -1287,7 +1287,7 @@ mod tests {
             identity_cols: vec![ColumnName::from_stored("id")],
             share_type: TypeName::canonicalized("shares"),
             relation: owner_user_relation(),
-            condition: "in_set".to_string(),
+            condition: ConditionName::canonicalized("in_set"),
             row_parameter: "member".to_string(),
             member_col: ColumnName::from_stored("viewer"),
             request_parameter: "subjects".to_string(),
@@ -1334,7 +1334,7 @@ mod tests {
             table: table("docs"),
             identity_cols: vec![ColumnName::from_stored("id")],
             relation: owner_user_relation(),
-            condition: "in_set".to_string(),
+            condition: ConditionName::canonicalized("in_set"),
             row_parameter: RowParameter::Column {
                 parameter: "owner".to_string(),
                 column: ColumnName::from_stored("owner"),

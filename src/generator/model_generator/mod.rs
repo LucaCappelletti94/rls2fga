@@ -37,8 +37,8 @@ use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, IdentifierCase, PolicyLike, RoleLike, TableLike,
 };
 use crate::types::{
-    stable_hex_suffix, ColumnKind, ColumnName, ConditionParameterName, ContextWitness,
-    RelationName, RequestComparison, TableId, TranslationNote, TypeName,
+    stable_hex_suffix, ColumnKind, ColumnName, ConditionName, ConditionParameterName,
+    ContextWitness, RelationName, RequestComparison, TableId, TranslationNote, TypeName,
 };
 
 /// Which relation a command reads, and how a policy's clauses reach it.
@@ -106,14 +106,14 @@ pub(crate) enum DirectSubject {
     /// while the condition evaluates true at check time.
     ConditionalWildcard {
         type_name: TypeName,
-        condition: String,
+        condition: ConditionName,
     },
     /// A directly related type every tuple of which carries a condition, so a named
     /// subject grants only while the condition evaluates true at check time. The member
     /// tuple a temporal membership emits is one.
     ConditionalType {
         type_name: TypeName,
-        condition: String,
+        condition: ConditionName,
     },
 }
 
@@ -278,7 +278,7 @@ pub(crate) struct TypePlan {
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
-    pub conditions: BTreeMap<String, ConditionSpec>,
+    pub conditions: BTreeMap<ConditionName, ConditionSpec>,
     /// The table has `INHERITS` children, so queries minting this type's objects read
     /// `FROM ONLY`: the key does not span child rows, and a shared value would merge
     /// two rows into one object.
@@ -620,7 +620,7 @@ pub(crate) struct SchemaPlan {
     pub notes: Vec<TranslationNote>,
     pub confidence_summary: Vec<(String, ConfidenceLevel)>,
     /// Conditions any relation reference names, keyed by name.
-    pub conditions: BTreeMap<String, ConditionSpec>,
+    pub conditions: BTreeMap<ConditionName, ConditionSpec>,
     pub well_known: WellKnownTypes,
 }
 
@@ -1755,21 +1755,21 @@ fn ordered_types(
 /// Only the conditions a surviving reference still names.
 ///
 /// A policy dropped by confidence filtering cannot leave a condition behind.
-fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<String, ConditionSpec> {
-    let named: BTreeSet<&str> = types
+fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<ConditionName, ConditionSpec> {
+    let named: BTreeSet<&ConditionName> = types
         .iter()
         .flat_map(|plan| plan.direct_relations.values())
         .flatten()
         .filter_map(|subject| match subject {
             DirectSubject::ConditionalWildcard { condition, .. }
-            | DirectSubject::ConditionalType { condition, .. } => Some(condition.as_str()),
+            | DirectSubject::ConditionalType { condition, .. } => Some(condition),
             DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
         })
         .collect();
     types
         .iter()
         .flat_map(|plan| plan.conditions.iter())
-        .filter(|(name, _)| named.contains(name.as_str()))
+        .filter(|(name, _)| named.contains(name))
         .map(|(name, spec)| (name.clone(), spec.clone()))
         .collect()
 }

@@ -1,12 +1,13 @@
 //! The kinds of name this crate handles, each its own type.
 //!
-//! Six kinds are in play and they obey different rules. A table reference as written may be
+//! Seven kinds are in play and they obey different rules. A table reference as written may be
 //! quoted and may omit its schema. A table's identity is the folded pair the schema stores. A
 //! column name arrives already unquoted. A model type name is canonicalised and suffixed on
-//! collision. A relation name is normalised and clamped to what `OpenFGA` accepts. A condition
-//! parameter is a valid non-reserved `CEL` identifier. An object id is encoded and length-capped.
+//! collision. A relation name and a condition name are normalised and clamped to what `OpenFGA`
+//! accepts. A condition parameter is a valid non-reserved `CEL` identifier. An object id is
+//! encoded and length-capped.
 //!
-//! The table kinds live here already. The other five arrive with the conversion that wires them,
+//! The table kinds live here already. The others arrive with the conversion that wires them,
 //! so no type sits here unused and every increment of this work leaves the gate green.
 //!
 //! They were all `String`, and every over-grant this crate has recorded is two of them confused:
@@ -405,16 +406,7 @@ impl RelationName {
     /// Canonicalize and clamp a generated relation name.
     #[must_use]
     pub fn canonicalized(name: impl AsRef<str>) -> Self {
-        const MAX_LEN: usize = 50;
-        let original = name.as_ref();
-        let mut canonical = canonical_identifier(original, "relation");
-        if canonical.len() > MAX_LEN {
-            let suffix = stable_hex_suffix(original);
-            canonical.truncate(MAX_LEN - suffix.len() - 1);
-            canonical.push('_');
-            canonical.push_str(&suffix);
-        }
-        Self(canonical)
+        Self(clamped_model_name(name.as_ref(), "relation"))
     }
 }
 
@@ -425,13 +417,10 @@ impl TryFrom<String> for RelationName {
         if name.is_empty() {
             return Err(RelationNameError::Empty);
         }
-        if name.len() > 50 {
+        if name.len() > MAX_MODEL_NAME_LEN {
             return Err(RelationNameError::TooLong { name });
         }
-        if !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
+        if !is_model_name(&name) {
             return Err(RelationNameError::Invalid { name });
         }
         Ok(Self(name))
@@ -459,6 +448,86 @@ pub enum RelationNameError {
         /// Refused name.
         name: String,
     },
+}
+
+/// A condition of the emitted model, normalised and clamped to what `OpenFGA` accepts.
+///
+/// A condition name is global to the model and a disambiguating suffix is appended to it
+/// after its base is decided, so the clamp lives in the one constructor every candidate
+/// passes through rather than at each place that builds one.
+///
+/// Serializes as its text, since the JSON model and every conditioned tuple spell a
+/// condition as a bare name, and deserializes the same way.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct ConditionName(String);
+
+impl ConditionName {
+    /// Canonicalize and clamp a generated condition name.
+    #[must_use]
+    pub fn canonicalized(name: impl AsRef<str>) -> Self {
+        Self(clamped_model_name(name.as_ref(), "condition"))
+    }
+}
+
+impl TryFrom<String> for ConditionName {
+    type Error = ConditionNameError;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        if name.is_empty() {
+            return Err(ConditionNameError::Empty);
+        }
+        if name.len() > MAX_MODEL_NAME_LEN {
+            return Err(ConditionNameError::TooLong { name });
+        }
+        if !is_model_name(&name) {
+            return Err(ConditionNameError::Invalid { name });
+        }
+        Ok(Self(name))
+    }
+}
+
+compares_against_text!(ConditionName, validated);
+
+/// Why an `OpenFGA` condition name was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConditionNameError {
+    /// Empty names cannot identify a condition.
+    #[error("an OpenFGA condition name cannot be empty")]
+    Empty,
+    /// The name exceeds the `OpenFGA` limit.
+    #[error("{name:?} exceeds the OpenFGA condition name limit")]
+    TooLong {
+        /// Refused name.
+        name: String,
+    },
+    /// The name contains an unsupported character.
+    #[error("{name:?} is not a valid OpenFGA condition name")]
+    Invalid {
+        /// Refused name.
+        name: String,
+    },
+}
+
+/// `OpenFGA` rejects a relation or condition name longer than this many bytes.
+const MAX_MODEL_NAME_LEN: usize = 50;
+
+/// Canonicalize `original` and clamp it to [`MAX_MODEL_NAME_LEN`], ending an over-long
+/// name with a hash of `original` so two names the clamp shortens stay distinct.
+fn clamped_model_name(original: &str, fallback: &str) -> String {
+    let mut canonical = canonical_identifier(original, fallback);
+    if canonical.len() > MAX_MODEL_NAME_LEN {
+        let suffix = stable_hex_suffix(original);
+        canonical.truncate(MAX_MODEL_NAME_LEN - suffix.len() - 1);
+        canonical.push('_');
+        canonical.push_str(&suffix);
+    }
+    canonical
+}
+
+fn is_model_name(name: &str) -> bool {
+    name.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// A condition parameter that can be referenced by a `CEL` expression.
@@ -629,6 +698,27 @@ mod tests {
     fn type_names_validate_at_the_public_boundary() {
         assert_eq!(TypeName::try_from("docs").expect("valid type name"), "docs");
         assert!(TypeName::try_from("not a type").is_err());
+    }
+
+    /// A suffix appended to a name already at the cap is clamped again rather than
+    /// passing it, and the clamped name stays distinct from the one it extends.
+    #[test]
+    fn a_condition_name_stays_within_the_openfga_limit() {
+        let base = ConditionName::canonicalized(format!("when_{}", "x".repeat(60)));
+        assert_eq!(base.as_str().len(), MAX_MODEL_NAME_LEN);
+        let second = ConditionName::canonicalized(format!("{base}_2"));
+        assert_eq!(second.as_str().len(), MAX_MODEL_NAME_LEN);
+        assert_ne!(base, second);
+
+        assert!(ConditionName::try_from(base.to_string()).is_ok());
+        assert!(matches!(
+            ConditionName::try_from("x".repeat(MAX_MODEL_NAME_LEN + 1)),
+            Err(ConditionNameError::TooLong { .. })
+        ));
+        assert!(matches!(
+            ConditionName::try_from("when:x".to_string()),
+            Err(ConditionNameError::Invalid { .. })
+        ));
     }
 
     /// A second pass changes nothing, which is what lets a canonical name be carried

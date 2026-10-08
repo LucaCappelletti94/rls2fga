@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::types::{stable_hex_suffix, ColumnName, RelationName, TableId, TypeName};
+use crate::types::{stable_hex_suffix, ColumnName, ConditionName, RelationName, TableId, TypeName};
 
 /// Return the identifier without surrounding double quotes, decoding internal
 /// escaped double-quote sequences (`""` → `"`).
@@ -255,13 +255,13 @@ pub fn attribute_gate_relation_name(column: &str, key: &str) -> RelationName {
 /// Keyed on the type as well as the policy: a condition name is global to the model while
 /// a `PostgreSQL` policy name is unique only per table, so one name reused across tables
 /// would otherwise collapse two guards into one spec.
-pub fn gate_condition_name(type_name: &str, policy_name: &str) -> String {
+pub fn gate_condition_name(type_name: &str, policy_name: &str) -> ConditionName {
     // The base joins on an underscore to read as a name, which is ambiguous between
     // (a_b, c) and (a, b_c), so the hash joins on a dot instead. A type name is canonical
     // and so carries no dot, which makes that pair unambiguous.
     let base = canonical_fga_type_name(&format!("{type_name}_{policy_name}"));
     let suffix = stable_hex_suffix(&format!("{type_name}.{policy_name}"));
-    clamp_relation_name(format!("when_{base}_{suffix}"))
+    ConditionName::canonicalized(format!("when_{base}_{suffix}"))
 }
 
 fn scope_relation_name(prefix: &str, key: &str) -> RelationName {

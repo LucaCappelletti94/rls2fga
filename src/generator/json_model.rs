@@ -8,7 +8,7 @@ use crate::generator::model_generator::{
     ConditionParameter, DirectSubject, SchemaPlan, TypePlan, UsersetExpr, OPENFGA_SCHEMA_VERSION,
 };
 use crate::generator::well_known::LIST_PARAMETER_TYPE;
-use crate::types::{RelationName, TypeName};
+use crate::types::{ConditionName, RelationName, TypeName};
 
 /// `OpenFGA` authorization model in the JSON form the API accepts.
 #[derive(Debug, Clone, Serialize)]
@@ -20,7 +20,7 @@ pub struct AuthorizationModel {
     /// Conditions a relation reference may name, keyed by condition name. Omitted
     /// when the schema needs none, since `OpenFGA` accepts a model without the field.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub conditions: Option<BTreeMap<String, Condition>>,
+    pub conditions: Option<BTreeMap<ConditionName, Condition>>,
 }
 
 /// A `CEL` expression `OpenFGA` evaluates when a tuple naming it is consulted.
@@ -30,7 +30,7 @@ pub struct AuthorizationModel {
 #[derive(Debug, Clone, Serialize)]
 pub struct Condition {
     /// Condition name, repeated inside the value as the API expects.
-    pub name: String,
+    pub name: ConditionName,
     /// The `CEL` expression, in terms of the parameter names.
     pub expression: String,
     /// Parameter name to its type.
@@ -106,7 +106,7 @@ pub struct RelationReference {
     pub wildcard: Option<EmptyObject>,
     /// Condition every tuple through this reference must satisfy.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
+    pub condition: Option<ConditionName>,
 }
 
 /// Marker struct serialized as `{}` for `OpenFGA`'s `this` and `wildcard` fields.
