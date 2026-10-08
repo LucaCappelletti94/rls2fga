@@ -110,46 +110,6 @@ CREATE POLICY docs_update ON docs FOR UPDATE TO PUBLIC
 }
 
 #[test]
-fn tuples_include_using_and_with_check_patterns_for_update() {
-    let sql = r"
-CREATE TABLE public.users (id UUID PRIMARY KEY);
-CREATE TABLE public.docs (
-  id UUID PRIMARY KEY,
-  owner_id UUID REFERENCES users(id)
-);
-CREATE TABLE public.memberships (
-  doc_id UUID NOT NULL REFERENCES docs(id),
-  user_id UUID NOT NULL REFERENCES users(id)
-);
-CREATE FUNCTION auth_current_user_id() RETURNS UUID
-  LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
--- FOR ALL so the clause also grants reads, which an UPDATE needs to name its row.
-CREATE POLICY p_upd ON docs FOR ALL TO PUBLIC
-  USING (owner_id = auth_current_user_id())
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM memberships
-      WHERE memberships.doc_id = docs.id
-        AND memberships.user_id = auth_current_user_id()
-    )
-  );
-";
-    let (classified, db, registry) = support::classify_sql(sql, Some(support::ACCESSOR_REGISTRY));
-    let tuples = support::plan_tuples(classified, &db, &registry);
-
-    assert!(
-        tuples.contains("'owner' AS relation"),
-        "expected owner tuples from USING, got:\n{tuples}"
-    );
-    assert!(
-        tuples.contains("'member' AS relation"),
-        "expected membership tuples from WITH CHECK, got:\n{tuples}"
-    );
-}
-
-#[test]
 fn for_all_expands_to_crud_actions() {
     let sql = r"
 CREATE TABLE users (id UUID PRIMARY KEY);

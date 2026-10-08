@@ -4,6 +4,7 @@
 //! grant relations a role-threshold function implies.
 
 use super::*;
+use crate::generator::well_known::owner_team_relation;
 
 /// The scope a `TO` clause narrows by, described in one value.
 ///
@@ -332,6 +333,9 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         None => None,
     };
     let has_team_support = team_membership_table.is_some();
+    let team_type = team_membership_table
+        .as_ref()
+        .map(|table| team_type_name(table, ctx.table_types, &table_plan.well_known));
     let owner_type = owner_type_name(&grant_table, function_name, registry, ctx.table_types);
     let refuse = |table_plan: &mut TypePlan, reason: SkippedTuples| {
         table_plan.add_source(TupleSource::Skipped { reason });
@@ -374,7 +378,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
         &owner_type,
         &owner_column,
         role_levels,
-        has_team_support,
+        team_type.as_ref(),
     );
     populate_role_threshold_sources(
         function_name,
@@ -382,6 +386,7 @@ pub(crate) fn prepare_role_threshold_translation<DB: DatabaseLike>(
             source: source_table,
             grant: &grant_table,
             team_membership: team_membership_table.as_ref(),
+            team_type: team_type.as_ref(),
         },
         db,
         registry,
@@ -426,7 +431,7 @@ pub(crate) fn ensure_role_threshold_scaffold(
     owner_type: &TypeName,
     owner_column: &ColumnName,
     role_levels: &BTreeMap<String, i32>,
-    has_team_support: bool,
+    team_type: Option<&TypeName>,
 ) -> (Vec<RoleRelationName>, RelationName) {
     let sorted_roles = sorted_role_relation_names(role_levels);
 
@@ -435,8 +440,8 @@ pub(crate) fn ensure_role_threshold_scaffold(
         vec![DirectSubject::Type(owner_type.clone())],
     );
     let well_known = table_plan.well_known.clone();
-    if has_team_support {
-        ensure_member_type(all_types, &well_known.team, &well_known);
+    if let Some(team_type) = team_type {
+        ensure_member_type(all_types, team_type, &well_known);
     }
     let owner_plan = all_types
         .entry(owner_type.clone())
@@ -446,21 +451,20 @@ pub(crate) fn ensure_role_threshold_scaffold(
         owner_user_relation(),
         vec![DirectSubject::Type(well_known.user.clone())],
     );
-    if has_team_support {
-        owner_plan.ensure_direct(
-            owner_team_relation(),
-            vec![DirectSubject::Type(well_known.team.clone())],
-        );
+    if let Some(team_type) = team_type {
+        owner_plan.claim_owner_team_relation(team_type);
     }
 
-    let grant_subjects = if has_team_support {
+    let grant_subjects = if let Some(team_type) = team_type {
         vec![
             DirectSubject::Type(well_known.user.clone()),
-            DirectSubject::Type(well_known.team.clone()),
+            DirectSubject::Type(team_type.clone()),
         ]
     } else {
         vec![DirectSubject::Type(well_known.user.clone())]
     };
+
+    let has_team_support = team_type.is_some();
 
     for role in &sorted_roles {
         owner_plan.ensure_direct(role.grant_relation(), grant_subjects.clone());

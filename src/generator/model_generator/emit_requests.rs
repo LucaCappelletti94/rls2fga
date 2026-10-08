@@ -5,7 +5,8 @@
 //! when the value is one only the request knows.
 
 use super::emit_membership::{
-    announce_residual, link_share_rows, share_reach, MembershipParent, ShareRows,
+    announce_residual, apply_membership_read_scope, link_share_rows, share_reach, MembershipParent,
+    ShareRows,
 };
 use super::*;
 
@@ -141,7 +142,7 @@ pub(crate) fn declare_condition(
     // One more candidate than there are conditions, so one is always free.
     let ceiling = table_plan.conditions.len() + 2;
     let name = core::iter::once(base.clone())
-        .chain((2..=ceiling).map(|nth| format!("{base}_{nth}")))
+        .chain((2..=ceiling).map(|nth| clamp_relation_name(format!("{base}_{nth}"))))
         .find(|candidate| {
             table_plan
                 .conditions
@@ -408,21 +409,21 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let source_table = ctx.source_table;
     // The subquery reads `join_table` as the caller, so its own RLS decides which
     // membership rows count, exactly as it does for a membership naming a person.
-    let Some(read_scope_roles) = noted_membership_read_scope(join_table, ctx, readability, notes)
-    else {
+    let Some(read_scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
         return deny_expr(table_plan);
     };
-    if !read_scope_roles.is_empty() {
-        // No rule intersects a role scope with a request-completed gate, so fall closed.
-        notes.push(TranslationNote::ExpressionRefused {
-            policy: policy_name.to_string(),
-            reason: format!(
-                "only {} may read {join_table}, and a request-scoped gate cannot \
-                     yet be narrowed to a role scope",
-                read_scope_roles.join(", ")
-            ),
-        });
-        return deny_expr(table_plan);
+    if let JoinTableReadability::Guarded { roles } = read_scope {
+        if !roles.is_empty() {
+            notes.push(TranslationNote::ExpressionRefused {
+                policy: policy_name.to_string(),
+                reason: format!(
+                    "only {} may read {join_table}, and a request-scoped gate cannot \
+                         yet be narrowed to a role scope",
+                    roles.join(", ")
+                ),
+            });
+            return deny_expr(table_plan);
+        }
     }
     let Some(parent) = MembershipParent::resolve(pairs, join_table, ctx, table_plan, notes) else {
         return deny_expr(table_plan);
@@ -494,24 +495,6 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         },
     };
 
-    // The gate rides the share type, keyed on the share row, so two viewers of one
-    // guarded row union through the link rather than collide on one tuple.
-    let share_type = share_type_name(join_table, ctx.table_types);
-    let (gate_relation, condition) = {
-        let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
-            TypePlan::new_with_well_known(share_type.clone(), &ctx.settings.well_known)
-        });
-        let condition = declare_condition(share_plan, policy_name, spec);
-        let gate_relation = share_plan.ensure_direct(
-            conditional_gate_relation_name(policy_name),
-            vec![DirectSubject::ConditionalWildcard {
-                type_name: ctx.settings.well_known.user.clone(),
-                condition: condition.clone(),
-            }],
-        );
-        (gate_relation, condition)
-    };
-
     let temporal_context: Vec<GateContextColumn> = temporal
         .into_iter()
         .map(|gate| GateContextColumn {
@@ -521,6 +504,44 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
             monotone: gate.monotone,
         })
         .collect();
+    // The gate rides the share type, keyed on the share row, so two viewers of one
+    // guarded row union through the link rather than collide on one tuple.
+    let share_type = share_type_name(join_table, ctx.table_types);
+    let (gate_relation, condition) = {
+        let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(share_type.clone(), &ctx.settings.well_known)
+        });
+        let condition = declare_condition(share_plan, policy_name, spec);
+        let key = emit_membership::membership_source_key(
+            join_table,
+            &identity_cols,
+            member_column,
+            extra_predicates,
+            Some(emit_membership::MembershipSourceGate {
+                condition: &condition,
+                context: &temporal_context,
+                aggregate: false,
+                clocked: !temporal_context.is_empty(),
+                inputs: &[
+                    row_parameter.as_str(),
+                    request_parameter.as_str(),
+                    source.setting_key(),
+                    if separator.is_some() { "some" } else { "none" },
+                    separator.as_deref().unwrap_or_default(),
+                ],
+            }),
+        );
+        let gate_relation = share_plan.membership_source_relation(
+            &key,
+            conditional_gate_relation_name(policy_name),
+            DirectSubject::ConditionalWildcard {
+                type_name: ctx.settings.well_known.user.clone(),
+                condition: condition.clone(),
+            },
+        );
+        (gate_relation, condition)
+    };
+
     let gate_source = TupleSource::CallerSetShareGate {
         join_table: join_table.clone(),
         identity_cols: identity_cols.clone(),
@@ -546,17 +567,20 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         fk_cols: &parent.fk_cols(),
         share_type: &share_type,
     };
-    if parent.is_self(table_plan) {
+    let membership = if parent.is_self(table_plan) {
         let link = link_share_rows(table_plan, &share);
-        return share_reach(link, gate_relation);
-    }
-    // The parent reaches the gate under the gate's own name, one per policy.
-    let parent_plan = parent.plan(all_types, &ctx.settings.well_known);
-    let link = link_share_rows(parent_plan, &share);
-    let reached =
-        parent_plan.ensure_computed(gate_relation.to_string(), share_reach(link, gate_relation));
-    UsersetExpr::TupleToUserset {
-        tupleset: parent.bridge_from(table_plan, source_table, parent.parent_type.clone()),
-        computed: reached,
-    }
+        share_reach(link, gate_relation)
+    } else {
+        let parent_plan = parent.plan(all_types, &ctx.settings.well_known);
+        let link = link_share_rows(parent_plan, &share);
+        let reached = parent_plan
+            .ensure_computed(gate_relation.to_string(), share_reach(link, gate_relation));
+        UsersetExpr::TupleToUserset {
+            tupleset: parent.bridge_from(table_plan, source_table),
+            computed: reached,
+        }
+    };
+    apply_membership_read_scope(
+        membership, join_table, read_scope, ctx, table_plan, all_types, notes,
+    )
 }

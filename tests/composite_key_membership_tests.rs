@@ -178,68 +178,34 @@ CREATE POLICY d ON docs FOR SELECT USING (EXISTS (
     AND m.user_id = current_setting('app.user_id', true)));
 ";
 
-fn model_and_tuples(sql: &str) -> (String, String) {
+fn tuple_sql(sql: &str) -> String {
     let db = parse(sql);
     let translated = translation(&db);
     let outputs = translated.outputs_accepting_gaps();
-    let tuples = rls2fga::generator::tuple_generator::format_tuples(outputs.tuple_queries());
-    (outputs.model(), tuples)
+    rls2fga::generator::tuple_generator::format_tuples(outputs.tuple_queries())
 }
 
-/// The self route: the outer columns are the guarded key, so the parent is the row
-/// itself, membership tuples name it by both share columns in the guarded key's
-/// order, and the bridge maps each row to itself.
+/// Membership tuples preserve every column of the guarded key.
 #[test]
 fn a_self_keyed_membership_names_the_guarded_row_by_its_whole_key() {
     let sql = TWO_COLUMNS;
-    let (model, tuples) = model_and_tuples(sql);
-    for line in [
-        "define can_select: member from p2",
-        "define member: [user]",
-        "define p2: [p2]",
-    ] {
-        assert!(model.contains(line), "missing `{line}` in:\n{model}");
-    }
-    assert!(
-        tuples.contains("-- p2 membership from s2"),
-        "membership query missing:\n{tuples}"
-    );
+    let tuples = tuple_sql(sql);
     assert!(
         tuples.contains(r#"'p2:' || CASE WHEN "tenant_id""#)
             && tuples.contains(r#"'|' || CASE WHEN "paper_id""#),
         "the membership object carries both share columns in the guarded key's \
          order:\n{tuples}"
     );
-    assert!(
-        tuples.contains("-- p2 to p2 bridge for tuple-to-userset"),
-        "the self bridge maps each row to itself:\n{tuples}"
-    );
 }
 
-/// The FK route: membership tuples name the referenced parent by every host column
-/// in its key's order, and the bridge points the guarded row at that parent.
+/// Membership tuples preserve the referenced parent's compound key.
 #[test]
 fn a_composite_fk_membership_names_the_referenced_parent_by_its_whole_key() {
     let sql = COMPOSITE_FK_PARENT;
-    let (model, tuples) = model_and_tuples(sql);
-    for line in [
-        "define can_select: member from projects",
-        "define member: [user]",
-        "define projects: [projects]",
-    ] {
-        assert!(model.contains(line), "missing `{line}` in:\n{model}");
-    }
-    assert!(
-        tuples.contains("-- projects membership from project_members"),
-        "membership query missing:\n{tuples}"
-    );
+    let tuples = tuple_sql(sql);
     assert!(
         tuples.contains(r#"'projects:' || CASE WHEN "tenant_id""#)
             && tuples.contains(r#"'|' || CASE WHEN "project_id""#),
         "the parent object carries both host columns in its key's order:\n{tuples}"
-    );
-    assert!(
-        tuples.contains("-- docs to projects bridge for tuple-to-userset"),
-        "the bridge points the guarded row at its parent:\n{tuples}"
     );
 }

@@ -5,7 +5,8 @@ use core::fmt::Write;
 
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
-use crate::classifier::recognizers::is_constantly_false;
+use crate::classifier::policy_classifier::classify_expr;
+use crate::classifier::recognizers::{constant_bool_value, is_constantly_false};
 use crate::generator::db_lookup::{
     column_is_nullable, column_kind, composite_primary_key_columns, resolve_row_identity,
     row_uniquely_keys, single_identity_column,
@@ -273,8 +274,7 @@ pub(crate) struct TypePlan {
     /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
     /// its own relation, so two keys must never share a name even on hash collision.
     wildcard_gate_relations: BTreeMap<String, RelationName>,
-    /// Distinct predicates must never share a blocked relation.
-    blocked_relations: BTreeMap<String, RelationName>,
+    membership_source_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
     /// beside the relation that needs it.
@@ -313,7 +313,12 @@ fn reserved_relation_subjects(
     } else if *relation == public_relation() {
         Some(vec![DirectSubject::Wildcard(well_known.user.clone())])
     } else if *relation == owner_team_relation() {
-        Some(vec![DirectSubject::Type(well_known.team.clone())])
+        // The team type is per-source (one per team_membership_table), so no single
+        // subject type can be declared here. An empty subject list never equals a real
+        // caller's subjects, so every caller yields away from this name except
+        // `TypePlan::claim_owner_team_relation`, which bypasses this check as the sole
+        // legitimate owner.
+        Some(Vec::new())
     } else {
         None
     }
@@ -341,7 +346,7 @@ impl TypePlan {
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
             wildcard_gate_relations: BTreeMap::new(),
-            blocked_relations: BTreeMap::new(),
+            membership_source_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
             narrowed_relations: BTreeSet::new(),
@@ -444,24 +449,40 @@ impl TypePlan {
         relation
     }
 
-    /// Relation carrying the users one blocklist predicate excludes.
-    fn blocked_relation_for(&mut self, memo_key: &str) -> RelationName {
-        if let Some(existing) = self.blocked_relations.get(memo_key) {
-            return existing.clone();
+    /// Each source's tuples satisfy only its own membership relation.
+    fn membership_source_relation(
+        &mut self,
+        key: &str,
+        base: impl Into<String>,
+        subject: DirectSubject,
+    ) -> RelationName {
+        if let Some(relation) = self.membership_source_relations.get(key) {
+            return relation.clone();
         }
-        let subjects = vec![DirectSubject::Type(self.well_known.user.clone())];
-        let relation = yield_until_free(blocked_relation().as_str(), memo_key, |relation| {
-            reserved_relation_subjects(relation, &self.well_known)
-                .is_some_and(|held| held != subjects)
-                || generator_defines(relation)
-                || self.direct_relations.contains_key(relation)
-                || self.computed_relations.contains_key(relation)
-        });
+        let base = clamp_relation_name(base.into());
+        let mut relation = RelationName::canonicalized(&base);
+        let mut counter = 0usize;
+        while self.direct_relations.contains_key(&relation)
+            || self.computed_relations.contains_key(&relation)
+            || reserved_relation_subjects(&relation, &self.well_known).is_some()
+            || generator_defines(&relation)
+        {
+            let suffix = if counter == 0 {
+                format!("_{}", stable_hex_suffix(key))
+            } else {
+                format!("_{counter}")
+            };
+            let head: String = base
+                .chars()
+                .take(MAX_RELATION_NAME_LEN - suffix.len())
+                .collect();
+            relation = RelationName::canonicalized(format!("{head}{suffix}"));
+            counter += 1;
+        }
         self.direct_relations
-            .entry(relation.clone())
-            .or_insert(subjects);
-        self.blocked_relations
-            .insert(memo_key.to_string(), relation.clone());
+            .insert(relation.clone(), vec![subject]);
+        self.membership_source_relations
+            .insert(key.to_string(), relation.clone());
         relation
     }
 
@@ -493,15 +514,17 @@ impl TypePlan {
         relation
     }
 
-    /// Add one directly-assignable subject to `relation`, creating it if absent. Unlike
-    /// [`Self::ensure_direct`], this widens an existing relation rather than yielding a new
-    /// name, which is what a shared relation like `member` needs when a conditioned variant
-    /// joins its plain one.
-    fn add_direct_subject(&mut self, relation: &RelationName, subject: DirectSubject) {
-        let subjects = self.direct_relations.entry(relation.clone()).or_default();
-        if !subjects.contains(&subject) {
-            subjects.push(subject);
-        }
+    /// Claims the literal `owner_team` relation for a role-threshold function's own
+    /// owner type, the sole legitimate source for it. Unlike [`Self::ensure_direct`],
+    /// this does not consult [`reserved_relation_subjects`]: that reservation exists to
+    /// keep `owner_team` free from every other caller until this one claims it, not to
+    /// disambiguate this call's own subjects, which vary with `team_type`.
+    fn claim_owner_team_relation(&mut self, team_type: &TypeName) -> RelationName {
+        let relation = owner_team_relation();
+        self.direct_relations
+            .entry(relation.clone())
+            .or_insert_with(|| vec![DirectSubject::Type(team_type.clone())]);
+        relation
     }
 
     fn ensure_computed(&mut self, relation: impl Into<String>, expr: UsersetExpr) -> RelationName {
@@ -1802,7 +1825,7 @@ fn prune_plain_subjects_fed_only_by_gated_sources(
     for plan in all_types.values() {
         for source in &plan.table_tuple_sources {
             let carries_condition = source_carries_condition(source);
-            for target in source.feeds(&plan.type_name, well_known) {
+            for target in source.feeds(&plan.type_name) {
                 all_gated
                     .entry(target)
                     .and_modify(|known| *known &= carries_condition)
@@ -1914,6 +1937,17 @@ fn share_type_name(join_table: &TableId, table_types: &TableTypes) -> TypeName {
     disambiguated_kind_type_name(join_table, table_types, "share")
 }
 
+/// The type standing for the team members of a team-membership table, named with
+/// `well_known.team`'s configured word, and keyed on the table so two different
+/// team-membership tables never pool their members into one type.
+fn team_type_name(
+    team_membership_table: &TableId,
+    table_types: &TableTypes,
+    well_known: &WellKnownTypes,
+) -> TypeName {
+    disambiguated_kind_type_name(team_membership_table, table_types, well_known.team.as_str())
+}
+
 /// Builds the base kind-suffix type name and appends a hex hash if `table_types` already claims it.
 fn disambiguated_kind_type_name(table: &TableId, table_types: &TableTypes, kind: &str) -> TypeName {
     let base = canonical_fga_type_name(&format!("{table}_{kind}"));
@@ -1991,47 +2025,41 @@ fn types_bearing_name<DB: DatabaseLike>(
 }
 
 /// How much of a membership table a querying user may read.
-#[derive(Clone)]
 enum JoinTableReadability {
-    /// No row level security, so every membership row counts.
     Open,
-    /// Row level security with at least one policy that can grant reads. `roles` is
-    /// non-empty when every such policy is role scoped, so reads also require one of
-    /// those roles.
+    RequestGated { gates: Vec<MembershipReadGate> },
     Guarded { roles: Vec<String> },
-    /// Row level security with nothing granting reads, so no row is visible.
     Unreadable,
 }
 
-/// Readability of one membership table, computed once per plan per table.
-///
-/// The uncached walk reads every policy the schema declares to find the table's own, and it
-/// runs once per clause naming that table, so a schema whose tables all join one membership
-/// table pays it quadratically. Memoized on the spelling, which `lookup_table` resolves.
-fn join_table_readability<DB: DatabaseLike>(
-    join_table: &TableId,
-    db: &DB,
-    memo: &mut BTreeMap<TableId, JoinTableReadability>,
-) -> JoinTableReadability {
-    memo.entry(join_table.clone())
-        .or_insert_with(|| read_join_table_readability(join_table, db))
-        .clone()
+struct MembershipReadGate {
+    policy_name: String,
+    pattern: PatternClass,
 }
 
-/// The role scope reading `join_table` requires, readability notes pushed.
-/// `None` means nothing grants reads, so the caller denies.
-fn noted_membership_read_scope<DB: DatabaseLike>(
+/// Readability of one membership table, computed once per plan per table.
+fn join_table_readability<'a, DB: DatabaseLike>(
+    join_table: &TableId,
+    db: &DB,
+    registry: &FunctionRegistry,
+    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
+) -> &'a JoinTableReadability {
+    memo.entry(join_table.clone())
+        .or_insert_with(|| read_join_table_readability(join_table, db, registry))
+}
+
+/// Returns the membership read constraints, or `None` when no row is visible.
+fn noted_membership_read_scope<'a, DB: DatabaseLike>(
     join_table: &TableId,
     ctx: &PatternCtx<'_, DB>,
-    memo: &mut BTreeMap<TableId, JoinTableReadability>,
+    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
     notes: &mut Vec<TranslationNote>,
-) -> Option<Vec<String>> {
-    // A proven definer bypass reads the table whole, so there is no caller-side
-    // readability question to ask.
+) -> Option<&'a JoinTableReadability> {
     if ctx.membership_reads_bypass_rls {
-        return Some(Vec::new());
+        return Some(&JoinTableReadability::Open);
     }
-    match join_table_readability(join_table, ctx.db, memo) {
+    let scope = join_table_readability(join_table, ctx.db, ctx.registry, memo);
+    match scope {
         JoinTableReadability::Unreadable => {
             notes.push(TranslationNote::MembershipTableGrantsNoReads {
                 policy: ctx.policy_name.to_string(),
@@ -2039,58 +2067,89 @@ fn noted_membership_read_scope<DB: DatabaseLike>(
             });
             None
         }
-        JoinTableReadability::Guarded { roles } => {
+        JoinTableReadability::Guarded { .. } => {
             notes.push(TranslationNote::MembershipTableGuarded {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
             });
-            Some(roles)
+            Some(scope)
         }
-        JoinTableReadability::Open => Some(Vec::new()),
+        JoinTableReadability::Open | JoinTableReadability::RequestGated { .. } => Some(scope),
+    }
+}
+
+/// Only these patterns can be moved without reading a membership row.
+fn is_request_only_gate(pattern: &PatternClass) -> bool {
+    match pattern {
+        PatternClass::P10ConstantBool(_)
+        | PatternClass::P16ConstantInCallerSet(_)
+        | PatternClass::P17CallerScalarEqualsConstant(_) => true,
+        PatternClass::P8Composite(composite) => composite
+            .parts
+            .iter()
+            .all(|part| is_request_only_gate(&part.pattern)),
+        PatternClass::ExpandedFunction(expanded) => {
+            expanded.presence_columns.is_empty() && is_request_only_gate(&expanded.inner.pattern)
+        }
+        _ => false,
     }
 }
 
 fn read_join_table_readability<DB: DatabaseLike>(
     join_table: &TableId,
     db: &DB,
+    registry: &FunctionRegistry,
 ) -> JoinTableReadability {
     let Some(table) = lookup_table_id(db, join_table) else {
         return JoinTableReadability::Open;
     };
-    // Only a table positively known to have RLS off is open.
-    if table.has_row_level_security(db) == Ok(false) {
+    let rls = table.has_row_level_security(db);
+    if rls == Ok(false) {
         return JoinTableReadability::Open;
     }
 
-    // A clause that admits no row grants nobody, whichever side of the algebra it sits on:
-    // PostgreSQL reads the table as (permissive OR ...) AND restrictive AND ..., so every
-    // permissive one being empty leaves nothing, and any restrictive one being empty removes
-    // whatever they admit. Only provable emptiness counts, since denying on a clause the
-    // crate merely failed to read would refuse what RLS allows.
-    //
-    // One pass, and at most one clause read per policy: this runs once per dependent clause
-    // and the accessors consult the schema, so a second walk here is quadratic in the tables
-    // that join one membership table.
     let mut roles = BTreeSet::new();
     let mut grants_read = false;
     let mut grants_read_unscoped = false;
+    let mut row_independent = rls == Ok(true);
+    let mut gates = Vec::new();
     for policy in table.policies(db).into_iter().flatten() {
         if !policy_covers_reads(policy) {
             continue;
         }
         let Some(using) = policy.using_expression(db) else {
+            row_independent = false;
             continue;
         };
         let admits_nothing = is_constantly_false(using);
 
         if derive_policy_mode(policy) == PolicyMode::Restrictive {
-            // A barrier bound to roles closes the table for those roles alone, which the
-            // three answers here cannot express, so it is left as a disclosed widening.
-            if admits_nothing && derive_scoped_roles(policy, db).is_empty() {
+            if admits_nothing && policy.applies_to_public() {
                 return JoinTableReadability::Unreadable;
+            }
+            if !policy.applies_to_public() {
+                row_independent = false;
+            } else if row_independent && constant_bool_value(using) != Some(true) {
+                let pattern = classify_expr(
+                    using,
+                    db,
+                    registry,
+                    &qualified_table_name(table),
+                    PolicyCommand::Select,
+                )
+                .pattern;
+                if is_request_only_gate(&pattern) {
+                    gates.push(MembershipReadGate {
+                        policy_name: format!("{join_table}_{}", policy.name()),
+                        pattern,
+                    });
+                } else {
+                    row_independent = false;
+                }
             }
             continue;
         }
+        row_independent &= policy.applies_to_public() && constant_bool_value(using) == Some(true);
         if admits_nothing {
             continue;
         }
@@ -2104,12 +2163,22 @@ fn read_join_table_readability<DB: DatabaseLike>(
         }
     }
 
-    match (grants_read, grants_read_unscoped) {
-        (false, _) => JoinTableReadability::Unreadable,
-        (true, true) => JoinTableReadability::Guarded { roles: Vec::new() },
-        (true, false) => JoinTableReadability::Guarded {
-            roles: roles.into_iter().collect(),
-        },
+    if !grants_read {
+        JoinTableReadability::Unreadable
+    } else if row_independent {
+        if gates.is_empty() {
+            JoinTableReadability::Open
+        } else {
+            JoinTableReadability::RequestGated { gates }
+        }
+    } else {
+        JoinTableReadability::Guarded {
+            roles: if grants_read_unscoped {
+                Vec::new()
+            } else {
+                roles.into_iter().collect()
+            },
+        }
     }
 }
 

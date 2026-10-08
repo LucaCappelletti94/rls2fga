@@ -74,7 +74,7 @@ impl TryFrom<SessionAttributeSpec> for SessionAttribute {
 
     fn try_from(spec: SessionAttributeSpec) -> Result<Self, Self::Error> {
         let mut attribute = SessionAttribute::build(&spec.key, spec.path, spec.kind);
-        attribute.identity_cast = spec.identity_cast;
+        attribute.identity_cast = spec.identity_cast.map(|cast| cast.to_ascii_lowercase());
         match spec.parameter {
             Some(name) => attribute.with_parameter(name),
             None => Ok(attribute),
@@ -136,7 +136,7 @@ impl SessionAttribute {
     /// that casts it to `cast` changes no value.
     #[must_use]
     pub fn with_identity_cast(mut self, cast: impl Into<String>) -> Self {
-        self.identity_cast = Some(cast.into());
+        self.identity_cast = Some(cast.into().to_ascii_lowercase());
         self
     }
 

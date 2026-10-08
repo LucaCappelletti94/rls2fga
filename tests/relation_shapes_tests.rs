@@ -1094,7 +1094,10 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
         "one holder object stands for the whole list"
     );
 
-    let members = entry(&shapes, holder_type.as_str(), member_relation().as_str());
+    let members = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str() == holder_type.as_str() && !entry.shapes.is_empty())
+        .expect("the holder's member list is described");
     assert_eq!(members.shapes.len(), 1, "one member source, one shape");
     let RecordDerivation::FromRow {
         table,
@@ -1106,7 +1109,7 @@ fn a_holder_relation_carries_the_shapes_that_fill_it() {
     };
     assert_eq!(table.to_string(), "staff");
     assert_eq!(template.object_type, members.type_name);
-    assert_eq!(template.relation, member_relation());
+    assert_eq!(template.relation, members.relation);
     assert_eq!(
         template.object_key.parts(),
         [ValueSource::Literal("all".to_string())],
@@ -1129,7 +1132,9 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
     let shapes = shapes_of(schema, ACCESSOR_REGISTRY);
     let holder = shapes
         .iter()
-        .find(|entry| entry.type_name.as_str().starts_with("reviewers_holder"))
+        .find(|entry| {
+            entry.type_name.as_str().starts_with("reviewers_holder") && !entry.shapes.is_empty()
+        })
         .expect("the reviewers holder is reported");
     let RecordDerivation::Joined { queries, .. } = &holder.shapes[0].derivation else {
         panic!(
@@ -1144,7 +1149,7 @@ fn a_holder_member_list_with_a_clock_conditions_its_member_tuple() {
         queries[0].scope(),
         &ReplayScope::Subject {
             subject_type: TypeName::canonicalized("user"),
-            relation: member_relation(),
+            relation: holder.relation.clone(),
             object_type: holder.type_name.clone(),
         },
         "the replay determines what the one member holds through the holder"
@@ -2975,7 +2980,14 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
     let reported = planned.relations();
     let member = reported
         .iter()
-        .find(|entry| entry.relation.as_str() == "member" && !entry.shapes.is_empty())
+        .find(|entry| {
+            entry.shapes.iter().any(|shape| {
+                matches!(
+                    &shape.derivation,
+                    RecordDerivation::FromRow { table, .. } if table.name() == "doc_shares"
+                )
+            })
+        })
         .expect("the membership feeds a member relation");
     let RecordDerivation::FromRow {
         table,
@@ -3013,11 +3025,12 @@ fn an_expiring_exists_membership_conditions_its_member_tuple() {
         "a share with no expiry writes no record: {guards:?}"
     );
 
+    let member_definition = format!("define {}:", member.relation.as_str());
     let outputs = planned.outputs_accepting_gaps();
     let dsl = outputs.model();
     assert!(
         dsl.lines()
-            .any(|line| line.contains("define member:") && line.contains("user with ")),
+            .any(|line| { line.contains(&member_definition) && line.contains("user with ") }),
         "the member relation admits a conditioned user:\n{dsl}"
     );
     let queries = outputs.tuple_queries();
@@ -3531,7 +3544,10 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
 #[test]
 fn a_cross_row_residual_names_every_relation_it_reads() {
     let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
-    let member = entry(&shapes, "papers", member_relation().as_str());
+    let member = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str() == "papers" && !entry.shapes.is_empty())
+        .expect("the membership is reported on papers");
     let tables: BTreeSet<String> = member
         .shapes
         .iter()
@@ -3549,7 +3565,10 @@ fn a_cross_row_residual_names_every_relation_it_reads() {
 #[test]
 fn a_cross_row_residual_refuses_a_keyed_replay() {
     let shapes = shapes_of(CROSS_ROW_RESIDUAL, "{}");
-    let member = entry(&shapes, "papers", member_relation().as_str());
+    let member = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str() == "papers" && !entry.shapes.is_empty())
+        .expect("the membership is reported on papers");
     let shape = member
         .shapes
         .first()
@@ -3564,7 +3583,7 @@ fn a_cross_row_residual_refuses_a_keyed_replay() {
                 scope,
                 &ReplayScope::Object {
                     object_type: TypeName::canonicalized("papers"),
-                    relations: vec![member_relation()],
+                    relations: vec![member.relation.clone()],
                 },
                 "the result is the whole truth for the membership facts on papers"
             );
@@ -3681,7 +3700,10 @@ CREATE POLICY papers_p ON papers FOR SELECT USING (EXISTS (
 #[test]
 fn a_temporal_conjunct_beside_a_cross_row_one_keeps_the_unnarrowed_derivation() {
     let shapes = shapes_of(MIXED_CROSS_ROW, "{}");
-    let member = entry(&shapes, "papers", member_relation().as_str());
+    let member = shapes
+        .iter()
+        .find(|entry| entry.type_name.as_str() == "papers" && !entry.shapes.is_empty())
+        .expect("the membership is reported on papers");
     for shape in &member.shapes {
         assert!(
             matches!(shape.derivation, RecordDerivation::WholeShape { .. }),

@@ -351,7 +351,7 @@ pub(crate) fn generate_tuple_queries_from_plan<'plan, DB: DatabaseLike>(
 
     for type_plan in &plan.types {
         for source in &type_plan.table_tuple_sources {
-            let fed = source.feeds(&type_plan.type_name, &plan.well_known);
+            let fed = source.feeds(&type_plan.type_name);
             if !fed.is_empty() && !fed.iter().any(|target| grantable.contains(target)) {
                 continue;
             }
@@ -829,6 +829,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             role_cases,
             user_principal,
             team_principal,
+            team_type,
         } => {
             if role_cases.is_empty() {
                 return None;
@@ -859,13 +860,18 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
 
             let grantee_ref = format!("og.{grant_grantee_col_sql}");
             let user_subject_sql = typed_name_sql(&well_known.user, [grantee_ref.as_str()]);
-            let team_subject_sql = typed_name_sql(&well_known.team, [grantee_ref.as_str()]);
+            let team_subject_sql = team_type
+                .as_ref()
+                .map(|tt| typed_name_sql(tt, [grantee_ref.as_str()]));
             let owner_ref = format!("og.{grant_resource_col_sql}");
             let object_sql = typed_name_sql(granted_type, [owner_ref.as_str()]);
             let mut subject_joins: Vec<String> = Vec::new();
             let mut principal_filter: Option<String> = None;
-            let subject_expr = match (user_principal.as_ref(), team_principal.as_ref()) {
-                (Some(up), Some(tp)) => {
+            let subject_expr = match (
+                user_principal.as_ref(),
+                team_principal.as_ref().zip(team_subject_sql.as_ref()),
+            ) {
+                (Some(up), Some((tp, team_subject_sql))) => {
                     let user_tbl_sql = up.table.sql_name();
                     let user_pk_sql = quote_sql_identifier(up.identity_col.as_str());
                     let team_tbl_sql = tp.table.sql_name();
@@ -887,13 +893,13 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     )
                 }
                 (Some(_), None) => user_subject_sql,
-                (None, Some(tp)) => {
+                (None, Some((tp, team_subject_sql))) => {
                     let team_tbl_sql = tp.table.sql_name();
                     let team_pk_sql = quote_sql_identifier(tp.identity_col.as_str());
                     subject_joins.push(format!(
                         "JOIN {team_tbl_sql} t ON t.{team_pk_sql} = og.{grant_grantee_col_sql}"
                     ));
-                    team_subject_sql
+                    team_subject_sql.clone()
                 }
                 (None, None) => {
                     // Fail closed: neither user nor team principal could be resolved.
@@ -941,11 +947,12 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             membership_table,
             team_col,
             user_col,
+            team_type,
         } => {
             let membership_table_sql = membership_table.sql_name();
             let team_col_sql = quote_sql_identifier(team_col.as_str());
             let user_col_sql = quote_sql_identifier(user_col.as_str());
-            let object_sql = typed_name_sql(&well_known.team, [team_col_sql.as_str()]);
+            let object_sql = typed_name_sql(team_type, [team_col_sql.as_str()]);
             let subject_sql = typed_name_sql(&well_known.user, [user_col_sql.as_str()]);
             let team_guards = join_row_is_nameable(
                 "",
@@ -1258,6 +1265,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             holder_type,
             member_table,
             user_col,
+            relation,
             extra_predicates,
             gate,
         } => {
@@ -1283,7 +1291,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     comment: format!("-- Everyone listed in {member_table}, held by {holder_type}"),
                     sql: format!(
                         "SELECT DISTINCT {object_sql} AS object, \
-                         'member' AS relation, {subject_sql} AS subject\n\
+                         '{relation}' AS relation, {subject_sql} AS subject\n\
                          FROM {member_table_sql}{where_clause};"
                     ),
                     description: None,
@@ -1314,7 +1322,7 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
                     gate.condition
                 ),
                 sql: format!(
-                    "SELECT {distinct}{object_sql} AS object, 'member' AS relation, \
+                    "SELECT {distinct}{object_sql} AS object, '{relation}' AS relation, \
                      {subject_sql} AS subject,\n\
                      \x20 '{}' AS condition, jsonb_build_object({context}) AS context\n\
                      FROM {member_table_sql}{where_clause}{group_by};",
@@ -1880,6 +1888,7 @@ mod tests {
             membership_table: table("team_members"),
             team_col: ColumnName::from_stored("team_id"),
             user_col: ColumnName::from_stored("user_id"),
+            team_type: TypeName::canonicalized("team"),
         };
         assert_eq!(
             rendered_source_key(&shared, &TypeName::canonicalized("docs"), false),
@@ -2467,6 +2476,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
             )],
             user_principal: None,
             team_principal: None,
+            team_type: None,
         };
         let query = render_explicit_grants(
             &source,
@@ -2510,6 +2520,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 table: table("teams"),
                 identity_col: ColumnName::from_stored("id"),
             }),
+            team_type: Some(TypeName::canonicalized("team")),
         };
         let query = render_explicit_grants(
             &source,
@@ -2551,6 +2562,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 table: table("teams"),
                 identity_col: ColumnName::from_stored("id"),
             }),
+            team_type: Some(TypeName::canonicalized("team")),
         };
         let query = render_explicit_grants(
             &source,
@@ -2592,6 +2604,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 table: table("groups"),
                 identity_col: ColumnName::from_stored("id"),
             }),
+            team_type: Some(TypeName::canonicalized("group")),
         };
         let query = render_explicit_grants(&source, &TypeName::canonicalized("doc"), &well_known);
         assert!(
@@ -2626,6 +2639,7 @@ CREATE POLICY docs_select ON docs FOR SELECT
                 table: table("teams"),
                 identity_col: ColumnName::from_stored("id"),
             }),
+            team_type: Some(TypeName::canonicalized("team")),
         };
         let query = render_explicit_grants(
             &source,

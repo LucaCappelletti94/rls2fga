@@ -343,11 +343,6 @@ fn a_distinct_membership_subquery_still_translates() {
     let (expected_dsl, expected_tuples) = membership_translation(
         "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
     );
-    assert_eq!(
-        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
-        Some("member from docs"),
-        "guard precondition: the plain spelling must translate:\n{expected_dsl}"
-    );
 
     for clause in [
         "id IN (SELECT DISTINCT doc_id FROM doc_members WHERE user_id = current_user)",

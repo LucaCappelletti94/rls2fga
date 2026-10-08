@@ -384,9 +384,10 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             membership_table,
             team_col,
             user_col,
+            team_type,
         } => Some(from_row(
             membership_table,
-            &well_known.team,
+            team_type,
             value_column(membership_table, team_col, db),
             &member_relation(),
             &well_known.user,
@@ -948,6 +949,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             user_col,
             extra_predicates,
             gate,
+            relation,
         } => {
             let mut guards = vec![not_null(member_table, user_col, db)];
             let Some(gate) = gate else {
@@ -961,7 +963,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                         extra_predicates,
                         ReplayScope::Subject {
                             subject_type: well_known.user.clone(),
-                            relation: member_relation(),
+                            relation: relation.clone(),
                             object_type: holder_type.clone(),
                         },
                         format!(
@@ -975,7 +977,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     member_table,
                     holder_type,
                     ValueSource::Literal(HOLDER_OBJECT_ID.to_string()),
-                    &member_relation(),
+                    relation,
                     &well_known.user,
                     value_column(member_table, user_col, db),
                     guards,
@@ -993,7 +995,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     extra_predicates,
                     ReplayScope::Subject {
                         subject_type: well_known.user.clone(),
-                        relation: member_relation(),
+                        relation: relation.clone(),
                         object_type: holder_type.clone(),
                     },
                     format!(
@@ -1026,7 +1028,7 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
                     object_key: ObjectKey::new(vec![ValueSource::Literal(
                         HOLDER_OBJECT_ID.to_string(),
                     )]),
-                    relation: member_relation(),
+                    relation: relation.clone(),
                     subject_type: well_known.user.clone(),
                     subject_key: subject_column(member_table, user_col, db),
                     context: Some(RecordContext {

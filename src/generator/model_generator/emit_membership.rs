@@ -7,6 +7,110 @@ use super::*;
 
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
+pub(super) struct MembershipSourceGate<'a> {
+    pub condition: &'a str,
+    pub context: &'a [GateContextColumn],
+    pub aggregate: bool,
+    pub clocked: bool,
+    pub inputs: &'a [&'a str],
+}
+
+impl<'a> From<&'a MembershipGate> for MembershipSourceGate<'a> {
+    fn from(gate: &'a MembershipGate) -> Self {
+        Self {
+            condition: &gate.condition,
+            context: &gate.context,
+            aggregate: gate.aggregate,
+            clocked: true,
+            inputs: &[],
+        }
+    }
+}
+
+// Length prefixes keep separators in SQL and stored names unambiguous.
+fn source_key_part(key: &mut String, part: &str) {
+    let _ = write!(key, "{}:{part}", part.len());
+}
+
+fn source_key_columns(key: &mut String, columns: &[ColumnName]) {
+    let _ = write!(key, "{}:", columns.len());
+    for column in columns {
+        source_key_part(key, column.as_str());
+    }
+}
+
+fn table_source_key(kind: &str, table: &TableId) -> String {
+    let mut key = String::new();
+    source_key_part(&mut key, kind);
+    source_key_part(&mut key, table.schema().unwrap_or("public"));
+    source_key_part(&mut key, table.name());
+    key
+}
+
+pub(super) fn membership_source_key(
+    table: &TableId,
+    object_cols: &[ColumnName],
+    user_column: &ColumnName,
+    residual: &ResidualPredicates,
+    gate: Option<MembershipSourceGate<'_>>,
+) -> String {
+    let mut key = table_source_key("membership", table);
+    source_key_columns(&mut key, object_cols);
+    source_key_part(&mut key, user_column.as_str());
+    let sql = if gate.as_ref().is_some_and(|gate| gate.clocked) {
+        residual.sql_excluding_requests()
+    } else {
+        residual.sql()
+    };
+    let _ = write!(key, "{}:", sql.is_some());
+    source_key_part(&mut key, sql.as_deref().unwrap_or_default());
+    let Some(gate) = gate else {
+        source_key_part(&mut key, "plain");
+        return key;
+    };
+    source_key_part(&mut key, "gated");
+    source_key_part(&mut key, gate.condition);
+    let _ = write!(
+        key,
+        "{}:{}:{}:",
+        gate.aggregate,
+        gate.clocked,
+        gate.context.len()
+    );
+    for column in gate.context {
+        source_key_part(&mut key, &column.parameter);
+        source_key_part(&mut key, column.column.as_str());
+        source_key_part(
+            &mut key,
+            match column.witness {
+                ContextWitness::Latest => "latest",
+                ContextWitness::Earliest => "earliest",
+            },
+        );
+    }
+    let _ = write!(key, "{}:", gate.inputs.len());
+    for input in gate.inputs {
+        source_key_part(&mut key, input);
+    }
+    key
+}
+
+fn parent_bridge_relation(
+    plan: &mut TypePlan,
+    table: &TableId,
+    columns: &[ColumnName],
+    parent_type: &TypeName,
+) -> RelationName {
+    let mut key = table_source_key("parent_bridge", table);
+    source_key_columns(&mut key, columns);
+    source_key_part(&mut key, parent_type.as_str());
+    plan.membership_source_relation(
+        &key,
+        parent_type.as_str(),
+        DirectSubject::Type(parent_type.clone()),
+    )
+}
+
 /// Disclose the residual, naming the relations an exemption rests on.
 ///
 /// `gated` drops the conjuncts the clock already took into the condition.
@@ -59,9 +163,10 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // Reading the member table is still reading it as the caller, so its own
     // RLS decides which membership rows count, exactly as for P4.
-    if noted_membership_read_scope(member_table, ctx, readability, notes).is_none() {
+    let Some(read_scope) = noted_membership_read_scope(member_table, ctx, readability, notes)
+    else {
         return deny_expr(table_plan);
-    }
+    };
     // Before any note or any minting: the grant hangs off a bridge from this row
     // to the holder, so with no row identity there is nothing to hang it on, a
     // holder type minted here would outlive the expression that justified it,
@@ -125,12 +230,26 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
                 TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
             });
-            share_plan.ensure_direct(
+            let key = membership_source_key(
+                member_table,
+                &identity_cols,
+                user_column,
+                extra_predicates,
+                Some(MembershipSourceGate {
+                    condition: &condition,
+                    context: &context,
+                    aggregate: false,
+                    clocked: true,
+                    inputs: &[],
+                }),
+            );
+            share_plan.membership_source_relation(
+                &key,
                 member_relation(),
-                vec![DirectSubject::ConditionalType {
+                DirectSubject::ConditionalType {
                     type_name: table_plan.well_known.user.clone(),
                     condition: condition.clone(),
-                }],
+                },
             )
         };
         let share_source = TupleSource::MembershipShareMembers {
@@ -174,30 +293,49 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             relation: holder_relation.clone(),
             holder_type,
         });
-        return UsersetExpr::TupleToUserset {
-            tupleset: holder_relation,
-            computed: witness_member,
-        };
+        return apply_membership_read_scope(
+            UsersetExpr::TupleToUserset {
+                tupleset: holder_relation,
+                computed: witness_member,
+            },
+            member_table,
+            read_scope,
+            ctx,
+            table_plan,
+            all_types,
+            notes,
+        );
     }
     let gate = gate.map(|(condition, context)| MembershipGate {
         condition,
         context,
         aggregate: !rows_unique,
     });
-    ensure_member_type(all_types, &holder_type, &table_plan.well_known);
-    if let (Some(gate), Some(holder_plan)) = (&gate, all_types.get_mut(&holder_type)) {
-        holder_plan.add_direct_subject(
-            &member_relation(),
-            DirectSubject::ConditionalType {
+    let member_rel = {
+        let holder_plan = all_types.entry(holder_type.clone()).or_insert_with(|| {
+            TypePlan::new_with_well_known(holder_type.clone(), &table_plan.well_known)
+        });
+        let key = membership_source_key(
+            member_table,
+            &[],
+            user_column,
+            extra_predicates,
+            gate.as_ref().map(MembershipSourceGate::from),
+        );
+        let subject = gate.as_ref().map_or_else(
+            || DirectSubject::Type(table_plan.well_known.user.clone()),
+            |gate| DirectSubject::ConditionalType {
                 type_name: table_plan.well_known.user.clone(),
                 condition: gate.condition.clone(),
             },
         );
-    }
+        holder_plan.membership_source_relation(&key, member_relation(), subject)
+    };
     table_plan.add_source(TupleSource::HolderMembers {
         holder_type: holder_type.clone(),
         member_table: member_table.clone(),
         user_col: user_column.clone(),
+        relation: member_rel.clone(),
         extra_predicates: extra_predicates.clone(),
         gate: gate.clone(),
     });
@@ -206,6 +344,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             holder_type: holder_type.clone(),
             member_table: member_table.clone(),
             user_col: user_column.clone(),
+            relation: member_rel.clone(),
             extra_predicates: extra_predicates.clone(),
             gate,
         });
@@ -216,31 +355,59 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
         relation: holder_relation.clone(),
         holder_type,
     });
-    UsersetExpr::TupleToUserset {
-        tupleset: holder_relation,
-        computed: member_relation(),
-    }
+    apply_membership_read_scope(
+        UsersetExpr::TupleToUserset {
+            tupleset: holder_relation,
+            computed: member_rel,
+        },
+        member_table,
+        read_scope,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+    )
 }
 
-struct MembershipReadScopeInput<'a> {
-    read_scope_roles: &'a [String],
-    join_table: &'a TableId,
-}
-
-/// Applies the membership read scope gate, returning the scoped or unscoped expression.
-fn apply_membership_read_scope<DB: DatabaseLike>(
+/// Intersects a membership arm with its table's read constraints.
+pub(super) fn apply_membership_read_scope<DB: DatabaseLike>(
     membership: UsersetExpr,
-    input: &MembershipReadScopeInput<'_>,
+    join_table: &TableId,
+    scope: &JoinTableReadability,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
-    if input.read_scope_roles.is_empty() {
+    let roles = match scope {
+        JoinTableReadability::Open => return membership,
+        JoinTableReadability::Unreadable => return deny_expr(table_plan),
+        JoinTableReadability::RequestGated { gates } => {
+            let mut expressions = Vec::with_capacity(gates.len() + 1);
+            expressions.push(membership);
+            // Request-only patterns never consult membership readability.
+            for gate in gates {
+                expressions.push(translate_pattern(
+                    &gate.pattern,
+                    &PatternCtx {
+                        policy_name: &gate.policy_name,
+                        ..*ctx
+                    },
+                    table_plan,
+                    all_types,
+                    notes,
+                    &mut BTreeMap::new(),
+                ));
+            }
+            return combine_intersection(expressions).unwrap_or_else(|| deny_expr(table_plan));
+        }
+        JoinTableReadability::Guarded { roles } => roles,
+    };
+    if roles.is_empty() {
         return membership;
     }
     let scope_relation =
-        membership_read_scope_relation_name(ctx.table_types.resolve(input.join_table).as_str());
+        membership_read_scope_relation_name(ctx.table_types.resolve(join_table).as_str());
     register_pg_role_scope(
         table_plan,
         all_types,
@@ -250,11 +417,11 @@ fn apply_membership_read_scope<DB: DatabaseLike>(
         RoleScopeSpec {
             scope_relation: &scope_relation,
             walked: &RolePrivilege::Usage.relation_name(),
-            role_names: input.read_scope_roles,
+            role_names: roles,
             scope_note: TranslationNote::MembershipReadScope {
                 policy: ctx.policy_name.to_string(),
-                join_table: input.join_table.clone(),
-                roles: input.read_scope_roles.to_vec(),
+                join_table: join_table.clone(),
+                roles: roles.clone(),
                 relation: scope_relation.clone(),
             },
             missing_object_what: "membership read scope tuples",
@@ -366,13 +533,13 @@ impl MembershipParent {
         &self,
         table_plan: &mut TypePlan,
         source_table: &TableId,
-        name: impl Into<String>,
     ) -> RelationName {
+        let outer_cols = self.outer_cols();
         let relation =
-            table_plan.ensure_direct(name, vec![DirectSubject::Type(self.parent_type.clone())]);
+            parent_bridge_relation(table_plan, source_table, &outer_cols, &self.parent_type);
         table_plan.add_source(TupleSource::ParentBridge {
             table: source_table.clone(),
-            fk_cols: self.outer_cols(),
+            fk_cols: outer_cols,
             parent_type: self.parent_type.clone(),
             relation: relation.clone(),
         });
@@ -390,9 +557,14 @@ pub(super) struct ShareRows<'a> {
 
 /// Link each object of `plan` to the share rows naming it, returning the link relation.
 pub(super) fn link_share_rows(plan: &mut TypePlan, share: &ShareRows<'_>) -> RelationName {
-    let link = plan.ensure_direct(
-        clamp_relation_name(share.share_type.to_string()),
-        vec![DirectSubject::Type(share.share_type.clone())],
+    let mut key = table_source_key("share_bridge", share.join_table);
+    source_key_columns(&mut key, share.identity_cols);
+    source_key_columns(&mut key, share.fk_cols);
+    source_key_part(&mut key, share.share_type.as_str());
+    let link = plan.membership_source_relation(
+        &key,
+        share.share_type.as_str(),
+        DirectSubject::Type(share.share_type.clone()),
     );
     plan.add_source(TupleSource::ShareBridge {
         join_table: share.join_table.clone(),
@@ -409,15 +581,6 @@ pub(super) fn link_share_rows(plan: &mut TypePlan, share: &ShareRows<'_>) -> Rel
 enum MembershipPolarity {
     Grant,
     Block,
-}
-
-impl MembershipPolarity {
-    fn bridge_name(self, parent: &TypeName, member: &RelationName) -> String {
-        match self {
-            Self::Grant => parent.as_str().to_string(),
-            Self::Block => format!("{member}_via_{parent}"),
-        }
-    }
 }
 
 /// Membership through a join table, bridged on the column the policy correlates.
@@ -462,7 +625,8 @@ fn emit_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // The subquery reads `join_table` as the user, so its own RLS decides which
     // membership rows count.
-    let read_scope_roles = if polarity == MembershipPolarity::Block {
+    let open_scope = JoinTableReadability::Open;
+    let read_scope = if polarity == MembershipPolarity::Block {
         let readable = lookup_table_id(db, join_table).is_some_and(|table| {
             crate::generator::unrestricted::restricts_nothing_by_any_route(table, db)
         });
@@ -475,12 +639,12 @@ fn emit_membership<DB: DatabaseLike>(
             });
             return deny_expr(table_plan);
         }
-        Vec::new()
+        &open_scope
     } else {
-        let Some(roles) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
+        let Some(scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
             return deny_expr(table_plan);
         };
-        roles
+        scope
     };
     let Some(parent) = MembershipParent::resolve(pairs, join_table, ctx, table_plan, notes) else {
         return deny_expr(table_plan);
@@ -542,49 +706,6 @@ fn emit_membership<DB: DatabaseLike>(
         }
         _ => None,
     };
-    let conditional_member = match &gate {
-        Some((condition, _)) if witness.is_none() => Some(DirectSubject::ConditionalType {
-            type_name: table_plan.well_known.user.clone(),
-            condition: condition.clone(),
-        }),
-        _ => None,
-    };
-    let memo_key =
-        (polarity == MembershipPolarity::Block).then(|| blocked_membership_key(exists_membership));
-    let member_relation = if let Some(key) = &memo_key {
-        if parent.is_self(table_plan) {
-            table_plan.blocked_relation_for(key)
-        } else {
-            parent
-                .plan(all_types, &table_plan.well_known)
-                .blocked_relation_for(key)
-        }
-    } else {
-        member_relation()
-    };
-
-    // The witness route reaches the share rows by a computed relation, so a direct
-    // `member` on the parent would sit unused.
-    if witness.is_none() {
-        if parent.is_self(table_plan) {
-            table_plan.ensure_direct(
-                member_relation.clone(),
-                vec![DirectSubject::Type(table_plan.well_known.user.clone())],
-            );
-            if let Some(subject) = &conditional_member {
-                table_plan.add_direct_subject(&member_relation, subject.clone());
-            }
-        } else {
-            let parent_plan = parent.plan(all_types, &table_plan.well_known);
-            parent_plan.ensure_direct(
-                member_relation.clone(),
-                vec![DirectSubject::Type(parent_plan.well_known.user.clone())],
-            );
-            if let Some(subject) = &conditional_member {
-                parent_plan.add_direct_subject(&member_relation, subject.clone());
-            }
-        }
-    }
 
     // The clock moved into the condition, so only what remains needs announcing.
     announce_residual(extra_predicates, gate.is_some(), policy_name, notes);
@@ -595,17 +716,32 @@ fn emit_membership<DB: DatabaseLike>(
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
                 TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
             });
-            let relation = if let Some(key) = &memo_key {
-                share_plan.blocked_relation_for(key)
+            let mut key = membership_source_key(
+                join_table,
+                &identity_cols,
+                user_column,
+                extra_predicates,
+                Some(MembershipSourceGate {
+                    condition: &condition,
+                    context: &context,
+                    aggregate: false,
+                    clocked: true,
+                    inputs: &[],
+                }),
+            );
+            let base = if polarity == MembershipPolarity::Block {
+                source_key_part(&mut key, "block");
+                blocked_relation()
             } else {
-                member_relation.clone()
+                member_relation()
             };
-            share_plan.ensure_direct(
-                relation,
-                vec![DirectSubject::ConditionalType {
+            share_plan.membership_source_relation(
+                &key,
+                base,
+                DirectSubject::ConditionalType {
                     type_name: table_plan.well_known.user.clone(),
                     condition: condition.clone(),
-                }],
+                },
             )
         };
         let share_source = TupleSource::MembershipShareMembers {
@@ -638,27 +774,53 @@ fn emit_membership<DB: DatabaseLike>(
             parent_plan.ensure_computed(reached, share_reach(link, member_rel))
         };
         UsersetExpr::TupleToUserset {
-            tupleset: parent.bridge_from(
-                table_plan,
-                source_table,
-                polarity.bridge_name(&parent.parent_type, &member_relation),
-            ),
+            tupleset: parent.bridge_from(table_plan, source_table),
             computed: witness_member,
         }
     } else {
+        let gate = gate.map(|(condition, context)| MembershipGate {
+            condition,
+            context,
+            aggregate: !rows_unique,
+        });
+        let fk_cols = parent.fk_cols();
+        let mut key = membership_source_key(
+            join_table,
+            &fk_cols,
+            user_column,
+            extra_predicates,
+            gate.as_ref().map(MembershipSourceGate::from),
+        );
+        let base = if polarity == MembershipPolarity::Block {
+            source_key_part(&mut key, "block");
+            blocked_relation()
+        } else {
+            member_relation()
+        };
+        let member_rel = {
+            let parent_plan = if parent.is_self(table_plan) {
+                &mut *table_plan
+            } else {
+                parent.plan(all_types, &table_plan.well_known)
+            };
+            let subject = gate.as_ref().map_or_else(
+                || DirectSubject::Type(parent_plan.well_known.user.clone()),
+                |gate| DirectSubject::ConditionalType {
+                    type_name: parent_plan.well_known.user.clone(),
+                    condition: gate.condition.clone(),
+                },
+            );
+            parent_plan.membership_source_relation(&key, base, subject)
+        };
         // On the guarded plan first, which is the order the renderer emits.
         let membership_source = TupleSource::ExistsMembership {
             join_table: join_table.clone(),
-            fk_cols: parent.fk_cols(),
+            fk_cols,
             user_col: user_column.clone(),
             parent_type: parent_type.clone(),
-            relation: member_relation.clone(),
+            relation: member_rel.clone(),
             extra_predicates: extra_predicates.clone(),
-            gate: gate.map(|(condition, context)| MembershipGate {
-                condition,
-                context,
-                aggregate: !rows_unique,
-            }),
+            gate,
         };
         table_plan.add_source(membership_source.clone());
         if let Some(parent_plan) = all_types.get_mut(parent_type) {
@@ -672,50 +834,17 @@ fn emit_membership<DB: DatabaseLike>(
                     .eq(parent.pairs.iter().map(|pair| &pair.outer_column))
             })
         {
-            UsersetExpr::Computed(member_relation)
+            UsersetExpr::Computed(member_rel)
         } else {
             UsersetExpr::TupleToUserset {
-                tupleset: parent.bridge_from(
-                    table_plan,
-                    source_table,
-                    polarity.bridge_name(&parent.parent_type, &member_relation),
-                ),
-                computed: member_relation,
+                tupleset: parent.bridge_from(table_plan, source_table),
+                computed: member_rel,
             }
         }
     };
     apply_membership_read_scope(
-        membership,
-        &MembershipReadScopeInput {
-            read_scope_roles: &read_scope_roles,
-            join_table,
-        },
-        ctx,
-        table_plan,
-        all_types,
-        notes,
+        membership, join_table, read_scope, ctx, table_plan, all_types, notes,
     )
-}
-
-fn blocked_membership_key(membership: &ExistsMembership) -> String {
-    let mut key = String::new();
-    let mut append = |part: &str| {
-        let _ = write!(key, "{}:{part}", part.len());
-    };
-    append(&membership.join_table.sql_name());
-    for pair in &membership.pairs {
-        append(pair.join_column.as_str());
-        append(pair.outer_column.as_str());
-    }
-    append(membership.user_column.as_str());
-    append(
-        membership
-            .extra_predicates
-            .sql()
-            .as_deref()
-            .unwrap_or_default(),
-    );
-    key
 }
 
 pub(super) fn emit_blocked_set<DB: DatabaseLike>(
@@ -819,11 +948,11 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
 
     let parent_type = table_types.resolve(parent_table);
 
-    // The relation is named after the parent type, but relation names have a
-    // tighter length limit, so use the name the plan actually registered.
-    let parent_relation = table_plan.ensure_direct(
-        parent_type.clone(),
-        vec![DirectSubject::Type(parent_type.clone())],
+    let parent_relation = parent_bridge_relation(
+        table_plan,
+        source_table,
+        core::slice::from_ref(fk_column),
+        &parent_type,
     );
     // The inner rule has to land on the parent's plan. When the parent is the
     // table being built, that plan is `table_plan`, held here rather than in

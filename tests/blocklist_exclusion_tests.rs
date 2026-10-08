@@ -80,16 +80,15 @@ fn positive_shares_and_negative_blocks_write_separate_relations() {
     let translated = translate(&schema(&format!("({OWNER} OR {SHARED}) AND NOT {BLOCKED}")));
     let blocked = records(&translated, "blocks", "d1", "alice");
     let shared = records(&translated, "shares", "d1", "alice");
+    let blocked_relation = blocked
+        .iter()
+        .find(|record| record.object == "docs:d1" && record.subject == "user:alice")
+        .map(|record| record.relation.clone())
+        .expect("a blocked record for alice on d1");
     assert!(
-        blocked.iter().any(|record| {
-            record.object == "docs:d1"
-                && record.relation == "blocked"
-                && record.subject == "user:alice"
-        }),
-        "{blocked:?}"
-    );
-    assert!(
-        shared.iter().all(|record| record.relation != "blocked"),
+        shared
+            .iter()
+            .all(|record| record.relation != blocked_relation),
         "{shared:?}"
     );
     assert!(
@@ -100,7 +99,7 @@ fn positive_shares_and_negative_blocks_write_separate_relations() {
     assert!(
         moved.iter().any(|record| {
             record.object == "docs:d2"
-                && record.relation == "blocked"
+                && record.relation == blocked_relation
                 && record.subject == "user:bob"
         }),
         "{moved:?}"
@@ -257,6 +256,38 @@ fn cast_caller_blocklist_with_declared_identity_is_accepted() {
             SessionAttributeKind::CallerId,
         )
         .with_identity_cast("integer")])
+        .build();
+    let translated = translator.translate(&db).expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+}
+
+#[test]
+fn declared_identity_cast_matches_the_written_cast_case_insensitively() {
+    let tables = TABLES.replace(
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id INTEGER NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+    );
+    let sql = format!(
+        "{tables} CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)::integer));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let translator = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("INTEGER")])
         .build();
     let translated = translator.translate(&db).expect("translation plans");
     assert!(

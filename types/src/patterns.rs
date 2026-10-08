@@ -150,7 +150,7 @@ impl AttributeOperator {
 /// value but complete only where [`AttributeOperator::is_monotone`] holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ContextWitness {
-    /// `MAX`, exact under a monotone comparison.
+    /// `MAX`, exact for `>`/`>=`. `=`/`<>` select it too but need a per-row witness.
     Latest,
     /// `MIN`, exact for past comparisons.
     Earliest,

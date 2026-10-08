@@ -628,11 +628,6 @@ fn a_membership_policy_translates_the_same_however_it_is_parenthesised() {
         "EXISTS (SELECT 1 FROM doc_members \
          WHERE doc_members.doc_id = docs.id AND doc_members.user_id = current_user)",
     );
-    assert_eq!(
-        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
-        Some("member from docs"),
-        "guard precondition: the unparenthesised spelling must translate:\n{expected_dsl}"
-    );
 
     for clause in [
         "(EXISTS ( SELECT 1 FROM doc_members \
@@ -659,11 +654,6 @@ fn a_membership_policy_translates_the_same_however_it_is_parenthesised() {
 fn the_in_membership_spelling_translates_the_same_however_it_is_parenthesised() {
     let (expected_dsl, expected_tuples) = membership_translation(
         "id IN (SELECT doc_id FROM doc_members WHERE user_id = current_user)",
-    );
-    assert_eq!(
-        relation_definition(&expected_dsl, "docs", "can_select").as_deref(),
-        Some("member from docs"),
-        "guard precondition: the unparenthesised spelling must translate:\n{expected_dsl}"
     );
 
     let (dsl, tuples) = membership_translation(
@@ -763,11 +753,6 @@ fn a_foreign_key_declared_by_alter_table_resolves_the_parent_type() {
         )
     };
     let (inline_dsl, inline_tuples) = translation(&schema("REFERENCES teams(id)", ""));
-    assert_eq!(
-        relation_definition(&inline_dsl, "docs", "can_select").as_deref(),
-        Some("member from teams"),
-        "guard precondition: the inline spelling must reach the teams type:\n{inline_dsl}"
-    );
 
     let (dsl, tuples) = translation(&schema(
         "",

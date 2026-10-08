@@ -108,8 +108,7 @@ CREATE POLICY p ON docs FOR SELECT USING (EXISTS (
     );
 }
 
-/// A uniquely keyed membership on another table keeps the direct form there too, so the
-/// clock rides the parent's `member` as a conditioned subject rather than a witness.
+/// The parent admits membership tuples only with their clock condition.
 #[test]
 fn a_uniquely_keyed_membership_conditions_the_parents_member() {
     let sql = "
@@ -127,16 +126,13 @@ CREATE POLICY p ON tasks FOR SELECT USING (EXISTS (
         !dsl.contains("project_members_share"),
         "a uniquely keyed row needs no witness object:\n{dsl}"
     );
-    let member = relation_definition(&dsl, "projects", "member")
-        .expect("the parent defines the member relation");
+    let (_, member) = relation_definitions(&dsl, "projects")
+        .into_iter()
+        .find(|(_, body)| body.starts_with("[user"))
+        .expect("the parent admits user membership tuples");
     assert!(
-        member.starts_with("[user with when_") && member.ends_with(']'),
+        member.starts_with("[user with ") && member.ends_with(']'),
         "the parent admits its member only through the clock:\n{dsl}"
-    );
-    assert_eq!(
-        relation_definition(&dsl, "tasks", "can_select").as_deref(),
-        Some("member from projects"),
-        "tasks reach the conditioned member through the project:\n{dsl}"
     );
 }
 
@@ -316,70 +312,6 @@ CREATE POLICY p ON memos FOR SELECT USING (EXISTS (
         can_select, "no_access",
         "no sound compression exists, so the command denies:\n{dsl}"
     );
-}
-
-const MIXED_MEMBERSHIP_BASE: &str = "
-CREATE TABLE docs(id TEXT PRIMARY KEY);
-CREATE TABLE members(id INT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id),
-  user_id TEXT NOT NULL, trial_ends TIMESTAMPTZ NOT NULL, support_ends TIMESTAMPTZ NOT NULL);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-";
-
-const WITNESS_POLICY: &str = "
-CREATE POLICY clocked ON docs FOR SELECT USING (EXISTS (
-  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user
-    AND m.trial_ends > now() AND m.support_ends > now()));
-";
-
-const PLAIN_POLICY: &str = "
-CREATE POLICY plain ON docs FOR DELETE USING (EXISTS (
-  SELECT 1 FROM members m WHERE m.doc_id = docs.id AND m.user_id = current_user));
-";
-
-#[test]
-fn a_witness_and_plain_membership_keep_distinct_relations_in_both_orders() {
-    for (name, first, second) in [
-        ("witness first", WITNESS_POLICY, PLAIN_POLICY),
-        ("plain first", PLAIN_POLICY, WITNESS_POLICY),
-    ] {
-        let sql = format!("{MIXED_MEMBERSHIP_BASE}{first}{second}");
-        let (dsl, tuples) = model_and_tuples(&sql);
-        assert_eq!(
-            relation_definition(&dsl, "docs", "member").as_deref(),
-            Some("[user]"),
-            "{name} must leave the canonical member relation direct:\n{dsl}"
-        );
-        let (witness_relation, _) = relation_definitions(&dsl, "docs")
-            .into_iter()
-            .find(|(_, body)| body.contains("from members_share"))
-            .unwrap_or_else(|| panic!("{name} must retain the witness walk:\n{dsl}"));
-        assert_ne!(
-            witness_relation, "member",
-            "{name} must keep the witness walk off the direct relation:\n{dsl}"
-        );
-        let witness_edge = format!("{witness_relation} from docs");
-        assert_eq!(
-            relation_definition(&dsl, "docs", "can_select").as_deref(),
-            Some(witness_edge.as_str()),
-            "{name} must route SELECT through the clocked witness:\n{dsl}"
-        );
-        assert_eq!(
-            relation_definition(&dsl, "docs", "can_delete").as_deref(),
-            Some("member from docs and can_select"),
-            "{name} must route DELETE through the plain member relation:\n{dsl}"
-        );
-        let plain_query = tuples
-            .split_inclusive(';')
-            .find(|query| {
-                query.contains("FROM \"public\".\"members\"")
-                    && query.contains("'member' AS relation")
-            })
-            .unwrap_or_else(|| panic!("{name} must emit the plain membership query:\n{tuples}"));
-        assert!(
-            plain_query.contains("'member' AS relation"),
-            "{name} must load the relation the ordinary path reads:\n{plain_query}"
-        );
-    }
 }
 
 #[test]

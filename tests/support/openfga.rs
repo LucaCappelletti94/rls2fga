@@ -142,11 +142,19 @@ pub(crate) const EARTH_METABOLOME_TUPLES: [(&str, &str, &str); 9] = [
     ("ownables:doc1", "owner_id", "owner_grants_owner:alice"),
     ("owner_grants_owner:alice", "owner_user", "user:alice"),
     ("ownables:doc2", "owner_id", "owner_grants_owner:alpha"),
-    ("owner_grants_owner:alpha", "owner_team", "team:alpha"),
-    ("team:alpha", "member", "user:bob"),
+    (
+        "owner_grants_owner:alpha",
+        "owner_team",
+        "team_members_team:alpha",
+    ),
+    ("team_members_team:alpha", "member", "user:bob"),
     ("owner_grants_owner:alice", "grant_editor", "user:carol"),
-    ("owner_grants_owner:alice", "grant_viewer", "team:beta"),
-    ("team:beta", "member", "user:dave"),
+    (
+        "owner_grants_owner:alice",
+        "grant_viewer",
+        "team_members_team:beta",
+    ),
+    ("team_members_team:beta", "member", "user:dave"),
     ("owner_grants_owner:alpha", "grant_admin", "user:eve"),
 ];
 
