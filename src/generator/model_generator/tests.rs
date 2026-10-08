@@ -1883,7 +1883,7 @@ fn rule_implies_consults_conditional_tupleset_subjects() {
             DirectSubject::Type(TypeName::canonicalized("teams")),
             DirectSubject::ConditionalType {
                 type_name: TypeName::canonicalized("groups"),
-                condition: "while_valid".to_string(),
+                condition: ConditionName::canonicalized("while_valid"),
             },
         ],
     );
@@ -1939,7 +1939,7 @@ fn a_relation_reached_only_through_a_conditional_tupleset_subject_is_not_pruned(
         "parent",
         vec![DirectSubject::ConditionalType {
             type_name: TypeName::canonicalized("groups"),
-            condition: "while_valid".to_string(),
+            condition: ConditionName::canonicalized("while_valid"),
         }],
     );
     let mut groups = TypePlan::new(TypeName::canonicalized("groups"));
@@ -1980,7 +1980,7 @@ fn an_inlined_alias_is_repointed_behind_a_conditional_tupleset_subject() {
         "parent",
         vec![DirectSubject::ConditionalType {
             type_name: TypeName::canonicalized("groups"),
-            condition: "while_valid".to_string(),
+            condition: ConditionName::canonicalized("while_valid"),
         }],
     );
     let mut groups = TypePlan::new(TypeName::canonicalized("groups"));
@@ -2019,7 +2019,7 @@ fn a_witness_membership_source_carries_its_condition() {
         user_col: ColumnName::from_stored("user_id"),
         share_type: TypeName::canonicalized("members_share"),
         relation: RelationName::canonicalized("member"),
-        condition: "when_valid".to_string(),
+        condition: ConditionName::canonicalized("when_valid"),
         extra_predicates: ResidualPredicates::default(),
         context: Vec::new(),
     };

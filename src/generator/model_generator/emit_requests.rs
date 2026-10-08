@@ -137,12 +137,12 @@ pub(crate) fn declare_condition(
     table_plan: &mut TypePlan,
     policy_name: &str,
     spec: ConditionSpec,
-) -> String {
+) -> ConditionName {
     let base = gate_condition_name(table_plan.type_name.as_str(), policy_name);
     // One more candidate than there are conditions, so one is always free.
     let ceiling = table_plan.conditions.len() + 2;
     let name = core::iter::once(base.clone())
-        .chain((2..=ceiling).map(|nth| clamp_relation_name(format!("{base}_{nth}"))))
+        .chain((2..=ceiling).map(|nth| ConditionName::canonicalized(format!("{base}_{nth}"))))
         .find(|candidate| {
             table_plan
                 .conditions
@@ -300,7 +300,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
     request_time_parameter: &ConditionParameterName,
     condition_parameters: &ConditionParameterAllocator,
     db: &DB,
-) -> Option<(String, Vec<GateContextColumn>)> {
+) -> Option<(ConditionName, Vec<GateContextColumn>)> {
     let mut namespace = condition_parameters.namespace([request_time_parameter]);
     let gates = temporal_gates(residual, table, request_time_parameter, &mut namespace, db)?;
     let [first, ..] = gates.as_slice() else {

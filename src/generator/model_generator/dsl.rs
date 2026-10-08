@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn render_dsl(
     types: &[TypePlan],
-    conditions: &BTreeMap<String, ConditionSpec>,
+    conditions: &BTreeMap<ConditionName, ConditionSpec>,
 ) -> String {
     let mut dsl = String::new();
     let _ = writeln!(dsl, "model");

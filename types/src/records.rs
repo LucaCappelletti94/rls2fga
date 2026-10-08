@@ -15,7 +15,7 @@ use crate::identity::{
     encode_identity, encode_part, hex_digit, object_name_fits, subject_name_fits,
 };
 use crate::{AttributeLiteral, AttributeOperator, AttributePredicate};
-use crate::{ColumnName, RelationName, TableId, TypeName};
+use crate::{ColumnName, ConditionName, RelationName, TableId, TypeName};
 use serde::{Deserialize, Serialize};
 
 /// One `(object, relation, subject)` fact, rendered exactly as the whole-table
@@ -41,7 +41,7 @@ pub struct Record {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RecordContextValue {
     /// Condition the tuple names, declared by the model.
-    pub condition: String,
+    pub condition: ConditionName,
     /// Each parameter the row fills in the condition context, keyed by parameter
     /// name and rendered as the tuple SQL renders it.
     pub values: BTreeMap<String, String>,
@@ -503,7 +503,7 @@ pub struct RecordTemplate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordContext {
     /// Condition the tuple names, declared by the model.
-    pub condition: String,
+    pub condition: ConditionName,
     /// Each parameter the row fills, in the order the emitter recorded them.
     pub entries: Vec<RecordContextEntry>,
 }
@@ -525,7 +525,7 @@ pub struct BoundQuery {
     table: TableId,
     key_columns: Vec<ColumnName>,
     sql: String,
-    condition: Option<String>,
+    condition: Option<ConditionName>,
     scope: ReplayScope,
 }
 
@@ -535,7 +535,7 @@ impl BoundQuery {
         table: TableId,
         key_columns: Vec<ColumnName>,
         sql: String,
-        condition: Option<String>,
+        condition: Option<ConditionName>,
         scope: ReplayScope,
     ) -> Result<Self, BoundQueryError> {
         if key_columns.is_empty() {
@@ -579,8 +579,8 @@ impl BoundQuery {
 
     /// Condition carried by the result rows.
     #[must_use]
-    pub fn condition(&self) -> Option<&str> {
-        self.condition.as_deref()
+    pub fn condition(&self) -> Option<&ConditionName> {
+        self.condition.as_ref()
     }
 
     /// Stored facts this query fully determines.
@@ -616,7 +616,7 @@ struct BoundQueryWire {
     table: TableId,
     key_columns: Vec<ColumnName>,
     sql: String,
-    condition: Option<String>,
+    condition: Option<ConditionName>,
     scope: ReplayScope,
 }
 
@@ -895,7 +895,7 @@ pub enum RecordDerivation {
         /// The query, taking no key and carrying no placeholder.
         query: String,
         /// The condition its rows carry, absent where they carry none.
-        condition: Option<String>,
+        condition: Option<ConditionName>,
         /// The slice the result fully determines, unnarrowed.
         scope: ReplayScope,
         /// Why no key narrows it, for the report.
@@ -1583,7 +1583,7 @@ mod tests {
                     subject_type: TypeName::canonicalized("user"),
                     subject_key: SubjectKey::wildcard(),
                     context: Some(RecordContext {
-                        condition: "when_share".to_string(),
+                        condition: ConditionName::canonicalized("when_share"),
                         entries: vec![
                             RecordContextEntry {
                                 key: "viewer".to_string(),
@@ -2243,7 +2243,7 @@ mod tests {
             SubjectKey::column("owner"),
             vec![Guard::not_null(read("gate", ColumnKind::Text))],
             Some(RecordContext {
-                condition: "when_row_matches".to_string(),
+                condition: ConditionName::canonicalized("when_row_matches"),
                 entries: vec![RecordContextEntry {
                     key: "ctx".to_string(),
                     value: ValueSource::typed_column(
@@ -2550,7 +2550,7 @@ mod tests {
             SubjectKey::wildcard(),
             Vec::new(),
             Some(RecordContext {
-                condition: "when_seen".to_string(),
+                condition: ConditionName::canonicalized("when_seen"),
                 entries: vec![RecordContextEntry {
                     key: "seen_at".to_string(),
                     value: ValueSource::typed_column(

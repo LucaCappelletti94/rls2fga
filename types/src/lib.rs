@@ -45,8 +45,9 @@ pub use action_relations::{
     ActionAnswer, ActionJudgement, ActionRelations, ActionStatement, RowVersion,
 };
 pub use identifiers::{
-    stable_hex_suffix, ColumnName, ConditionParameterName, ConditionParameterNameError,
-    RelationName, RelationNameError, TableId, TableRef, TypeName, TypeNameError,
+    stable_hex_suffix, ColumnName, ConditionName, ConditionNameError, ConditionParameterName,
+    ConditionParameterNameError, RelationName, RelationNameError, TableId, TableRef, TypeName,
+    TypeNameError,
 };
 pub use notes::{NoteSeverity, TranslationNote};
 pub use patterns::{

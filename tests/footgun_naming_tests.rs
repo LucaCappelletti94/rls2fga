@@ -14,8 +14,9 @@ use rls2fga::types::ConfidenceLevel;
 mod support;
 
 use support::footgun::{
-    assert_model_is_internally_consistent, db_of, is_structural_type, relation_definition,
-    relation_definitions, translator, tuples_reading_from, type_names,
+    assert_model_is_internally_consistent, capped_gate_arms_translator, db_of, is_structural_type,
+    relation_definition, relation_definitions, translator, tuples_reading_from, type_names,
+    CAPPED_GATE_ARMS,
 };
 
 const COLLIDING_SCHEMAS: &str = r"
@@ -576,6 +577,37 @@ fn generated_names_respect_openfga_length_limits() {
         }
     }
     assert!(relations > 5, "expected a populated model, got:\n{dsl}");
+}
+
+/// `OpenFGA` caps condition names at 50 characters too. Each arm of a gate gets its own
+/// condition under one policy, so every arm after the first takes a numbered suffix, and
+/// on a policy whose base name already sits at the cap that suffix must not lengthen it.
+#[test]
+fn suffixed_condition_names_respect_the_openfga_length_limit() {
+    let dsl = capped_gate_arms_translator()
+        .translate(&db_of(CAPPED_GATE_ARMS))
+        .expect("translation should plan")
+        .outputs()
+        .expect("the gate translates whole")
+        .model();
+
+    let conditions: Vec<&str> = dsl
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("condition "))
+        .map(|rest| rest.split_once('(').map_or(rest, |(name, _)| name).trim())
+        .collect();
+    assert_eq!(conditions.len(), 2, "one condition per arm:\n{dsl}");
+    assert_ne!(
+        conditions[0], conditions[1],
+        "two arms share a name:\n{dsl}"
+    );
+    for name in conditions {
+        assert!(
+            name.chars().count() <= 50,
+            "condition '{name}' is {} characters, over the 50 limit:\n{dsl}",
+            name.chars().count()
+        );
+    }
 }
 
 /// Two schemas holding a table of the same name must not collapse into one type.

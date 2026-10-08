@@ -385,7 +385,7 @@ fn assert_bound_queries_account_for_every_record(
     for bound in bound_queries {
         assert_eq!(
             bound.condition(),
-            query.condition.as_deref(),
+            query.condition.as_ref(),
             "{label}: the replay of {} claims a different projection from the load it \
              extends, so the two loaders decode the same rows differently:\n{}",
             bound.table(),
@@ -961,8 +961,8 @@ async fn a_clock_gated_record_is_decoded_from_its_own_row() {
             .as_ref()
             .expect("a conditional record carries the value the request completes");
         assert_eq!(
-            Some(context.condition.as_str()),
-            gate.condition.as_deref(),
+            Some(&context.condition),
+            gate.condition.as_ref(),
             "the record names the condition its query declares"
         );
     }

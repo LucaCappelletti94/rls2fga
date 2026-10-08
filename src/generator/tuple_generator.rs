@@ -17,7 +17,7 @@ use crate::generator::well_known::{
 };
 use crate::parser::names::{table_id_has_column, table_identity};
 use crate::parser::sql_parser::{ColumnLike, DatabaseLike, TableLike};
-use crate::types::{ColumnName, ContextWitness, RelationName, TableId, TypeName};
+use crate::types::{ColumnName, ConditionName, ContextWitness, RelationName, TableId, TypeName};
 use crate::types::{Record, RecordContextValue, RecordDescription};
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
@@ -53,7 +53,7 @@ pub struct TupleQuery {
     /// Condition the rows carry, when the query yields the two extra columns a
     /// conditional tuple needs. `None` means three columns and no condition, so a
     /// loader knows the shape without parsing the SQL.
-    pub condition: Option<String>,
+    pub condition: Option<ConditionName>,
     /// The gap this entry stands for, where no statement could be built. `sql` is then
     /// advice rather than something to run: executing it loads nothing and succeeds.
     pub skipped: Option<SkippedTuples>,
@@ -276,21 +276,21 @@ fn row_context(
             Err(mismatch(None))
         };
     };
-    if !subjects.iter().any(|subject| match subject {
+    let Some(named) = subjects.iter().find_map(|subject| match subject {
         DirectSubject::ConditionalWildcard {
             condition: named, ..
         }
         | DirectSubject::ConditionalType {
             condition: named, ..
-        } => named == condition.name,
-        DirectSubject::Type(_) | DirectSubject::Wildcard(_) => false,
-    }) {
+        } => (named == condition.name).then_some(named),
+        DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
+    }) else {
         return Err(mismatch(Some(condition.name)));
-    }
+    };
     let values = context_entries(condition.context)
         .ok_or_else(|| TupleRowError::MalformedContext(condition.context.to_string()))?;
     Ok(Some(RecordContextValue {
-        condition: condition.name.to_string(),
+        condition: named.clone(),
         values,
     }))
 }

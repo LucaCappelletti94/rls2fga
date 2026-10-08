@@ -1419,7 +1419,7 @@ fn tuples_replaying_pure_queries(
                             })
                             .collect();
                         (
-                            context.condition.clone(),
+                            context.condition.to_string(),
                             serde_json::Value::Object(values).to_string(),
                         )
                     }),
