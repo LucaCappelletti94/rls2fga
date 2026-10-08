@@ -7,7 +7,7 @@
 use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
 use crate::generator::model_generator::RowParameter;
 use crate::generator::notes::SkippedTuples;
-use crate::generator::well_known::{member_relation, WellKnownTypes};
+use crate::generator::well_known::member_relation;
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use crate::types::{
@@ -116,13 +116,19 @@ pub(crate) enum TupleSource {
         role_cases: Vec<(i32, RelationName, String)>,
         user_principal: Option<PrincipalInfo>,
         team_principal: Option<PrincipalInfo>,
+        /// The type a team grantee belongs to, present exactly when `team_principal`
+        /// is, and the same type `TeamMembership` on that team table feeds.
+        team_type: Option<TypeName>,
     },
 
-    /// P1/P2 team membership. Produces `(team:team_col, member, user:user_col)`.
+    /// P1/P2 team membership. Produces `(team_type:team_col, member, user:user_col)`.
     TeamMembership {
         membership_table: TableId,
         team_col: ColumnName,
         user_col: ColumnName,
+        /// Synthetic type the team objects belong to, keyed on `membership_table` so
+        /// two different team-membership tables never pool their members.
+        team_type: TypeName,
     },
 
     /// P4 membership, from `EXISTS` or an `IN` subquery.
@@ -463,11 +469,13 @@ pub(crate) enum TupleSourceKey<'a> {
         role_cases: &'a [(i32, RelationName, String)],
         user_principal: Option<&'a PrincipalInfo>,
         team_principal: Option<&'a PrincipalInfo>,
+        team_type: Option<&'a TypeName>,
     },
     TeamMembership {
         membership_table: &'a TableId,
         team_col: &'a ColumnName,
         user_col: &'a ColumnName,
+        team_type: &'a TypeName,
     },
     ExistsMembership {
         join_table: &'a TableId,
@@ -630,11 +638,7 @@ impl TupleSource {
 
     /// The `(type, relation)` pairs this source populates. Empty means it carries no
     /// tuples, so it is never dropped as unreachable.
-    pub(crate) fn feeds(
-        &self,
-        owner_type: &TypeName,
-        well_known: &WellKnownTypes,
-    ) -> Vec<(TypeName, RelationName)> {
+    pub(crate) fn feeds(&self, owner_type: &TypeName) -> Vec<(TypeName, RelationName)> {
         let own = |relation: &RelationName| vec![(owner_type.clone(), relation.clone())];
         match self {
             Self::DirectOwnership { relation, .. }
@@ -681,8 +685,8 @@ impl TupleSource {
                 relation,
                 ..
             } => vec![(holder_type.clone(), relation.clone())],
-            Self::TeamMembership { .. } => {
-                vec![(well_known.team.clone(), member_relation())]
+            Self::TeamMembership { team_type, .. } => {
+                vec![(team_type.clone(), member_relation())]
             }
             Self::ExistsMembership {
                 parent_type,
@@ -768,6 +772,7 @@ impl TupleSource {
                 role_cases,
                 user_principal,
                 team_principal,
+                team_type,
             } => TupleSourceKey::ExplicitGrants {
                 owner_type,
                 grant_table,
@@ -777,15 +782,18 @@ impl TupleSource {
                 role_cases,
                 user_principal: user_principal.as_ref(),
                 team_principal: team_principal.as_ref(),
+                team_type: team_type.as_ref(),
             },
             Self::TeamMembership {
                 membership_table,
                 team_col,
                 user_col,
+                team_type,
             } => TupleSourceKey::TeamMembership {
                 membership_table,
                 team_col,
                 user_col,
+                team_type,
             },
             Self::ExistsMembership {
                 join_table,
@@ -1050,6 +1058,7 @@ mod tests {
             )],
             user_principal: None,
             team_principal: None,
+            team_type: None,
         }
     }
 
@@ -1100,11 +1109,13 @@ mod tests {
             membership_table: table("team_members"),
             team_col: ColumnName::from_stored("team_id"),
             user_col: ColumnName::from_stored("user_id"),
+            team_type: TypeName::canonicalized("team"),
         };
         let mem_b = TupleSource::TeamMembership {
             membership_table: table("team_members"),
             team_col: ColumnName::from_stored("group_id"),
             user_col: ColumnName::from_stored("member_id"),
+            team_type: TypeName::canonicalized("team"),
         };
         assert_ne!(
             mem_a.dedup_key(),
@@ -1173,11 +1184,13 @@ mod tests {
             membership_table: table("team"),
             team_col: ColumnName::from_stored("members:team"),
             user_col: ColumnName::from_stored("user"),
+            team_type: TypeName::canonicalized("team"),
         };
         let separator_in_user = TupleSource::TeamMembership {
             membership_table: table("team"),
             team_col: ColumnName::from_stored("members"),
             user_col: ColumnName::from_stored("team:user"),
+            team_type: TypeName::canonicalized("team"),
         };
 
         assert_ne!(separator_in_team.dedup_key(), separator_in_user.dedup_key());

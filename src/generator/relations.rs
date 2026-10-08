@@ -76,7 +76,7 @@ fn index_sources<'plan, 'description>(
                 type_plan.reads_only_its_own_rows,
             );
             let description = descriptions.get(&key).and_then(Option::as_ref);
-            for target in source.feeds(&type_plan.type_name, &plan.well_known) {
+            for target in source.feeds(&type_plan.type_name) {
                 index.entry(target).or_default().push(IndexedSource {
                     source,
                     description,

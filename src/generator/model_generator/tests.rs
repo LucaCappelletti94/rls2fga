@@ -570,7 +570,7 @@ fn exact_roles_relation_does_not_conflate_roles_at_same_level() {
         &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
-        false,
+        None,
     );
 
     // Select only "viewer" by name.
@@ -614,13 +614,14 @@ fn ensure_role_threshold_scaffold_with_team_support_and_exact_roles_owner_inclus
         ("admin".to_string(), 3),
     ]);
 
+    let team_type = TypeName::canonicalized("team");
     let (sorted, pointer) = ensure_role_threshold_scaffold(
         &mut table_plan,
         &mut all_types,
         &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
-        true,
+        Some(&team_type),
     );
     // The ladder judges the owner, and the guarded type carries only the pointer at it,
     // named after the column whose value picks which owner.
@@ -670,7 +671,7 @@ fn ensure_role_threshold_scaffold_sanitizes_role_relation_names() {
         &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
-        false,
+        None,
     );
 
     let owner = &all_types["grants_owner"];
@@ -700,7 +701,7 @@ fn ensure_role_threshold_scaffold_disambiguates_role_name_collisions() {
         &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
-        false,
+        None,
     );
 
     let grant_relations: Vec<&RelationName> = all_types["grants_owner"]
@@ -909,7 +910,7 @@ fn ensure_role_threshold_scaffold_sorts_ties_by_role_name() {
         &TypeName::canonicalized("grants_owner"),
         &ColumnName::from_stored("owner_id"),
         &role_levels,
-        false,
+        None,
     );
     let ordered: Vec<(String, i32)> = sorted
         .iter()
@@ -1276,6 +1277,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
             source: &table_id("docs"),
             grant: &table_id("object_grants"),
             team_membership: None,
+            team_type: None,
         },
         &db,
         &registry,
@@ -1324,13 +1326,14 @@ CREATE TABLE team_memberships(id UUID PRIMARY KEY, user_id UUID, team_id UUID);
     let registry = role_registry(r#"{"viewer": 1}"#, true);
     let mut table_plan = TypePlan::new(TypeName::canonicalized("docs"));
     let mut all_types = BTreeMap::new();
-
+    let team_type = TypeName::canonicalized("team_memberships_team");
     populate_role_threshold_sources(
         "role_level",
         &RoleThresholdTables {
             source: &table_id("docs"),
             grant: &table_id("object_grants"),
             team_membership: Some(&table_id("team_memberships")),
+            team_type: Some(&team_type),
         },
         &db,
         &registry,
@@ -1412,6 +1415,7 @@ CREATE TABLE object_grants(id UUID PRIMARY KEY, grantee_id UUID, resource_id UUI
             source: &table_id("things"),
             grant: &table_id("object_grants"),
             team_membership: None,
+            team_type: None,
         },
         &db,
         &registry,

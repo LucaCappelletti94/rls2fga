@@ -43,8 +43,12 @@ async fn openfga_semantic_checks_all_patterns() {
             tuples: vec![
                 ("ownables:res1", "owner_id", "owner_grants_owner:o1"),
                 ("owner_grants_owner:o1", "owner_user", "user:alice"),
-                ("owner_grants_owner:o1", "owner_team", "team:alpha"),
-                ("team:alpha", "member", "user:bob"),
+                (
+                    "owner_grants_owner:o1",
+                    "owner_team",
+                    "team_members_team:alpha",
+                ),
+                ("team_members_team:alpha", "member", "user:bob"),
                 ("owner_grants_owner:o1", "grant_viewer", "user:carol"),
                 ("owner_grants_owner:o1", "grant_editor", "user:dave"),
             ],
@@ -164,8 +168,12 @@ async fn openfga_semantic_checks_all_patterns() {
                 // item2 is not active, so the guard denies whatever the ladder says.
                 ("ownables:item2", "owner_id", "owner_grants_owner:o1"),
                 ("owner_grants_owner:o1", "owner_user", "user:alice"),
-                ("owner_grants_owner:o1", "owner_team", "team:alpha"),
-                ("team:alpha", "member", "user:bob"),
+                (
+                    "owner_grants_owner:o1",
+                    "owner_team",
+                    "team_members_team:alpha",
+                ),
+                ("team_members_team:alpha", "member", "user:bob"),
                 ("owner_grants_owner:o1", "grant_editor", "user:carol"),
                 // Dave's viewer grant used to be written here. The policy needs the
                 // editor rung, so `grant_viewer` reaches no permission and is no longer

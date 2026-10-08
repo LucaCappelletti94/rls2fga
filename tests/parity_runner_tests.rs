@@ -122,6 +122,10 @@ async fn every_parity_case_agrees() {
             a_declared_write_stays_on_its_own_table,
             a_mutation_spelling_resolves_to_exactly_one_table,
             the_oracle_rejects_a_note_excused_mismatch,
+            a_witness_link_and_a_caller_set_gate_do_not_share_a_tupleset,
+            distinct_acl_tables_do_not_share_a_member_relation,
+            distinct_team_membership_tables_do_not_share_access,
+            a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_access,
         ]
     ];
     let total = cases.len();
@@ -4069,4 +4073,306 @@ CREATE POLICY refused_insert ON refused FOR INSERT
             .collect()
     })
     .await;
+}
+
+/// A `P4` witness membership and a `P18` caller-set gate correlating to the same owner
+/// type through different columns of one membership table must not share a link relation.
+async fn a_witness_link_and_a_caller_set_gate_do_not_share_a_tupleset(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-witness-link-caller-set-gate",
+        "
+CREATE TABLE principals (id TEXT PRIMARY KEY);
+CREATE TABLE owners (id TEXT PRIMARY KEY);
+CREATE TABLE docs (id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE projects (id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE memberships (
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    lead_id TEXT NOT NULL REFERENCES owners(id),
+    user_id TEXT NOT NULL REFERENCES principals(id),
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m WHERE m.owner_id = docs.owner_id
+        AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+CREATE POLICY projects_select ON projects FOR SELECT USING (
+    EXISTS (SELECT 1 FROM memberships m WHERE m.lead_id = projects.owner_id
+        AND m.user_id = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+        &[
+            "INSERT INTO principals VALUES ('alice'), ('bob'), ('carol')",
+            "INSERT INTO owners VALUES ('A'), ('B')",
+            "INSERT INTO docs VALUES ('d1','B'), ('d2','A')",
+            "INSERT INTO projects VALUES ('p1','A')",
+            "INSERT INTO memberships VALUES ('m1','A','B','alice','2100-01-01T00:00:00Z')",
+            "INSERT INTO memberships VALUES ('m2','A','A','carol','2100-01-01T00:00:00Z')",
+            "CREATE ROLE app_reader LOGIN; GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_reader",
+        ],
+        vec![
+            user_holder("alice", "app_reader", &["alice"]).with_clock(),
+            user_holder("bob", "app_reader", &["bob"]).with_clock(),
+            user_holder("carol", "app_reader", &["carol"]).with_clock(),
+        ],
+    )
+    .with_attributes(
+        r#"[{"key":"app.user_id","kind":"caller_id"},{"key":"app.subjects","kind":"set_attribute"}]"#,
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, visible) in [
+        // alice's row ties her to A via owner_id and to B via lead_id, so each
+        // policy's own column denies her and must not grant through the other.
+        ("alice", "docs:d1", false),
+        ("alice", "projects:p1", false),
+        ("carol", "docs:d2", true),
+        ("carol", "projects:p1", true),
+        ("bob", "docs:d1", false),
+        ("bob", "projects:p1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            visible,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Two `ACL` tables gating two different privileges on one guarded table must not share a
+/// member relation: membership in either table must not grant the other's privilege.
+async fn distinct_acl_tables_do_not_share_a_member_relation(cluster: Arc<Cluster>) {
+    let case = ParityCase::reading(
+        "runner-distinct-acl-tables",
+        "
+CREATE TABLE principals (id TEXT PRIMARY KEY);
+CREATE TABLE resources (id TEXT PRIMARY KEY);
+CREATE TABLE read_acl (
+    resource_id TEXT REFERENCES resources(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES principals(id),
+    PRIMARY KEY (resource_id, user_id));
+CREATE TABLE delete_acl (
+    resource_id TEXT REFERENCES resources(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES principals(id),
+    PRIMARY KEY (resource_id, user_id));
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+CREATE POLICY resources_read ON resources FOR SELECT USING (
+    EXISTS (SELECT 1 FROM read_acl m
+        WHERE m.resource_id = resources.id AND m.user_id = current_setting('app.user_id', true)));
+CREATE POLICY resources_delete ON resources FOR DELETE USING (
+    EXISTS (SELECT 1 FROM delete_acl m
+        WHERE m.resource_id = resources.id AND m.user_id = current_setting('app.user_id', true)));
+",
+        &[
+            "INSERT INTO principals VALUES ('alice'), ('bob'), ('carol')",
+            "INSERT INTO resources VALUES ('r1')",
+            "INSERT INTO read_acl VALUES ('r1', 'bob'), ('r1', 'carol')",
+            "INSERT INTO delete_acl VALUES ('r1', 'alice'), ('r1', 'carol')",
+            "CREATE ROLE app_reader LOGIN; \
+             GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_reader; \
+             GRANT DELETE ON resources TO app_reader",
+        ],
+        vec![
+            Principal::with_setting("alice", "app_reader", "app.user_id", "alice"),
+            Principal::with_setting("bob", "app_reader", "app.user_id", "bob"),
+            Principal::with_setting("carol", "app_reader", "app.user_id", "carol"),
+        ],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, statement, allowed) in [
+        // Alice is only in delete_acl, not read_acl, which the harness's delete probe
+        // also needs: two pools, not one, so being in one alone must not suffice.
+        ("alice", ActionStatement::Select, false),
+        ("alice", ActionStatement::Delete, false),
+        // Bob is only in read_acl: a read, not a delete.
+        ("bob", ActionStatement::Select, true),
+        ("bob", ActionStatement::Delete, false),
+        // Carol is in both.
+        ("carol", ActionStatement::Select, true),
+        ("carol", ActionStatement::Delete, true),
+    ] {
+        support::parity::assert_postgres(&case, &run, subject, "resources:r1", statement, allowed);
+    }
+    assert_agrees(&case, &run);
+}
+
+/// Two `role_threshold` functions, each with its own grant table and its own
+/// `team_membership` table, must not pool their team rows into one `team` type: a caller
+/// who joined one function's team table must not inherit the other function's grants to
+/// a team of the same id.
+async fn distinct_team_membership_tables_do_not_share_access(cluster: Arc<Cluster>) {
+    const TEAM: &str = "00000000-0000-0000-0000-00000000001f";
+    const ALICE: &str = "00000000-0000-0000-0000-0000000000a1";
+    const BOB: &str = "00000000-0000-0000-0000-0000000000a2";
+    const OWNER_A: &str = "00000000-0000-0000-0000-0000000000b1";
+    const OWNER_B: &str = "00000000-0000-0000-0000-0000000000b2";
+    let case = ParityCase::reading(
+        "runner-distinct-team-membership-tables",
+        "
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE teams(id UUID PRIMARY KEY);
+CREATE TABLE team_members_a(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE team_members_b(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE owner_grants_a(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE owner_grants_b(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE docs_a(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE docs_b(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role_a(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_a og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_a tm WHERE tm.user_id = user_uuid))
+    ) sub';
+CREATE FUNCTION get_role_b(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_b og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_b tm WHERE tm.user_id = user_uuid))
+    ) sub';
+ALTER TABLE docs_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_select ON docs_a FOR SELECT TO PUBLIC
+    USING (get_role_a(auth_current_user_id(), owner_id) >= 2);
+CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
+    USING (get_role_b(auth_current_user_id(), owner_id) >= 2);
+",
+        &[
+            &format!("INSERT INTO users (id) VALUES ('{ALICE}'), ('{BOB}')"),
+            &format!("INSERT INTO teams (id) VALUES ('{TEAM}')"),
+            // Alice joins the team through function A's table only.
+            &format!(
+                "INSERT INTO team_members_a (team_id, user_id) VALUES ('{TEAM}', '{ALICE}')"
+            ),
+            // Bob joins the same team id, but through function B's table only.
+            &format!("INSERT INTO team_members_b (team_id, user_id) VALUES ('{TEAM}', '{BOB}')"),
+            // Only function B's grant table gives the team viewer access to owner_b.
+            &format!(
+                "INSERT INTO owner_grants_b (grantee_owner_id, granted_owner_id, role_id) \
+                 VALUES ('{TEAM}', '{OWNER_B}', 2)"
+            ),
+            &format!("INSERT INTO docs_a (id, owner_id) VALUES ('{OWNER_A}', '{OWNER_A}')"),
+            &format!("INSERT INTO docs_b (id, owner_id) VALUES ('{OWNER_B}', '{OWNER_B}')"),
+            "CREATE ROLE app_reader LOGIN; \
+             GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_reader",
+        ],
+        vec![
+            Principal::with_setting(ALICE, "app_reader", "app.current_user_id", ALICE),
+            Principal::with_setting(BOB, "app_reader", "app.current_user_id", BOB),
+        ],
+    )
+    .with_registry(
+        r#"{
+          "get_role_a": {
+            "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+            "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+            "grant_table": "owner_grants_a", "grant_grantee_col": "grantee_owner_id",
+            "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+            "team_membership": {"table": "team_members_a", "user_col": "user_id", "team_col": "team_id"}
+          },
+          "get_role_b": {
+            "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+            "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+            "grant_table": "owner_grants_b", "grant_grantee_col": "grantee_owner_id",
+            "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+            "team_membership": {"table": "team_members_b", "user_col": "user_id", "team_col": "team_id"}
+          },
+          "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+        }"#,
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (subject, object, allowed) in [
+        // Alice joined the team only through function A's table, which function B never
+        // reads, so function B's grant to the team must not reach her.
+        (ALICE, "docs_b:00000000-0000-0000-0000-0000000000b2", false),
+        // Bob joined the team only through function B's table, which the grant targets:
+        // the legitimate pairing must still work.
+        (BOB, "docs_b:00000000-0000-0000-0000-0000000000b2", true),
+        // Neither function A's table nor its grant table ever names the team, so neither
+        // caller sees docs_a through it.
+        (ALICE, "docs_a:00000000-0000-0000-0000-0000000000b1", false),
+        (BOB, "docs_a:00000000-0000-0000-0000-0000000000b1", false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            subject,
+            object,
+            ActionStatement::Select,
+            allowed,
+        );
+    }
+    assert_agrees(&case, &run);
+}
+
+/// A plain read and a temporally-gated read of the same join table through the same
+/// foreign key and user column must not pool. An expired member must still pass the
+/// plain policy but fail the gated one.
+async fn a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_access(
+    cluster: Arc<Cluster>,
+) {
+    let case = ParityCase::reading(
+        "runner-plain-and-gated-same-join-table",
+        r"
+CREATE TABLE docs (id INT PRIMARY KEY);
+CREATE TABLE members (
+    doc_id INT REFERENCES docs(id),
+    user_id TEXT,
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (doc_id, user_id)
+);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+        AND m.user_id = current_setting('app.user_id', true)));
+CREATE POLICY docs_delete ON docs FOR DELETE USING (
+    EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+        AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+",
+        &[
+            "INSERT INTO docs (id) VALUES (1);
+             INSERT INTO members (doc_id, user_id, expires_at) VALUES
+                 (1, 'expired_member', now() - interval '1 day')",
+            "CREATE ROLE app_reader LOGIN;
+             GRANT SELECT, DELETE ON docs TO app_reader;
+             GRANT SELECT ON members TO app_reader",
+        ],
+        vec![Principal::with_setting(
+            "expired_member",
+            "app_reader",
+            "app.user_id",
+            "expired_member",
+        )
+        .with_clock()],
+    );
+    let run = support::parity::run(&cluster, &case).await;
+    for (statement, allowed) in [
+        // The plain policy never checks expiry, so an expired row still satisfies it.
+        (ActionStatement::Select, true),
+        // The gated policy requires expires_at > now(), which this row no longer meets:
+        // the plain source's unconditional tuple must not leak into the gated relation.
+        (ActionStatement::Delete, false),
+    ] {
+        support::parity::assert_postgres(
+            &case,
+            &run,
+            "expired_member",
+            "docs:1",
+            statement,
+            allowed,
+        );
+    }
+    assert_agrees(&case, &run);
 }

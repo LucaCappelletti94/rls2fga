@@ -20,6 +20,7 @@ use support::footgun::{
     relation_denies, scope_admits_role, translation, translator, tuples_reading_from, type_names,
     CORRELATION_SCHEMA,
 };
+use support::{classify_sql, plan_at};
 
 /// `x = ANY (SELECT ...)` is another spelling of `x IN (SELECT ...)`.
 #[test]
@@ -1126,7 +1127,7 @@ fn session_attr_plan(sql: &str) -> rls2fga::translator::Outputs {
         )])
         .build();
     let (classified, registry) = translator.classify_with_effective_registry(&db);
-    support::plan_at(classified, &db, &registry, ConfidenceLevel::B)
+    plan_at(classified, &db, &registry, ConfidenceLevel::B)
 }
 
 /// The sharing subquery reads its table as the caller, so that table's own rules decide
@@ -1558,5 +1559,297 @@ CREATE POLICY p ON papers FOR SELECT USING (EXISTS (
         bridge.sql.contains("\"tenant_id\"") && bridge.sql.contains("\"paper_id\""),
         "the bridge names the paper by both columns of its key:\n{}",
         bridge.sql
+    );
+}
+
+/// Two `role_threshold` functions with their own grant table and their own
+/// `team_membership` table must not pool their team rows into one `team` type:
+/// membership under one function's table must not carry the other's grants.
+#[test]
+fn distinct_team_membership_tables_do_not_share_a_team_type() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE teams(id UUID PRIMARY KEY);
+CREATE TABLE team_members_a(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE team_members_b(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE owner_grants_a(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE owner_grants_b(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE docs_a(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE docs_b(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role_a(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_a og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_a tm WHERE tm.user_id = user_uuid))
+    ) sub';
+CREATE FUNCTION get_role_b(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_b og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members_b tm WHERE tm.user_id = user_uuid))
+    ) sub';
+ALTER TABLE docs_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_select ON docs_a FOR SELECT TO PUBLIC
+    USING (get_role_a(auth_current_user_id(), owner_id) >= 2);
+CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
+    USING (get_role_b(auth_current_user_id(), owner_id) >= 2);
+";
+    let registry_json = r#"{
+      "get_role_a": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_a", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members_a", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "get_role_b": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_b", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members_b", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+    }"#;
+    let (classified, db, registry) = classify_sql(sql, Some(registry_json));
+    let model = plan_at(classified, &db, &registry, ConfidenceLevel::A);
+    let dsl = model.model();
+    let team_types: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name.contains("team"))
+        .collect();
+    assert_eq!(
+        team_types.len(),
+        2,
+        "team_members_a and team_members_b name different rows, so get_role_a and \
+         get_role_b must not pool them into one team type, got {team_types:?}:\n{dsl}"
+    );
+    assert_ne!(
+        team_types[0], team_types[1],
+        "two distinct team_membership tables must mint two distinct team types:\n{dsl}"
+    );
+}
+
+/// Two `role_threshold` functions that share the very same `team_membership` table must
+/// still pool it into one team type: splitting a legitimately shared source would lose
+/// the sharing the schema actually declares.
+#[test]
+fn the_same_team_membership_table_across_two_functions_shares_one_team_type() {
+    let sql = r"
+CREATE TABLE users(id UUID PRIMARY KEY);
+CREATE TABLE teams(id UUID PRIMARY KEY);
+CREATE TABLE team_members(team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id), PRIMARY KEY(team_id, user_id));
+CREATE TABLE owner_grants_a(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE owner_grants_b(grantee_owner_id UUID NOT NULL, granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL);
+CREATE TABLE docs_a(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE TABLE docs_b(id UUID PRIMARY KEY, owner_id UUID NOT NULL);
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE FUNCTION get_role_a(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_a og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members tm WHERE tm.user_id = user_uuid))
+    ) sub';
+CREATE FUNCTION get_role_b(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE AS '
+    SELECT COALESCE(MAX(role), 0) FROM (
+        SELECT og.role_id AS role FROM owner_grants_b og
+        WHERE og.granted_owner_id = target_owner_id
+        AND (og.grantee_owner_id = user_uuid OR og.grantee_owner_id IN (
+            SELECT tm.team_id FROM team_members tm WHERE tm.user_id = user_uuid))
+    ) sub';
+ALTER TABLE docs_a ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docs_b ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_a_select ON docs_a FOR SELECT TO PUBLIC
+    USING (get_role_a(auth_current_user_id(), owner_id) >= 2);
+CREATE POLICY docs_b_select ON docs_b FOR SELECT TO PUBLIC
+    USING (get_role_b(auth_current_user_id(), owner_id) >= 2);
+";
+    let registry_json = r#"{
+      "get_role_a": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_a", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "get_role_b": {
+        "kind": "role_threshold", "user_param_index": 0, "resource_param_index": 1,
+        "role_levels": {"viewer": 2, "editor": 3, "admin": 4},
+        "grant_table": "owner_grants_b", "grant_grantee_col": "grantee_owner_id",
+        "grant_resource_col": "granted_owner_id", "grant_role_col": "role_id",
+        "team_membership": {"table": "team_members", "user_col": "user_id", "team_col": "team_id"}
+      },
+      "auth_current_user_id": {"kind": "current_user_accessor", "returns": "uuid"}
+    }"#;
+    let (classified, db, registry) = classify_sql(sql, Some(registry_json));
+    let model = plan_at(classified, &db, &registry, ConfidenceLevel::A);
+    let dsl = model.model();
+    let team_types: Vec<String> = type_names(&dsl)
+        .into_iter()
+        .filter(|name| name.contains("team"))
+        .collect();
+    assert_eq!(
+        team_types.len(),
+        1,
+        "both functions name the same team_members table, so they must share one \
+         team type, got {team_types:?}:\n{dsl}"
+    );
+}
+
+/// Two `ACL` tables gating two different privileges on one guarded table must not share a
+/// member relation, so membership in either table must not grant the other's privilege.
+#[test]
+fn distinct_acl_tables_do_not_share_a_member_relation() {
+    let db = db_of(
+        r"
+CREATE TABLE principals(id UUID PRIMARY KEY);
+CREATE TABLE resources(id UUID PRIMARY KEY);
+CREATE TABLE read_acl(resource_id UUID REFERENCES resources(id), user_id UUID REFERENCES principals(id));
+CREATE TABLE delete_acl(resource_id UUID REFERENCES resources(id), user_id UUID REFERENCES principals(id));
+ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
+CREATE POLICY resources_read ON resources FOR SELECT USING (
+  EXISTS (SELECT 1 FROM read_acl m WHERE m.resource_id = resources.id AND m.user_id = current_user));
+CREATE POLICY resources_delete ON resources FOR DELETE USING (
+  EXISTS (SELECT 1 FROM delete_acl m WHERE m.resource_id = resources.id AND m.user_id = current_user));
+",
+    );
+    let translator = translator(ConfidenceLevel::A);
+    let dsl = translator
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let select = relation_definition(&dsl, "resources", "can_select")
+        .expect("resources should define can_select");
+    let delete = relation_definition(&dsl, "resources", "can_delete")
+        .expect("resources should define can_delete");
+    assert_ne!(
+        select, delete,
+        "read_acl and delete_acl name different rows, so can_select and \
+         can_delete must not share the member relation:\n{dsl}"
+    );
+}
+
+/// A `P4` witness membership and a `P18` caller-set gate resolving to the same parent
+/// type through different columns of one join table must not share a link relation.
+#[test]
+fn a_witness_link_and_a_caller_set_gate_do_not_share_a_tupleset() {
+    let db = db_of(
+        r"
+CREATE TABLE principals(id TEXT PRIMARY KEY);
+CREATE TABLE owners(id TEXT PRIMARY KEY);
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT REFERENCES owners(id));
+CREATE TABLE memberships(
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    lead_id TEXT NOT NULL REFERENCES owners(id),
+    user_id TEXT NOT NULL REFERENCES principals(id),
+    expires_at TIMESTAMPTZ,
+    PRIMARY KEY (id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM memberships m WHERE m.owner_id = docs.owner_id
+    AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+CREATE POLICY projects_select ON projects FOR SELECT USING (
+  EXISTS (SELECT 1 FROM memberships m WHERE m.lead_id = projects.owner_id
+    AND m.user_id = ANY(string_to_array(current_setting('app.subjects', true), ','))));
+",
+    );
+    let dsl = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([
+            SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+            SessionAttribute::setting("app.subjects", SessionAttributeKind::SetAttribute),
+        ])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let share_links: Vec<_> = relation_definitions(&dsl, "owners")
+        .into_iter()
+        .filter(|(_, body)| body.starts_with('[') && body.contains("_share"))
+        .collect();
+    assert_eq!(
+        share_links.len(),
+        2,
+        "docs reaches the owner through owner_id and projects through lead_id, two \
+         different memberships columns, so owners should define two separate share \
+         links, got {share_links:?}:\n{dsl}"
+    );
+}
+
+/// A plain read and a temporally-gated read of the same join table through the same
+/// foreign key and user column must not pool. The plain source's unconditional subject
+/// would otherwise let the gated relation's policy grant access past its own deadline.
+#[test]
+fn a_plain_and_a_gated_read_of_the_same_join_table_do_not_share_a_relation() {
+    let db = db_of(
+        r"
+CREATE TABLE docs(id UUID PRIMARY KEY);
+CREATE TABLE members(doc_id UUID REFERENCES docs(id), user_id TEXT, expires_at TIMESTAMPTZ,
+    PRIMARY KEY(doc_id, user_id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_select ON docs FOR SELECT USING (
+  EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+    AND m.user_id = current_setting('app.user_id', true)));
+CREATE POLICY docs_delete ON docs FOR DELETE USING (
+  EXISTS (SELECT 1 FROM members m WHERE m.doc_id = docs.id
+    AND m.user_id = current_setting('app.user_id', true) AND m.expires_at > now()));
+",
+    );
+    let dsl = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::A)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    let member_bodies: Vec<(String, String)> = relation_definitions(&dsl, "docs")
+        .into_iter()
+        .filter(|(_, body)| body.starts_with("[user"))
+        .collect();
+    assert_eq!(
+        member_bodies.len(),
+        2,
+        "the plain policy and the gated policy read members through the same join \
+         table and column, so docs should still define two separate member relations, \
+         got {member_bodies:?}:\n{dsl}"
+    );
+    assert!(
+        member_bodies.iter().any(|(_, body)| body == "[user]"),
+        "the plain source's relation must hold only the unconditional subject, \
+         got {member_bodies:?}:\n{dsl}"
+    );
+    assert!(
+        member_bodies
+            .iter()
+            .any(|(_, body)| body.starts_with("[user with ") && !body.contains(", user]")),
+        "the gated source's relation must hold only the conditional subject, not the \
+         plain source's unconditional one, got {member_bodies:?}:\n{dsl}"
     );
 }

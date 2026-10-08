@@ -1,5 +1,6 @@
 ---
 source: tests/generator_tests.rs
+assertion_line: 56
 expression: model
 ---
 {
@@ -197,7 +198,7 @@ expression: model
                 "type": "user"
               },
               {
-                "type": "team"
+                "type": "team_members_team"
               }
             ]
           },
@@ -207,7 +208,7 @@ expression: model
                 "type": "user"
               },
               {
-                "type": "team"
+                "type": "team_members_team"
               }
             ]
           },
@@ -217,14 +218,14 @@ expression: model
                 "type": "user"
               },
               {
-                "type": "team"
+                "type": "team_members_team"
               }
             ]
           },
           "owner_team": {
             "directly_related_user_types": [
               {
-                "type": "team"
+                "type": "team_members_team"
               }
             ]
           },
@@ -239,7 +240,7 @@ expression: model
       }
     },
     {
-      "type": "team",
+      "type": "team_members_team",
       "relations": {
         "member": {
           "this": {}

@@ -1,5 +1,6 @@
 ---
 source: tests/generator_tests.rs
+assertion_line: 462
 expression: dsl.trim()
 ---
 model
@@ -11,10 +12,10 @@ type nobody
 
 type owner_grants_owner
   relations
-    define grant_admin: [user, team]
-    define grant_editor: [user, team]
-    define grant_viewer: [user, team]
-    define owner_team: [team]
+    define grant_admin: [user, team_members_team]
+    define grant_editor: [user, team_members_team]
+    define grant_viewer: [user, team_members_team]
+    define owner_team: [team_members_team]
     define owner_user: [user]
     define role_admin: owner_user or member from owner_team or grant_admin or member from grant_admin
     define role_editor: role_admin or grant_editor or member from grant_editor
@@ -42,6 +43,6 @@ type spectra
     define can_update: no_access
     define can_update_without_reading: can_update
 
-type team
+type team_members_team
   relations
     define member: [user]

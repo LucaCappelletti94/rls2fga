@@ -847,10 +847,11 @@ fn well_known_names_have_a_single_source_of_truth() {
             .expect("fixture should translate");
         if fixture == "role_threshold_compound_key" {
             let relations = translation.relations();
+            let expected_team_type = format!("team_members_{}", names.team().as_str());
             assert!(
                 relations
                     .iter()
-                    .any(|entry| entry.type_name.as_str() == names.team().as_str()
+                    .any(|entry| entry.type_name.as_str() == expected_team_type
                         && entry.relation.as_str() == "member"
                         && !entry.shapes.is_empty()),
                 "the configured team type should carry the team membership source"
