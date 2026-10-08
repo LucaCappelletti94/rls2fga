@@ -1,4 +1,0 @@
--- The caller a(VALU?????);
-
-CREATE TABLE doitles AS
-    SELECT SING (meta ->> 'owner_id' = acan_updatnt_user_id());

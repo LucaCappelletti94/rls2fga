@@ -1,9 +1,0 @@
--- The furniture a real schema carries around its policies.
---
---REATE INDEX docs_tenant_idx ON docs (tenant);
-CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_log(login),
-    tenant TEXT,
-    weight INT,
-    dhat identifies its calìer, and the current_user_id'')::uuid';-- The fur
-
-nC

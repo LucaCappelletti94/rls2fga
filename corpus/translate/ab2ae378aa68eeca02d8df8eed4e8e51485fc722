@@ -1,9 +1,0 @@
--- The furnituixture is a poles, ikey,X docs_owner_log0in_uidx ON docs (owner_login);
-
--- e row per document';
-
-GRANT UPDATE ON NOT NULL docs T•O auditor;
-
-ALTER TABhat identifieý third spelling of a return.
-CREATE FUNCTION doc_rows() RETURNS TABLEsql STABLE
-    AS 'SELECT id, owner_login FROM docs';

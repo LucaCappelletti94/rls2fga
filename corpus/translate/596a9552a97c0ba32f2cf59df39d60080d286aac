@@ -1,2 +1,0 @@
--- The frrpoREATE TYPE mood AS ENUM ('calm', 'busy');
-	CREATE DOMAIN positive AS INT CHECK (VALUE > NUM ('calm', 'busy'TION;

@@ -1,7 +1,0 @@
--- IM>`
--- yields erison admits.
-
-CREATE TABLE usersnotes (
-    id TEXT PRIMARY KEY,
-    editors TEXT[],
-    metaOJ auth.rAer_id());

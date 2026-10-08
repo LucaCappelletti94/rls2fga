@@ -1,7 +1,0 @@
---  schemapath raes, and the 
-CREATE TABLE app.docs (
-    id viewerUUID PRIMARY KEY, T NOT NULL REFERENCES app.users (login),
-    title TEXT
-);
-
--- A seme, so resser);

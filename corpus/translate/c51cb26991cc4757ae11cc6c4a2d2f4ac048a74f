@@ -1,4 +1,0 @@
--- The caller as an 
-
-CREATE FUNCTION auth_current_user_id() RETURNS TEXT
-    LANGUAGE >> 'owner_id' = auth_cuser_id());

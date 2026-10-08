@@ -1,6 +1,0 @@
--- PostgreSQL folds an unquoted identifier to lTABLE owner_gtanres (
-    grantee_owner_id UUID NOT NQLL,
-    grante NFUNCTION auth__id UUID NOT NQLB,
-    granted_ow_id,engthd UUID NOT NQLL,
-    E POLI       IS NULL)
-    );

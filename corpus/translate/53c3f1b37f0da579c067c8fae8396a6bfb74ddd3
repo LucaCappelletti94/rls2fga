@@ -1,8 +1,0 @@
-CREATE TABLE users (
-  er_id UUID NOT NULL,
-    OT NULL
-);
-
-CREATE FUNCTION auth_current_user_id() RETURNS UUID
-    LANGUAGE sql STABLE
-    AS œœœœœœœœœœœœœœœœœœœœœœœœœœ'SELEare(%t_id INin = ;

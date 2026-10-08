@@ -1,4 +1,0 @@
--- The fq INCREMENT BINDEX docs_tenant_idx ON docs (tenant);
-CREATE  OR UE INDEX docs_owner_login_uidx ON docs (owner_login);
-
--- A key  a real schemts polefic

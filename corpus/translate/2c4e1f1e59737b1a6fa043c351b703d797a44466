@@ -1,3 +1,0 @@
--- ;
-
-CREATE TRIGGER docs_touch UPDATE ON dô

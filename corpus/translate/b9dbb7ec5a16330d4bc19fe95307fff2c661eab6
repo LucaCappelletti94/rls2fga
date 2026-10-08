@@ -1,7 +1,0 @@
--- ts TO auditor;
-
-ALTER TABLE docs DROP PO auditor;
-
-ALTER TABLE docs OWNER TO auditor;
-
--- A functo]umenYYYYYauthenticatedYYYYYYYY,  

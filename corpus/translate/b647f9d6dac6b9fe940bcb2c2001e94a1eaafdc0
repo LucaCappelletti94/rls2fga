@@ -1,15 +1,0 @@
-CREATE TABLE users (
-    id BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~Y,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkk~~~~~~~k~k~kkkkkkkkY,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~Y,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkk~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~Y,
-    title TEXT,
-    is_public BOOLE%N NOT NULL DEF TABLE doÿÿc_links ENABLE ROW LEVEL SECURITY;
-
-CR;
-EATEÿ POLICÿÿY

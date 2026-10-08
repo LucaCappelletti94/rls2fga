@@ -1,4 +1,0 @@
--- A R - outrHa ;
-
-CREATE POLICY notes_reviewed ON notes
-    AS RESTRICTIVE= auth_currenr_id());

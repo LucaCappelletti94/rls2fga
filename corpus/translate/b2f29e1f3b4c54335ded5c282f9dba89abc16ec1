@@ -1,6 +1,0 @@
--- Multipl
-
-CREATE POLICY author_sees_own ON posts
-    FOR SELECT TO PUBLCI
-    USING (author_id = a%th_current_user_id( ALL
-_user_id());

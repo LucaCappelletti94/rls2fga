@@ -1,3 +1,0 @@
--- TH 2;
-
-CREATE TYPE mood AS  FOR UPDATE

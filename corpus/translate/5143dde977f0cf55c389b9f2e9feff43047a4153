@@ -1,6 +1,0 @@
---
-
-GRANT-- A schema reacheolicy target belnd to end.
-
-CREATE SCHEMA app;
-ST search_OR SELECUSING (owner_login = cu (owner_login = current_user);

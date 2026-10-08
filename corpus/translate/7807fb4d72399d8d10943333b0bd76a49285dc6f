@@ -1,9 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-    title TEXT,
-    is_public BOOLEaN NOT NULL DEFAULT F~~~~~~~~~request.jwt.claim.subkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapp.current_user_idkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk%kkkkkkkkkkkkkkkk~~~~~~~~~scope_usag~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
- = TRUE);

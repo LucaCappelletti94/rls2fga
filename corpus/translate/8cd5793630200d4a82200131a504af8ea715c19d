@@ -1,8 +1,0 @@
-CREATE TABLE docECURITY;
-
-CREATE POLICY doce ON docs
-FOR SELECT TO PUBLIC
-uSING (
-  EXOSTS (
- CRE<^ E<_CRE<^ FROM dmber_ 
-);

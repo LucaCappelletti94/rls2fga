@@ -1,9 +1,0 @@
--- Afied, so the path puts iT in 0app`.
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    logEFERENCES app.users (login),
-    title TEXT
-);
-
--- A a holding a ta&ble of the same narder rather than by name alone.
-CREATE SCHEMA a2chi DEFAULT vgggggin = current_user);

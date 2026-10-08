@@ -1,5 +1,0 @@
--- Towneer document';
-
-GRANT SELECT ON docs TO audhtor:
-
-ALTERÙTM docs';

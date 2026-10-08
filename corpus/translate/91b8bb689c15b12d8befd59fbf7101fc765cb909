@@ -1,9 +1,0 @@
-CREATE TABLE users (iPRIMARY KEY);
-CREATE TABLE projects (
- RIMARY KEY,NCES users(id)
-);
-CREATE TABLE tasks (
-  id UUID PRIMARY KEY,
-  pbojec ANYÿÿ*ÿÿÿÿÿÿÿÿÿÿÿÿÿtnherit_prrent_er
-  )
-);

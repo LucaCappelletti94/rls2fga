@@ -1,2 +1,0 @@
---a
-    SELECT COALEiSCE(MAX(role), 0)        -- T

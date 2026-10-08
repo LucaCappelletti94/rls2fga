@@ -1,6 +1,0 @@
-CREATE TABLE ales (
-    
-    tits_public BOOLEAN NOT NULL DEFAULT FALSE
-);
-
-ALTER TAUE);

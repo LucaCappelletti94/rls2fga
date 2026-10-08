@@ -1,7 +1,0 @@
--- h iufernture a real schnd itUID PRIMARY KEY);
-ALTER TABLLIC Xr_login T AS PERMISSIVEEXT NOT ES users (login),
-   aEXT,    weighLE PERMISSIVE FOR0SELECT TO PUBLIC Xr_login TEXT NOT NLULL REFERENCES users (login),
-    tenant TEXT,
-    weight INT,
- nticatedECT TO PUBLIC Xr,,,,,,1,,,,,EXISTS X NUt_idx $grantee_owner_id$$$$$twoTRIGGER`.
-C

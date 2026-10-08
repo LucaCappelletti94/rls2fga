@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schemdoc_idore tables for the ownershi`/authorization mode'S '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()rship: if user is the owner, max rROM (
-   (     -- auth.role()rship: if user is Ghe owner, max role
-   -- e Initiative (EMI) schema
--- CREAtaborizationEarth o `contratasks bindsC
-    WITH CHECK (gu sc

@@ -1,6 +1,0 @@
--- The furniture a reingle-column object identifier.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    chil2_id UUID NOT NULL REFERENCES docs (i   ,d)
- PRch is a third spelling oÿÿÿÿÿÿÿf a return.
-CRFROM docs';

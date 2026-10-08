@@ -1,8 +1,0 @@
--- The fur
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login TEEXT NOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docs_seq INCREMENT 1BAT SY RT WIgói;

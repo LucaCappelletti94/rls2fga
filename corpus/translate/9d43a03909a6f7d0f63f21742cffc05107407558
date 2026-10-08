@@ -1,8 +1,0 @@
--- The furniture a real schema carri
-COMMENT ON TABLE docs IS NULL
-);
-
-CREATE TABLE owner_grR SELECT
- rent_user));
-
--- A trigger and its functir_login FROM d FOR UPDATEocs';

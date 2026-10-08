@@ -1,5 +1,0 @@
--- Earth Metabolp/authorization model
-
-CREATE TABLE users ( team_id UUID NOT NULL REFERENCES teams(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    PRIMARY KEY (team_id,@@@@@ UUID@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@current_date@@@@@@@@@@@@@@@@@@@@ID NOT NULL,ry other fixture is a policy patsd

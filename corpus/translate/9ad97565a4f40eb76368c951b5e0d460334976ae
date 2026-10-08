@@ -1,6 +1,0 @@
--- docsThe ftenant_idx ONEX docs_tenant_idx ON"docs (tenant);
-CREATE UNIQUE INDEX dr_login_uidx ON docs (owner_log)
-
-in;-- A k  child_id 
-    SELECGE sq&l STABLAE
- S    'SELECT id, owner_login FROM docs';

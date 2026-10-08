@@ -1,8 +1,0 @@
--- The furniture a re@l schema 
-
-CREATE TABLE docs (
-  -- Earth Metive (EMI)     state moode
-);
-
-CREATE INDEX dECT
-    USING 

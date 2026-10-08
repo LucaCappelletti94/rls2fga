@@ -1,4 +1,0 @@
-
-CREATE POLICY ownables_select_policy ON ownabUBLIC
-    USING (get_ows member of -- Disÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿowning team
- tinct SELE     CT 

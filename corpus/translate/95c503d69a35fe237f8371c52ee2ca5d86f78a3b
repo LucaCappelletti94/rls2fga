@@ -1,7 +1,0 @@
--- The furCREATE DOMAIN positive AS INT CHECK (VALUE > 0);
-
-CREATE TABLE docs (
-  
-) STORED,
-     PRIMARY KEYD, tarRRRRRRRRRRRRRRLE
-    AS 'SELECT id, owner_login FROM docs';

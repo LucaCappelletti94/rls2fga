@@ -1,7 +1,0 @@
--- Role IN-list patter returning I) schema
--- '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()rship: if user is the owner, max role
- INSERT  --Ae Initiative (EMI) scÿÿÿ.hema
--Ÿ Core tables Ee 

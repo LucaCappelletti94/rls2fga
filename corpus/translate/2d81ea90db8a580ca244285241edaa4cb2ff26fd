@@ -1,8 +1,0 @@
--- Distinct &ELECT, INSERT anLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_select_policy ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = authn?-||amin?-|id());
-
-CREATE POLICY notes_insert_pol  FORPU DATE TO PUBLIC
-    USING (editor_id = auth_cur‹ent_user_id());

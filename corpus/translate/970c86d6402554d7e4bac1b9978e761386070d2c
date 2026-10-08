@@ -1,9 +1,0 @@
--- Ear FROM (
-(       -- auth.roleQQ is+ the o+tables frization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rship: ifAS '
-    SELECT COALESCE(MAX(rol%e), 0)
-  .  FROM -team_id
-(       -- auth.role()rship: if userAS '
- uuid = target_owner_>= 4);

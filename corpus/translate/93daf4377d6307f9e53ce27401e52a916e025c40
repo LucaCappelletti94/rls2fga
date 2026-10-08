@@ -1,7 +1,0 @@
--- for the ownershi`/authorization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- authorg_idr, max role
-   -- e InitiatFALSEEMI) schema
--- Core taborization modeAS '
-    SELECT CO IS NOT NULLALESCE(MAX(r

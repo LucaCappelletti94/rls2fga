@@ -1,8 +1,0 @@
--- P9: standalone attritus = ')
-CREATE TABLE articles (
-  id UUID PRIMARY KEY,
-  title TEXT NOT NULL,
-  status TEID PRIMARY KEY,
-  title TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT&<u<;³
-;

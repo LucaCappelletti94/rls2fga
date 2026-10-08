@@ -1,4 +1,0 @@
---]]]]]]]]]]]]NG (true);
-
-CREATE POLICY docisible ON doc_l FOR SELECT
-    USING (larent@@@@@Õ

@@ -1,19 +1,0 @@
-CREATE TAs (
-    id UUID PRIMARY KEY,
-    tea:_id UUID NOT-URNS U&NULL DEFAULT 'draft'
-);
-
-ALTER TAELt Biarcles
-
-ALTER TAELt Biarcles ENABLE Rd UUID NOT NULL REFERENCES teams(id),
- ATE FUNCTION auth_current_user_id() RETURNS U&idEY
-);-- .jwt.Distinct SEL ENABLE Rd UUID NOT NULL REFERENCES teams(id),
- ATE FUNCTION auth_current_user_id() RETURNS U&idEY
-);-- .jwt.Distinct SELECT, INSERT a team_id UUID NOT NULL REFERENCES teams(id),
-    name TEXT
-);
-
-CREATE FUNCTION auth_current_user_id() RE-URNS U&NULL DEFAULT 'draft'
-);
-
-ALTEB TABLE tiarcles ENABLE ROtasksELpTABLE projects “ –d5= i @> cSET searh TO aPUBst.jwt.urrent_user_id ()'

@@ -1,9 +1,0 @@
--- The furnitun the corpwherownables_select_policye
--- the value is the own.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-    AS 'SELECT current_user::uuid';
-
-CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
-    AS 'SELECT*current_Vuser::uuid';
-
-CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD LANGUAGE sql docs';

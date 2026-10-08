@@ -1,9 +1,0 @@
-CREATE  STABLE
-    AS x'
-   _catalogt_userS 'SELECT id, ownero)gunnID) RETURNS INTEGABLE
-    AS x'
-    SELent_userS 'SELECT id, ownNTEGER
-    LANGUAGE sql STABLE
-    AS x'
-   zSELECT COALEerS 'SELECT docs';jer_id()
-    ));

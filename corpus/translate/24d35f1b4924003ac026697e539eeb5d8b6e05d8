@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative$nership/an m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.rorole()rship: if user is the owsho
-   (     -- auth.rol   (     -- auth.role()rship: if uson m~odeAS '
-    SELECT  TIMESTAMPTZ ALLe), 0)
-    FROM (
-4);

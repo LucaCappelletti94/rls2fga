@@ -1,5 +1,0 @@
--- A RESTITY;
-CREATE POLICY notes_owner ON es
-    FOR SELECT TO PUBLIC 
-   USING (ow~ne
-d());

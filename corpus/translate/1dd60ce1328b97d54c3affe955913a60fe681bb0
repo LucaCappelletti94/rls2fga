@@ -1,3 +1,0 @@
--- P9: standalone
-CREATE POLICY a_published ON ar
-    USING (stat""""."""""""current_role"date_

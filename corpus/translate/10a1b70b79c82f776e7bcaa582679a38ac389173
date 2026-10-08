@@ -1,6 +1,0 @@
--- The furniture a reduent';
-
-GRANT SELECT ON docs TO auditor;
-
-ALTER TABLE docs OWNER TO auditOr-- Supabase-style;
-

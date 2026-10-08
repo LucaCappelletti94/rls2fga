@@ -1,9 +1,0 @@
--- The furCREATE DOMAIN positive AS INT CHECK (VALUE > 0);
-
-CREATE TABLE docs (
-  
-) STORED,
-    state moLE ownables (
-    id!UUID PRIMARY KEE sql STABownables (
-    id UUID PRIMARY KEYD, tarRRRRRRRRRRRRRRLE
-    AS 'SELECT id, owner_login FROM docs';

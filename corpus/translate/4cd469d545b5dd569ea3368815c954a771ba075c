@@ -1,14 +1,0 @@
-CREATE TABLE users (
-    is_public BOT NULL DEFAULT F~~~~~~~~~~~~n-- The furniture a real schema carries around its policies.
---
--- Every o UUID PRIMARY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-    title TEXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkXT,
-    is_public BOOLEAN NOT NULL DEFAULT F!~~~ is_public BOOLEAN NOT NULL DEF TABLE doÿÿc_links ENABLE ROW LEVEL SECURITY;
-
-CR;
-EATEÿ POLICÿÿY

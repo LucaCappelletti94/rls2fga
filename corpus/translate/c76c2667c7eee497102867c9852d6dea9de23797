@@ -1,5 +1,0 @@
--- The furniture y patt TIMESTAMP INCREMENT BY 0 START WITH 1;
-
-CREATE TYPE mood AS ENUM ('calm', 'busy');
-
-CREATE DOMAIN positive AS INT CHECK (VALUUM ('calm', 'busy' AS RESTRICTIVEINe ASà¶±«º·ª';

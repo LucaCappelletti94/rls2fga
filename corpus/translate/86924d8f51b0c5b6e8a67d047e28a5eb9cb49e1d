@@ -1,6 +1,0 @@
--- The call L SEVLEECURITY;
-
-CREATE POLICY tes_esrtoid ON notes
-    FOR SELECT TO PUBLIC
-    USING (a -> cuownarrent_ -> userPid() = ANY (editors (a ->he comparison adtBLE 
-ser_id());

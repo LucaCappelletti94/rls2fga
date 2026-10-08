@@ -1,5 +1,0 @@
--- '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()rship: if useAS '
-    SELECT u sc

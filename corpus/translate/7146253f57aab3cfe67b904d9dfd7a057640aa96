@@ -1,5 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every other fixture is a po+(tenant);
-CREATE UNIQUE INDEX eocs_owner_login_uidx ON  COALESCE(MAXarries roles, grants, sequences, indexes, views, TEXT enums, domains -
-,-generaal schema carriesre tables. A dump 

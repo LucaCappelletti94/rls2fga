@@ -1,5 +1,0 @@
--- Compound OR: owner can see their own docs, OR  a very common pattern combining P3can_update UPDATE--E users (
- (((((((((((UPDATE--E users (
- ((((((((((( (
- (((((((((((UPDATE--E ussrs (
- ((((( -(((((select ON  USING (owner_docsid = auth_current_user_id() OR is_public = TRUE);

@@ -1,6 +1,0 @@
--- ripping.  AS
-    SELECT idditor;
-
-ALTER TABLE docs OWNER TO acoalesce
--- sql STABLE SECURITY DEFINEql STABLE
-    AS 'SELECT id, owner_login FROM docs';

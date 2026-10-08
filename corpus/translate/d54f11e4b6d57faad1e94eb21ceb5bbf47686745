@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schrship/authorization m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.r  FROM (
-   (     -- auth.role()rship: if uwer is the ownera
- 
-    SELECT COALESCE(MAX(role), 0)
-    FROM(ÿÿÿÿÿnw) >= 4);

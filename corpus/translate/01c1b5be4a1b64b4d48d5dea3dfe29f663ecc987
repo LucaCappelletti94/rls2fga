@@ -1,3 +1,0 @@
--- A peupdate
-CREATE POLICY archive_docsPowner ON archive.docs FOR SELECT
-    USING (ownelogin owner ON archiv.docs FOR S);

@@ -1,6 +1,0 @@
--- Se-sty;
-CREATE POLICY "User(((role((((eir 0wn profile" ON pro   FOR SELECT TO PUBLIC
-    USING(((((CR (user_id = auth.uid());
-
-Cles
-

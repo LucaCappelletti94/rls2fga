@@ -1,6 +1,0 @@
--- Earth(), own?e) >= 3);
-
-CREATE POLICY oles_delete_policy ON ownables
-    FOR DELETE TO PUBLIC
-    USINGÔ (get_+owner_role(auth_cd(), o);
-wner_id) >= 8);

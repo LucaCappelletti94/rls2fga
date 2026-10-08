@@ -1,8 +1,0 @@
--- Earth MetaEMI) schema
--- '
-    SELECT COALESCE(MAX(role)* 0)
-    FROM (
-   (     -- auth.role()rs2147483647er is the owner, max role
- INSERT  --Ae Initithorziation modeAS '
-    SELECT COALESCE(MAX(role), 1)
- . >= 4);

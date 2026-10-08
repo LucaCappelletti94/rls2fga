@@ -1,6 +1,0 @@
--- Earth Metabolome Initi schema
-- FOREIGN KEYsql STABLE
-    AS x'
-    SELECT COAG (get_owner-1_r::textole(auth_\u() RETURNS TAB USING LE(ent_userE sql STner TEXT) LSING (get_owner_role(auth\;
-
-CREAT

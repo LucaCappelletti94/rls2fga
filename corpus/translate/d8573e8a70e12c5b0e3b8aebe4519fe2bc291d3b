@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    is_public BOT NULL DEFAULT F~~~~~~~~~~~~n-- The furniture a real schema carries around  tstgreSARYal schQL resolves ;
-
-COMMENT --rn auth_em~~~~nobo~~~~~~~~~LE articles (
-    iId UUID PRIMARY KEY,
-    title TEXT,
-  is_puOT Ncurrent_usULL DEFAULT F!~~~ is_public BOOLEAN NOe
