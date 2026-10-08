@@ -454,6 +454,7 @@ fn emit_membership<DB: DatabaseLike>(
         pairs,
         user_column,
         extra_predicates,
+        caller_cast: _,
     } = exists_membership;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
@@ -513,10 +514,20 @@ fn emit_membership<DB: DatabaseLike>(
         Some((condition, context)) if !rows_unique => {
             if let Some(identity_cols) = resolve_row_identity(join_table, db) {
                 Some((condition.clone(), context.clone(), identity_cols))
-            } else if context.len() == 1 {
-                // A single carried value is a real row's value, so compressing the
-                // rows stays sound and at worst incomplete.
-                None
+            } else if let [column] = context.as_slice() {
+                if column.monotone || polarity == MembershipPolarity::Grant {
+                    None
+                } else {
+                    notes.push(TranslationNote::ExpressionRefused {
+                        policy: policy_name.to_string(),
+                        reason: format!(
+                            "the rows of '{join_table}' have no declared identity, and \
+                             a non-monotone clock comparison cannot be compressed into \
+                             one fact without risking a missed block"
+                        ),
+                    });
+                    return deny_expr(table_plan);
+                }
             } else {
                 notes.push(TranslationNote::ExpressionRefused {
                     policy: policy_name.to_string(),

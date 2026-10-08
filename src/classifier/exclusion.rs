@@ -6,8 +6,8 @@ use crate::no_std_prelude::*;
 use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{
-    exclusion_confidence, ClassifiedExpr, ExistsMembership, MembershipExclusion, PatternClass,
-    PolicyCommand,
+    exclusion_confidence, CallerCast, ClassifiedExpr, ExistsMembership, MembershipExclusion,
+    PatternClass, PolicyCommand,
 };
 use crate::classifier::recognizers::{
     diagnose_p4_membership_ambiguity, is_current_user_expr, recognize_p4, recognize_p4_in_subquery,
@@ -27,6 +27,15 @@ pub(crate) enum ExclusionError {
     GuardedTable(TableId),
     #[error("the blocklist projection '{table}.{column}' must be provably non-null")]
     NullableProjection { table: TableId, column: ColumnName },
+    #[error(
+        "the blocklist comparison casts the caller to '{cast}', with no declared \
+         identity form proving that cast changes no value"
+    )]
+    UnprovenCallerCast {
+        table: TableId,
+        column: ColumnName,
+        cast: String,
+    },
 }
 
 /// Split a clause into its positive grant and correlated blocklists.
@@ -257,6 +266,13 @@ fn exclusion_conjunct<DB: DatabaseLike>(
         Some(membership) => {
             if table_guarded_by_rls(db, &membership.join_table) {
                 return Err(ExclusionError::GuardedTable(membership.join_table));
+            }
+            if let Some(CallerCast { cast_type, .. }) = &membership.caller_cast {
+                return Err(ExclusionError::UnprovenCallerCast {
+                    table: membership.join_table,
+                    column: membership.user_column,
+                    cast: cast_type.clone(),
+                });
             }
             if requires_non_null_projection(conjunct)
                 && !column_proven_not_null(

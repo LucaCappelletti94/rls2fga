@@ -133,14 +133,24 @@ impl AttributeOperator {
             Self::Lt | Self::LtEq => ContextWitness::Earliest,
         }
     }
+
+    /// Whether collapsing several rows into one witness loses no match,
+    /// false for `=`/`<>`, which can miss a different row that also matches.
+    #[must_use]
+    pub fn is_monotone(self) -> bool {
+        match self {
+            Self::Gt | Self::GtEq | Self::Lt | Self::LtEq => true,
+            Self::Eq | Self::NotEq => false,
+        }
+    }
 }
 
-/// Which value of a compressed column witnesses the comparison when several rows
-/// collapse into one fact. Sound either way, because the carried value is a real
-/// row's value. The direction decides completeness.
+/// Which value of a compressed column witnesses the comparison when several
+/// rows collapse into one fact, sound either way since it is a real row's
+/// value but complete only where [`AttributeOperator::is_monotone`] holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ContextWitness {
-    /// `MAX`, exact for future comparisons and sound for equality.
+    /// `MAX`, exact under a monotone comparison.
     Latest,
     /// `MIN`, exact for past comparisons.
     Earliest,

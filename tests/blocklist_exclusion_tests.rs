@@ -183,6 +183,150 @@ fn a_failed_blocklist_witness_denies_its_positive_grant() {
     ));
 }
 
+#[test]
+fn unkeyed_equality_clock_blocklist_requires_a_monotone_witness() {
+    let sql = format!(
+        "CREATE TABLE docs(id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+         CREATE TABLE blocks(
+           doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,
+           stamp TIMESTAMPTZ NOT NULL);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)
+             AND b.stamp = now()));"
+    );
+    let translated = translate(&sql);
+    assert!(translated.notes().iter().any(|note| matches!(
+        note,
+        rls2fga::types::TranslationNote::ExpressionRefused { .. }
+    )));
+    assert!(support::footgun::relation_denies(
+        &translated.outputs_accepting_gaps().model(),
+        "docs",
+        "can_select"
+    ));
+}
+
+#[test]
+fn cast_caller_blocklist_without_declared_identity_is_refused() {
+    let tables = TABLES.replace(
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id INTEGER NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+    );
+    let sql = format!(
+        "{tables} CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)::integer));"
+    );
+    let translated = translate(&sql);
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .any(|note| note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+    assert!(support::footgun::relation_denies(
+        &translated.outputs_accepting_gaps().model(),
+        "docs",
+        "can_select"
+    ));
+}
+
+#[test]
+fn cast_caller_blocklist_with_declared_identity_is_accepted() {
+    let tables = TABLES.replace(
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+        "CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id INTEGER NOT NULL,\n                    PRIMARY KEY(doc, user_id));",
+    );
+    let sql = format!(
+        "{tables} CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)::integer));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let translator = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("integer")])
+        .build();
+    let translated = translator.translate(&db).expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+}
+
+#[test]
+fn stacked_caller_cast_blocklist_is_refused_despite_a_matching_outer_cast() {
+    let sql = format!(
+        "{TABLES} CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)::integer::text));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let translator = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("text")])
+        .build();
+    let translated = translator.translate(&db).expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .any(|note| note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+    assert!(support::footgun::relation_denies(
+        &translated.outputs_accepting_gaps().model(),
+        "docs",
+        "can_select"
+    ));
+}
+
+#[test]
+fn unkeyed_monotone_clock_blocklist_still_compresses() {
+    let sql = format!(
+        "CREATE TABLE docs(id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+         CREATE TABLE blocks(
+           doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,
+           expires_at TIMESTAMPTZ NOT NULL);
+         ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)
+             AND b.expires_at > now()));"
+    );
+    let translated = translate(&sql);
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+}
+
 #[cfg(all(not(target_os = "windows"), feature = "client"))]
 mod parity {
     use super::*;
@@ -190,6 +334,8 @@ mod parity {
     use support::parity::{assert_agrees, assert_postgres, Cluster, ParityCase, Principal};
 
     const ATTRIBUTES: &str = r#"[{"key":"app.user_id","kind":"caller_id"}]"#;
+    const UUID_ATTRIBUTES: &str =
+        r#"[{"key":"app.user_id","kind":"caller_id","identity_cast":"uuid"}]"#;
     const SEED: &[&str] = &[
         "INSERT INTO docs VALUES ('d1', 'alice'), ('d2', 'bob'), ('d3', 'alice');",
         "INSERT INTO shares VALUES ('d1', 'carol'), ('d2', 'carol'), ('d3', 'carol');",
@@ -487,7 +633,7 @@ mod parity {
                         Principal::with_setting(bob, "bob", "app.user_id", bob),
                         Principal::with_setting(carol, "carol", "app.user_id", carol),
                     ],
-                ).with_attributes(ATTRIBUTES).loading_from_rows();
+                ).with_attributes(UUID_ATTRIBUTES).loading_from_rows();
                 let run = support::parity::run(&cluster, &case).await;
                 for (subject, object, visible) in [
                     (alice, format!("docs:{d1}"), true),

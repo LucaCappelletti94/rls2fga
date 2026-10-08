@@ -327,6 +327,16 @@ pub struct MembershipJoinPair {
     pub outer_column: ColumnName,
 }
 
+/// A cast applied to the caller side of a membership's identity comparison.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallerCast {
+    /// The comparison's cast target, e.g. `uuid` or `integer`.
+    pub cast_type: String,
+    /// The identity form declared for the session attribute read, when one
+    /// exists and the comparison names a declared `CallerId` attribute.
+    pub declared_identity: Option<String>,
+}
+
 /// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExistsMembership {
@@ -340,6 +350,9 @@ pub struct ExistsMembership {
     /// Residual filter such as `role = 'admin'`, structured where a row
     /// image alone decides it.
     pub extra_predicates: ResidualPredicates,
+    /// The cast on the caller side of the identity match, when the written
+    /// comparison applies one.
+    pub caller_cast: Option<CallerCast>,
 }
 
 /// P5: Parent permission inheritance through a foreign key.

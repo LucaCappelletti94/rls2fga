@@ -5,7 +5,7 @@ use crate::types::ColumnName;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::expansion::{self, ExpansionState};
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
 use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
@@ -32,7 +32,20 @@ pub(crate) fn classify_policies_with_effective_registry_and_settings<DB: Databas
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
-    effective_registry.declare_session_attributes(settings.session_attributes().iter().cloned());
+    // An explicit declaration on `registry` outranks a convenience default from
+    // `settings`, so naming a key once with the richer form is never silently
+    // downgraded by the bare default for the same key.
+    let defaults: Vec<SessionAttribute> = settings
+        .session_attributes()
+        .iter()
+        .filter(|attribute| {
+            effective_registry
+                .session_attribute(attribute.setting_key(), attribute.path())
+                .is_none()
+        })
+        .cloned()
+        .collect();
+    effective_registry.declare_session_attributes(defaults);
     // The two lists become one before anything reads either, so a declaration made on the
     // registry and one made through the settings cannot describe the same source apart.
     let declared: Vec<_> = effective_registry.session_attributes().cloned().collect();
@@ -1773,6 +1786,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 }],
                 user_column: ColumnName::from_stored("u"),
                 extra_predicates: ResidualPredicates::default(),
+                caller_cast: None,
             })
         ));
         assert!(is_relationship_pattern_for_p7(
@@ -1829,6 +1843,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                             }],
                             user_column: ColumnName::from_stored("u"),
                             extra_predicates: ResidualPredicates::default(),
+                            caller_cast: None,
                         }),
                         confidence: ConfidenceLevel::A,
                     },

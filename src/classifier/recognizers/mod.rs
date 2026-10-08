@@ -4,7 +4,9 @@ use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArguments, Select, SelectItem, TableFactor, UnaryOperator, Value,
 };
 
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{
+    FunctionRegistry, SessionAttribute, SessionAttributeKind,
+};
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
 pub(crate) use crate::parser::expr::unwrap_cast_or_nested;
@@ -953,6 +955,58 @@ fn reads_caller_setting_key(expr: &Expr, registry: &FunctionRegistry) -> bool {
     accessor_root(expr)
         .and_then(current_setting_literal_key)
         .is_some_and(|key| registry.names_caller_setting_key(&key))
+}
+
+/// The declared `CallerId` attribute `expr` reads, when it is a `current_setting`
+/// key a deployment declared as the caller.
+pub(crate) fn caller_session_attribute<'r>(
+    expr: &Expr,
+    registry: &'r FunctionRegistry,
+) -> Option<&'r SessionAttribute> {
+    let key = accessor_root(expr).and_then(current_setting_literal_key)?;
+    let attribute = registry.session_attribute(&key, &[])?;
+    (attribute.kind() == SessionAttributeKind::CallerId).then_some(attribute)
+}
+
+/// Every cast directly wrapping `expr`'s written form, outermost first, down
+/// to the accessor a plain read would reach.
+fn cast_chain(expr: &Expr) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut current = expr;
+    loop {
+        match current {
+            Expr::Cast {
+                expr: inner,
+                data_type,
+                ..
+            } => {
+                chain.push(data_type.to_string().to_ascii_lowercase());
+                current = inner;
+            }
+            Expr::Nested(inner) => current = inner,
+            _ => return chain,
+        }
+    }
+}
+
+/// The unproven cast on `expr`'s caller read, `None` only when every cast in
+/// the chain targets the declared identity form.
+pub(crate) fn caller_cast(expr: &Expr, registry: &FunctionRegistry) -> Option<CallerCast> {
+    let chain = cast_chain(expr);
+    let cast_type = chain.first()?.clone();
+    let declared_identity = caller_session_attribute(expr, registry)
+        .and_then(SessionAttribute::identity_cast)
+        .map(str::to_string);
+    let proven = declared_identity
+        .as_deref()
+        .is_some_and(|declared| chain.iter().all(|cast| cast == declared));
+    if proven {
+        return None;
+    }
+    Some(CallerCast {
+        cast_type,
+        declared_identity,
+    })
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.

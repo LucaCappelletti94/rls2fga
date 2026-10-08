@@ -32,6 +32,8 @@ pub(crate) struct GateContextColumn {
     pub column: ColumnName,
     /// The compressing aggregate's direction, unused where no compression happens.
     pub witness: ContextWitness,
+    /// Whether the source comparison stays exact when rows compress.
+    pub monotone: bool,
 }
 
 /// The condition a temporal membership tuple names, with every column its context
@@ -1239,6 +1241,7 @@ mod tests {
                 parameter: "expires_at".to_string(),
                 column: ColumnName::from_stored("expires_at"),
                 witness: ContextWitness::Latest,
+                monotone: true,
             }],
             aggregate: false,
         };
@@ -1299,6 +1302,7 @@ mod tests {
                     parameter: "expires_at".to_string(),
                     column: ColumnName::from_stored("expires_at"),
                     witness: ContextWitness::Latest,
+                    monotone: true,
                 }]
             } else {
                 Vec::new()

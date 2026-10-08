@@ -43,6 +43,7 @@ pub struct SessionAttribute {
     path: Vec<String>,
     kind: SessionAttributeKind,
     parameter: ConditionParameterName,
+    identity_cast: Option<String>,
 }
 
 /// The written form of a declaration, so a deployment can ship its list as data.
@@ -62,13 +63,18 @@ pub struct SessionAttributeSpec {
     /// Condition parameter the caller supplies, derived from the source when absent.
     #[serde(default)]
     pub parameter: Option<String>,
+    /// Cast target this `CallerId` value is already rendered in canonical form
+    /// for, trusted so a blocklist may cast and subtract on it.
+    #[serde(default)]
+    pub identity_cast: Option<String>,
 }
 
 impl TryFrom<SessionAttributeSpec> for SessionAttribute {
     type Error = ConditionParameterNameError;
 
     fn try_from(spec: SessionAttributeSpec) -> Result<Self, Self::Error> {
-        let attribute = SessionAttribute::build(&spec.key, spec.path, spec.kind);
+        let mut attribute = SessionAttribute::build(&spec.key, spec.path, spec.kind);
+        attribute.identity_cast = spec.identity_cast;
         match spec.parameter {
             Some(name) => attribute.with_parameter(name),
             None => Ok(attribute),
@@ -108,6 +114,7 @@ impl SessionAttribute {
             path,
             kind,
             parameter,
+            identity_cast: None,
         }
     }
 
@@ -123,6 +130,14 @@ impl SessionAttribute {
     ) -> Result<Self, ConditionParameterNameError> {
         self.parameter = ConditionParameterName::try_from(name.into())?;
         Ok(self)
+    }
+
+    /// Declare this value already canonical for `cast`, so a comparison
+    /// that casts it to `cast` changes no value.
+    #[must_use]
+    pub fn with_identity_cast(mut self, cast: impl Into<String>) -> Self {
+        self.identity_cast = Some(cast.into());
+        self
     }
 
     /// The `current_setting` key this source reads.
@@ -141,6 +156,12 @@ impl SessionAttribute {
     #[must_use]
     pub fn kind(&self) -> SessionAttributeKind {
         self.kind
+    }
+
+    /// The cast target this value is declared already canonical for.
+    #[must_use]
+    pub fn identity_cast(&self) -> Option<&str> {
+        self.identity_cast.as_deref()
     }
 
     /// The condition parameter name the caller supplies.
@@ -881,6 +902,31 @@ CREATE FUNCTION plpgsql_user_id() RETURNS UUID
         assert!(
             !registry.is_current_user_accessor("plpgsql_user_id"),
             "a plpgsql function must not be inferred as a current-user accessor"
+        );
+    }
+
+    #[test]
+    fn explicit_identity_cast_outranks_the_default_caller_key() {
+        use crate::classifier::policy_classifier::classify_policies_with_effective_registry_and_settings;
+        use crate::parser::function_analyzer::AccessorInferenceSettings;
+
+        let db =
+            parse_schema("CREATE TABLE docs(id UUID PRIMARY KEY);").expect("schema should parse");
+        let mut registry = FunctionRegistry::new();
+        registry.declare_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("uuid")]);
+        let settings = AccessorInferenceSettings::default();
+        let (_, effective) =
+            classify_policies_with_effective_registry_and_settings(&db, &registry, &settings);
+        assert_eq!(
+            effective
+                .session_attribute("app.user_id", &[])
+                .and_then(SessionAttribute::identity_cast),
+            Some("uuid"),
+            "the default convenience key must not erase an explicit identity_cast"
         );
     }
 }
