@@ -10,7 +10,7 @@ use crate::generator::identity::{
     MAX_SUBJECT_NAME_BYTES,
 };
 use crate::generator::ir::{MembershipGate, TupleSource, TupleSourceKey};
-use crate::generator::model_generator::{DirectSubject, RowParameter, SchemaPlan};
+use crate::generator::model_generator::{DirectSubject, SchemaPlan};
 pub use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::{
     deny_relation, WellKnownTypes, ARRAY_ELEMENT_ALIAS, HOLDER_OBJECT_ID,
@@ -1578,38 +1578,58 @@ pub(crate) fn render_tuple_source_inner<DB: DatabaseLike>(
             relation,
             condition,
             row_parameter,
+            column,
             ..
         } => {
             let (table_sql, object_sql, key_not_null) =
                 owner_object_sql(owner_type, table, identity_cols, only_own_rows, names);
-            let parameter_sql = quote_sql_string_literal(row_parameter.parameter());
+            let parameter_sql = quote_sql_string_literal(row_parameter);
+            let column_sql = quote_sql_identifier(column.as_str());
             // A NULL row value matches nothing in PostgreSQL, so it needs no tuple.
-            let (carried_sql, carried_filter, what) = match row_parameter {
-                RowParameter::Column { column, .. } => {
-                    let column_sql = quote_sql_identifier(column.as_str());
-                    (
-                        format!("{column_sql}::text"),
-                        format!("\nAND {column_sql} IS NOT NULL"),
-                        format!("the row's {column}"),
-                    )
-                }
-                RowParameter::Literal { value, .. } => (
-                    quote_sql_string_literal(value),
-                    String::new(),
-                    format!("the constant {value}"),
-                ),
-            };
             Some(TupleQuery {
                 comment: format!(
-                    "-- Request-scoped gate carrying {what}, evaluated by condition {condition}"
+                    "-- Request-scoped gate carrying the row's {column}, evaluated by \
+                     condition {condition}"
                 ),
                 sql: format!(
                     "SELECT {object_sql} AS object, '{relation}' AS relation, \
                      {wildcard_subject} AS subject,\n\
                      \x20 '{condition}' AS condition, \
-                     jsonb_build_object({parameter_sql}, {carried_sql}) AS context\n\
+                     jsonb_build_object({parameter_sql}, {column_sql}::text) AS context\n\
                      FROM {table_sql}\n\
-                     WHERE {key_not_null}{carried_filter};"
+                     WHERE {key_not_null}\n\
+                     AND {column_sql} IS NOT NULL;"
+                ),
+                description: None,
+                condition: Some(condition.clone()),
+                skipped: None,
+            })
+        }
+
+        // The constant a gate tests is a fact about the policy, so the query has no `FROM`
+        // and yields its one row whatever any table holds.
+        TupleSource::RequestGateEntry {
+            gate_type,
+            gate_object,
+            relation,
+            condition,
+            row_parameter,
+            atom,
+        } => {
+            let object_sql = typed_name_literal(gate_type, gate_object);
+            let parameter_sql = quote_sql_string_literal(row_parameter);
+            let value_sql = quote_sql_string_literal(&atom.value);
+            Some(TupleQuery {
+                comment: format!(
+                    "-- Gate {gate_object} tests the constant {}, which the policy decides \
+                     rather than any row, evaluated by condition {condition}",
+                    atom.value
+                ),
+                sql: format!(
+                    "SELECT {object_sql} AS object, '{relation}' AS relation, \
+                     {wildcard_subject} AS subject,\n\
+                     \x20 '{condition}' AS condition, \
+                     jsonb_build_object({parameter_sql}, {value_sql}) AS context;"
                 ),
                 description: None,
                 condition: Some(condition.clone()),
@@ -2586,8 +2606,15 @@ CREATE POLICY docs_select ON docs FOR SELECT
     fn explicit_grants_team_only_uses_configured_team_type() {
         use crate::generator::ir::{PrincipalInfo, TupleSource};
 
-        let well_known = WellKnownTypes::new("user", "group", "pg_role", "pg_role_scope", "nobody")
-            .expect("valid well-known types");
+        let well_known = WellKnownTypes::new(
+            "user",
+            "group",
+            "pg_role",
+            "pg_role_scope",
+            "request_gate",
+            "nobody",
+        )
+        .expect("valid well-known types");
         let source = TupleSource::ExplicitGrants {
             owner_type: TypeName::canonicalized("doc"),
             grant_table: table("doc_grants"),

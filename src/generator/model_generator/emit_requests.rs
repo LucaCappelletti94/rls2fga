@@ -10,16 +10,15 @@ use super::emit_membership::{
 };
 use super::*;
 
-/// Mint the relation, the condition and the tuple source a declared request-scoped
-/// value needs.
+/// Mint the relation, the condition and the tuple source a row column compared against a
+/// declared request-scoped value needs.
 ///
-/// The authority split: the tuple carries what only the row or the rule knows, the
-/// request carries what only the caller knows, and the condition relates them. Returns
-/// `None` when no tuple can name the row, so the caller falls back to closing the
-/// policy.
+/// The tuple carries what only the row knows, the request what only the caller knows,
+/// and the condition relates them. Returns `None` when no tuple can name the row, so the
+/// caller falls back to closing the policy.
 pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     declared: RequestSide<'_>,
-    carried: RowParameterSource<'_>,
+    column: &ColumnName,
     policy_name: &str,
     source_table: &TableId,
     table_plan: &mut TypePlan,
@@ -33,20 +32,48 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     } = declared;
     let identity_cols = resolve_row_identity(source_table, db)?;
 
-    let request_parameter = source.condition_parameter().clone();
-    let mut namespace = condition_parameters.namespace([&request_parameter]);
-    let row_parameter = namespace.allocate_row(carried.parameter_base());
-    let row_parameter = match carried {
-        RowParameterSource::Column(column) => RowParameter::Column {
-            parameter: row_parameter.to_string(),
-            column: column.clone(),
-        },
-        RowParameterSource::Constant(value) => RowParameter::Literal {
-            parameter: row_parameter.to_string(),
-            value: value.to_string(),
-        },
-    };
+    let request_parameter = source.condition_parameter();
+    let mut namespace = condition_parameters.namespace([request_parameter]);
+    let row_parameter = namespace.allocate_row(column.as_str());
+    let spec = request_comparison_spec(&row_parameter, request_parameter, comparison)?;
+    let condition = declare_condition(table_plan, spec);
 
+    let memo_key = format!(
+        "session:{}:{policy_name}:{condition}:{column:?}",
+        policy_name.len()
+    );
+    let subjects = vec![DirectSubject::ConditionalWildcard {
+        type_name: table_plan.well_known.user.clone(),
+        condition: condition.clone(),
+    }];
+    let relation = table_plan.gate_relation(
+        &memo_key,
+        conditional_gate_relation_name(policy_name),
+        subjects,
+    );
+    table_plan.add_source(TupleSource::SessionAttributeGate {
+        table: source_table.clone(),
+        identity_cols,
+        relation: relation.clone(),
+        condition,
+        row_parameter: row_parameter.to_string(),
+        column: column.clone(),
+        request_parameter: request_parameter.to_string(),
+        setting_key: source.setting_key().to_string(),
+        separator: separator.map(str::to_string),
+        comparison,
+    });
+    Some(UsersetExpr::Computed(relation))
+}
+
+/// The condition comparing what a tuple carries under `row_parameter` against what the
+/// caller supplies under `request_parameter`, or `None` for a comparison this crate
+/// cannot state.
+fn request_comparison_spec(
+    row_parameter: &ConditionParameterName,
+    request_parameter: &ConditionParameterName,
+    comparison: RequestComparison,
+) -> Option<ConditionSpec> {
     let (request_type, operator) = match comparison {
         RequestComparison::CallerSetHolds => {
             (ConditionParameter::ListOf(STRING_PARAMETER_TYPE), "in")
@@ -56,56 +83,18 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         }
         _ => return None,
     };
-    let expression = format!(
-        "{} {operator} {request_parameter}",
-        row_parameter.parameter()
-    );
-    let spec = ConditionSpec {
-        expression,
+    Some(ConditionSpec {
+        expression: format!("{row_parameter} {operator} {request_parameter}"),
         parameters: [
             (
-                row_parameter.parameter().to_string(),
+                row_parameter.to_string(),
                 ConditionParameter::Scalar(STRING_PARAMETER_TYPE),
             ),
             (request_parameter.to_string(), request_type),
         ]
         .into_iter()
         .collect(),
-    };
-    let condition = declare_condition(table_plan, spec);
-
-    // Every constant tested against one request value shares the condition, so the
-    // relation is keyed on the constant too. Two arms sharing one relation would write two
-    // tuples under one key for every row.
-    let relation_key = match carried {
-        RowParameterSource::Column(_) => policy_name.to_string(),
-        RowParameterSource::Constant(value) => format!("{policy_name}_{value}"),
-    };
-    let memo_key = format!(
-        "session:{}:{policy_name}:{condition}:{row_parameter:?}",
-        policy_name.len()
-    );
-    let subjects = vec![DirectSubject::ConditionalWildcard {
-        type_name: table_plan.well_known.user.clone(),
-        condition: condition.clone(),
-    }];
-    let relation = table_plan.gate_relation(
-        &memo_key,
-        conditional_gate_relation_name(&relation_key),
-        subjects,
-    );
-    table_plan.add_source(TupleSource::SessionAttributeGate {
-        table: source_table.clone(),
-        identity_cols,
-        relation: relation.clone(),
-        condition,
-        row_parameter,
-        request_parameter: request_parameter.to_string(),
-        setting_key: source.setting_key().to_string(),
-        separator: separator.map(str::to_string),
-        comparison,
-    });
-    Some(UsersetExpr::Computed(relation))
+    })
 }
 
 /// The request's half of the comparison, as the policy declared it.
@@ -119,22 +108,147 @@ pub(crate) struct RequestSide<'a> {
     pub(crate) separator: Option<&'a str>,
 }
 
-/// Where the tuple's side of the comparison comes from.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum RowParameterSource<'a> {
-    /// A column of the guarded row.
-    Column(&'a ColumnName),
-    /// A constant the policy named, so every row carries the same one.
-    Constant(&'a str),
+/// Gate rows on a formula only the request decides.
+///
+/// The formula has one truth value for every row, so it is stated once, on the object of
+/// the request-gate type standing for this type. Each test is one tuple there under a
+/// condition shared by every test of its kind, and the formula's `AND` and `OR` are the
+/// model's own. `OpenFGA` bounds the cost of each condition evaluation, so one test per
+/// evaluation keeps the longest list a caller can send at what one test allows. The row
+/// carries one link to the object whatever the number of gates.
+pub(crate) fn emit_request_formula<DB: DatabaseLike>(
+    formula: &RequestFormula,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+) -> UsersetExpr {
+    match formula {
+        RequestFormula::Const(true) => {
+            return emit_constant_bool(&ConstantBool { value: true }, ctx, table_plan)
+        }
+        RequestFormula::Const(false) => return deny_expr(table_plan),
+        RequestFormula::Atom(_) | RequestFormula::Any(_) | RequestFormula::All(_) => {}
+    }
+    let Some(identity_cols) = resolve_row_identity(ctx.source_table, ctx.db) else {
+        skip_source_without_row_identity(
+            table_plan,
+            ctx.source_table,
+            "request gate links",
+            ctx.db,
+        );
+        return deny_expr(table_plan);
+    };
+
+    let well_known = &ctx.settings.well_known;
+    let gate_type = well_known.request_gate.clone();
+    let gate_object = table_plan.type_name.to_string();
+    let mut entries = Vec::new();
+    let relation = {
+        let gate_plan = all_types
+            .entry(gate_type.clone())
+            .or_insert_with(|| TypePlan::new_with_well_known(gate_type.clone(), well_known));
+        let mut gate = GateObject {
+            plan: gate_plan,
+            object: &gate_object,
+            condition_parameters: ctx.condition_parameters,
+            entries: &mut entries,
+        };
+        gate.relation(formula)
+    };
+    let Some(relation) = relation else {
+        return deny_expr(table_plan);
+    };
+    for entry in entries {
+        table_plan.add_source(entry);
+    }
+
+    let link = table_plan.ensure_direct(
+        request_gate_link_relation(),
+        vec![DirectSubject::Type(gate_type.clone())],
+    );
+    table_plan.add_source(TupleSource::PolicyScope {
+        table: ctx.source_table.clone(),
+        identity_cols,
+        scope_relation: link.clone(),
+        scope_type: gate_type,
+        scope_object: gate_object,
+    });
+    UsersetExpr::TupleToUserset {
+        tupleset: link,
+        computed: relation,
+    }
 }
 
-impl RowParameterSource<'_> {
-    fn parameter_base(&self) -> &str {
-        match self {
-            Self::Column(column) => column.as_str(),
-            // The rule supplies it, so it is named after what it is rather than after
-            // its value, which may be any text at all.
-            Self::Constant(_) => "required_value",
+/// The request-gate object standing for one guarded type, while a formula is stated on it.
+struct GateObject<'a> {
+    plan: &'a mut TypePlan,
+    object: &'a str,
+    condition_parameters: &'a ConditionParameterAllocator,
+    /// One tuple per test, written on the object.
+    entries: &'a mut Vec<TupleSource>,
+}
+
+impl GateObject<'_> {
+    /// The relation of the request-gate type standing for `formula`, or `None` for a
+    /// constant or a comparison this crate cannot state.
+    ///
+    /// Named after the formula's content, so one formula is one relation wherever it
+    /// gates, and two guarded types share it on their own objects.
+    fn relation(&mut self, formula: &RequestFormula) -> Option<RelationName> {
+        match formula {
+            RequestFormula::Const(_) => None,
+            RequestFormula::Atom(atom) => {
+                let mut namespace = self
+                    .condition_parameters
+                    .namespace([&atom.request_parameter]);
+                // The rule supplies it, so it is named after what it is rather than after
+                // its value, which may be any text at all.
+                let row_parameter = namespace.allocate_row("required_value");
+                let spec = request_comparison_spec(
+                    &row_parameter,
+                    &atom.request_parameter,
+                    atom.comparison,
+                )?;
+                let condition = declare_condition(self.plan, spec);
+                let verb = match atom.comparison {
+                    RequestComparison::CallerValueEquals => "is",
+                    _ => "holds",
+                };
+                let relation = self.plan.ensure_direct(
+                    request_gate_relation_name(
+                        &format!("{}_{verb}_{}", atom.request_parameter, atom.value),
+                        &formula.key(),
+                    ),
+                    vec![DirectSubject::ConditionalWildcard {
+                        type_name: self.plan.well_known.user.clone(),
+                        condition: condition.clone(),
+                    }],
+                );
+                self.entries.push(TupleSource::RequestGateEntry {
+                    gate_type: self.plan.type_name.clone(),
+                    gate_object: self.object.to_string(),
+                    relation: relation.clone(),
+                    condition,
+                    row_parameter: row_parameter.to_string(),
+                    atom: atom.clone(),
+                });
+                Some(relation)
+            }
+            RequestFormula::Any(children) | RequestFormula::All(children) => {
+                let members = children
+                    .iter()
+                    .map(|child| self.relation(child).map(UsersetExpr::Computed))
+                    .collect::<Option<Vec<_>>>()?;
+                let (readable, expr) = if matches!(formula, RequestFormula::Any(_)) {
+                    ("any", UsersetExpr::Union(members))
+                } else {
+                    ("all", UsersetExpr::Intersection(members))
+                };
+                Some(self.plan.ensure_computed(
+                    request_gate_relation_name(readable, &formula.key()).to_string(),
+                    expr,
+                ))
+            }
         }
     }
 }
@@ -339,20 +453,18 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
     Some((condition, context))
 }
 
-/// The gate a request-scoped comparison earns, for all four of the declared shapes.
-///
-/// P14 to P17 differ only in how the two sides are compared and whether the row's side is a
-/// column or a constant the policy named. One emitter answers all four, and the model cannot
-/// describe two of them apart, so writing the same tail four times only invited them to drift.
+/// The gate a row column compared against a declared request-scoped value earns, for
+/// P14 testing membership in the caller's set and P15 testing equality with the
+/// caller's value.
 pub(crate) fn emit_request_gate<DB: DatabaseLike>(
     declared: RequestSide<'_>,
-    carried: RowParameterSource<'_>,
+    column: &ColumnName,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
 ) -> UsersetExpr {
     session_attribute_expr(
         declared,
-        carried,
+        column,
         ctx.policy_name,
         ctx.source_table,
         table_plan,

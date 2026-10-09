@@ -131,13 +131,19 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 | P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object with source-specific membership relations |
 | P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate asking whether the caller's list holds the row's value |
 | P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, equality against the caller's value |
-| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, no column takes part |
-| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, caller's value against a constant |
+| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | A test of the caller's list, held once per table, see below |
+| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | A test of the caller's value, held once per table, see below |
 | P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(...))` | The gate on each share row, reached through the same parent P4 bridges to |
 | - | `MembershipExclusion` | Positive grant `AND NOT EXISTS (...)`, caller `NOT IN (...)`, caller `<> ALL (...)` | Grant `but not blocked`, with independent relations per blocklist |
 | - | `Unknown` | Anything else | Denied, with a TODO, unless an oracle classifies it |
 
 Blocklist subqueries must be correlated caller-identity memberships over tables with no own or inherited row-level security. `NOT IN` and `<> ALL` require a provably non-null projected column. A negative-only `RESTRICTIVE` clause subtracts from the action's existing grants, while standalone permissive negation and caller-set blocklists are refused.
+
+## Gates that read only the request
+
+A clause built from P16, P17 and constants has the same answer for every row, so it is stated once per table. It is first reduced to a normal form, which flattens nested `AND` and `OR`, drops repeated or subsumed arms and folds constants, so two spellings of one gate become one relation. Each constant it tests is one tuple on the `request_gate` object named after the table (`request_gate:docs`), and the `AND` and `OR` between them are written in the model. Each row carries one `request_gate` link to that object, however many gates the table has.
+
+Every test of one kind shares one condition (`required_value in app_bot_list`), so the model declares one condition per distinct guard rather than per table or policy. `OpenFGA` limits each condition evaluation by cost (`maxConditionEvaluationCost`, 100 by default), which on `OpenFGA` 1.11 stops a test at a list of about 90 fifteen-character entries. Testing several constants in one expression would divide that limit between them, which is why each constant gets its own tuple. The relation report states such a gate as `RowDecision::Request`, which the check context decides without any record.
 
 ## What the crate refuses
 

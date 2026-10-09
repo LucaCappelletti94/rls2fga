@@ -2,7 +2,7 @@
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::generator::well_known::{
-    WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
+    WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, REQUEST_GATE_TYPE, TEAM_TYPE,
 };
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
@@ -83,6 +83,7 @@ CREATE POLICY p ON timed_docs FOR SELECT USING ("in" > now());
         TEAM_TYPE,
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     )
     .expect("the extended type name should be valid");

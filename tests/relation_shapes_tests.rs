@@ -27,7 +27,9 @@ use rls2fga::types::{
     ValueSource,
 };
 use rls2fga::types::{ColumnName, RelationName, TableId};
-use rls2fga::types::{RelationShapes, RowDecision};
+use rls2fga::types::{
+    RelationShapes, RequestAtom, RequestComparison, RequestPredicate, RowDecision,
+};
 
 mod support;
 
@@ -1635,7 +1637,20 @@ fn recipe_leaves(decision: &RowDecision) -> Vec<Leaf<'_>> {
         RowDecision::Any(children) | RowDecision::All(children) => {
             children.iter().flat_map(recipe_leaves).collect()
         }
+        // The request alone decides it, so no record of the row takes part.
+        RowDecision::Request(_) => Vec::new(),
         other => panic!("a recipe shape this test cannot read: {other:?}"),
+    }
+}
+
+/// Whether a recipe reaches a predicate the check context decides with no record.
+fn reaches_the_request(decision: &RowDecision) -> bool {
+    match decision {
+        RowDecision::Request(_) => true,
+        RowDecision::Any(children) | RowDecision::All(children) => {
+            children.iter().any(reaches_the_request)
+        }
+        _ => false,
     }
 }
 
@@ -1822,7 +1837,7 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
             };
             let reached = recipe_leaves(decision);
             assert!(
-                !reached.is_empty(),
+                !reached.is_empty() || reaches_the_request(decision),
                 "{fixture}: {}#{} reports a recipe reaching no leaf, which grants either \
                  nobody or everybody depending on how it composes",
                 reported.type_name,
@@ -2381,20 +2396,9 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
         (
             "supabase_mfa_restrictive",
             &[],
-            &[
-                "documents#can_select",
-                "documents#gate_documents_mfa_aal2_ed02710d",
-                "documents#owner",
-            ],
+            &["documents#can_select", "documents#owner"],
         ),
-        (
-            "claims_role_gate",
-            &[],
-            &[
-                "audit_log#can_select",
-                "audit_log#gate_audit_admin_admin_d57d0020",
-            ],
-        ),
+        ("claims_role_gate", &[], &["audit_log#can_select"]),
     ];
 
     for (fixture, scars, decidable) in expected {
@@ -3746,32 +3750,23 @@ fn an_open_table_under_a_request_gate_is_decided_without_a_round_trip() {
     assert!(open.from_one_row, "the open arm reads nothing but the row");
     assert_eq!(open.decision.as_ref(), Some(&everyone));
 
-    let gates: Vec<RowDecision> = shapes
-        .iter()
-        .filter(|reported| {
-            reported
-                .relation
-                .as_str()
-                .starts_with("gate_orders_cap_read")
+    let holds = |value: &str| {
+        RequestPredicate::Holds(RequestAtom {
+            request_parameter: "app_bot_list".to_string(),
+            comparison: RequestComparison::CallerSetHolds,
+            value: value.to_string(),
         })
-        .map(|reported| {
-            reported
-                .decision
-                .clone()
-                .expect("a request-only gate is decided by the request")
-        })
-        .collect();
-    assert_eq!(gates.len(), 2, "one gate per arm of the OR");
-    let Some(RowDecision::All(read)) = &entry(&shapes, "orders", "can_select").decision else {
-        panic!("the read is the open arm intersected with the gate");
     };
-    let [open_arm, RowDecision::Any(arms)] = read.as_slice() else {
-        panic!("the read is the open arm intersected with the gate: {read:?}");
-    };
-    assert_eq!(*open_arm, everyone);
-    assert!(
-        arms.len() == gates.len() && gates.iter().all(|gate| arms.contains(gate)),
-        "the gate is the union of its arms: {arms:?}"
+    assert_eq!(
+        entry(&shapes, "orders", "can_select").decision,
+        Some(RowDecision::All(vec![
+            everyone,
+            RowDecision::Request(RequestPredicate::Any(vec![
+                holds("*"),
+                holds("orders:read")
+            ])),
+        ])),
+        "the read is the open arm intersected with the gate the request decides"
     );
 }
 

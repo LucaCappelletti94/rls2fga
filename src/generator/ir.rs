@@ -5,7 +5,7 @@
 //! cannot drift apart.
 
 use crate::classifier::patterns::{AttributePredicate, ResidualPredicates};
-use crate::generator::model_generator::RowParameter;
+use crate::generator::model_generator::GateAtom;
 use crate::generator::notes::SkippedTuples;
 use crate::generator::well_known::member_relation;
 #[cfg(not(feature = "std"))]
@@ -204,17 +204,17 @@ pub(crate) enum TupleSource {
         column: ColumnName,
     },
 
-    /// A declared request-scoped value the service compares per check. Produces
-    /// `(type:pk, relation, user:*, condition, context)` where the context carries what
-    /// only the row or the rule knows: the row's own value, or the constant the policy
-    /// named.
+    /// A row column compared against a declared request-scoped value per check. Produces
+    /// `(type:pk, relation, user:*, condition, context)` where the context carries the
+    /// row's own value.
     SessionAttributeGate {
         table: TableId,
         identity_cols: Vec<ColumnName>,
         relation: RelationName,
         condition: ConditionName,
-        /// Condition parameter the tuple supplies, and where its value comes from.
-        row_parameter: RowParameter,
+        /// Condition parameter the row supplies, and the column it reads.
+        row_parameter: String,
+        column: ColumnName,
         /// Condition parameter the caller supplies in every check context.
         request_parameter: String,
         /// Session setting the caller's value mirrors, so the contract can name it.
@@ -223,6 +223,24 @@ pub(crate) enum TupleSource {
         separator: Option<String>,
         /// How the two sides are compared.
         comparison: RequestComparison,
+    },
+
+    /// One constant a gate reading only the request tests, held by the object standing
+    /// for one guarded type. Produces `(gate_type:gate_object, relation, user:*,
+    /// condition, context)` with the constant under `row_parameter`.
+    ///
+    /// Names no table. The constant is a fact about the policy, so the query is a
+    /// constant `SELECT` yielding one row, and every row of the guarded type reaches it
+    /// through the one link [`Self::PolicyScope`] writes.
+    RequestGateEntry {
+        gate_type: TypeName,
+        gate_object: String,
+        relation: RelationName,
+        condition: ConditionName,
+        /// Condition parameter the constant fills.
+        row_parameter: String,
+        /// The test, with the caller contract it states.
+        atom: GateAtom,
     },
 
     /// A share row keyed on its own join-table primary key, gated by a conditional
@@ -303,19 +321,21 @@ pub(crate) enum TupleSource {
         relation: RelationName,
     },
 
-    /// Links every row of a role-scoped table to the scope its policy declares. Produces
-    /// `(type:pk, scope_relation, scope_type:scope_object)` per row.
+    /// Links every row of a table to one object of a synthetic type standing for
+    /// something every row shares, such as the scope a policy's `TO` clause declares or
+    /// the gates that read only the request. Produces `(type:pk, scope_relation,
+    /// scope_type:scope_object)` per row.
     ///
-    /// The roles the scope admits are a fact about the policy, carried once by
-    /// [`Self::PolicyScopeRoles`], so a policy naming several roles no longer writes one fact
-    /// per row per role.
+    /// What the object admits is a fact about the policy, carried once by
+    /// [`Self::PolicyScopeRoles`] or [`Self::RequestGateEntry`], so a policy naming
+    /// several roles or a table carrying several gates writes one fact per row.
     PolicyScope {
         table: TableId,
         identity_cols: Vec<ColumnName>,
         scope_relation: RelationName,
         /// Synthetic type the scope objects belong to.
         scope_type: TypeName,
-        /// Object id standing for this policy's scope.
+        /// Object id standing for this scope.
         scope_object: String,
     },
 
@@ -526,9 +546,18 @@ pub(crate) enum TupleSourceKey<'a> {
         identity_cols: &'a [ColumnName],
         relation: &'a RelationName,
         condition: &'a ConditionName,
-        row_parameter: &'a RowParameter,
+        row_parameter: &'a str,
+        column: &'a ColumnName,
         request_parameter: &'a str,
         comparison: RequestComparison,
+    },
+    RequestGateEntry {
+        gate_type: &'a TypeName,
+        gate_object: &'a str,
+        relation: &'a RelationName,
+        condition: &'a ConditionName,
+        row_parameter: &'a str,
+        atom: &'a GateAtom,
     },
     CallerSetShareGate {
         share_type: &'a TypeName,
@@ -627,6 +656,7 @@ impl TupleSource {
             | Self::HolderBridge { .. } => true,
             Self::ShareBridge { .. }
             | Self::PolicyScopeRoles { .. }
+            | Self::RequestGateEntry { .. }
             | Self::OwnerIdentity { .. }
             | Self::ExplicitGrants { .. }
             | Self::TeamMembership { .. }
@@ -711,6 +741,11 @@ impl TupleSource {
                 relation,
                 ..
             } => vec![(scope_type.clone(), relation.clone())],
+            Self::RequestGateEntry {
+                gate_type,
+                relation,
+                ..
+            } => vec![(gate_type.clone(), relation.clone())],
             Self::Skipped { .. } => Vec::new(),
         }
     }
@@ -880,6 +915,7 @@ impl TupleSource {
                 relation,
                 condition,
                 row_parameter,
+                column,
                 request_parameter,
                 comparison,
                 // The caller's contract, which the notes carry off the plan's own sources.
@@ -892,8 +928,24 @@ impl TupleSource {
                 relation,
                 condition,
                 row_parameter,
+                column,
                 request_parameter,
                 comparison: *comparison,
+            },
+            Self::RequestGateEntry {
+                gate_type,
+                gate_object,
+                relation,
+                condition,
+                row_parameter,
+                atom,
+            } => TupleSourceKey::RequestGateEntry {
+                gate_type,
+                gate_object,
+                relation,
+                condition,
+                row_parameter,
+                atom,
             },
             Self::CallerSetShareGate {
                 join_table,
@@ -1358,10 +1410,8 @@ mod tests {
             identity_cols: vec![ColumnName::from_stored("id")],
             relation: owner_user_relation(),
             condition: ConditionName::canonicalized("in_set"),
-            row_parameter: RowParameter::Column {
-                parameter: "owner".to_string(),
-                column: ColumnName::from_stored("owner"),
-            },
+            row_parameter: "owner".to_string(),
+            column: ColumnName::from_stored("owner"),
             request_parameter: "subjects".to_string(),
             setting_key: setting_key.to_string(),
             separator: separator.map(str::to_string),

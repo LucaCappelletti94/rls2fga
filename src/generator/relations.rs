@@ -14,7 +14,7 @@
 use crate::no_std_prelude::*;
 use crate::types::{
     RecordDerivation, RecordDescription, RelationName, RelationShapes, RequestComparison,
-    RowDecision, TypeName, ValueSource,
+    RequestPredicate, RowDecision, TypeName, ValueSource,
 };
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -178,10 +178,79 @@ fn expr_decision<DB: DatabaseLike>(
         UsersetExpr::Intersection(children) => {
             child_decisions(type_name, children, plan, sources, db, visiting).map(RowDecision::All)
         }
-        // A tuple-to-userset resolves on the object the tupleset reaches rather than
-        // on this row, and an exclusion lets adding a record revoke access, so
+        // A link to the object holding this type's request gates reaches a predicate over
+        // the request alone, so the caller's context decides it for every row.
+        UsersetExpr::TupleToUserset { tupleset, computed }
+            if links_to_request_gates(type_name, tupleset, plan, sources) =>
+        {
+            request_predicate(&plan.well_known.request_gate, computed, plan, sources)
+                .map(RowDecision::Request)
+        }
+        // Any other tuple-to-userset resolves on the object the tupleset reaches rather
+        // than on this row, and an exclusion lets adding a record revoke access, so
         // neither is decidable from the row.
         UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. } => None,
+    }
+}
+
+/// Every record `tupleset` holds links a row of `type_name` to its own request-gate
+/// object, which every row with a key carries.
+fn links_to_request_gates(
+    type_name: &TypeName,
+    tupleset: &RelationName,
+    plan: &SchemaPlan,
+    sources: &SourceIndex<'_, '_>,
+) -> bool {
+    sources
+        .get(&(type_name.clone(), tupleset.clone()))
+        .is_some_and(|feeding| {
+            !feeding.is_empty()
+                && feeding.iter().all(|indexed| {
+                    matches!(
+                        indexed.source,
+                        TupleSource::PolicyScope { scope_type, scope_object, .. }
+                            if *scope_type == plan.well_known.request_gate
+                                && scope_object.as_str() == type_name.as_str()
+                    )
+                })
+        })
+}
+
+/// The predicate `relation` of the request-gate type states, or `None` when it is not
+/// one the request alone decides. Gate relations are minted from a finite formula and
+/// never refer back, so the walk ends.
+fn request_predicate(
+    gate_type: &TypeName,
+    relation: &RelationName,
+    plan: &SchemaPlan,
+    sources: &SourceIndex<'_, '_>,
+) -> Option<RequestPredicate> {
+    let gate_plan = find_type(plan, gate_type)?;
+    let members = |children: &[UsersetExpr]| {
+        children
+            .iter()
+            .map(|child| match child {
+                UsersetExpr::Computed(name) => request_predicate(gate_type, name, plan, sources),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    match gate_plan.computed_relations.get(relation) {
+        Some(UsersetExpr::Computed(name)) => request_predicate(gate_type, name, plan, sources),
+        Some(UsersetExpr::Union(children)) => members(children).map(RequestPredicate::Any),
+        Some(UsersetExpr::Intersection(children)) => members(children).map(RequestPredicate::All),
+        Some(UsersetExpr::TupleToUserset { .. } | UsersetExpr::Exclusion { .. }) => None,
+        None => {
+            let feeding = sources.get(&(gate_type.clone(), relation.clone()))?;
+            let mut atoms = feeding.iter().map(|indexed| match indexed.source {
+                TupleSource::RequestGateEntry { atom, .. } => Some(atom),
+                _ => None,
+            });
+            let first = atoms.next()??;
+            atoms
+                .all(|atom| atom == Some(first))
+                .then(|| RequestPredicate::Holds(first.request_atom()))
+        }
     }
 }
 
@@ -240,7 +309,7 @@ fn leaf_decision<DB: DatabaseLike>(
         return Some(RowDecision::RequestGated {
             relation: relation.clone(),
             shapes: vec![description],
-            context_key: row_parameter.parameter().to_string(),
+            context_key: row_parameter.clone(),
             request_parameter: request_parameter.clone(),
             comparison: *comparison,
         });

@@ -384,6 +384,7 @@ fn a_configured_type_name_past_two_hundred_fifty_four_refuses_the_translation() 
         "team",
         "pg_role",
         "pg_role_scope",
+        "request_gate",
         "nobody",
     )
     .expect("the name is otherwise valid");

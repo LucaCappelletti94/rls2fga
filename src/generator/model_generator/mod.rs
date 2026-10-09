@@ -21,17 +21,17 @@ use crate::generator::well_known::{
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
     can_upsert_relation, deny_relation, member_relation, owner_team_relation, owner_user_relation,
-    public_relation, scope_roles_relation, WellKnownTypes, REQUEST_TIME_PARAMETER,
-    STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
+    public_relation, request_gate_link_relation, scope_roles_relation, WellKnownTypes,
+    REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
 };
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     attribute_gate_relation_name, canonical_fga_type_name, clamp_relation_name,
     conditional_gate_relation_name, is_owner_like_column_name, lookup_table, lookup_table_id,
     membership_read_scope_relation_name, parent_type_from_fk_column, public_flag_relation_name,
-    resolve_table_id, role_limited_relation_name, role_scope_name, row_presence_relation_name,
-    stored_relation_name, table_id_has_column, table_identity, yielded_relation_name,
-    MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
+    request_gate_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
+    row_presence_relation_name, stored_relation_name, table_id_has_column, table_identity,
+    yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, IdentifierCase, PolicyLike, RoleLike, TableLike,
@@ -55,6 +55,8 @@ mod emit_requests;
 mod emit_roles;
 /// Which statements `PostgreSQL` refuses to plan because the policies loop.
 mod recursion;
+/// A gate that reads only the request, reduced to one normal form.
+mod request_formula;
 /// Role-threshold resource-column inference and tuple-source population.
 mod role_threshold;
 /// Whole-plan passes that run once every table is translated.
@@ -80,13 +82,15 @@ use emit_ownership::{
 };
 use emit_requests::{
     conditional_gate_expr, declare_temporal_condition, emit_membership_in_caller_set,
-    emit_request_gate, RequestSide, RowParameterSource,
+    emit_request_formula, emit_request_gate, RequestSide,
 };
 use emit_roles::{
     emit_numeric_threshold, emit_role_name_in_list, register_pg_role_scope, OwnerScope,
     RoleScopeSpec,
 };
 use recursion::PolicyReadRecursion;
+pub(crate) use request_formula::GateAtom;
+use request_formula::RequestFormula;
 use role_threshold::{populate_role_threshold_sources, RoleThresholdTables};
 pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
@@ -208,34 +212,6 @@ pub(crate) enum ConditionParameter {
     Scalar(&'static str),
     /// A list of values of the named element type.
     ListOf(&'static str),
-}
-
-/// What a tuple puts in the context under the parameter the request cannot supply.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RowParameter {
-    /// Read from this column of the row.
-    Column {
-        /// The condition parameter the value fills.
-        parameter: String,
-        /// The column the value comes from.
-        column: ColumnName,
-    },
-    /// A constant the policy named, so every row of the table carries the same one.
-    Literal {
-        /// The condition parameter the value fills.
-        parameter: String,
-        /// The constant.
-        value: String,
-    },
-}
-
-impl RowParameter {
-    /// The parameter this tuple side fills.
-    pub(crate) fn parameter(&self) -> &str {
-        match self {
-            Self::Column { parameter, .. } | Self::Literal { parameter, .. } => parameter,
-        }
-    }
 }
 
 /// Structural identity of a subject list, stable against `Debug` formatting.
@@ -1783,6 +1759,13 @@ fn note_request_contracts(
                     separator.clone(),
                 ));
             }
+            TupleSource::RequestGateEntry { atom, .. } => {
+                contracts.insert((
+                    atom.request_parameter.to_string(),
+                    Some(atom.setting_key.clone()),
+                    atom.separator.clone(),
+                ));
+            }
             TupleSource::CallerSetShareGate {
                 request_parameter,
                 setting_key,
@@ -1879,6 +1862,7 @@ fn source_carries_condition(source: &TupleSource) -> bool {
         source,
         TupleSource::ConditionalAttributeGate { .. }
             | TupleSource::SessionAttributeGate { .. }
+            | TupleSource::RequestGateEntry { .. }
             | TupleSource::CallerSetShareGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
             | TupleSource::HolderMembers { gate: Some(_), .. }
@@ -2745,7 +2729,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 comparison: RequestComparison::CallerSetHolds,
                 separator: separator.as_deref(),
             },
-            RowParameterSource::Column(column),
+            column,
             ctx,
             table_plan,
         ),
@@ -2758,36 +2742,21 @@ fn translate_pattern<DB: DatabaseLike>(
                 comparison: RequestComparison::CallerValueEquals,
                 separator: None,
             },
-            RowParameterSource::Column(column),
+            column,
             ctx,
             table_plan,
         ),
-        PatternClass::P16ConstantInCallerSet(ConstantInCallerSet {
-            value,
-            source,
-            separator,
-        }) => emit_request_gate(
-            RequestSide {
-                source,
-                comparison: RequestComparison::CallerSetHolds,
-                separator: separator.as_deref(),
-            },
-            RowParameterSource::Constant(value),
+        PatternClass::P16ConstantInCallerSet(test) => emit_request_formula(
+            &RequestFormula::Atom(GateAtom::held_by_caller_set(test)),
             ctx,
             table_plan,
+            all_types,
         ),
-        PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant {
-            value,
-            source,
-        }) => emit_request_gate(
-            RequestSide {
-                source,
-                comparison: RequestComparison::CallerValueEquals,
-                separator: None,
-            },
-            RowParameterSource::Constant(value),
+        PatternClass::P17CallerScalarEqualsConstant(test) => emit_request_formula(
+            &RequestFormula::Atom(GateAtom::equal_to_caller_value(test)),
             ctx,
             table_plan,
+            all_types,
         ),
         PatternClass::Unknown(unclassified) => {
             emit_unclassified(unclassified, ctx, table_plan, notes)

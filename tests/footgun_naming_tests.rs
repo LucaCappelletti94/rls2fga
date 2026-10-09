@@ -5,8 +5,8 @@
 
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::generator::well_known::{
-    WellKnownTypes, WellKnownTypesError, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
-    USER_TYPE,
+    WellKnownTypes, WellKnownTypesError, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE,
+    REQUEST_GATE_TYPE, TEAM_TYPE, USER_TYPE,
 };
 use rls2fga::translator::{Translator, TranslatorBuilder};
 use rls2fga::types::ConfidenceLevel;
@@ -708,6 +708,11 @@ fn custom_well_known_types(setting: &str, replacement: &str) -> WellKnownTypes {
         } else {
             PG_ROLE_SCOPE_TYPE
         },
+        if setting == "request_gate" {
+            replacement
+        } else {
+            REQUEST_GATE_TYPE
+        },
         if setting == "nobody" {
             replacement
         } else {
@@ -742,6 +747,7 @@ fn invalid_configured_well_known_type_names_are_rejected_at_construction() {
             TEAM_TYPE,
             PG_ROLE_TYPE,
             PG_ROLE_SCOPE_TYPE,
+            REQUEST_GATE_TYPE,
             NOBODY_TYPE,
         );
         assert!(
@@ -758,6 +764,7 @@ fn duplicate_configured_well_known_type_names_are_rejected_at_construction() {
         "principal",
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     );
     assert!(matches!(
@@ -823,6 +830,7 @@ fn well_known_names_have_a_single_source_of_truth() {
         "principal_group",
         "database_role",
         "database_role_scope",
+        "request_check",
         "empty_principal",
     )
     .expect("custom type names should be valid");
@@ -873,7 +881,14 @@ fn well_known_names_have_a_single_source_of_truth() {
             "custom type name {expected} should reach every output:\n{rendered}"
         );
     }
-    for default in ["user", "team", "pg_role", "pg_role_scope", "nobody"] {
+    for default in [
+        "user",
+        "team",
+        "pg_role",
+        "pg_role_scope",
+        "request_gate",
+        "nobody",
+    ] {
         assert!(
             !rendered.contains(&format!("type {default}\n"))
                 && !rendered.contains(&format!("'{default}:")),
@@ -890,6 +905,7 @@ fn valid_extended_well_known_type_name_keeps_its_exact_spelling() {
         TEAM_TYPE,
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     )
     .expect("the extended identifier should be valid");

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use rls2fga::types::{
     records_from_row, ActionAnswer, ActionStatement, ConfidenceLevel, RelationShapes,
-    RequestComparison, RowDecision,
+    RequestComparison, RequestPredicate, RowDecision,
 };
 
 mod support;
@@ -173,6 +173,7 @@ fn grants(
                 other => panic!("a comparison this test cannot evaluate: {other:?}"),
             }
         }),
+        RowDecision::Request(predicate) => holds(predicate, context),
         RowDecision::Any(children) => children
             .iter()
             .any(|child| grants(child, row, subject, context)),
@@ -180,6 +181,24 @@ fn grants(
             .iter()
             .all(|child| grants(child, row, subject, context)),
         other => panic!("a recipe shape this test cannot evaluate: {other:?}"),
+    }
+}
+
+/// Whether the caller's `context` satisfies a predicate the request alone decides.
+fn holds(predicate: &RequestPredicate, context: &serde_json::Value) -> bool {
+    match predicate {
+        RequestPredicate::Holds(atom) => {
+            let caller_side = &context[atom.request_parameter.as_str()];
+            match atom.comparison {
+                RequestComparison::CallerSetHolds => caller_side
+                    .as_array()
+                    .is_some_and(|held| held.iter().any(|value| value == atom.value.as_str())),
+                RequestComparison::CallerValueEquals => caller_side == atom.value.as_str(),
+                other => panic!("a comparison this test cannot evaluate: {other:?}"),
+            }
+        }
+        RequestPredicate::Any(children) => children.iter().any(|child| holds(child, context)),
+        RequestPredicate::All(children) => children.iter().all(|child| holds(child, context)),
     }
 }
 

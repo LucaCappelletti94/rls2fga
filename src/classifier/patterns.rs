@@ -77,7 +77,7 @@ impl fmt::Display for PolicyCommand {
 }
 
 /// Boolean operator for composite patterns.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BoolOp {
     /// Logical conjunction: all sub-conditions must hold.
     And,

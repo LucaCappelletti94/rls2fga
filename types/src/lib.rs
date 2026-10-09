@@ -60,7 +60,9 @@ pub use records::{
     RecordDescription, RecordError, RecordTemplate, ReplayScope, RowCell, RowList, RowValues,
     SubjectKey, ValueSource,
 };
-pub use relations::{RelationShapes, RequestComparison, RowDecision};
+pub use relations::{
+    RelationShapes, RequestAtom, RequestComparison, RequestPredicate, RowDecision,
+};
 pub use row_naming::RowNaming;
 pub use unrestricted::UnrestrictedTable;
 

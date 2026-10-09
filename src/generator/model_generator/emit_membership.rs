@@ -1107,6 +1107,9 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
 }
 
 /// A union or intersection of the parts a composite clause combines.
+///
+/// The parts that read only the request fold into one gate in normal form, so reordered,
+/// repeated or subsumed arms reach one relation. The rest translate one by one.
 pub(crate) fn emit_composite<DB: DatabaseLike>(
     composite: &Composite,
     ctx: &PatternCtx<'_, DB>,
@@ -1116,16 +1119,24 @@ pub(crate) fn emit_composite<DB: DatabaseLike>(
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
     let Composite { op, parts } = composite;
+    let mut request_only = Vec::new();
     let mut child_exprs = Vec::new();
     for part in parts {
-        child_exprs.push(translate_pattern(
-            &part.pattern,
-            ctx,
-            table_plan,
-            all_types,
-            notes,
-            readability,
-        ));
+        match RequestFormula::of(&part.pattern) {
+            Some(formula) => request_only.push(formula),
+            None => child_exprs.push(translate_pattern(
+                &part.pattern,
+                ctx,
+                table_plan,
+                all_types,
+                notes,
+                readability,
+            )),
+        }
+    }
+    if !request_only.is_empty() {
+        let gate = RequestFormula::join(*op, request_only);
+        child_exprs.push(emit_request_formula(&gate, ctx, table_plan, all_types));
     }
     match op {
         BoolOp::Or => combine_union(child_exprs).unwrap_or_else(|| deny_expr(table_plan)),

@@ -250,6 +250,16 @@ pub fn attribute_gate_relation_name(column: &str, key: &str) -> RelationName {
     )))
 }
 
+/// Derive a relation of the request-gate type from what it tests.
+///
+/// `readable` says what the relation tests, and `key` is its exact structural identity,
+/// since folding `readable` to a name can map two tests onto one spelling
+/// (`t0:read` and `t0_read`).
+#[must_use]
+pub fn request_gate_relation_name(readable: &str, key: &str) -> RelationName {
+    RelationName::canonicalized(format!("{readable}_{}", stable_hex_suffix(key)))
+}
+
 fn scope_relation_name(prefix: &str, key: &str) -> RelationName {
     let base = canonical_fga_type_name(key);
     let suffix = stable_hex_suffix(key);

@@ -76,6 +76,10 @@ pub enum RowDecision {
         /// How the two sides are compared.
         comparison: RequestComparison,
     },
+    /// The caller's request alone decides, the same way for every row. The row reaches
+    /// the predicate through a link every row of the type carries, and the predicate
+    /// reads no column.
+    Request(RequestPredicate),
 }
 
 /// How a request-gated relation compares the row's side against the caller's.
@@ -88,4 +92,31 @@ pub enum RequestComparison {
     CallerSetHolds,
     /// The caller's single value has to equal the row's.
     CallerValueEquals,
+}
+
+/// A predicate over the values the caller supplies in every check context.
+///
+/// In canonical form children are sorted and distinct, an [`Self::Any`] never directly
+/// holds another [`Self::Any`] nor an [`Self::All`] another [`Self::All`], and either holds
+/// at least two children.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RequestPredicate {
+    /// One test of a request value against a constant the policy names.
+    Holds(RequestAtom),
+    /// Any child holds.
+    Any(Vec<RequestPredicate>),
+    /// Every child holds.
+    All(Vec<RequestPredicate>),
+}
+
+/// One test of a request value against a constant the policy names.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequestAtom {
+    /// Parameter the caller supplies its value as, in every check context.
+    pub request_parameter: String,
+    /// How the caller's value is compared against [`Self::value`]. `PostgreSQL` reads an
+    /// unset setting as `NULL`, which fails the test.
+    pub comparison: RequestComparison,
+    /// The constant the policy names.
+    pub value: String,
 }
