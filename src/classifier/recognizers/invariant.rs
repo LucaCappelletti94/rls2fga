@@ -8,15 +8,19 @@ use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::ops::ControlFlow;
 use sqlparser::ast::{
-    Expr, Ident, ObjectName, ObjectNamePart, Query, SetExpr, TableFactor, Value, Visit, VisitMut,
-    Visitor, VisitorMut,
+    BinaryOperator, Expr, Ident, ObjectName, ObjectNamePart, Query, SelectItem, SetExpr,
+    TableFactor, Value, Visit, VisitMut, Visitor, VisitorMut,
 };
 
 use super::attribute::{attribute_operator, ROW_PURE_FUNCTIONS};
-use super::subquery::{query_binds_its_own_names, set_limiting_clause};
-use super::unwrap_cast_or_nested;
+use super::subquery::{
+    query_binds_its_own_names, select_result_shaping_clause, set_limiting_clause,
+};
+use super::{unparenthesize, unwrap_cast_or_nested};
 use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::readability::{table_readability, TableReadability};
 use crate::generator::unrestricted::row_level_security_is_off;
+use crate::parser::expr::function_call;
 use crate::parser::names::{
     builtin_function_name, is_current_user_keyword_name, lookup_table, stored_ident_name,
     stored_relation_name, table_identity,
@@ -48,7 +52,9 @@ pub(crate) struct MembershipScope<'a> {
 /// no such proof holds.
 ///
 /// Empty where it reads none, which the caller still judges as before. Non-empty rewrites
-/// each relation to the identity the catalog carries, so no `search_path` decides it.
+/// each relation to the identity the catalog carries, so no `search_path` decides it. A
+/// request-gated table reads alike only because the gate decides it, and the caller the
+/// gate excludes sees it empty, so the residual must hold for no row then.
 pub(crate) fn residual_relations<DB: DatabaseLike>(
     conjunct: &mut Expr,
     db: Option<&DB>,
@@ -70,10 +76,22 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     }
     for name in &names.0 {
         let table = lookup_table(db, name)?;
+        let identity = table_identity(table);
         if !row_level_security_is_off(table, db) {
-            return None;
+            // Row security is on, so the caller and the loader read different rows unless the
+            // table is request-gated. The caller the gate excludes sees it empty, so the
+            // residual must hold for no row then, or the gate would hide rows it may read.
+            if !matches!(
+                table_readability(&identity, db, registry),
+                TableReadability::RequestGated { .. }
+            ) {
+                return None;
+            }
+            if !residual_never_true_when_empty(conjunct, &identity, db) {
+                return None;
+            }
         }
-        relations.insert(table_identity(table));
+        relations.insert(identity);
         columns.extend(table, db);
     }
     if answer_depends_on_the_asker(conjunct, registry, &columns) {
@@ -503,4 +521,267 @@ impl<DB: DatabaseLike> VisitorMut for QualifyRelations<'_, DB> {
         ]);
         ControlFlow::Continue(())
     }
+}
+
+/// Whether `conjunct` is never true when `table` holds no row.
+///
+/// Each subquery over `table` is reduced to the value it takes on an empty table, and
+/// [`never_true`] then has to prove the surrounding tree false or `NULL`. Anything the
+/// evaluation cannot place is refused, which is the only outcome a wrong allow could not
+/// forgive.
+fn residual_never_true_when_empty<DB: DatabaseLike>(
+    conjunct: &Expr,
+    table: &TableId,
+    db: &DB,
+) -> bool {
+    let mut substituted = conjunct.clone();
+    let mut visitor = SubstituteEmpty {
+        table,
+        db,
+        ok: true,
+    };
+    let _ = VisitMut::visit(&mut substituted, &mut visitor);
+    visitor.ok && never_true(&substituted)
+}
+
+/// Reduces, in place, every subquery that reads `table` alone to the value it takes on an
+/// empty table.
+///
+/// [`Self::ok`] stays false where a subquery joins `table` to another relation or is not a
+/// projection the evaluation can place on an empty table, which the caller reads as a
+/// refusal. A subquery that reads nothing of `table` is left standing.
+struct SubstituteEmpty<'a, DB> {
+    table: &'a TableId,
+    db: &'a DB,
+    ok: bool,
+}
+
+impl<DB: DatabaseLike> VisitorMut for SubstituteEmpty<'_, DB> {
+    type Break = ();
+
+    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+        if !self.ok {
+            return ControlFlow::Break(());
+        }
+        let (over_table, value) = match expr {
+            Expr::Exists { subquery, negated } => {
+                match subquery_over_table(subquery, self.table, self.db) {
+                    Some(over) => (over, Some(boolean_literal(*negated))),
+                    None => return ControlFlow::Break(()),
+                }
+            }
+            Expr::Subquery(query) => match subquery_over_table(query, self.table, self.db) {
+                Some(over) => (over, scalar_empty_value(query)),
+                None => return ControlFlow::Break(()),
+            },
+            Expr::InSubquery {
+                subquery, negated, ..
+            } => match subquery_over_table(subquery, self.table, self.db) {
+                Some(over) => (over, Some(boolean_literal(*negated))),
+                None => return ControlFlow::Break(()),
+            },
+            _ => return ControlFlow::Continue(()),
+        };
+        if over_table {
+            if let Some(value) = value {
+                *expr = value;
+            } else {
+                self.ok = false;
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Whether a subquery's FROM reads `table` alone.
+///
+/// `Some(true)` where the FROM is the single plain table `table`, `Some(false)` where it
+/// reads nothing the caller's gate hides, and [`None`] where it joins `table` to another
+/// relation or names a relation the evaluation cannot place.
+fn subquery_over_table<DB: DatabaseLike>(query: &Query, table: &TableId, db: &DB) -> Option<bool> {
+    let tables = from_tables(query, db)?;
+    if !tables.contains(table) {
+        return Some(false);
+    }
+    Some(tables.len() == 1)
+}
+
+/// The plain tables a query's FROM names, or [`None`] where one is not a plain table.
+fn from_tables<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<BTreeSet<TableId>> {
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    let mut tables = BTreeSet::new();
+    for item in &select.from {
+        for factor in
+            core::iter::once(&item.relation).chain(item.joins.iter().map(|join| &join.relation))
+        {
+            let TableFactor::Table {
+                name,
+                args: None,
+                version: None,
+                sample: None,
+                json_path: None,
+                with_hints,
+                partitions,
+                index_hints,
+                with_ordinality: false,
+                ..
+            } = factor
+            else {
+                return None;
+            };
+            if !with_hints.is_empty() || !partitions.is_empty() || !index_hints.is_empty() {
+                return None;
+            }
+            let table = lookup_table(db, &name.to_string())?;
+            tables.insert(table_identity(table));
+        }
+    }
+    Some(tables)
+}
+
+/// The value a scalar subquery over an empty table takes, by the aggregate it projects.
+///
+/// [`None`] where the projection is not a single bare aggregate the evaluation can place,
+/// so `count(*) + 1` and a grouped projection are refused rather than guessed at. A cast
+/// keeps a `NULL` but may change a `count`, so only an uncast `count` is placed.
+fn scalar_empty_value(query: &Query) -> Option<Expr> {
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    if select_result_shaping_clause(select).is_some() {
+        return None;
+    }
+    let [SelectItem::UnnamedExpr(projection)] = select.projection.as_slice() else {
+        return None;
+    };
+    if let Some(function) = function_call(unwrap_cast_or_nested(projection)) {
+        let uncast = function_call(projection).is_some();
+        return match builtin_function_name(function).as_deref() {
+            Some("count") if uncast => Some(Expr::Value(Value::Number("0".into(), false).into())),
+            Some("count") => None,
+            Some(name) if ORDER_FREE_AGGREGATES.contains(&name) => {
+                Some(Expr::Value(Value::Null.into()))
+            }
+            _ => None,
+        };
+    }
+    // A projection with no aggregate at all returns no row on an empty table, so the
+    // subquery is `NULL`. One that buries an aggregate is refused above.
+    if contains_aggregate(projection) {
+        return None;
+    }
+    Some(Expr::Value(Value::Null.into()))
+}
+
+/// Whether `expr` calls an aggregate anywhere, which an aggregate-free check would pass.
+fn contains_aggregate(expr: &Expr) -> bool {
+    struct Aggregates;
+
+    impl Visitor for Aggregates {
+        type Break = ();
+
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            if let Some(function) = function_call(expr) {
+                if let Some(name) = builtin_function_name(function) {
+                    if ORDER_FREE_AGGREGATES.contains(&name.as_str()) {
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    expr.visit(&mut Aggregates).is_break()
+}
+
+fn boolean_literal(value: bool) -> Expr {
+    Expr::Value(Value::Boolean(value).into())
+}
+
+/// A value the empty-set evaluation can place, or [`Self::Unknown`] where it cannot.
+enum Abs {
+    Null,
+    Bool(bool),
+    /// An integer literal, or the `0` of an empty `count`. Fractional and exponent
+    /// literals stay unknown, so no comparison rests on a rounded value.
+    Int(i128),
+    Unknown,
+}
+
+/// Whether `expr` is provably never true, by the small evaluation the empty-set check allows.
+///
+/// `AND` is never true when either side is. A strict comparison is never true on a `NULL`
+/// operand or when two constants compare false, and arithmetic on a `NULL` is `NULL`.
+/// Anything the list does not cover is unknown, which the caller reads as a refusal.
+fn never_true(expr: &Expr) -> bool {
+    match unwrap_cast_or_nested(expr) {
+        Expr::BinaryOp { left, op, right } => match op {
+            BinaryOperator::And => never_true(left) || never_true(right),
+            BinaryOperator::Plus
+            | BinaryOperator::Minus
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide => is_null_value(left) || is_null_value(right),
+            BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Lt
+            | BinaryOperator::Gt
+            | BinaryOperator::LtEq
+            | BinaryOperator::GtEq => {
+                let left = abstract_value(left);
+                let right = abstract_value(right);
+                if matches!(left, Abs::Null) || matches!(right, Abs::Null) {
+                    return true;
+                }
+                match (left, right) {
+                    (Abs::Bool(a), Abs::Bool(b)) => cmp_false(&a, &b, op),
+                    (Abs::Int(a), Abs::Int(b)) => cmp_false(&a, &b, op),
+                    _ => false,
+                }
+            }
+            _ => false,
+        },
+        Expr::Value(spanned) => {
+            matches!(&spanned.value, Value::Null | Value::Boolean(false))
+        }
+        _ => false,
+    }
+}
+
+fn is_null_value(expr: &Expr) -> bool {
+    matches!(abstract_value(expr), Abs::Null)
+}
+
+/// The constant `expr` names, or [`Abs::Unknown`] where it is a column or a value the
+/// evaluation cannot place.
+///
+/// A cast keeps only a `NULL`, since casting a number can round it (`0.5::int` is `1`).
+fn abstract_value(expr: &Expr) -> Abs {
+    let Expr::Value(spanned) = unwrap_cast_or_nested(expr) else {
+        return Abs::Unknown;
+    };
+    let uncast = matches!(unparenthesize(expr), Expr::Value(_));
+    match &spanned.value {
+        Value::Null => Abs::Null,
+        Value::Boolean(value) if uncast => Abs::Bool(*value),
+        Value::Number(number, _) if uncast => number.parse().map_or(Abs::Unknown, Abs::Int),
+        _ => Abs::Unknown,
+    }
+}
+
+/// Whether `left op right` is false, for two known operands.
+fn cmp_false<T: Ord>(left: &T, right: &T, op: &BinaryOperator) -> bool {
+    let value = match op {
+        BinaryOperator::Eq => left == right,
+        BinaryOperator::NotEq => left != right,
+        BinaryOperator::Lt => left < right,
+        BinaryOperator::Gt => left > right,
+        BinaryOperator::LtEq => left <= right,
+        BinaryOperator::GtEq => left >= right,
+        _ => return false,
+    };
+    !value
 }

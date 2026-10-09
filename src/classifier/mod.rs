@@ -9,7 +9,9 @@ pub mod expansion;
 pub mod oracle;
 /// Pattern enums, confidence levels, and classified expression/policy types.
 pub mod patterns;
+// `readability` documents itself in the file.
 /// Top-level policy classification: walks each policy's USING/WITH CHECK expression tree.
 pub mod policy_classifier;
+pub(crate) mod readability;
 /// Individual pattern recognizers (P1 to P6) that probe a single AST expression node.
 pub mod recognizers;

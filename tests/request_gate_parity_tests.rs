@@ -220,3 +220,103 @@ async fn request_gate_parity() {
         assert_agrees(&case, &run);
     }
 }
+
+/// A grant whose residual compares against aggregates over two tables the request gates,
+/// the share table the membership reads and a second table only the residual reads.
+const AGGREGATES: &str = "
+CREATE TABLE papers (id TEXT PRIMARY KEY);
+CREATE TABLE paper_shares (paper_id TEXT REFERENCES papers(id), viewer TEXT, weight NUMERIC,
+                           PRIMARY KEY (paper_id, viewer));
+CREATE TABLE tiers (id TEXT PRIMARY KEY, cutoff NUMERIC);
+
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY paper_read ON papers FOR SELECT USING (
+    EXISTS (SELECT 1 FROM paper_shares s
+            WHERE s.paper_id = papers.id
+              AND s.viewer = current_setting('app.user_id', true)
+              AND s.weight > (SELECT avg(weight) FROM paper_shares)
+              AND s.weight > (SELECT max(cutoff) FROM tiers)));
+
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_open ON paper_shares FOR SELECT USING (true);
+CREATE POLICY shares_cap ON paper_shares AS RESTRICTIVE FOR SELECT USING (
+    'paper_shares:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));
+
+ALTER TABLE tiers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tiers_open ON tiers FOR SELECT USING (true);
+CREATE POLICY tiers_cap ON tiers AS RESTRICTIVE FOR SELECT USING (
+    'tiers:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));
+";
+
+#[tokio::test]
+#[ignore = "requires Docker, postgres:18, and openfga/openfga containers"]
+async fn gated_aggregate_parity() {
+    let cluster = Cluster::start().await;
+    let viewers: [(&str, Option<&[&str]>); 5] = [
+        ("both", Some(&["paper_shares:read", "tiers:read"])),
+        ("shares", Some(&["paper_shares:read"])),
+        ("tiers", Some(&["tiers:read"])),
+        ("star", Some(&["*"])),
+        ("unset", None),
+    ];
+    // Each viewer holds one share above both the average (5.5) and the cutoff (5), and one
+    // below them.
+    let rows = viewers.iter().fold(String::new(), |mut rows, (viewer, _)| {
+        let _ = writeln!(
+            rows,
+            "INSERT INTO papers VALUES ('{viewer}-hi'), ('{viewer}-lo');
+             INSERT INTO paper_shares VALUES ('{viewer}-hi', '{viewer}', 10),
+                                             ('{viewer}-lo', '{viewer}', 1);"
+        );
+        rows
+    });
+    for from_rows in [false, true] {
+        let mut case = ParityCase::reading(
+            if from_rows {
+                "aggregates-rows"
+            } else {
+                "aggregates"
+            },
+            AGGREGATES,
+            &[
+                &format!("{rows}INSERT INTO tiers VALUES ('gold', 5);"),
+                "CREATE ROLE app_rw LOGIN;
+                 GRANT SELECT ON papers, paper_shares, tiers TO app_rw",
+            ],
+            viewers
+                .iter()
+                .map(|(viewer, entries)| caller(viewer, *entries))
+                .collect(),
+        )
+        .with_attributes(ATTRIBUTES);
+        case.loading_from_rows = from_rows;
+        let run = tokio::time::timeout(
+            Duration::from_secs(300),
+            support::parity::run(&cluster, &case),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{} exceeded its parity deadline", case.name));
+        for (subject, object, allowed) in [
+            ("both", "papers:both-hi", true),
+            ("both", "papers:both-lo", false),
+            ("star", "papers:star-hi", true),
+            // `tiers` reads empty, so `max(cutoff)` is `NULL` and no share passes.
+            ("shares", "papers:shares-hi", false),
+            // `paper_shares` reads empty, so no membership exists.
+            ("tiers", "papers:tiers-hi", false),
+            ("unset", "papers:unset-hi", false),
+        ] {
+            assert_postgres(
+                &case,
+                &run,
+                subject,
+                object,
+                ActionStatement::Select,
+                allowed,
+            );
+        }
+        assert_agrees(&case, &run);
+    }
+}

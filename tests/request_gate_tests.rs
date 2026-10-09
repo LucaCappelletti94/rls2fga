@@ -279,3 +279,63 @@ fn a_request_gate_names_its_link_and_the_type_it_admits() {
     );
     assert_eq!(subject_type.as_str(), "principal");
 }
+
+/// A membership whose residual reads a request-gated table beside its own join table,
+/// both gated, translates by intersecting the grant with the gate of each.
+const RESIDUAL_GATED_SCHEMA: &str = "
+CREATE TABLE papers (id UUID PRIMARY KEY);
+CREATE TABLE paper_shares (id UUID PRIMARY KEY, paper_id UUID REFERENCES papers(id), viewer TEXT, weight NUMERIC);
+CREATE TABLE tiers (id UUID PRIMARY KEY, cutoff NUMERIC);
+
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY paper_read ON papers FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = current_setting('app.user_id', true)
+          AND s.weight > (SELECT max(cutoff) FROM tiers)
+    )
+);
+
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_open ON paper_shares FOR SELECT USING (true);
+CREATE POLICY shares_cap ON paper_shares AS RESTRICTIVE FOR SELECT USING (
+    'paper_shares:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+);
+
+ALTER TABLE tiers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tiers_open ON tiers FOR SELECT USING (true);
+CREATE POLICY tiers_cap ON tiers AS RESTRICTIVE FOR SELECT USING (
+    'tiers:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+);
+";
+
+/// A residual reading a gated table beside the join table translates, and the grant carries
+/// the gate of each.
+#[test]
+fn a_residual_over_a_request_gated_relation_translates() {
+    let outputs = outputs_of(RESIDUAL_GATED_SCHEMA);
+    let dsl = outputs.model();
+    let can_select =
+        relation_definition(&dsl, "papers", "can_select").expect("papers defines can_select");
+    let gate_refs = can_select.matches("from request_gate").count();
+    assert!(
+        gate_refs >= 2,
+        "the join table's gate and the residual's table gate both intersect the grant, \
+         got: {can_select}\n{dsl}"
+    );
+    // The residual reads tiers rather than the join table, so its gate is a distinct one the
+    // grant references.
+    let tier_gate = defines_in_type(&dsl, "request_gate")
+        .into_iter()
+        .find(|(_, body)| body.contains("tiers_read"))
+        .map(|(name, _)| name)
+        .expect("the residual's table gates its reads");
+    assert!(
+        can_select.contains(tier_gate),
+        "the grant intersects the residual's table gate, got: {can_select}\n{dsl}"
+    );
+}

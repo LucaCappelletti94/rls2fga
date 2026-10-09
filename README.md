@@ -157,6 +157,8 @@ Naming a row to change means reading it, so `can_update` and `can_delete` inters
 
 Membership tables whose permissive read policies all use `USING (true)` and apply to `PUBLIC` need no caveat when their restrictive read policies are absent or constant `true`. Supported restrictive gates using only literals and declared session attributes are `AND`ed onto the membership arm and require those attributes in each check context. Row-dependent or role-scoped membership rules retain `MembershipTableGuarded`.
 
+A residual such as `s.weight > (SELECT avg(weight) FROM paper_shares)` may read a table gated that way too. When the gate holds the caller sees what the loader saw, and when it fails the table reads empty, so the residual is accepted only where an empty table makes it false (`avg` of nothing is `NULL`, `count` of nothing fails `> 0`), and the grant is `AND`ed with the gate. `count(*) = 0` and `NOT EXISTS` stay refused.
+
 Membership tuple relations are isolated by table, correlation, user column, predicates and condition inputs. Parent and share-row bridges are isolated by the columns they traverse.
 
 ## Runtime data you have to supply

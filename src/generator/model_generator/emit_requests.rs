@@ -491,7 +491,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let MembershipInCallerSet {
         membership:
@@ -512,7 +512,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let Some(read_scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
         return deny_expr(table_plan);
     };
-    if let JoinTableReadability::Guarded { roles } = read_scope {
+    if let TableReadability::Guarded { roles } = read_scope {
         if !roles.is_empty() {
             notes.push(TranslationNote::ExpressionRefused {
                 policy: policy_name.to_string(),
@@ -677,6 +677,13 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         }
     };
     apply_membership_read_scope(
-        membership, join_table, read_scope, ctx, table_plan, all_types, notes,
+        membership,
+        join_table,
+        extra_predicates,
+        read_scope,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
     )
 }

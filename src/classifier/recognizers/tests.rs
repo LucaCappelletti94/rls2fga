@@ -1524,6 +1524,177 @@ fn a_residual_reading_a_third_unrestricted_relation_is_recognized() {
     );
 }
 
+/// The share table gated by a request-only RESTRICTIVE policy beside an open permissive read.
+const GATED_SHARES: &str = "
+ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_open ON paper_shares FOR SELECT USING (true);
+CREATE POLICY shares_cap ON paper_shares AS RESTRICTIVE FOR SELECT USING (
+    'paper_shares:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+    OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+);";
+
+fn gated_registry() -> FunctionRegistry {
+    let mut registry = FunctionRegistry::new();
+    registry.declare_session_attributes([
+        SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+        SessionAttribute::setting("app.bot_list", SessionAttributeKind::SetAttribute),
+    ]);
+    registry
+}
+
+fn gated_residual(residual: &str) -> Expr {
+    parse_expr(&format!(
+        "EXISTS (
+           SELECT 1
+           FROM paper_shares s
+           WHERE s.paper_id = papers.id
+             AND s.viewer = current_user
+             AND {residual}
+       )"
+    ))
+}
+
+/// The residual the row and the caller's gate decide, over the request-gated share table.
+fn gated_recognizes(residual: &str) -> String {
+    let db = papers_schema(GATED_SHARES);
+    let classified = recognize_p4(
+        &gated_residual(residual),
+        &db,
+        &gated_registry(),
+        "papers",
+        &ExpansionState::new(),
+    )
+    .expect("a residual the gate decides over a request-gated table is translatable");
+    assert_eq!(
+        classified.confidence,
+        ConfidenceLevel::A,
+        "the gate decides the residual, so the recognition is as strong as without it"
+    );
+    let PatternClass::P4ExistsMembership(membership) = &classified.pattern else {
+        panic!(
+            "expected an EXISTS membership, got {:?}",
+            classified.pattern
+        );
+    };
+    membership
+        .extra_predicates
+        .sql()
+        .expect("the residual rides the tuple query")
+}
+
+fn gated_refuses(residual: &str) -> bool {
+    recognize_p4(
+        &gated_residual(residual),
+        &papers_schema(GATED_SHARES),
+        &gated_registry(),
+        "papers",
+        &ExpansionState::new(),
+    )
+    .is_none()
+}
+
+/// A strict comparison against the gated table's aggregate is never true when it is empty.
+#[test]
+fn a_residual_over_a_request_gated_relation_is_recognized() {
+    for residual in [
+        "s.weight > (SELECT avg(weight) FROM paper_shares)",
+        "s.weight < (SELECT min(weight) FROM paper_shares)",
+        "s.weight > (SELECT max(weight) FROM paper_shares)",
+        "s.weight < (SELECT sum(weight) FROM paper_shares)",
+    ] {
+        let sql = gated_recognizes(residual);
+        assert!(
+            sql.contains("paper_shares"),
+            "the gated residual rides the tuple query, got: {sql}"
+        );
+    }
+}
+
+/// `count` on an empty table is `0`, so `count(*) > 0` is never true when it is empty.
+#[test]
+fn a_count_greater_than_zero_over_a_gated_relation_is_recognized() {
+    let sql = gated_recognizes("(SELECT count(*) FROM paper_shares) > 0");
+    assert!(sql.contains("count(*)"), "got: {sql}");
+}
+
+/// `EXISTS` over an empty table is false, so the residual is never true when it is empty.
+#[test]
+fn an_exists_over_a_gated_relation_is_recognized() {
+    let sql = gated_recognizes("EXISTS (SELECT 1 FROM paper_shares)");
+    assert!(sql.contains("EXISTS"), "got: {sql}");
+}
+
+/// `count(*) = 0` is true on an empty table, so the caller the gate excludes could read a row.
+#[test]
+fn a_count_equal_to_zero_over_a_gated_relation_is_refused() {
+    assert!(
+        gated_refuses("(SELECT count(*) FROM paper_shares) = 0"),
+        "count is zero on the empty table, so the residual is true for the excluded caller"
+    );
+}
+
+/// `NOT EXISTS` over an empty table is true, so the caller the gate excludes could read a row.
+#[test]
+fn a_not_exists_over_a_gated_relation_is_refused() {
+    assert!(
+        gated_refuses("NOT EXISTS (SELECT 1 FROM paper_shares)"),
+        "NOT EXISTS is true on the empty table, so the residual is true for the excluded caller"
+    );
+}
+
+/// `COALESCE` of the aggregate with a constant is a value the evaluation cannot place.
+#[test]
+fn a_coalesce_of_a_gated_aggregate_is_refused() {
+    assert!(
+        gated_refuses("COALESCE((SELECT avg(weight) FROM paper_shares), 0) > 5"),
+        "COALESCE hides whether the table is empty"
+    );
+}
+
+/// A cast can round a constant, and `0.4::int` is `0`, so `count(*) >= 0.4::int` is true on
+/// the empty table even though `0 >= 0.4` is false.
+#[test]
+fn a_cast_constant_beside_a_gated_aggregate_is_refused() {
+    assert!(
+        gated_refuses("(SELECT count(*) FROM paper_shares) >= 0.4::int"),
+        "the cast decides the comparison, so the empty table cannot be placed"
+    );
+}
+
+/// A subquery that joins the gated table to another cannot be placed on the empty table.
+#[test]
+fn a_gated_aggregate_behind_a_join_is_refused() {
+    assert!(
+        gated_refuses(
+            "s.weight > (SELECT avg(weight) \
+             FROM paper_shares JOIN papers p ON p.id = paper_shares.paper_id)"
+        ),
+        "a join over the gated table reads rows the empty-set value cannot place"
+    );
+}
+
+/// A restrictive policy that reads a row column guards the table rather than gating it.
+#[test]
+fn a_residual_over_a_row_column_gated_relation_is_refused() {
+    let db = papers_schema(
+        "ALTER TABLE paper_shares ENABLE ROW LEVEL SECURITY;
+CREATE POLICY shares_open ON paper_shares FOR SELECT USING (true);
+CREATE POLICY shares_owner ON paper_shares AS RESTRICTIVE FOR SELECT \
+         USING (viewer = current_user);",
+    );
+    assert!(
+        recognize_p4(
+            &gated_residual("s.weight > (SELECT avg(weight) FROM paper_shares)"),
+            &db,
+            &gated_registry(),
+            "papers",
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "a row-column gate reads the caller's rows, so the residual is not caller-independent"
+    );
+}
+
 /// A partition read directly is filtered by its own flag, never by its root's.
 #[test]
 fn a_residual_over_a_child_of_a_row_secured_root_is_recognized() {

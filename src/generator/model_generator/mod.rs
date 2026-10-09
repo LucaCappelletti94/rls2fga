@@ -5,8 +5,7 @@ use core::fmt::Write;
 
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
-use crate::classifier::policy_classifier::classify_expr;
-use crate::classifier::recognizers::{constant_bool_value, is_constantly_false};
+use crate::classifier::readability::{table_readability, ReadGate, TableReadability};
 use crate::generator::db_lookup::{
     column_is_nullable, column_kind, composite_primary_key_columns, resolve_row_identity,
     row_uniquely_keys, single_identity_column,
@@ -945,7 +944,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     // Read terms refuse related-table RLS through classification, membership readability, and the caller-side check.
     let recursion = catalog_policies.then(|| PolicyReadRecursion::detect(db, &table_types));
     // Answered once per membership table rather than once per clause naming it.
-    let mut readability: BTreeMap<TableId, JoinTableReadability> = BTreeMap::new();
+    let mut readability: BTreeMap<TableId, TableReadability> = BTreeMap::new();
     let readability = &mut readability;
 
     let inheritance_children = inheritance_children(db);
@@ -1200,7 +1199,7 @@ struct TableBuild<'a, DB: DatabaseLike> {
     /// Everything the translation has to say.
     notes: &'a mut Vec<TranslationNote>,
     /// Which membership tables a caller can read, answered once each.
-    readability: &'a mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &'a mut BTreeMap<TableId, TableReadability>,
     /// Per-clause grades, for the report.
     confidence_summary: &'a mut Vec<(String, ConfidenceLevel)>,
     /// The schema.
@@ -2077,161 +2076,44 @@ fn types_bearing_name<DB: DatabaseLike>(
         .collect()
 }
 
-/// How much of a membership table a querying user may read.
-enum JoinTableReadability {
-    Open,
-    RequestGated { gates: Vec<MembershipReadGate> },
-    Guarded { roles: Vec<String> },
-    Unreadable,
-}
-
-struct MembershipReadGate {
-    policy_name: String,
-    pattern: PatternClass,
-}
-
 /// Readability of one membership table, computed once per plan per table.
 fn join_table_readability<'a, DB: DatabaseLike>(
     join_table: &TableId,
     db: &DB,
     registry: &FunctionRegistry,
-    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
-) -> &'a JoinTableReadability {
+    memo: &'a mut BTreeMap<TableId, TableReadability>,
+) -> &'a TableReadability {
     memo.entry(join_table.clone())
-        .or_insert_with(|| read_join_table_readability(join_table, db, registry))
+        .or_insert_with(|| table_readability(join_table, db, registry))
 }
 
 /// Returns the membership read constraints, or `None` when no row is visible.
 fn noted_membership_read_scope<'a, DB: DatabaseLike>(
     join_table: &TableId,
     ctx: &PatternCtx<'_, DB>,
-    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
+    memo: &'a mut BTreeMap<TableId, TableReadability>,
     notes: &mut Vec<TranslationNote>,
-) -> Option<&'a JoinTableReadability> {
+) -> Option<&'a TableReadability> {
     if ctx.membership_reads_bypass_rls {
-        return Some(&JoinTableReadability::Open);
+        return Some(&TableReadability::Open);
     }
     let scope = join_table_readability(join_table, ctx.db, ctx.registry, memo);
     match scope {
-        JoinTableReadability::Unreadable => {
+        TableReadability::Unreadable => {
             notes.push(TranslationNote::MembershipTableGrantsNoReads {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
             });
             None
         }
-        JoinTableReadability::Guarded { .. } => {
+        TableReadability::Guarded { .. } => {
             notes.push(TranslationNote::MembershipTableGuarded {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
             });
             Some(scope)
         }
-        JoinTableReadability::Open | JoinTableReadability::RequestGated { .. } => Some(scope),
-    }
-}
-
-/// Only these patterns can be moved without reading a membership row.
-fn is_request_only_gate(pattern: &PatternClass) -> bool {
-    match pattern {
-        PatternClass::P10ConstantBool(_)
-        | PatternClass::P16ConstantInCallerSet(_)
-        | PatternClass::P17CallerScalarEqualsConstant(_) => true,
-        PatternClass::P8Composite(composite) => composite
-            .parts
-            .iter()
-            .all(|part| is_request_only_gate(&part.pattern)),
-        PatternClass::ExpandedFunction(expanded) => {
-            expanded.presence_columns.is_empty() && is_request_only_gate(&expanded.inner.pattern)
-        }
-        _ => false,
-    }
-}
-
-fn read_join_table_readability<DB: DatabaseLike>(
-    join_table: &TableId,
-    db: &DB,
-    registry: &FunctionRegistry,
-) -> JoinTableReadability {
-    let Some(table) = lookup_table_id(db, join_table) else {
-        return JoinTableReadability::Open;
-    };
-    let rls = table.has_row_level_security(db);
-    if rls == Ok(false) {
-        return JoinTableReadability::Open;
-    }
-
-    let mut roles = BTreeSet::new();
-    let mut grants_read = false;
-    let mut grants_read_unscoped = false;
-    let mut row_independent = rls == Ok(true);
-    let mut gates = Vec::new();
-    for policy in table.policies(db).into_iter().flatten() {
-        if !policy_covers_reads(policy) {
-            continue;
-        }
-        let Some(using) = policy.using_expression(db) else {
-            row_independent = false;
-            continue;
-        };
-        let admits_nothing = is_constantly_false(using);
-
-        if derive_policy_mode(policy) == PolicyMode::Restrictive {
-            if admits_nothing && policy.applies_to_public() {
-                return JoinTableReadability::Unreadable;
-            }
-            if !policy.applies_to_public() {
-                row_independent = false;
-            } else if row_independent && constant_bool_value(using) != Some(true) {
-                let pattern = classify_expr(
-                    using,
-                    db,
-                    registry,
-                    &qualified_table_name(table),
-                    PolicyCommand::Select,
-                )
-                .pattern;
-                if is_request_only_gate(&pattern) {
-                    gates.push(MembershipReadGate {
-                        policy_name: format!("{join_table}_{}", policy.name()),
-                        pattern,
-                    });
-                } else {
-                    row_independent = false;
-                }
-            }
-            continue;
-        }
-        row_independent &= policy.applies_to_public() && constant_bool_value(using) == Some(true);
-        if admits_nothing {
-            continue;
-        }
-
-        grants_read = true;
-        let scoped = derive_scoped_roles(policy, db);
-        if scoped.is_empty() {
-            grants_read_unscoped = true;
-        } else {
-            roles.extend(scoped);
-        }
-    }
-
-    if !grants_read {
-        JoinTableReadability::Unreadable
-    } else if row_independent {
-        if gates.is_empty() {
-            JoinTableReadability::Open
-        } else {
-            JoinTableReadability::RequestGated { gates }
-        }
-    } else {
-        JoinTableReadability::Guarded {
-            roles: if grants_read_unscoped {
-                Vec::new()
-            } else {
-                roles.into_iter().collect()
-            },
-        }
+        TableReadability::Open | TableReadability::RequestGated { .. } => Some(scope),
     }
 }
 
@@ -2579,7 +2461,7 @@ fn translate_pattern<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let source_table = ctx.source_table;
     match pattern {
