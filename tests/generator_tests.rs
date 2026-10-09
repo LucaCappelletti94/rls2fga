@@ -133,7 +133,11 @@ fn generate_abac_status_model_and_tuples() {
 
 #[test]
 fn generate_compound_or_model_and_tuples() {
-    fixture_model_and_tuples("compound_or", &FunctionRegistry::new(), ConfidenceLevel::B);
+    fixture_model_and_tuples(
+        "compound_or",
+        &support::try_load_fixture_registry("compound_or"),
+        ConfidenceLevel::B,
+    );
 }
 
 // ── P10: constant TRUE / FALSE ───────────────────────────────────────────────

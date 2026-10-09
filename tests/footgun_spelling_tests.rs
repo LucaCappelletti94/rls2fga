@@ -456,8 +456,10 @@ fn an_any_array_list_classifies_as_the_in_list() {
         written_spelling,
         "(get_owner_role(auth_current_user_id(), owner_id) = ANY (ARRAY[2, 3, 4]))",
     );
-    let plain = model_with_attributes(&written, Some(&registry), "[]");
-    let dumped = model_with_attributes(&dumped_sql, Some(&registry), "[]");
+    let attributes = std::fs::read_to_string("tests/fixtures/role_in_list/session_attributes.json")
+        .expect("fixture attributes should be readable");
+    let plain = model_with_attributes(&written, Some(&registry), &attributes);
+    let dumped = model_with_attributes(&dumped_sql, Some(&registry), &attributes);
     assert!(
         !support::footgun::relation_denies(&plain, "ownables", "can_select"),
         "the written IN-list must translate, or this proves nothing:\n{plain}"
@@ -468,7 +470,8 @@ fn an_any_array_list_classifies_as_the_in_list() {
 /// `pg_dump` casts the setting key itself: `current_setting('app.tenant_id'::text)`.
 #[test]
 fn a_cast_setting_key_classifies_as_the_plain_one() {
-    let attributes = r#"[{ "key": "app.tenant_id", "kind": "scalar_attribute" }]"#;
+    let attributes =
+        r#"[{ "key": "app.tenant_id", "kind": "scalar_attribute", "identity_cast": "uuid" }]"#;
     let schema = |using: &str| {
         format!(
             "CREATE TABLE documents(id UUID PRIMARY KEY, tenant_id UUID);\n\

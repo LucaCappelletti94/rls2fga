@@ -22,9 +22,9 @@ use rls2fga::types::RelationShapes;
 
 const SCHEMA: &str = "
 CREATE TABLE public.users (id UUID PRIMARY KEY);
-CREATE TABLE public.docs (id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION auth_current_user_id() RETURNS UUID LANGUAGE sql STABLE
-    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE TABLE public.docs (id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_id = auth_current_user_id());
 ";

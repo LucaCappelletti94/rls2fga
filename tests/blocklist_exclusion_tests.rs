@@ -333,6 +333,41 @@ fn stacked_caller_cast_blocklist_is_refused_despite_a_matching_outer_cast() {
     ));
 }
 
+/// `::integer::text` renders a canonical integer back to the text it was sent as, so
+/// declaring `integer` proves the whole chain.
+#[test]
+fn stacked_caller_cast_blocklist_is_accepted_under_a_declared_inner_cast() {
+    let sql = format!(
+        "{TABLES} CREATE POLICY docs_read ON docs FOR SELECT USING (
+           {OWNER} AND NOT EXISTS (
+             SELECT 1 FROM blocks b WHERE b.doc = docs.id
+             AND b.user_id = current_setting('app.user_id', true)::integer::text));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let translator = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("integer")])
+        .build();
+    let translated = translator.translate(&db).expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+    assert!(!support::footgun::relation_denies(
+        &translated.outputs_accepting_gaps().model(),
+        "docs",
+        "can_select"
+    ));
+}
+
 #[test]
 fn unkeyed_monotone_clock_blocklist_still_compresses() {
     let sql = format!(

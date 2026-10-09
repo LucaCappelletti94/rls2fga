@@ -19,6 +19,7 @@ Each `USING` and `WITH CHECK` expression is classified against the patterns belo
 Parse a schema, plan a translation, then ask it for each output. The plan is built once and every output is rendered from it.
 
 ```rust
+use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
@@ -39,8 +40,11 @@ let sql = "
 ";
 
 let db = parse_schema(sql).expect("parse error");
+let caller = SessionAttribute::setting("app.current_user_id", SessionAttributeKind::CallerId)
+    .with_identity_cast("uuid");
 let translation = TranslatorBuilder::new()
     .with_min_confidence(ConfidenceLevel::B)
+    .with_session_attributes([caller])
     .build()
     .translate(&db)
     .expect("schema should plan");
@@ -55,6 +59,8 @@ for note in outputs.notes() {
 ```
 
 `outputs()` refuses while anything went unclassified, because such a model denies what the database grants. `outputs_accepting_gaps()` takes the narrower model on purpose and `unhandled()` names what that costs. `min_confidence` sets the bar: `A` fully translated, `B` a composed pattern or a row-decided guard, `C` the relationship half of an ABAC crossover, `D` unrecognised. `Outputs::report()` lists every clause below the bar. A dropped `PERMISSIVE` clause grants nothing and a dropped `RESTRICTIVE` one becomes `no_access`.
+
+The model compares the caller as sent, while `PostgreSQL` compares whatever a cast made of it, and `'01'::integer` is `1`. Any cast but `text` or an unbounded `varchar` on a request value or on the row it meets is therefore refused, unless `with_identity_cast` declares that the value always arrives in that type's canonical form, as the `::uuid` above does.
 
 ## Output
 

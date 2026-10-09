@@ -1,4 +1,6 @@
-use rls2fga::classifier::function_registry::FunctionRegistry;
+use rls2fga::classifier::function_registry::{
+    FunctionRegistry, SessionAttribute, SessionAttributeKind,
+};
 use rls2fga::classifier::patterns::*;
 use rls2fga::classifier::policy_classifier;
 use rls2fga::parser::function_analyzer::FunctionSemantic;
@@ -184,7 +186,11 @@ fn classify_abac_status_as_a_threshold_beside_a_literal_guard() {
 fn classify_tenant_isolation_without_registry_via_function_body_inference() {
     let db = support::parse_fixture_db("tenant_isolation");
     let classified = TranslatorBuilder::new()
-        .with_current_user_setting_keys(["app.tenant_id"])
+        .with_session_attributes([SessionAttribute::setting(
+            "app.tenant_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("uuid")])
         .build()
         .classify(&db);
     assert_eq!(classified.len(), 1);

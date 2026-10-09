@@ -8,9 +8,8 @@ use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
-use crate::classifier::recognizers::projected_select;
-use crate::parser::expr::function_arg_expr;
-use crate::parser::expr::unwrap_cast_or_nested;
+use crate::classifier::recognizers::{projected_select, renaming_reason};
+use crate::parser::expr::{function_arg_expr, CastChain};
 use crate::parser::names::{
     builtin_function_name, folded_function_name, is_current_user_keyword_name, parse_target,
 };
@@ -168,13 +167,17 @@ impl AccessorInferenceSettings {
         &self.session_attributes
     }
 
-    fn allows_current_setting_key(&self, key: &str) -> bool {
+    /// The declaration of the value at `key` and `path`.
+    pub(crate) fn attribute(&self, key: &str, path: &[String]) -> Option<&SessionAttribute> {
         let key = normalize_setting_key(key);
-        self.session_attributes.iter().any(|attribute| {
-            attribute.kind() == SessionAttributeKind::CallerId
-                && attribute.path().is_empty()
-                && attribute.setting_key() == key
-        })
+        self.session_attributes
+            .iter()
+            .find(|attribute| attribute.setting_key() == key && attribute.path() == path)
+    }
+
+    fn caller_attribute(&self, key: &str) -> Option<&SessionAttribute> {
+        self.attribute(key, &[])
+            .filter(|attribute| attribute.kind() == SessionAttributeKind::CallerId)
     }
 
     /// True when a deployment declared the value at `key` readable at all, whatever kind
@@ -386,23 +389,41 @@ pub(crate) fn current_setting_literal_key(expr: &Expr) -> Option<String> {
     Some(normalize_setting_key(&key))
 }
 
-fn is_direct_current_user_accessor_expr(expr: &Expr, settings: &AccessorInferenceSettings) -> bool {
-    match unwrap_cast_or_nested(expr) {
-        Expr::Identifier(ident) => {
-            ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value)
+/// A body expression that reads the caller, and the cast in it that can rename what the
+/// function returns. A cast is proven only by the `identity_cast` declared on the caller
+/// key it reads.
+struct BodyCallerRead {
+    /// The caller key whose declaration would prove the cast, absent for a keyword.
+    key: Option<String>,
+    /// The first cast that renames the caller.
+    renaming: Option<String>,
+}
+
+fn body_caller_read(expr: &Expr, settings: &AccessorInferenceSettings) -> Option<BodyCallerRead> {
+    let (casts, peeled) = CastChain::peeled(expr);
+    let read = |key: Option<String>, declared: Option<&str>| BodyCallerRead {
+        key,
+        renaming: casts.renaming(declared).map(str::to_string),
+    };
+    match peeled {
+        Expr::Identifier(ident)
+            if ident.quote_style.is_none() && is_current_user_keyword_name(&ident.value) =>
+        {
+            Some(read(None, None))
         }
-        Expr::Function(func) => {
-            current_setting_literal_key(unwrap_cast_or_nested(expr))
-                .is_some_and(|key| settings.allows_current_setting_key(&key))
-                || {
-                    folded_function_name(func)
-                        .is_some_and(|name| is_current_user_keyword_name(&name))
-                        && parse_target(&func.name.to_string())
-                            .is_some_and(|target| target.schema().is_none())
-                        && matches!(func.args, FunctionArguments::None)
-                }
-        }
-        _ => false,
+        Expr::Function(func) => match current_setting_literal_key(peeled) {
+            Some(key) => {
+                let declared = settings.caller_attribute(&key)?.identity_cast();
+                Some(read(Some(key), declared))
+            }
+            None => (folded_function_name(func)
+                .is_some_and(|name| is_current_user_keyword_name(&name))
+                && parse_target(&func.name.to_string())
+                    .is_some_and(|target| target.schema().is_none())
+                && matches!(func.args, FunctionArguments::None))
+            .then(|| read(None, None)),
+        },
+        _ => None,
     }
 }
 
@@ -428,16 +449,29 @@ pub(crate) fn body_single_projection(body: &str) -> Option<Expr> {
     Some(expr.clone())
 }
 
-fn has_single_direct_accessor_expression(body: &str, settings: &AccessorInferenceSettings) -> bool {
-    body_single_projection(body)
-        .is_some_and(|expr| is_direct_current_user_accessor_expr(&expr, settings))
+/// The caller read a whole body makes, when the body has the shape of an accessor.
+fn body_caller_read_of(
+    body: &str,
+    return_type: &str,
+    language: &str,
+    settings: &AccessorInferenceSettings,
+) -> Option<BodyCallerRead> {
+    // A *direct* accessor expression, not a complex function that merely references
+    // current_user or current_setting incidentally, such as an audit trigger that
+    // records the caller and returns something else.
+    if language != "sql" || !returns_one_identity(return_type) || accessor_shape(body) != Some(true)
+    {
+        return None;
+    }
+    body_caller_read(&body_single_projection(body)?, settings)
 }
 
-/// The `current_setting` key a whole body reads, so a call to the function is a call to
-/// that key.
-pub(crate) fn body_setting_key(body: &str) -> Option<String> {
+/// The `current_setting` key a whole body reads and the casts around that read, so a call
+/// to the function is a call to that key.
+pub(crate) fn body_setting_key(body: &str) -> Option<(String, CastChain)> {
     let expr = body_single_projection(body)?;
-    current_setting_literal_key(unwrap_cast_or_nested(&expr))
+    let (casts, peeled) = CastChain::peeled(&expr);
+    Some((current_setting_literal_key(peeled)?, casts))
 }
 
 impl FunctionSemantic {
@@ -462,26 +496,31 @@ impl FunctionSemantic {
         security: &FunctionSecurity,
         settings: &AccessorInferenceSettings,
     ) -> Option<FunctionSemantic> {
-        if language != "sql" {
-            return None;
-        }
         let return_type_lower = return_type.to_lowercase();
-
-        // A *direct* accessor expression, not a complex function that merely references
-        // current_user or current_setting incidentally, such as an audit trigger that
-        // records the caller and returns something else.
-        if returns_one_identity(&return_type_lower)
-            && accessor_shape(body) == Some(true)
-            && has_single_direct_accessor_expression(body, settings)
-            && !runs_as_owner_reading_effective_user(body, security)
-        {
-            return Some(FunctionSemantic::CurrentUserAccessor {
+        let read = body_caller_read_of(body, &return_type_lower, language, settings)?;
+        (read.renaming.is_none() && !runs_as_owner_reading_effective_user(body, security)).then(
+            || FunctionSemantic::CurrentUserAccessor {
                 returns: return_type_lower.trim().to_string(),
-            });
-        }
-
-        None
+            },
+        )
     }
+}
+
+/// Why a body that reads the caller is no accessor, when the reason is a cast that can
+/// rename what it returns.
+pub(crate) fn renamed_caller_body(
+    body: &str,
+    return_type: &str,
+    language: &str,
+    settings: &AccessorInferenceSettings,
+) -> Option<String> {
+    let read = body_caller_read_of(body, &return_type.to_lowercase(), language, settings)?;
+    let cast = read.renaming?;
+    let subject = match &read.key {
+        Some(key) => format!("its body reads current_setting('{key}'), which"),
+        None => "its body reads the caller, which".to_string(),
+    };
+    Some(renaming_reason(&subject, &cast, read.key.as_deref()))
 }
 
 /// True when the body identifies its caller through `current_user` or `current_role`
@@ -503,7 +542,8 @@ pub(crate) fn body_reads_effective_user(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessorInferenceSettings, FunctionSecurity, FunctionSemantic, TeamMembershipConfig,
+        AccessorInferenceSettings, FunctionSecurity, FunctionSemantic, SessionAttribute,
+        SessionAttributeKind, TeamMembershipConfig,
     };
     use crate::types::ColumnName;
     use alloc::collections::BTreeMap;
@@ -561,7 +601,7 @@ mod tests {
         for body in [
             "SELECT current_user -- update",
             "SELECT current_user /* delete from */",
-            "SELECT current_setting('app.current_user_id')::uuid /* update from */",
+            "SELECT current_setting('app.current_user_id') /* update from */",
             r#"SELECT current_user AS "from""#,
         ] {
             assert!(
@@ -627,38 +667,64 @@ mod tests {
     #[test]
     fn analyze_body_detects_current_user_accessor() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('app.current_user_id')::uuid",
-            "UUID",
+            "SELECT current_setting('app.current_user_id')",
+            "TEXT",
             "sql",
         );
 
         assert!(matches!(
             semantic,
-            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "text"
         ));
+    }
+
+    /// A body that casts the caller returns the value sent only where the key it reads is
+    /// declared to arrive canonical for that cast.
+    #[test]
+    fn analyze_body_infers_a_cast_caller_only_through_a_declared_identity_cast() {
+        let analyze = |body: &str, attribute: SessionAttribute| {
+            FunctionSemantic::analyze_body_with_settings(
+                body,
+                "UUID",
+                "sql",
+                &FunctionSecurity::Invoker,
+                &AccessorInferenceSettings::from_attributes([attribute]),
+            )
+        };
+        let caller = || SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId);
+        let cast = "SELECT current_setting('app.user_id')::uuid";
+        let renamed = "SELECT current_setting('app.user_id')::integer::text";
+
+        assert!(analyze(cast, caller()).is_none());
+        assert!(analyze(cast, caller().with_identity_cast("uuid")).is_some());
+        assert!(analyze(cast, caller().with_identity_cast("integer")).is_none());
+        assert!(analyze(renamed, caller()).is_none());
+        assert!(analyze(renamed, caller().with_identity_cast("integer")).is_some());
+        assert!(analyze("SELECT current_setting('app.user_id')::text", caller()).is_some());
+        assert!(analyze("SELECT current_user::uuid", caller()).is_none());
     }
 
     #[test]
     fn analyze_body_detects_direct_current_user_keyword_accessor() {
-        let semantic = FunctionSemantic::analyze_body("SELECT current_user::uuid", "UUID", "sql");
+        let semantic = FunctionSemantic::analyze_body("SELECT current_user::text", "TEXT", "sql");
 
         assert!(matches!(
             semantic,
-            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "text"
         ));
 
         let semantic_role =
-            FunctionSemantic::analyze_body("SELECT current_role::uuid", "UUID", "sql");
+            FunctionSemantic::analyze_body("SELECT current_role::text", "TEXT", "sql");
         assert!(matches!(
             semantic_role,
-            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "uuid"
+            Some(FunctionSemantic::CurrentUserAccessor { ref returns }) if returns == "text"
         ));
     }
 
     #[test]
     fn analyze_body_rejects_the_keyword_accessor_when_the_function_runs_as_its_owner() {
         let settings = AccessorInferenceSettings::default();
-        for body in ["SELECT current_user::uuid", "SELECT CURRENT_USER::uuid"] {
+        for body in ["SELECT current_user::text", "SELECT CURRENT_USER::text"] {
             let semantic = FunctionSemantic::analyze_body_with_settings(
                 body,
                 "UUID",
@@ -673,7 +739,7 @@ mod tests {
         }
 
         let setting_body = FunctionSemantic::analyze_body_with_settings(
-            "SELECT current_setting('app.current_user_id')::uuid",
+            "SELECT current_setting('app.current_user_id')",
             "UUID",
             "sql",
             &FunctionSecurity::Definer,
@@ -730,7 +796,7 @@ mod tests {
     fn analyze_body_accepts_accessor_when_literal_contains_keyword_substrings() {
         let settings = AccessorInferenceSettings::from_keys(["app.from_user_id"]);
         let semantic = FunctionSemantic::analyze_body_with_settings(
-            "SELECT current_setting('app.from_user_id')::uuid",
+            "SELECT current_setting('app.from_user_id')",
             "UUID",
             "sql",
             &FunctionSecurity::Invoker,
@@ -749,7 +815,7 @@ mod tests {
     fn analyze_body_ignores_keyword_substrings_inside_literals() {
         let settings = AccessorInferenceSettings::from_keys(["custom.update_marker"]);
         let semantic = FunctionSemantic::analyze_body_with_settings(
-            "SELECT current_setting('custom.update_marker')::uuid",
+            "SELECT current_setting('custom.update_marker')",
             "UUID",
             "sql",
             &FunctionSecurity::Invoker,
@@ -861,7 +927,7 @@ mod tests {
 
     #[test]
     fn analyze_body_does_not_treat_user_keyword_as_accessor_marker() {
-        let semantic = FunctionSemantic::analyze_body("SELECT user::uuid", "UUID", "sql");
+        let semantic = FunctionSemantic::analyze_body("SELECT user", "UUID", "sql");
         assert!(
             semantic.is_none(),
             "`user` keyword is too ambiguous to auto-classify as current-user accessor"
@@ -871,7 +937,7 @@ mod tests {
     #[test]
     fn analyze_body_rejects_non_direct_current_user_expressions() {
         let case_expr = FunctionSemantic::analyze_body(
-            "SELECT CASE WHEN TRUE THEN current_user::uuid ELSE gen_random_uuid() END",
+            "SELECT CASE WHEN TRUE THEN current_user ELSE gen_random_uuid() END",
             "UUID",
             "sql",
         );
@@ -881,7 +947,7 @@ mod tests {
         );
 
         let coalesce_expr = FunctionSemantic::analyze_body(
-            "SELECT COALESCE(current_user::uuid, gen_random_uuid())",
+            "SELECT COALESCE(current_user, gen_random_uuid())",
             "UUID",
             "sql",
         );
@@ -890,11 +956,8 @@ mod tests {
             "COALESCE expression containing current_user must not classify as direct accessor"
         );
 
-        let concat_expr = FunctionSemantic::analyze_body(
-            "SELECT (current_user::uuid || '')::uuid",
-            "UUID",
-            "sql",
-        );
+        let concat_expr =
+            FunctionSemantic::analyze_body("SELECT current_user || ''", "UUID", "sql");
         assert!(
             concat_expr.is_none(),
             "composed expressions around current_user must not classify as direct accessor"
@@ -933,11 +996,8 @@ mod tests {
 
     #[test]
     fn analyze_body_rejects_non_allowlisted_current_setting_key_by_default() {
-        let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('timezone')::uuid",
-            "UUID",
-            "sql",
-        );
+        let semantic =
+            FunctionSemantic::analyze_body("SELECT current_setting('timezone')", "UUID", "sql");
         assert!(
             semantic.is_none(),
             "non-allowlisted current_setting keys must not be inferred as current-user accessors"
@@ -948,7 +1008,7 @@ mod tests {
     fn analyze_body_with_settings_accepts_custom_allowlisted_current_setting_key() {
         let settings = AccessorInferenceSettings::from_keys(["tenant.current_user_uuid"]);
         let semantic = FunctionSemantic::analyze_body_with_settings(
-            "SELECT current_setting('tenant.current_user_uuid')::uuid",
+            "SELECT current_setting('tenant.current_user_uuid')",
             "UUID",
             "sql",
             &FunctionSecurity::Invoker,
@@ -966,7 +1026,7 @@ mod tests {
     #[test]
     fn analyze_body_rejects_non_literal_current_setting_argument() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting(app.current_user_id)::uuid",
+            "SELECT current_setting(app.current_user_id)",
             "UUID",
             "sql",
         );
@@ -979,7 +1039,7 @@ mod tests {
     #[test]
     fn analyze_body_rejects_uuid_array_return_type_for_accessor() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('app.current_user_id')::uuid[]",
+            "SELECT current_setting('app.current_user_id')",
             "UUID[]",
             "sql",
         );
@@ -992,7 +1052,7 @@ mod tests {
     #[test]
     fn analyze_body_rejects_setof_uuid_return_type_for_accessor() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('app.current_user_id')::uuid",
+            "SELECT current_setting('app.current_user_id')",
             "SETOF UUID",
             "sql",
         );
@@ -1005,7 +1065,7 @@ mod tests {
     #[test]
     fn analyze_body_accepts_direct_accessor_with_keyword_substring_alias() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('app.current_user_id')::uuid AS from_id",
+            "SELECT current_setting('app.current_user_id') AS from_id",
             "UUID",
             "sql",
         );
@@ -1192,7 +1252,7 @@ mod tests {
     #[test]
     fn analyze_body_rejects_current_setting_accessor_body_when_language_is_not_sql() {
         let semantic = FunctionSemantic::analyze_body(
-            "SELECT current_setting('app.current_user_id')::uuid",
+            "SELECT current_setting('app.current_user_id')",
             "uuid",
             "plpgsql",
         );

@@ -2,15 +2,30 @@
 //! function body, so the documented workaround for policy self-recursion
 //! translates from the dump alone. Every guard refuses by falling closed.
 
+use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::patterns::{
     ExistsMembership, ExpandedFunction, PatternClass, UnclassifiedExpr,
 };
+use rls2fga::translator::{Translator, TranslatorBuilder};
 use rls2fga::types::ConfidenceLevel;
 use rls2fga::types::{NoteSeverity, TranslationNote};
 
 mod support;
 
-use support::footgun::{db_of, relation_denies, translator};
+use support::footgun::{db_of, relation_denies};
+
+/// The bodies compare `uuid` members with the caller cast to `uuid`, which the
+/// deployment declares canonical.
+fn translator(min_confidence: ConfidenceLevel) -> Translator {
+    TranslatorBuilder::new()
+        .with_min_confidence(min_confidence)
+        .with_session_attributes([SessionAttribute::setting(
+            "app.current_user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("uuid")])
+        .build()
+}
 
 /// The classified USING pattern of the one policy on `docs`.
 fn docs_using_pattern(sql: &str) -> PatternClass {
@@ -698,7 +713,7 @@ SET search_path TO public, pg_catalog, pg_temp AS
 CREATE POLICY docs_sel ON docs FOR SELECT USING (is_member(id));
 ";
     let db = db_of(sql);
-    let translator = rls2fga::translator::TranslatorBuilder::new()
+    let translator = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
         .with_registry_json(
             r#"{"is_member": {"kind": "unknown", "reason": "audited and declined"}}"#,
