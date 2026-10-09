@@ -1661,6 +1661,66 @@ fn a_cast_constant_beside_a_gated_aggregate_is_refused() {
     );
 }
 
+/// Each residual is false or `NULL` once the gated table reads empty, so the caller the
+/// gate excludes reads no row through it either.
+#[test]
+fn residuals_false_on_an_empty_gated_table_are_recognized() {
+    for residual in [
+        // `IN` over no rows is false.
+        "s.paper_id IN (SELECT paper_id FROM paper_shares)",
+        // A projection without an aggregate yields no row, so the subquery is `NULL`.
+        "s.weight > (SELECT weight FROM paper_shares WHERE viewer = 'x')",
+        // `EXISTS` over no rows is false, and false is not true.
+        "EXISTS (SELECT 1 FROM paper_shares) = true",
+        // `count` of no rows is 0.
+        "(SELECT count(*) FROM paper_shares) >= 1",
+        "(SELECT count(*) FROM paper_shares) <> 0",
+        "(SELECT count(*) FROM paper_shares) < 0",
+        // A numeric cast of that 0 is still 0.
+        "(SELECT count(*)::int FROM paper_shares) > 0",
+        // A row-pure function of no row is no row either.
+        "s.weight > (SELECT abs(weight) FROM paper_shares WHERE viewer = 'x')",
+    ] {
+        let sql = gated_recognizes(residual);
+        assert!(sql.contains("paper_shares"), "{residual}: got {sql}");
+    }
+}
+
+/// Each residual is true once the gated table reads empty, or depends on what the
+/// evaluation cannot place, so the caller the gate excludes might read a row.
+#[test]
+fn residuals_not_proven_false_on_an_empty_gated_table_are_refused() {
+    for residual in [
+        // `NOT IN` over no rows is true.
+        "s.paper_id NOT IN (SELECT paper_id FROM paper_shares)",
+        // `count` of no rows is 0, and `0 <= 0` holds.
+        "(SELECT count(*) FROM paper_shares) <= 0",
+        // A grouped projection yields no row where an ungrouped one yields one.
+        "s.weight > (SELECT max(weight) FROM paper_shares GROUP BY viewer)",
+        // An aggregate inside arithmetic is not the bare value the evaluation places.
+        "(SELECT count(*) + 1 FROM paper_shares) > 1",
+        // A cast to text leaves a comparison the evaluation does not place.
+        "(SELECT count(*)::text FROM paper_shares) = '0'",
+        // A boolean against an integer is a comparison the evaluation does not place.
+        "EXISTS (SELECT 1 FROM paper_shares) = 1",
+        // `IS NULL` is true on the `NULL` an empty aggregate yields.
+        "(SELECT max(weight) FROM paper_shares) IS NULL",
+        // `OR` lets the other side decide.
+        "(SELECT max(weight) FROM paper_shares) > 1 OR s.weight > 0",
+        // A set operation is not a projection the evaluation places.
+        "s.weight > (SELECT max(weight) FROM paper_shares UNION SELECT 1)",
+        // Two columns are not one value.
+        "s.weight > (SELECT max(weight), 1 FROM paper_shares)",
+        // A table function is not a plain table.
+        "EXISTS (SELECT 1 FROM paper_shares, generate_series(1, 2))",
+        // An outer subquery over another table still stands after the inner one empties.
+        "s.weight > (SELECT max(cutoff) FROM tiers \
+         WHERE cutoff < (SELECT max(weight) FROM paper_shares))",
+    ] {
+        assert!(gated_refuses(residual), "{residual} must be refused");
+    }
+}
+
 /// A subquery that joins the gated table to another cannot be placed on the empty table.
 #[test]
 fn a_gated_aggregate_behind_a_join_is_refused() {

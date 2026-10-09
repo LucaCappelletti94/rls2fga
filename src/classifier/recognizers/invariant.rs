@@ -6,6 +6,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
+use core::cmp::Ordering;
 use core::ops::ControlFlow;
 use sqlparser::ast::{
     BinaryOperator, Expr, Ident, ObjectName, ObjectNamePart, Query, SelectItem, SetExpr,
@@ -547,45 +548,54 @@ fn residual_never_true_when_empty<DB: DatabaseLike>(
 /// Reduces, in place, every subquery that reads `table` alone to the value it takes on an
 /// empty table.
 ///
-/// [`Self::ok`] stays false where a subquery joins `table` to another relation or is not a
-/// projection the evaluation can place on an empty table, which the caller reads as a
-/// refusal. A subquery that reads nothing of `table` is left standing.
+/// [`Self::ok`] turns false where a subquery joins `table` to another relation, reads a
+/// relation that is not a plain table, or is not a projection the evaluation can place on
+/// an empty table, which the caller reads as a refusal. A subquery that reads nothing of
+/// `table` is left standing.
 struct SubstituteEmpty<'a, DB> {
     table: &'a TableId,
     db: &'a DB,
     ok: bool,
 }
 
+/// A subquery the evaluation cannot place on an empty table.
+struct Unplaceable;
+
+impl<DB: DatabaseLike> SubstituteEmpty<'_, DB> {
+    /// The value `query` takes when the table reads empty, `None` when it reads nothing of
+    /// the table and stands as it is.
+    fn placement(
+        &self,
+        query: &Query,
+        value: impl FnOnce(&Query) -> Option<Expr>,
+    ) -> Result<Option<Expr>, Unplaceable> {
+        match subquery_over_table(query, self.table, self.db) {
+            Some(false) => Ok(None),
+            Some(true) => value(query).map(Some).ok_or(Unplaceable),
+            None => Err(Unplaceable),
+        }
+    }
+}
+
 impl<DB: DatabaseLike> VisitorMut for SubstituteEmpty<'_, DB> {
     type Break = ();
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-        if !self.ok {
-            return ControlFlow::Break(());
-        }
-        let (over_table, value) = match expr {
-            Expr::Exists { subquery, negated } => {
-                match subquery_over_table(subquery, self.table, self.db) {
-                    Some(over) => (over, Some(boolean_literal(*negated))),
-                    None => return ControlFlow::Break(()),
-                }
-            }
-            Expr::Subquery(query) => match subquery_over_table(query, self.table, self.db) {
-                Some(over) => (over, scalar_empty_value(query)),
-                None => return ControlFlow::Break(()),
-            },
-            Expr::InSubquery {
+        let placement = match expr {
+            Expr::Exists { subquery, negated }
+            | Expr::InSubquery {
                 subquery, negated, ..
-            } => match subquery_over_table(subquery, self.table, self.db) {
-                Some(over) => (over, Some(boolean_literal(*negated))),
-                None => return ControlFlow::Break(()),
-            },
-            _ => return ControlFlow::Continue(()),
+            } => {
+                let negated = *negated;
+                self.placement(subquery, |_| Some(boolean_literal(negated)))
+            }
+            Expr::Subquery(query) => self.placement(query, scalar_empty_value),
+            _ => Ok(None),
         };
-        if over_table {
-            if let Some(value) = value {
-                *expr = value;
-            } else {
+        match placement {
+            Ok(None) => {}
+            Ok(Some(value)) => *expr = value,
+            Err(Unplaceable) => {
                 self.ok = false;
                 return ControlFlow::Break(());
             }
@@ -642,11 +652,10 @@ fn from_tables<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<BTreeSet<Tabl
     Some(tables)
 }
 
-/// The value a scalar subquery over an empty table takes, by the aggregate it projects.
+/// The value a scalar subquery over an empty table takes, or [`None`] where the evaluation
+/// cannot place it.
 ///
-/// [`None`] where the projection is not a single bare aggregate the evaluation can place,
-/// so `count(*) + 1` and a grouped projection are refused rather than guessed at. A cast
-/// keeps a `NULL` but may change a `count`, so only an uncast `count` is placed.
+/// A cast around the aggregate drops with it, since `NULL` and a numeric `0` survive it.
 fn scalar_empty_value(query: &Query) -> Option<Expr> {
     let SetExpr::Select(select) = query.body.as_ref() else {
         return None;
@@ -657,23 +666,17 @@ fn scalar_empty_value(query: &Query) -> Option<Expr> {
     let [SelectItem::UnnamedExpr(projection)] = select.projection.as_slice() else {
         return None;
     };
-    if let Some(function) = function_call(unwrap_cast_or_nested(projection)) {
-        let uncast = function_call(projection).is_some();
-        return match builtin_function_name(function).as_deref() {
-            Some("count") if uncast => Some(Expr::Value(Value::Number("0".into(), false).into())),
-            Some("count") => None,
+    if let Some(function) = function_call(projection) {
+        match builtin_function_name(function).as_deref() {
+            Some("count") => return Some(Expr::Value(Value::Number("0".into(), false).into())),
             Some(name) if ORDER_FREE_AGGREGATES.contains(&name) => {
-                Some(Expr::Value(Value::Null.into()))
+                return Some(Expr::Value(Value::Null.into()));
             }
-            _ => None,
-        };
+            _ => {}
+        }
     }
-    // A projection with no aggregate at all returns no row on an empty table, so the
-    // subquery is `NULL`. One that buries an aggregate is refused above.
-    if contains_aggregate(projection) {
-        return None;
-    }
-    Some(Expr::Value(Value::Null.into()))
+    // Without an aggregate an empty table yields no row, which a scalar subquery reads as `NULL`.
+    (!contains_aggregate(projection)).then(|| Expr::Value(Value::Null.into()))
 }
 
 /// Whether `expr` calls an aggregate anywhere, which an aggregate-free check would pass.
@@ -714,45 +717,25 @@ enum Abs {
 
 /// Whether `expr` is provably never true, by the small evaluation the empty-set check allows.
 ///
-/// `AND` is never true when either side is. A strict comparison is never true on a `NULL`
-/// operand or when two constants compare false, and arithmetic on a `NULL` is `NULL`.
-/// Anything the list does not cover is unknown, which the caller reads as a refusal.
+/// A strict comparison is never true on a `NULL` operand or when two constants compare
+/// false. A conjunct is already split from its siblings, so an `AND` never reaches here.
+/// Anything else is unknown, which the caller reads as a refusal.
 fn never_true(expr: &Expr) -> bool {
     match unwrap_cast_or_nested(expr) {
-        Expr::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => never_true(left) || never_true(right),
-            BinaryOperator::Plus
-            | BinaryOperator::Minus
-            | BinaryOperator::Multiply
-            | BinaryOperator::Divide => is_null_value(left) || is_null_value(right),
-            BinaryOperator::Eq
-            | BinaryOperator::NotEq
-            | BinaryOperator::Lt
-            | BinaryOperator::Gt
-            | BinaryOperator::LtEq
-            | BinaryOperator::GtEq => {
-                let left = abstract_value(left);
-                let right = abstract_value(right);
-                if matches!(left, Abs::Null) || matches!(right, Abs::Null) {
-                    return true;
-                }
-                match (left, right) {
-                    (Abs::Bool(a), Abs::Bool(b)) => cmp_false(&a, &b, op),
-                    (Abs::Int(a), Abs::Int(b)) => cmp_false(&a, &b, op),
-                    _ => false,
-                }
+        Expr::BinaryOp { left, op, right } => {
+            let Some(holds) = comparison(op) else {
+                return false;
+            };
+            match (abstract_value(left), abstract_value(right)) {
+                (Abs::Null, _) | (_, Abs::Null) => true,
+                (Abs::Bool(left), Abs::Bool(right)) => !holds(left.cmp(&right)),
+                (Abs::Int(left), Abs::Int(right)) => !holds(left.cmp(&right)),
+                _ => false,
             }
-            _ => false,
-        },
-        Expr::Value(spanned) => {
-            matches!(&spanned.value, Value::Null | Value::Boolean(false))
         }
+        Expr::Value(spanned) => matches!(&spanned.value, Value::Null | Value::Boolean(false)),
         _ => false,
     }
-}
-
-fn is_null_value(expr: &Expr) -> bool {
-    matches!(abstract_value(expr), Abs::Null)
 }
 
 /// The constant `expr` names, or [`Abs::Unknown`] where it is a column or a value the
@@ -772,16 +755,16 @@ fn abstract_value(expr: &Expr) -> Abs {
     }
 }
 
-/// Whether `left op right` is false, for two known operands.
-fn cmp_false<T: Ord>(left: &T, right: &T, op: &BinaryOperator) -> bool {
-    let value = match op {
-        BinaryOperator::Eq => left == right,
-        BinaryOperator::NotEq => left != right,
-        BinaryOperator::Lt => left < right,
-        BinaryOperator::Gt => left > right,
-        BinaryOperator::LtEq => left <= right,
-        BinaryOperator::GtEq => left >= right,
-        _ => return false,
-    };
-    !value
+/// What a comparison operator asks of the ordering of its two operands, or [`None`] for
+/// an operator that is not a strict comparison.
+fn comparison(op: &BinaryOperator) -> Option<fn(Ordering) -> bool> {
+    Some(match op {
+        BinaryOperator::Eq => Ordering::is_eq,
+        BinaryOperator::NotEq => Ordering::is_ne,
+        BinaryOperator::Lt => Ordering::is_lt,
+        BinaryOperator::Gt => Ordering::is_gt,
+        BinaryOperator::LtEq => Ordering::is_le,
+        BinaryOperator::GtEq => Ordering::is_ge,
+        _ => return None,
+    })
 }
