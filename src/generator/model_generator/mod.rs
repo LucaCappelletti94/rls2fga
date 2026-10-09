@@ -686,7 +686,9 @@ pub enum PlanningError {
     },
     /// The model to be written crosses a `validate.rules` bound in `openfga/api`,
     /// which the `WriteAuthorizationModel` call would refuse.
-    #[error("the model crosses the OpenFGA {bound} bound at `{item}`: {measured} against {limit}")]
+    #[error(
+        "the model crosses the OpenFGA {bound:?} bound at `{item}`: {measured} against {limit}"
+    )]
     ModelBoundExceeded {
         /// The bound the model crosses.
         bound: crate::generator::model_bounds::ModelBound,

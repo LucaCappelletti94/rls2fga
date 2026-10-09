@@ -141,12 +141,15 @@ async fn the_denial_cannot_be_lifted_by_writing_a_fact() {
     );
 }
 
-/// The size the outputs report is the one the server compares with its
-/// `maxAuthorizationModelSizeInBytes`, so a server capped exactly there stores the model
-/// and one capped a byte lower refuses it.
+/// The size and the type count the outputs report are the ones the server compares with
+/// `maxAuthorizationModelSizeInBytes` and `maxTypesPerAuthorizationModel`, so a server
+/// capped exactly there stores the model and one capped one lower refuses it.
 #[tokio::test]
 #[ignore = "requires Docker and an openfga/openfga container"]
-async fn the_reported_model_size_is_the_size_the_server_measures() {
+async fn the_reported_size_and_type_count_are_what_the_server_measures() {
+    const SIZE: &str = "OPENFGA_MAX_AUTHORIZATION_MODEL_SIZE_IN_BYTES";
+    const TYPES: &str = "OPENFGA_MAX_TYPES_PER_AUTHORIZATION_MODEL";
+
     let db = rls2fga::parser::sql_parser::parse_schema(OWNERSHIP).expect("the schema parses");
     let outputs = TranslatorBuilder::new()
         .with_min_confidence(ConfidenceLevel::B)
@@ -159,30 +162,39 @@ async fn the_reported_model_size_is_the_size_the_server_measures() {
     let size = outputs
         .model_size_in_bytes()
         .expect("the model translates into the client's types");
+    let types = outputs.type_count();
 
-    for (cap, stored) in [(size, true), (size - 1, false)] {
-        let container = support::containers::start_openfga_with(&[(
-            "OPENFGA_MAX_AUTHORIZATION_MODEL_SIZE_IN_BYTES",
-            cap.to_string(),
-        )])
-        .await;
+    for (setting, cap, refusal) in [
+        (SIZE, size, None),
+        (SIZE, size - 1, Some("model exceeds size limit")),
+        (TYPES, types, None),
+        (
+            TYPES,
+            types - 1,
+            Some("The number of type definitions in an authorization model exceeds"),
+        ),
+    ] {
+        let container =
+            support::containers::start_openfga_with(&[(setting, cap.to_string())]).await;
         let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
         let mut service = support::openfga::connect(grpc_port).await;
-        let store_id = support::openfga::create_store(&mut service, "model-size").await;
+        let store_id = support::openfga::create_store(&mut service, "model-limits").await;
         let written = rls2fga::client::write_authorization_model(
             &mut service,
             &store_id,
             &outputs.json_model(),
         )
         .await;
-        let refused_for_size = matches!(
-            &written,
-            Err(rls2fga::client::WriteModelError::Refused(status))
-                if status.message().starts_with("model exceeds size limit")
-        );
+        let as_expected = match (&written, refusal) {
+            (Ok(_), None) => true,
+            (Err(rls2fga::client::WriteModelError::Refused(status)), Some(refusal)) => {
+                status.message().starts_with(refusal)
+            }
+            _ => false,
+        };
         assert!(
-            written.is_ok() == stored && refused_for_size != stored,
-            "a {size}-byte model under a {cap}-byte cap: {written:?}"
+            as_expected,
+            "{size} bytes and {types} types under {setting}={cap}: {written:?}"
         );
     }
 }
