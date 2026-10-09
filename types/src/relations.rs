@@ -8,8 +8,8 @@ pub struct RelationShapes {
     pub type_name: TypeName,
     /// Relation name.
     pub relation: RelationName,
-    /// True only when every leaf resolves from the object's own row to a named
-    /// user. False whenever the analysis cannot establish that, including every
+    /// True only when every leaf resolves from the object's own row, to a named user or
+    /// to every user. False whenever the analysis cannot establish that, including every
     /// case it does not understand.
     pub from_one_row: bool,
     /// The shapes whose records fill this relation, one per query the loader runs
@@ -28,8 +28,9 @@ pub struct RelationShapes {
 /// How the subjects a relation grants compose from one row's records.
 ///
 /// The whole evaluation: [`Self::Leaf`] is the union of the subjects
-/// [`crate::records_from_row`] yields over its shapes,
-/// [`Self::Any`] is the union of its children and [`Self::All`] their intersection.
+/// [`crate::records_from_row`] yields over its shapes, [`Self::Everyone`] every user when
+/// those shapes yield any record, [`Self::Any`] is the union of its children and
+/// [`Self::All`] their intersection.
 ///
 /// `#[non_exhaustive]`: a shape the analysis learns to decide adds a variant, and a
 /// caller matching this outside the crate keeps a wildcard arm.
@@ -38,6 +39,16 @@ pub struct RelationShapes {
 pub enum RowDecision {
     /// The subjects are the records these shapes produce for this row.
     Leaf {
+        /// The direct relation whose records answer. Always on the same type.
+        relation: RelationName,
+        /// The shapes filling it, identical to that relation's own entry. Never empty.
+        shapes: Vec<RecordDescription>,
+    },
+    /// Every user, on a row for which at least one of the shapes yields a record.
+    ///
+    /// The records name the typed wildcard, so matching their subject against a caller's
+    /// name refuses everybody.
+    Everyone {
         /// The direct relation whose records answer. Always on the same type.
         relation: RelationName,
         /// The shapes filling it, identical to that relation's own entry. Never empty.

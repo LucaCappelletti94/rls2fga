@@ -403,6 +403,13 @@ impl SubjectKey {
         }
     }
 
+    /// Whether this is the typed wildcard, granting every subject of the type rather
+    /// than one the row names.
+    #[must_use]
+    pub const fn is_wildcard(&self) -> bool {
+        self.wildcard
+    }
+
     /// Where the value comes from, so a caller can settle whether it reads it.
     #[must_use]
     pub const fn part(&self) -> &ValueSource {
