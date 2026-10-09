@@ -399,7 +399,6 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
                 pairs,
                 user_column: member_column,
                 extra_predicates,
-                caller_cast: _,
             },
         separator,
         source,

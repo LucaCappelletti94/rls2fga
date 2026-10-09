@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
-use sqlparser::ast::{Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{DataType, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 use crate::parser::names::stored_ident_name;
 use crate::types::ColumnName;
@@ -8,21 +8,123 @@ use crate::types::ColumnName;
 /// Peel the wrappers that carry no meaning for what an expression *is*: a cast and a
 /// parenthesis.
 ///
-/// The one place that decides it. Every reader that then asks "is this a column, a call, a
-/// literal" starts here, so a wrapper learned once is seen through by all of them. Spelled
-/// as a loop deliberately: a second peel written as recursion inside another reader is the
-/// duplication `every_cast_peel_routes_through_the_shared_peeler` forbids, and the door
-/// this crate was burned through twice.
+/// Every reader that then asks "is this a column, a call, a literal" starts here, so a
+/// wrapper learned once is seen through by all of them.
 ///
 /// A cast changes the value, so a reader that keeps the value rather than its shape must
-/// not peel: see `projected_select` and the tuple SQL, which keep the cast.
-pub(crate) fn unwrap_cast_or_nested(mut expr: &Expr) -> &Expr {
+/// not peel: see `projected_select` and the tuple SQL, which keep the cast. A reader that
+/// compares the value peels through [`peel_noting_casts`] and judges what it peeled.
+pub(crate) fn unwrap_cast_or_nested(expr: &Expr) -> &Expr {
+    peel_noting_casts(expr, |_| {})
+}
+
+/// [`unwrap_cast_or_nested`], handing each peeled cast's target to `cast`, outermost
+/// first.
+///
+/// The one place a cast is peeled. Spelled as a loop deliberately: a second peel written
+/// as recursion inside another reader is the duplication
+/// `every_cast_peel_routes_through_the_shared_peeler` forbids, and the door this crate was
+/// burned through twice.
+pub(crate) fn peel_noting_casts<'e>(
+    mut expr: &'e Expr,
+    mut cast: impl FnMut(&'e DataType),
+) -> &'e Expr {
     loop {
         match expr {
-            Expr::Cast { expr: inner, .. } | Expr::Nested(inner) => expr = inner.as_ref(),
+            Expr::Cast {
+                expr: inner,
+                data_type,
+                ..
+            } => {
+                cast(data_type);
+                expr = inner.as_ref();
+            }
+            Expr::Nested(inner) => expr = inner.as_ref(),
             _ => return expr,
         }
     }
+}
+
+/// The casts written around one value, outermost first, each named the way a
+/// deployment declares it.
+///
+/// A cast through `text` or an unbounded `varchar` renders the value it is given, which is
+/// how the model compares every value, so it renames nothing. Any other cast can rename
+/// it: `'01'::integer` is `1`, and `uuid` lower-cases. Such a cast is proven only by a
+/// declaration that the value already arrives canonical for that type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CastChain(Vec<String>);
+
+impl CastChain {
+    /// The casts [`peel_noting_casts`] finds around `expr`, and what they wrap.
+    pub(crate) fn peeled(expr: &Expr) -> (Self, &Expr) {
+        let mut chain = Self::default();
+        let inner = peel_noting_casts(expr, |data_type| chain.0.push(cast_type_name(data_type)));
+        (chain, inner)
+    }
+
+    /// Record the casts `inner` holds inside those already recorded.
+    pub(crate) fn extend(&mut self, inner: CastChain) {
+        self.0.extend(inner.0);
+    }
+
+    /// The first cast that can rename the value, given the type the value is declared to
+    /// arrive canonical for.
+    ///
+    /// An array cast is judged by its element type, since the declaration speaks of each
+    /// element.
+    pub(crate) fn renaming(&self, canonical_for: Option<&str>) -> Option<&str> {
+        self.0.iter().map(String::as_str).find(|cast| {
+            !renders_as_text(cast)
+                && canonical_for
+                    .is_none_or(|declared| !element_type(cast).eq_ignore_ascii_case(declared))
+        })
+    }
+
+    /// The outermost cast, which decides the type the value is compared as.
+    pub(crate) fn outermost(&self) -> Option<&str> {
+        self.0.first().map(String::as_str)
+    }
+
+    /// Whether the value the chain yields is text, so a literal it is compared with keeps
+    /// its spelling. Any other type coerces the literal, which can rename it.
+    pub(crate) fn yields_text(&self) -> bool {
+        self.outermost().is_none_or(renders_as_text)
+    }
+
+    /// The chain without the parse into `json` or `jsonb` that an arrow or a jsonb
+    /// expander needs, which is the read's structure rather than a renaming.
+    pub(crate) fn without_json_parse(mut self) -> Self {
+        if self
+            .0
+            .first()
+            .is_some_and(|outermost| matches!(outermost.as_str(), "json" | "jsonb"))
+        {
+            self.0.remove(0);
+        }
+        self
+    }
+}
+
+/// A cast's target type as a declaration names it: lower case, without the
+/// `pg_catalog` schema every built-in type lives in.
+fn cast_type_name(data_type: &DataType) -> String {
+    let rendered = data_type.to_string().to_ascii_lowercase();
+    match rendered.strip_prefix("pg_catalog.") {
+        Some(unqualified) => unqualified.to_string(),
+        None => rendered,
+    }
+}
+
+/// Whether a cast to `name` renders its value as text without bounding its length. A
+/// bounded `varchar(n)` truncates and `char(n)` pads, so both can rename.
+fn renders_as_text(name: &str) -> bool {
+    matches!(element_type(name), "text" | "varchar" | "character varying")
+}
+
+/// The element type an array cast names, or the type itself.
+pub(crate) fn element_type(name: &str) -> &str {
+    name.trim_end_matches("[]")
 }
 
 /// The string literal an expression spells, once its casts and parentheses are peeled.
@@ -167,7 +269,7 @@ mod tests {
         let casted = Expr::Cast {
             kind: sqlparser::ast::CastKind::Cast,
             expr: Box::new(Expr::Identifier(Ident::new("owner_id"))),
-            data_type: sqlparser::ast::DataType::Uuid,
+            data_type: DataType::Uuid,
             format: None,
         };
 

@@ -487,7 +487,7 @@ fn recognize_p3_current_setting_requires_registration() {
 
     // Without explicit registration: no match.
     let empty_registry = FunctionRegistry::new();
-    let expr = parse_expr("owner_id = current_setting('app.current_user_id')::uuid");
+    let expr = parse_expr("owner_id = current_setting('app.current_user_id')");
     assert!(
         recognize_p3(&expr, &db, &empty_registry).is_none(),
         "unregistered current_setting must not match P3"
@@ -2312,10 +2312,12 @@ fn table_extractors_cover_non_table_and_alias_paths() {
 }
 
 #[test]
-fn current_user_expr_detection_supports_cast_and_nested() {
+fn current_user_expr_detection_supports_identity_casts_and_nested() {
     let registry = registry_with_role_level();
     let nested = parse_expr("(auth_current_user_id())");
-    let casted = parse_expr("CAST(auth_current_user_id() AS UUID)");
+    let casted = parse_expr("CAST(auth_current_user_id() AS TEXT)");
+    let own_type = parse_expr("CAST(auth_current_user_id() AS UUID)");
+    let renamed = parse_expr("CAST(auth_current_user_id() AS INTEGER)");
     let keyword = parse_expr("current_user");
     let quoted_keyword = parse_expr("\"user\"");
     let schema_qualified_keyword_fn = parse_expr("auth.user()");
@@ -2323,6 +2325,14 @@ fn current_user_expr_detection_supports_cast_and_nested() {
 
     assert!(is_current_user_expr(&nested, &registry));
     assert!(is_current_user_expr(&casted, &registry));
+    assert!(
+        is_current_user_expr(&own_type, &registry),
+        "a cast to the type the accessor returns changes nothing"
+    );
+    assert!(
+        !is_current_user_expr(&renamed, &registry),
+        "an accessor declares no identity cast, so a cast to another type renames the caller"
+    );
     assert!(is_current_user_expr(&keyword, &registry));
     assert!(
         !is_current_user_expr(&quoted_keyword, &registry),

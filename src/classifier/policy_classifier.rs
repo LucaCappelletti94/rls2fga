@@ -469,6 +469,11 @@ fn classify_expr_inner<DB: DatabaseLike>(
         return classify_expr_depth(inner, db, registry, table, command, depth + 1, state);
     }
 
+    let renamings = recognizers::renaming_casts(expr, registry);
+    if !renamings.is_empty() {
+        return unknown_d(expr, renamings.join(". "));
+    }
+
     // Handle NOT unary operator.
     if let Expr::UnaryOp {
         op: UnaryOperator::Not,
@@ -724,7 +729,12 @@ fn describe_unrecognized_function(func_name: &str, registry: &FunctionRegistry) 
         Some(FunctionSemantic::Unknown { reason }) => {
             format!("Function '{func_name}' is registered as Unknown: {reason}")
         }
-        None => format!("Function '{func_name}' not in registry and body not available"),
+        None => match registry.renamed_accessor(func_name) {
+            Some(reason) => {
+                format!("Function '{func_name}' is not the caller's accessor, since {reason}")
+            }
+            None => format!("Function '{func_name}' not in registry and body not available"),
+        },
         _ => format!("Function '{func_name}' did not match any recognized translation pattern"),
     }
 }
@@ -1786,7 +1796,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 }],
                 user_column: ColumnName::from_stored("u"),
                 extra_predicates: ResidualPredicates::default(),
-                caller_cast: None,
             })
         ));
         assert!(is_relationship_pattern_for_p7(
@@ -1843,7 +1852,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                             }],
                             user_column: ColumnName::from_stored("u"),
                             extra_predicates: ResidualPredicates::default(),
-                            caller_cast: None,
                         }),
                         confidence: ConfidenceLevel::A,
                     },

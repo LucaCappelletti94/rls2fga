@@ -253,6 +253,7 @@ pub(crate) fn load_fixture_registry(fixture: &str) -> FunctionRegistry {
     registry
         .load_from_json(&read_fixture_registry_json(fixture))
         .expect("fixture registry should parse");
+    registry.declare_session_attributes(fixture_session_attributes(fixture));
     registry
 }
 

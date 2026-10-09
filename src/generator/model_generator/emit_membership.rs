@@ -617,7 +617,6 @@ fn emit_membership<DB: DatabaseLike>(
         pairs,
         user_column,
         extra_predicates,
-        caller_cast: _,
     } = exists_membership;
     let policy_name = ctx.policy_name;
     let db = ctx.db;

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::classifier::recognizers::row_valued_set;
 use crate::parser::function_analyzer::{
-    body_setting_key, body_single_projection, normalize_setting_key, AccessorInferenceSettings,
-    FunctionSemantic,
+    body_setting_key, body_single_projection, normalize_setting_key, renamed_caller_body,
+    AccessorInferenceSettings, FunctionSemantic,
 };
 use crate::parser::names::stored_relation_name;
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike};
@@ -63,8 +63,8 @@ pub struct SessionAttributeSpec {
     /// Condition parameter the caller supplies, derived from the source when absent.
     #[serde(default)]
     pub parameter: Option<String>,
-    /// Cast target this `CallerId` value is already rendered in canonical form
-    /// for, trusted so a blocklist may cast and subtract on it.
+    /// Cast target the value already arrives canonical for, so a cast to it renames
+    /// nothing.
     #[serde(default)]
     pub identity_cast: Option<String>,
 }
@@ -132,8 +132,9 @@ impl SessionAttribute {
         Ok(self)
     }
 
-    /// Declare this value already canonical for `cast`, so a comparison
-    /// that casts it to `cast` changes no value.
+    /// Declare this value already canonical for `cast`, so a comparison that casts it to
+    /// `cast` changes no value. Any other cast but `text` or an unbounded `varchar` is
+    /// refused wherever the value is read.
     #[must_use]
     pub fn with_identity_cast(mut self, cast: impl Into<String>) -> Self {
         self.identity_cast = Some(cast.into().to_ascii_lowercase());
@@ -318,6 +319,9 @@ pub struct FunctionRegistry {
     /// Functions whose body describes a caller accessor their security mode
     /// invalidates, kept so the report can name the cause.
     owner_bound_accessors: BTreeMap<FunctionKey, String>,
+    /// Functions whose body reads the caller through a cast that can rename it, with the
+    /// reason the report gives.
+    renamed_accessors: BTreeMap<FunctionKey, String>,
     /// Request-scoped sources a deployment declared readable, keyed on the setting key
     /// and the field path taken out of it.
     session_attributes: BTreeMap<(String, Vec<String>), SessionAttribute>,
@@ -332,6 +336,7 @@ impl FunctionRegistry {
             function_resolution: BTreeMap::new(),
             public_flag_columns: BTreeSet::new(),
             owner_bound_accessors: BTreeMap::new(),
+            renamed_accessors: BTreeMap::new(),
             session_attributes: BTreeMap::new(),
         }
     }
@@ -346,6 +351,16 @@ impl FunctionRegistry {
         let key = FunctionKey::parse(name);
         let resolved = self.function_resolution.get(&key).unwrap_or(&key);
         self.owner_bound_accessors.contains_key(resolved.as_str())
+    }
+
+    /// Why the function `name` reads the caller yet is no accessor, when a cast in its body
+    /// can rename what it returns.
+    pub(crate) fn renamed_accessor(&self, name: &str) -> Option<&str> {
+        let key = FunctionKey::parse(name);
+        let resolved = self.function_resolution.get(&key).unwrap_or(&key);
+        self.renamed_accessors
+            .get(resolved.as_str())
+            .map(String::as_str)
     }
 
     /// Confirm a column as a public flag, lifting its `P6BooleanFlag` to confidence A.
@@ -610,13 +625,28 @@ impl FunctionRegistry {
                 // A wrapper around a declared source is that source, so the inline and
                 // the wrapped spelling reach one declaration and cannot disagree.
                 if let Some(key) = body_setting_key(body)
-                    .map(|key| normalize_setting_key(&key))
-                    .filter(|key| settings.declares_setting_key(key))
+                    .map(|(key, casts)| (normalize_setting_key(&key), casts.without_json_parse()))
+                    .filter(|(key, casts)| {
+                        settings.declares_setting_key(key)
+                            && casts
+                                .renaming(
+                                    settings
+                                        .attribute(key, &[])
+                                        .and_then(SessionAttribute::identity_cast),
+                                )
+                                .is_none()
+                    })
+                    .map(|(key, _)| key)
                 {
                     self.register_target_if_absent(
                         &target,
                         &FunctionSemantic::SettingReader { key },
                     );
+                } else if let Some(reason) =
+                    renamed_caller_body(body, &return_type, &language, settings)
+                {
+                    let target_key = self.target_key(&target);
+                    self.renamed_accessors.entry(target_key).or_insert(reason);
                 }
             }
         }
@@ -634,7 +664,17 @@ impl FunctionRegistry {
                 .body()
                 .and_then(body_single_projection)
                 .and_then(|expr| row_valued_set(&expr, self))
-                .filter(|source| settings.declares_setting_key(&source.key))
+                .filter(|source| {
+                    settings.declares_setting_key(&source.key)
+                        && source
+                            .casts
+                            .renaming(
+                                settings
+                                    .attribute(&source.key, &source.path)
+                                    .and_then(SessionAttribute::identity_cast),
+                            )
+                            .is_none()
+                })
             else {
                 continue;
             };
@@ -681,7 +721,7 @@ mod tests {
         let sql = r"
 CREATE FUNCTION current_tenant_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+  AS 'SELECT current_setting(''app.current_user_id'')';
 
 CREATE FUNCTION opaque_lookup() RETURNS TEXT
   LANGUAGE sql STABLE
@@ -706,7 +746,7 @@ CREATE FUNCTION declared_only() RETURNS UUID LANGUAGE SQL;
 
 CREATE FUNCTION current_tenant_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+  AS 'SELECT current_setting(''app.current_user_id'')';
 ";
         let db = parse_schema(sql).expect("schema should parse");
 
@@ -783,7 +823,7 @@ CREATE FUNCTION other.uid() RETURNS UUID LANGUAGE sql AS 'SELECT NULL::uuid';
         let sql = r"
 CREATE FUNCTION wrong_user_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''timezone'')::uuid';
+  AS 'SELECT current_setting(''timezone'')';
 ";
         let db = parse_schema(sql).expect("schema should parse");
 
@@ -827,7 +867,7 @@ CREATE FUNCTION wrong_user_id() RETURNS UUID
         let sql = r"
 CREATE FUNCTION tenant_user_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''tenant.current_user_uuid'')::uuid';
+  AS 'SELECT current_setting(''tenant.current_user_uuid'')';
 ";
         let db = parse_schema(sql).expect("schema should parse");
         let settings = AccessorInferenceSettings::from_keys(["tenant.current_user_uuid"]);
@@ -846,7 +886,7 @@ CREATE FUNCTION tenant_user_id() RETURNS UUID
         let sql = r"
 CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid[]';
+  AS 'SELECT string_to_array(current_setting(''app.current_user_id''), '','')';
 ";
         let db = parse_schema(sql).expect("schema should parse");
 
@@ -873,7 +913,7 @@ CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
             let sql = format!(
                 "CREATE FUNCTION {name}() RETURNS {declaration}
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid';"
+  AS 'SELECT current_setting(''app.current_user_id'')';"
             );
             let db = parse_schema(&sql).expect("schema should parse");
 

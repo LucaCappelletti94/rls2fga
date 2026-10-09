@@ -356,7 +356,6 @@ impl PolicyOracle for UnkeyedShare {
                     pairs: vec![pair("paper_batch", "batch"), pair("paper_lane", "lane")],
                     user_column: ColumnName::from_stored("viewer"),
                     extra_predicates: ResidualPredicates::default(),
-                    caller_cast: None,
                 },
                 separator: Some(",".to_string()),
                 source: SessionAttribute::setting(

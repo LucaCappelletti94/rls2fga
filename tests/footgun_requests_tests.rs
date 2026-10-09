@@ -25,11 +25,11 @@ use support::footgun::{
 fn current_setting_with_missing_ok_infers_a_current_user_accessor() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE FUNCTION app_user_id() RETURNS UUID
+CREATE FUNCTION app_user_id() RETURNS TEXT
     LANGUAGE sql STABLE
-    AS 'SELECT current_setting(''app.current_user_id'', true)::uuid';
+    AS 'SELECT current_setting(''app.current_user_id'', true)';
 CREATE POLICY docs_sel ON docs FOR SELECT USING (owner_id = app_user_id());
 ",
     );
@@ -276,8 +276,8 @@ fn a_restrictive_clause_never_drops_an_attribute_conjunct() {
 fn security_definer_current_user_is_not_the_caller() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION app_uid() RETURNS TEXT LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::text';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
@@ -300,14 +300,14 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 fn an_explicitly_registered_accessor_outranks_its_security_mode() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION app_uid() RETURNS TEXT LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::text';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
     );
     let model = TranslatorBuilder::new()
-        .with_registry_json(r#"{"app_uid": {"kind": "current_user_accessor", "returns": "uuid"}}"#)
+        .with_registry_json(r#"{"app_uid": {"kind": "current_user_accessor", "returns": "text"}}"#)
         .expect("registry should parse")
         .with_min_confidence(ConfidenceLevel::B)
         .build()
@@ -337,8 +337,8 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 fn an_owner_bound_accessor_is_reported_by_name() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::uuid';
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION app_uid() RETURNS TEXT LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::text';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
@@ -362,8 +362,8 @@ fn owner_bound_accessor_quote_identity_does_not_block_other_function() {
     let db = db_of(
         r#"
 CREATE TABLE docs(id UUID PRIMARY KEY);
-CREATE FUNCTION "UID"() RETURNS UUID LANGUAGE sql SECURITY DEFINER
-  AS 'SELECT current_user::uuid';
+CREATE FUNCTION "UID"() RETURNS TEXT LANGUAGE sql SECURITY DEFINER
+  AS 'SELECT current_user::text';
 CREATE FUNCTION uid(value UUID) RETURNS BOOLEAN LANGUAGE sql
   AS 'SELECT true';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
@@ -386,8 +386,8 @@ CREATE POLICY docs_sel ON docs FOR SELECT USING (uid(id));
 fn security_invoker_current_user_stays_the_caller() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql AS 'SELECT current_user::uuid';
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION app_uid() RETURNS TEXT LANGUAGE sql AS 'SELECT current_user::text';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",
@@ -410,9 +410,9 @@ CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 fn security_definer_current_setting_still_identifies_the_caller() {
     let db = db_of(
         r"
-CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
-CREATE FUNCTION app_uid() RETURNS UUID LANGUAGE sql SECURITY DEFINER
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+CREATE TABLE docs(id UUID PRIMARY KEY, owner_id TEXT);
+CREATE FUNCTION app_uid() RETURNS TEXT LANGUAGE sql SECURITY DEFINER
+  AS 'SELECT current_setting(''app.current_user_id'')';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_own ON docs FOR SELECT USING (owner_id = app_uid());
 ",

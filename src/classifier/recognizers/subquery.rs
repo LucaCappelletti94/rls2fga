@@ -962,7 +962,7 @@ fn classify_membership_select<DB: DatabaseLike>(
                 MembershipColumns {
                     pairs,
                     user_column,
-                    member_match: MemberMatch::Caller { cast },
+                    member_match: MemberMatch::Caller,
                     extra_predicates,
                 },
         } => Some(ClassifiedExpr {
@@ -971,7 +971,6 @@ fn classify_membership_select<DB: DatabaseLike>(
                 pairs,
                 user_column,
                 extra_predicates,
-                caller_cast: cast,
             }),
             confidence: ConfidenceLevel::A,
         }),
@@ -991,7 +990,6 @@ fn classify_membership_select<DB: DatabaseLike>(
                     pairs,
                     user_column,
                     extra_predicates,
-                    caller_cast: None,
                 },
                 separator,
                 source,
@@ -1231,7 +1229,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     for analyzed in predicates {
         let predicate = analyzed.predicate;
         match &analyzed.analysis {
-            MembershipEqAnalysis::UserColumn(column, MemberMatch::Caller { .. })
+            MembershipEqAnalysis::UserColumn(column, MemberMatch::Caller)
                 if user_column.is_none() =>
             {
                 user_column = Some(column.clone());
@@ -1956,11 +1954,7 @@ pub(super) fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
 #[derive(Clone, PartialEq)]
 pub(super) enum MemberMatch {
     /// The column holds the caller's own identity.
-    Caller {
-        /// The cast applied to the caller side, when the written comparison
-        /// applies one.
-        cast: Option<CallerCast>,
-    },
+    Caller,
     /// The column holds a value the caller's declared set has to contain.
     InCallerSet {
         /// The declared source, carrying the parameter the caller supplies.
@@ -2115,12 +2109,7 @@ fn analyze_membership_eq_predicate(
             join_cols,
         ) && is_current_user_expr(right, registry)
         {
-            return MembershipEqAnalysis::UserColumn(
-                col,
-                MemberMatch::Caller {
-                    cast: caller_cast(right, registry),
-                },
-            );
+            return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
     }
     if let Some((qual, col)) = right_col.clone() {
@@ -2132,12 +2121,7 @@ fn analyze_membership_eq_predicate(
             join_cols,
         ) && is_current_user_expr(left, registry)
         {
-            return MembershipEqAnalysis::UserColumn(
-                col,
-                MemberMatch::Caller {
-                    cast: caller_cast(left, registry),
-                },
-            );
+            return MembershipEqAnalysis::UserColumn(col, MemberMatch::Caller);
         }
     }
 

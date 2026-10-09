@@ -18,7 +18,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE FUNCTION wrong_user_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''timezone'')::uuid';
+  AS 'SELECT current_setting(''timezone'')';
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
 ";
     let db = parse_schema(sql).expect("schema should parse");
@@ -45,7 +45,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE FUNCTION wrong_user_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''timezone'')::uuid';
+  AS 'SELECT current_setting(''timezone'')';
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = wrong_user_id());
 ";
     let db = parse_schema(sql).expect("schema should parse");
@@ -76,7 +76,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE FUNCTION listed_ids_accessor() RETURNS UUID[]
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid[]';
+  AS 'SELECT current_setting(''app.current_user_id'')';
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = listed_ids_accessor());
 ";
     let db = parse_schema(sql).expect("schema should parse");
@@ -103,7 +103,7 @@ CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE FUNCTION current_user_id() RETURNS UUID
   LANGUAGE sql STABLE
-  AS 'SELECT current_setting(''app.current_user_id'')::uuid AS from_id';
+  AS 'SELECT current_setting(''app.current_user_id'') AS from_id';
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_user_id());
 ";
     let db = parse_schema(sql).expect("schema should parse");
@@ -203,10 +203,10 @@ fn a_wrapper_whose_body_can_return_no_row_does_not_resolve_to_its_key() {
     fn classify(body: &str) -> PatternClass {
         declared(
             &schema(body),
-            vec![SessionAttribute::setting(
-                "app.tenant_id",
-                SessionAttributeKind::ScalarAttribute,
-            )],
+            vec![
+                SessionAttribute::setting("app.tenant_id", SessionAttributeKind::ScalarAttribute)
+                    .with_identity_cast("uuid"),
+            ],
         )
         .remove(0)
         .1
@@ -382,33 +382,48 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = app_user_id());
     );
 }
 
-/// A cast changes the type, not who the value belongs to, so it must not decide whether
-/// the key was named.
+/// A cast the deployment declares canonical changes the type, not who the value belongs
+/// to, so it must not decide whether the key was named. Undeclared, it can rename the
+/// caller and the clause is refused.
 #[test]
-fn translator_builder_names_the_caller_from_a_cast_inline_setting_key() {
+fn translator_builder_names_the_caller_from_a_declared_cast_inline_setting_key() {
     let sql = r"
 CREATE TABLE docs(id UUID PRIMARY KEY, owner_id UUID);
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (owner_id = current_setting('app.user_id', true)::uuid);
 ";
     let db = parse_schema(sql).expect("schema should parse");
-    let translator = TranslatorBuilder::new()
-        .with_current_user_setting_keys(["app.user_id"])
-        .build();
+    let classify = |caller: SessionAttribute| {
+        TranslatorBuilder::new()
+            .with_session_attributes([caller])
+            .build()
+            .classify(&db)
+            .remove(0)
+            .using_classification()
+            .cloned()
+            .expect("expected USING classification")
+    };
+    let caller = || SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId);
 
-    let classified = translator.classify(&db);
-    let using = classified[0]
-        .using_classification()
-        .expect("expected USING classification");
+    let declared = classify(caller().with_identity_cast("uuid"));
     assert!(
-        matches!(&using.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
-        "a cast key read inline should infer direct ownership, got: {:?}",
-        using.pattern
+        matches!(&declared.pattern, PatternClass::P3DirectOwnership(DirectOwnership { column }) if column == "owner_id"),
+        "a declared cast key read inline should infer direct ownership, got: {:?}",
+        declared.pattern
     );
     assert_eq!(
-        using.confidence,
+        declared.confidence,
         ConfidenceLevel::A,
         "a cast is not indirection",
+    );
+    let undeclared = classify(caller());
+    assert!(
+        matches!(
+            &undeclared.pattern,
+            PatternClass::Unknown(UnclassifiedExpr { .. })
+        ),
+        "an undeclared cast can rename the caller, got: {:?}",
+        undeclared.pattern
     );
 }
 
@@ -737,10 +752,10 @@ CREATE POLICY p ON documents FOR SELECT USING (tenant_id = current_setting('app.
 ";
     let classified = declared(
         sql,
-        vec![SessionAttribute::setting(
-            "app.tenant_id",
-            SessionAttributeKind::ScalarAttribute,
-        )],
+        vec![
+            SessionAttribute::setting("app.tenant_id", SessionAttributeKind::ScalarAttribute)
+                .with_identity_cast("uuid"),
+        ],
     );
     assert!(
         matches!(
@@ -982,7 +997,7 @@ CREATE FUNCTION uid() RETURNS UUID LANGUAGE sql STABLE
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (uid() IS NOT NULL AND uid() = user_id);
 ";
-    let classified = declared(sql, Vec::new());
+    let classified = declared(sql, vec![claim_sub_declared_uuid()]);
     assert!(
         matches!(
             &classified[0].1,
@@ -1010,7 +1025,7 @@ CREATE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY p ON docs FOR SELECT USING (approved_at IS NOT NULL AND auth.uid() = user_id);
 ";
-    let classified = declared(sql, Vec::new());
+    let classified = declared(sql, vec![claim_sub_declared_uuid()]);
     assert!(
         !matches!(
             &classified[0].1,
@@ -1019,6 +1034,12 @@ CREATE POLICY p ON docs FOR SELECT USING (approved_at IS NOT NULL AND auth.uid()
         "the row's own guard decides which rows are granted, got {:?}",
         classified[0].1
     );
+}
+
+/// The subject key `PostgREST` sets, declared to arrive as a canonical `uuid`.
+fn claim_sub_declared_uuid() -> SessionAttribute {
+    SessionAttribute::setting("request.jwt.claim.sub", SessionAttributeKind::CallerId)
+        .with_identity_cast("uuid")
 }
 
 /// The output types serialize and come back equal, so a consumer can store a
@@ -1035,6 +1056,11 @@ CREATE POLICY p ON docs FOR SELECT USING (owner_id = auth_uid());
 ";
     let db = parse_schema(sql).expect("schema should parse");
     let translation = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )
+        .with_identity_cast("uuid")])
         .build()
         .translate(&db)
         .expect("translation should plan");

@@ -10,7 +10,7 @@ use crate::classifier::function_registry::{
 use crate::classifier::patterns::*;
 pub use crate::parser::expr::extract_column_name;
 pub(crate) use crate::parser::expr::unwrap_cast_or_nested;
-use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped};
+use crate::parser::expr::{extract_column_name_through_coalesce, is_coalesce_wrapped, CastChain};
 use crate::parser::expr::{function_arg_expr, function_call, positional_function_arg};
 use crate::parser::function_analyzer::current_setting_literal_key;
 use crate::parser::function_analyzer::FunctionSemantic;
@@ -24,6 +24,8 @@ use crate::types::ColumnName;
 
 /// P7/P9 attribute-condition detection (non-user column comparisons, temporal guards).
 mod attribute;
+/// Casts that can rename a value compared with a request value.
+mod casts;
 /// Whether a residual answers every caller alike.
 mod invariant;
 /// Request-scoped values a deployment declared readable.
@@ -36,6 +38,7 @@ pub use attribute::{
     residual_predicate,
 };
 pub(crate) use attribute::{conjunct_reads_only_the_row, residual_predicate_reading};
+pub(crate) use casts::{renaming_casts, renaming_reason};
 pub(crate) use invariant::{residual_relations, MembershipScope};
 pub use session::recognize_session_attribute;
 pub(crate) use session::{
@@ -362,6 +365,11 @@ pub fn recognize_p3<DB: DatabaseLike>(
     if null_safe && !is_sql_keyword {
         return None;
     }
+    if caller_renaming_cast(accessor_side, &CastChain::default(), registry).is_some()
+        || casts::row_renaming_cast(column_side).is_some()
+    {
+        return None;
+    }
 
     let accessor_indirection =
         is_subquery_wrapped(accessor_side) || is_coalesce_wrapped(column_side);
@@ -451,22 +459,24 @@ fn array_membership_column(expr: &Expr, registry: &FunctionRegistry) -> Option<C
         CallerForm::Direct => is_current_user_expr(caller_side, registry),
         CallerForm::Singleton => is_singleton_caller_element(caller_side, registry),
     };
-    if !names_the_caller {
+    if !names_the_caller || casts::row_renaming_cast(array_side).is_some() {
         return None;
     }
 
     extract_column_name(unwrap_cast_or_nested(array_side))
 }
 
-/// Whether `expr` is a one-element array literal holding the caller.
+/// Whether `expr` is a one-element array literal holding the caller, where a cast on the
+/// array casts the caller too.
 fn is_singleton_caller_element(expr: &Expr, registry: &FunctionRegistry) -> bool {
-    let Expr::Array(array) = unwrap_cast_or_nested(expr) else {
+    let (array_casts, peeled) = CastChain::peeled(expr);
+    let Expr::Array(array) = peeled else {
         return false;
     };
     let [only] = array.elem.as_slice() else {
         return false;
     };
-    is_current_user_expr(only, registry)
+    reads_the_caller(only, registry) && caller_renaming_cast(only, &array_casts, registry).is_none()
 }
 
 /// Recognise `data ->> 'owner' = caller`, the caller's identity stored in a jsonb
@@ -487,13 +497,18 @@ pub fn recognize_jsonb_field_ownership(
         return None;
     };
 
-    let (column, path) = if is_current_user_expr(right, registry) {
-        jsonb_text_path(left)?
-    } else if is_current_user_expr(left, registry) {
-        jsonb_text_path(right)?
+    let (row_side, caller_side) = if reads_the_caller(right, registry) {
+        (left, right)
+    } else if reads_the_caller(left, registry) {
+        (right, left)
     } else {
         return None;
     };
+    if !is_current_user_expr(caller_side, registry) || casts::row_renaming_cast(row_side).is_some()
+    {
+        return None;
+    }
+    let (column, path) = jsonb_text_path(row_side)?;
 
     Some(ClassifiedExpr {
         pattern: PatternClass::P12JsonbFieldOwnership(JsonbFieldOwnership { column, path }),
@@ -870,20 +885,32 @@ fn extract_qualified_column(expr: &Expr) -> Option<(Option<String>, ColumnName)>
     }
 }
 
-/// The value an accessor expression reads, and the field path taken out of it.
+/// One read of a request value, with the node it bottoms out at, the field path taken out
+/// of it, and the casts written around it.
 ///
 /// One traversal, under parentheses, casts, a scalar subquery that is only its
-/// projection, and an arrow chain, so the name, the setting key and the field path an
-/// expression carries can never disagree about which read they describe.
-pub(crate) fn accessor_root_and_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
-    accessor_root_and_path_ending(expr, PathEnd::Text)
+/// projection, and an arrow chain, so the name, the setting key, the field path and the
+/// casts an expression carries can never disagree about which read they describe.
+pub(crate) struct AccessorRead<'e> {
+    /// The accessor itself, a call, a keyword or a `current_setting`.
+    pub(crate) root: &'e Expr,
+    /// The field path taken out of the accessor's value, empty for the value itself.
+    pub(crate) path: Vec<String>,
+    /// Every cast between the accessor and the compared value, outermost first. The parse
+    /// into `json` an arrow needs is structure and is left out.
+    pub(crate) casts: CastChain,
 }
 
-/// As [`accessor_root_and_path`], for a chain whose last hop is `->` and so is still
-/// jsonb. Expanding a jsonb array needs that, since `->>` renders the array as text and
+/// The read `expr` makes, ending on `->>` or on no arrow at all.
+pub(crate) fn accessor_read(expr: &Expr) -> Option<AccessorRead<'_>> {
+    accessor_read_ending(expr, PathEnd::Text)
+}
+
+/// As [`accessor_read`], for a chain whose last hop is `->` and so is still jsonb.
+/// Expanding a jsonb array needs that, since `->>` renders the array as text and
 /// `PostgreSQL` refuses to expand text.
-pub(crate) fn accessor_root_and_value_path(expr: &Expr) -> Option<(&Expr, Vec<String>)> {
-    accessor_root_and_path_ending(expr, PathEnd::JsonValue)
+pub(crate) fn accessor_value_read(expr: &Expr) -> Option<AccessorRead<'_>> {
+    accessor_read_ending(expr, PathEnd::JsonValue)
 }
 
 /// Which arrow the caller's read is allowed to end on.
@@ -895,8 +922,9 @@ pub(crate) enum PathEnd {
     JsonValue,
 }
 
-fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Vec<String>)> {
-    match unwrap_cast_or_nested(expr) {
+fn accessor_read_ending(expr: &Expr, end: PathEnd) -> Option<AccessorRead<'_>> {
+    let (mut casts, peeled) = CastChain::peeled(expr);
+    let mut read = match peeled {
         // `(SELECT auth.uid())`, and only that: a subquery reading a table or carrying a
         // clause that can empty its result is a conjunct in disguise, and the pattern
         // keeps only a column name, so whatever it gates would vanish from the model.
@@ -906,7 +934,7 @@ fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Ve
             else {
                 return None;
             };
-            accessor_root_and_path_ending(inner, end)
+            accessor_read_ending(inner, end)?
         }
         other => {
             let hop = match end {
@@ -916,15 +944,22 @@ fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Ve
             match hop {
                 // Every hop below the last is `->`, so the walk continues on that end.
                 Some((base, mut path)) => {
-                    let (root, mut inner) =
-                        accessor_root_and_path_ending(base, PathEnd::JsonValue)?;
-                    inner.append(&mut path);
-                    Some((root, inner))
+                    let mut base = accessor_read_ending(base, PathEnd::JsonValue)?;
+                    base.path.append(&mut path);
+                    base.casts = base.casts.without_json_parse();
+                    base
                 }
-                None => Some((other, Vec::new())),
+                None => AccessorRead {
+                    root: other,
+                    path: Vec::new(),
+                    casts: CastChain::default(),
+                },
             }
         }
-    }
+    };
+    casts.extend(read.casts);
+    read.casts = casts;
+    Some(read)
 }
 
 /// The node an accessor expression bottoms out at, refusing a field taken out of it.
@@ -933,10 +968,9 @@ fn accessor_root_and_path_ending(expr: &Expr, end: PathEnd) -> Option<(&Expr, Ve
 /// and so is `tenant`, and nothing in the expression says which of them the caller is.
 /// Name a key holding the identity itself instead.
 fn accessor_root(expr: &Expr) -> Option<&Expr> {
-    match accessor_root_and_path(expr)? {
-        (root, path) if path.is_empty() => Some(root),
-        _ => None,
-    }
+    accessor_read(expr)
+        .filter(|read| read.path.is_empty())
+        .map(|read| read.root)
 }
 
 fn current_user_accessor_name(expr: &Expr) -> Option<String> {
@@ -957,56 +991,46 @@ fn reads_caller_setting_key(expr: &Expr, registry: &FunctionRegistry) -> bool {
         .is_some_and(|key| registry.names_caller_setting_key(&key))
 }
 
-/// The declared `CallerId` attribute `expr` reads, when it is a `current_setting`
-/// key a deployment declared as the caller.
-pub(crate) fn caller_session_attribute<'r>(
-    expr: &Expr,
+/// The declared `CallerId` attribute `root` reads, when it is a `current_setting` key a
+/// deployment declared as the caller.
+fn caller_session_attribute<'r>(
+    root: &Expr,
     registry: &'r FunctionRegistry,
 ) -> Option<&'r SessionAttribute> {
-    let key = accessor_root(expr).and_then(current_setting_literal_key)?;
+    let key = current_setting_literal_key(root)?;
     let attribute = registry.session_attribute(&key, &[])?;
     (attribute.kind() == SessionAttributeKind::CallerId).then_some(attribute)
 }
 
-/// Every cast directly wrapping `expr`'s written form, outermost first, down
-/// to the accessor a plain read would reach.
-fn cast_chain(expr: &Expr) -> Vec<String> {
-    let mut chain = Vec::new();
-    let mut current = expr;
-    loop {
-        match current {
-            Expr::Cast {
-                expr: inner,
-                data_type,
-                ..
-            } => {
-                chain.push(data_type.to_string().to_ascii_lowercase());
-                current = inner;
-            }
-            Expr::Nested(inner) => current = inner,
-            _ => return chain,
-        }
-    }
+/// The cast on `expr`'s read of the caller that can rename the caller, inside the casts
+/// `outer` already found around it.
+///
+/// A cast is proven by the `identity_cast` of a declared caller key, or for an accessor
+/// function by the type it returns, which a cast to that same type cannot change.
+fn caller_renaming_cast(
+    expr: &Expr,
+    outer: &CastChain,
+    registry: &FunctionRegistry,
+) -> Option<String> {
+    let read = accessor_read(expr)?;
+    let declared = caller_session_attribute(read.root, registry)
+        .and_then(SessionAttribute::identity_cast)
+        .or_else(|| accessor_return_type(read.root, registry));
+    outer
+        .renaming(declared)
+        .or_else(|| read.casts.renaming(declared))
+        .map(str::to_string)
 }
 
-/// The unproven cast on `expr`'s caller read, `None` only when every cast in
-/// the chain targets the declared identity form.
-pub(crate) fn caller_cast(expr: &Expr, registry: &FunctionRegistry) -> Option<CallerCast> {
-    let chain = cast_chain(expr);
-    let cast_type = chain.first()?.clone();
-    let declared_identity = caller_session_attribute(expr, registry)
-        .and_then(SessionAttribute::identity_cast)
-        .map(str::to_string);
-    let proven = declared_identity
-        .as_deref()
-        .is_some_and(|declared| chain.iter().all(|cast| cast == declared));
-    if proven {
+/// The type an accessor function the registry knows returns.
+fn accessor_return_type<'r>(root: &Expr, registry: &'r FunctionRegistry) -> Option<&'r str> {
+    let Expr::Function(function) = root else {
         return None;
+    };
+    match registry.get(&function.name.to_string())? {
+        FunctionSemantic::CurrentUserAccessor { returns } => Some(returns.as_str()),
+        _ => None,
     }
-    Some(CallerCast {
-        cast_type,
-        declared_identity,
-    })
 }
 
 /// Returns `true` when `expr` (or its Cast/Nested wrapper) is a scalar subquery.
@@ -1070,7 +1094,14 @@ pub fn is_redundant_caller_presence(expr: &Expr, registry: &FunctionRegistry) ->
     }
 }
 
+/// Whether `expr` is the caller, read so that the value compared is the value sent.
 pub(crate) fn is_current_user_expr(expr: &Expr, registry: &FunctionRegistry) -> bool {
+    reads_the_caller(expr, registry)
+        && caller_renaming_cast(expr, &CastChain::default(), registry).is_none()
+}
+
+/// Whether `expr` reads the caller, whatever casts it is written under.
+fn reads_the_caller(expr: &Expr, registry: &FunctionRegistry) -> bool {
     let Some(name) = current_user_accessor_name(expr) else {
         return false;
     };

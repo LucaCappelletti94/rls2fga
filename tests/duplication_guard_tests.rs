@@ -958,29 +958,30 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
 
 /// Every plain cast peel goes through the shared peeler.
 ///
-/// Three readers inspect the cast type before recursing or in place of it.
+/// Two readers inspect the cast type before recursing or in place of it.
 #[test]
 fn every_cast_peel_routes_through_the_shared_peeler() {
     let own_peels = fns_whose_body(|body| {
         let after_signature = body.split_once('\n').map_or("", |(_, rest)| rest);
-        body.contains("Expr::Cast") && !after_signature.contains("unwrap_cast_or_nested(")
+        body.contains("Expr::Cast")
+            && !after_signature.contains("unwrap_cast_or_nested(")
+            && !after_signature.contains("CastChain::peeled(")
     });
+    let readers = [
+        "peel_noting_casts",
+        "conjunct_reads_only_the_row",
+        "literal_uses_session_against_zoned_column",
+    ];
     let unexpected: Vec<&String> = own_peels
         .iter()
         .filter(|found| {
-            !found.ends_with(": unwrap_cast_or_nested")
-                && !found.ends_with(": conjunct_reads_only_the_row")
-                && !found.ends_with(": literal_uses_session_against_zoned_column")
-                && !found.ends_with(": cast_chain")
+            !readers
+                .iter()
+                .any(|reader| found.ends_with(&format!(": {reader}")))
         })
         .collect();
 
-    for expected in [
-        "unwrap_cast_or_nested",
-        "conjunct_reads_only_the_row",
-        "literal_uses_session_against_zoned_column",
-        "cast_chain",
-    ] {
+    for expected in readers {
         assert!(
             own_peels
                 .iter()
@@ -990,7 +991,7 @@ fn every_cast_peel_routes_through_the_shared_peeler() {
     }
     assert!(
         unexpected.is_empty(),
-        "a cast is peeled outside the four readers: {unexpected:#?}"
+        "a cast is peeled outside the three readers: {unexpected:#?}"
     );
 }
 
@@ -1121,8 +1122,18 @@ fn the_readme_example_blocks_match_the_output() {
     );
 
     let db = rls2fga::parser::sql_parser::parse_schema(schema).expect("the schema parses");
+    let caller = rls2fga::classifier::function_registry::SessionAttribute::setting(
+        "app.current_user_id",
+        rls2fga::classifier::function_registry::SessionAttributeKind::CallerId,
+    )
+    .with_identity_cast("uuid");
+    assert!(
+        readme.contains(".with_identity_cast(\"uuid\")"),
+        "the README usage fence no longer declares the caller this guard declares"
+    );
     let outputs = rls2fga::translator::TranslatorBuilder::new()
         .with_min_confidence(rls2fga::types::ConfidenceLevel::B)
+        .with_session_attributes([caller])
         .build()
         .translate(&db)
         .expect("the schema plans")
