@@ -8,7 +8,8 @@ on:
   merge_group:
   workflow_dispatch:
   schedule:
-    # Weekly security audit every Monday at 06:00 UTC
+    # Weekly security audit and container suite run against freshly pulled images,
+    # every Monday at 06:00 UTC.
     - cron: "0 6 * * 1"
 
 concurrency:
@@ -108,9 +109,11 @@ jobs:
         run: cargo audit
 
   coverage:
-    name: Coverage (Codecov)
+    name: Coverage and runtime parity (Codecov)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The container suites run one test at a time on an instrumented build, and a fresh
+    # runner pulls their images cold.
+    timeout-minutes: 90
     needs: quality
     permissions:
       contents: read
@@ -133,8 +136,20 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Verify Docker availability
+        run: docker version
+
+      # The server-backed targets carry `required-features = ["client"]`, and cargo omits
+      # such a target silently, so without the feature they would neither run nor count.
+      - name: Run the in-process suites
+        run: cargo llvm-cov --no-report --features client --lib --tests
+
+      # One thread because a fresh runner pulls both images cold.
+      - name: Run the container-backed suites
+        run: cargo llvm-cov --no-report --features client --tests -- --ignored --test-threads=1
+
       - name: Generate coverage report
-        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
